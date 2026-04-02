@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { InstancesService } from './instances.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -32,5 +32,11 @@ export class InstancesController {
   @Roles(UserRole.SUPER_ADMIN)
   reconnect(@Param('nome') nome: string) {
     return this.instancesService.reconnect(nome);
+  }
+
+  @Delete(':nome')
+  @Roles(UserRole.SUPER_ADMIN)
+  delete(@Param('nome') nome: string) {
+    return this.instancesService.delete(nome);
   }
 }

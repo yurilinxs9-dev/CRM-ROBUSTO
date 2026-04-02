@@ -15,6 +15,14 @@ export class WebhookProcessor extends WorkerHost {
     const start = Date.now();
     try {
       switch (job.name) {
+        // WPPConnect events
+        case 'onmessage':
+          await this.handleWppMessage(job.data);
+          break;
+        case 'status-find':
+          await this.handleWppStatus(job.data);
+          break;
+        // Legacy Evolution API events (kept for compatibility)
         case 'messages.upsert':
           await this.handleMessageUpsert(job.data);
           break;
@@ -45,6 +53,100 @@ export class WebhookProcessor extends WorkerHost {
       throw error;
     }
   }
+
+  // ── WPPConnect handlers ──────────────────────────────────────────────────────
+
+  private async handleWppMessage(payload: Record<string, unknown>) {
+    const instanceName = payload?.instance as string | undefined;
+    const msg = payload?.data as Record<string, unknown> | undefined;
+    if (!msg) return;
+
+    // Skip group messages
+    if (msg.isGroupMsg === true) return;
+
+    const from = msg.from as string | undefined;
+    if (!from) return;
+
+    const phone = from.replace('@c.us', '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
+    const msgIdObj = msg.id as Record<string, unknown> | undefined;
+    const messageId = (msgIdObj?._serialized as string) || (msg.id as string) || undefined;
+    const isFromMe = (msg.fromMe as boolean) || false;
+    const content = (msg.body as string) || null;
+
+    const pipeline = await this.prisma.pipeline.findFirst({ where: { ativo: true } });
+    if (!pipeline) return;
+
+    const firstStage = await this.prisma.stage.findFirst({
+      where: { pipeline_id: pipeline.id },
+      orderBy: { ordem: 'asc' },
+    });
+    if (!firstStage) return;
+
+    const defaultUser = await this.prisma.user.findFirst({ where: { ativo: true } });
+    if (!defaultUser) return;
+
+    const lead = await this.prisma.lead.upsert({
+      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: pipeline.id } },
+      create: {
+        nome: (msg.pushName as string) || phone,
+        telefone: phone,
+        origem: 'WHATSAPP_INCOMING',
+        instancia_whatsapp: instanceName || '',
+        pipeline_id: pipeline.id,
+        estagio_id: firstStage.id,
+        responsavel_id: defaultUser.id,
+        ultima_interacao: new Date(),
+      },
+      update: {
+        ultima_interacao: new Date(),
+        mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
+      },
+    });
+
+    if (messageId) {
+      await this.prisma.message.upsert({
+        where: { whatsapp_message_id: messageId },
+        create: {
+          lead_id: lead.id,
+          instance_name: instanceName || '',
+          whatsapp_message_id: messageId,
+          direction: isFromMe ? 'OUTGOING' : 'INCOMING',
+          type: 'TEXT',
+          content,
+          status: isFromMe ? 'SENT' : 'DELIVERED',
+          metadata: JSON.parse(JSON.stringify(payload)),
+        },
+        update: {},
+      });
+    }
+
+    this.logger.log(`Mensagem WPP processada: lead ${lead.id}, phone ${phone}`);
+  }
+
+  private async handleWppStatus(payload: Record<string, unknown>) {
+    const instanceName = payload?.instance as string | undefined;
+    if (!instanceName) return;
+
+    // WPPConnect sends data as a string: "CONNECTED", "QRCODE", "notLogged", etc.
+    const rawStatus = payload?.data as string | undefined;
+    const statusMap: Record<string, string> = {
+      CONNECTED: 'open',
+      QRCODE: 'connecting',
+      DISCONNECTED: 'close',
+      DESTROYED: 'close',
+      notLogged: 'close',
+    };
+    const status = (rawStatus && statusMap[rawStatus]) || 'disconnected';
+
+    await this.prisma.whatsappInstance.upsert({
+      where: { nome: instanceName },
+      create: { nome: instanceName, status },
+      update: { status, ultimo_check: new Date() },
+    });
+    this.logger.log(`Instancia ${instanceName}: ${rawStatus} → ${status}`);
+  }
+
+  // ── Legacy Evolution API handlers ───────────────────────────────────────────
 
   private async handleMessageUpsert(data: Record<string, unknown>) {
     const rawData = data?.data as Record<string, unknown> | undefined;
@@ -109,8 +211,6 @@ export class WebhookProcessor extends WorkerHost {
         update: {},
       });
     }
-
-    this.logger.log(`Mensagem processada: lead ${lead.id}, phone ${phone}`);
   }
 
   private async handleMessageUpdate(data: Record<string, unknown>) {
@@ -150,7 +250,6 @@ export class WebhookProcessor extends WorkerHost {
       create: { nome: instanceName, status: state || 'disconnected' },
       update: { status: state || 'disconnected', ultimo_check: new Date() },
     });
-    this.logger.log(`Instancia ${instanceName}: ${state}`);
   }
 
   private async handleContactsUpsert(data: Record<string, unknown>) {

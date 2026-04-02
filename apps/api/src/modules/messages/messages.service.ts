@@ -20,15 +20,22 @@ const internalNoteSchema = z.object({
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
   private readonly apiUrl: string;
-  private readonly apiKey: string;
+  private readonly secretKey: string;
 
   constructor(
     private http: HttpService,
     private config: ConfigService,
     private prisma: PrismaService,
   ) {
-    this.apiUrl = config.get('EVOLUTION_API_URL_INTERNAL', 'http://evolution-api:8080') || 'http://evolution-api:8080';
-    this.apiKey = config.get('EVOLUTION_API_KEY', '') || '';
+    this.apiUrl = config.get('WPPCONNECT_URL_INTERNAL', 'http://wppconnect:21465') || 'http://wppconnect:21465';
+    this.secretKey = config.get('WPPCONNECT_SECRET', '') || '';
+  }
+
+  private async getToken(session: string): Promise<string> {
+    const { data } = await firstValueFrom(
+      this.http.post(`${this.apiUrl}/${this.secretKey}/generate-token`, { session }),
+    );
+    return (data as { token: string }).token;
   }
 
   async sendText(data: unknown, userId: string) {
@@ -37,19 +44,20 @@ export class MessagesService {
     const lead = await this.prisma.lead.findUnique({ where: { id: lead_id } });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
-    const remoteJid = `${lead.telefone}@s.whatsapp.net`;
+    const token = await this.getToken(lead.instancia_whatsapp);
 
     const { data: response } = await firstValueFrom(
       this.http.post(
-        `${this.apiUrl}/message/sendText/${lead.instancia_whatsapp}`,
-        { number: remoteJid, text: content },
-        { headers: { apikey: this.apiKey } },
+        `${this.apiUrl}/api/${lead.instancia_whatsapp}/send-message`,
+        { phone: lead.telefone, message: content, isGroup: false },
+        { headers: { Authorization: `Bearer ${token}` } },
       ),
     );
 
     const responseData = response as Record<string, unknown>;
-    const keyData = responseData?.key as Record<string, unknown> | undefined;
-    const whatsappMessageId = (keyData?.id as string) || uuid();
+    const msgData = responseData?.message as Record<string, unknown> | undefined;
+    const msgId = msgData?.id as Record<string, unknown> | undefined;
+    const whatsappMessageId = (msgId?._serialized as string) || uuid();
 
     const message = await this.prisma.message.create({
       data: {
