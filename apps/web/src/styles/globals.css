@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+
+@layer base {
+  :root {
+    --primary:         #00a859;
+    --primary-hover:   #008f4c;
+    --primary-subtle:  rgba(0,168,89,0.12);
+    --primary-border:  rgba(0,168,89,0.30);
+    --secondary:       #6366f1;
+    --bg-base:         #0a0d0f;
+    --bg-surface-1:    #0f1419;
+    --bg-surface-2:    #151d27;
+    --bg-surface-3:    #1c2733;
+    --bg-surface-4:    #253447;
+    --border-subtle:   #1e2d3d;
+    --border-default:  #2d4059;
+    --border-strong:   #3d5a7a;
+    --text-primary:    #e8edf2;
+    --text-secondary:  #8899aa;
+    --text-muted:      #4a5d6e;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger:  #ef4444;
+    --info:    #0ea5e9;
+    --temp-cold: #38bdf8;
+    --temp-warm: #fb923c;
+    --temp-hot:  #f97316;
+    --temp-fire: #ef4444;
+    --temp-frio: #38bdf8;
+    --temp-morno: #fb923c;
+    --temp-quente: #f97316;
+    --temp-muito-quente: #ef4444;
+    --font-sans: 'Geist', 'Inter', system-ui, sans-serif;
+    --font-mono: 'Geist Mono', 'JetBrains Mono', monospace;
+    --radius: 8px;
+    /* shadcn variables */
+    --background:       10 13 15;
+    --foreground:       232 237 242;
+    --card:             21 29 39;
+    --card-foreground:  232 237 242;
+    --popover:          28 39 51;
+    --popover-foreground: 232 237 242;
+    --primary-shadcn:   0 168 89;
+    --primary-foreground: 232 237 242;
+    --secondary-shadcn: 99 102 241;
+    --secondary-foreground: 232 237 242;
+    --muted:            28 39 51;
+    --muted-foreground: 136 153 170;
+    --accent:           37 52 71;
+    --accent-foreground: 232 237 242;
+    --destructive:      239 68 68;
+    --destructive-foreground: 255 255 255;
+    --border-shadcn:    45 64 89;
+    --input:            28 39 51;
+    --ring:             0 168 89;
+  }
+
+  * { border-color: var(--border-default); }
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scrollbar global */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+}

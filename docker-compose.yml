@@ -1,0 +1,110 @@
+version: '3.8'
+services:
+  postgres-evolution:
+    image: postgres:16-alpine
+    container_name: postgres-evolution
+    restart: always
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=${POSTGRES_EVOLUTION_PASSWORD}
+      - POSTGRES_DB=evolution
+    volumes:
+      - postgres_evolution_data:/var/lib/postgresql/data
+    networks: [crm-network]
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: '0.3' }
+
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution-api
+    restart: always
+    ports: ["8080:8080"]
+    environment:
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+      - WEBHOOK_GLOBAL_URL=http://crm-backend:3001/api/webhook/evolution
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+      - WEBHOOK_EVENTS_MESSAGES_UPDATE=true
+      - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
+      - WEBHOOK_EVENTS_QRCODE_UPDATED=true
+      - WEBHOOK_EVENTS_CONTACTS_UPSERT=true
+      - STORE_MESSAGES=true
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:${POSTGRES_EVOLUTION_PASSWORD}@postgres-evolution:5432/evolution
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - LOG_LEVEL=ERROR,WARN
+    depends_on: [postgres-evolution]
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    networks: [crm-network]
+    deploy:
+      resources:
+        limits: { memory: 4G, cpus: '1.0' }
+        reservations: { memory: 2G }
+
+  crm-backend:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: crm-backend
+    restart: always
+    ports: ["3001:3001"]
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_URL=${DIRECT_URL}
+      - UPSTASH_REDIS_TLS_URL=${UPSTASH_REDIS_TLS_URL}
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_STORAGE_BUCKET=${SUPABASE_STORAGE_BUCKET:-crm-media}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - JWT_ACCESS_EXPIRY=${JWT_ACCESS_EXPIRY:-15m}
+      - JWT_REFRESH_EXPIRY=${JWT_REFRESH_EXPIRY:-7d}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - FFMPEG_PATH=/usr/bin/ffmpeg
+    depends_on: [evolution-api]
+    networks: [crm-network]
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: '0.8' }
+        reservations: { memory: 1G }
+
+  nginx:
+    image: nginx:alpine
+    container_name: crm-nginx
+    restart: always
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [crm-backend]
+    networks: [crm-network]
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: always
+    ports: ["3002:3001"]
+    volumes: [uptime_data:/app/data]
+    networks: [crm-network]
+
+volumes:
+  postgres_evolution_data:
+  evolution_instances:
+  evolution_store:
+  uptime_data:
+
+networks:
+  crm-network:
+    driver: bridge

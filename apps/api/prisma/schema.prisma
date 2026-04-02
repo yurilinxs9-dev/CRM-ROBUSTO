@@ -1,0 +1,294 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  GERENTE
+  OPERADOR
+  VISUALIZADOR
+}
+
+enum LeadOrigem {
+  WHATSAPP_INCOMING
+  WHATSAPP_OUTGOING
+  MANUAL
+  IMPORT
+  LANDING_PAGE
+  INDICACAO
+}
+
+enum LeadTemperatura {
+  FRIO
+  MORNO
+  QUENTE
+  MUITO_QUENTE
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING
+}
+
+enum MessageType {
+  TEXT
+  AUDIO
+  IMAGE
+  VIDEO
+  DOCUMENT
+  STICKER
+  LOCATION
+  CONTACT
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model User {
+  id         String   @id @default(uuid())
+  nome       String
+  email      String   @unique
+  senha_hash String
+  role       UserRole @default(OPERADOR)
+  avatar_url String?
+  ativo      Boolean  @default(true)
+  team_id    String?
+  team       Team?    @relation(fields: [team_id], references: [id])
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  leads          Lead[]
+  sent_messages  Message[]      @relation("SentBy")
+  activities     LeadActivity[]
+  quick_replies  QuickReply[]
+  notifications  Notification[]
+  user_instances UserInstance[]
+
+  @@index([email])
+}
+
+model Team {
+  id         String   @id @default(uuid())
+  nome       String
+  descricao  String?
+  created_at DateTime @default(now())
+  users      User[]
+}
+
+model Pipeline {
+  id         String   @id @default(uuid())
+  nome       String
+  descricao  String?
+  ativo      Boolean  @default(true)
+  ordem      Int      @default(0)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  stages     Stage[]
+  leads      Lead[]
+}
+
+model Stage {
+  id                  String   @id @default(uuid())
+  nome                String
+  cor                 String   @default("#3498DB")
+  ordem               Int
+  pipeline_id         String
+  pipeline            Pipeline @relation(fields: [pipeline_id], references: [id], onDelete: Cascade)
+  is_won              Boolean  @default(false)
+  is_lost             Boolean  @default(false)
+  auto_action         Json?
+  campos_obrigatorios Json?
+  created_at          DateTime @default(now())
+  leads               Lead[]
+
+  @@index([pipeline_id, ordem])
+}
+
+model Lead {
+  id                  String          @id @default(uuid())
+  nome                String
+  telefone            String
+  email               String?
+  empresa             String?
+  cargo               String?
+  origem              LeadOrigem      @default(WHATSAPP_INCOMING)
+  temperatura         LeadTemperatura @default(FRIO)
+  valor_estimado      Decimal?        @db.Decimal(12, 2)
+  score               Int             @default(0)
+  tags                Json?           @default("[]")
+  dados_custom        Json?           @default("{}")
+  ultima_interacao    DateTime?
+  proximo_followup    DateTime?
+  motivo_perda        String?
+  position            Float           @default(0)
+  instancia_whatsapp  String
+  foto_url            String?
+  mensagens_nao_lidas Int             @default(0)
+  pipeline_id         String
+  pipeline            Pipeline        @relation(fields: [pipeline_id], references: [id])
+  estagio_id          String
+  estagio             Stage           @relation(fields: [estagio_id], references: [id])
+  responsavel_id      String
+  responsavel         User            @relation(fields: [responsavel_id], references: [id])
+  created_at          DateTime        @default(now())
+  updated_at          DateTime        @updatedAt
+
+  messages   Message[]
+  activities LeadActivity[]
+  lead_tags  LeadTag[]
+
+  @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
+  @@index([responsavel_id, estagio_id])
+  @@index([instancia_whatsapp])
+  @@index([pipeline_id, estagio_id, position])
+  @@index([ultima_interacao])
+  @@index([score])
+}
+
+model Message {
+  id                     String           @id @default(uuid())
+  lead_id                String
+  lead                   Lead             @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  instance_name          String
+  whatsapp_message_id    String?          @unique
+  direction              MessageDirection
+  type                   MessageType      @default(TEXT)
+  content                String?
+  media_url              String?
+  media_mimetype         String?
+  media_duration_seconds Int?
+  media_filename         String?
+  media_size_bytes       Int?
+  status                 MessageStatus    @default(PENDING)
+  is_internal_note       Boolean          @default(false)
+  sent_by_user_id        String?
+  sent_by                User?            @relation("SentBy", fields: [sent_by_user_id], references: [id])
+  quoted_message_id      String?
+  quoted_message         Message?         @relation("QuotedMessage", fields: [quoted_message_id], references: [id])
+  replies                Message[]        @relation("QuotedMessage")
+  metadata               Json?
+  created_at             DateTime         @default(now())
+
+  @@index([lead_id, created_at])
+  @@index([instance_name, created_at])
+}
+
+model LeadActivity {
+  id           String   @id @default(uuid())
+  lead_id      String
+  lead         Lead     @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  user_id      String?
+  user         User?    @relation(fields: [user_id], references: [id])
+  tipo         String
+  descricao    String
+  dados_antes  Json?
+  dados_depois Json?
+  created_at   DateTime @default(now())
+
+  @@index([lead_id, created_at])
+}
+
+model WhatsappInstance {
+  id             String    @id @default(uuid())
+  nome           String    @unique
+  telefone       String?
+  status         String    @default("disconnected")
+  ultimo_check   DateTime?
+  config         Json?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+  user_instances UserInstance[]
+  instance_logs  InstanceLog[]
+}
+
+model UserInstance {
+  id          String           @id @default(uuid())
+  user_id     String
+  user        User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  instance_id String
+  instance    WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, instance_id])
+}
+
+model InstanceLog {
+  id          String           @id @default(uuid())
+  instance_id String
+  instance    WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  evento      String
+  detalhes    Json?
+  created_at  DateTime         @default(now())
+
+  @@index([instance_id, created_at])
+}
+
+model Tag {
+  id         String    @id @default(uuid())
+  nome       String    @unique
+  cor        String    @default("#3498DB")
+  created_at DateTime  @default(now())
+  lead_tags  LeadTag[]
+}
+
+model LeadTag {
+  id      String @id @default(uuid())
+  lead_id String
+  lead    Lead   @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  tag_id  String
+  tag     Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+
+  @@unique([lead_id, tag_id])
+}
+
+model QuickReply {
+  id         String   @id @default(uuid())
+  titulo     String
+  conteudo   String
+  atalho     String?
+  user_id    String?
+  user       User?    @relation(fields: [user_id], references: [id])
+  is_global  Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@index([atalho])
+}
+
+model WebhookLog {
+  id                 String   @id @default(uuid())
+  event              String
+  instance           String?
+  payload            Json
+  processed          Boolean  @default(false)
+  error              String?
+  processing_time_ms Int?
+  created_at         DateTime @default(now())
+
+  @@index([event, created_at])
+  @@index([processed])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  titulo     String
+  conteudo   String
+  tipo       String
+  lida       Boolean  @default(false)
+  link       String?
+  created_at DateTime @default(now())
+
+  @@index([user_id, lida, created_at])
+}
