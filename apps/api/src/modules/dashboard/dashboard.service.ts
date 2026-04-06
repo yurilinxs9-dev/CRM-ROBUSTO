@@ -62,6 +62,110 @@ export class DashboardService {
     );
   }
 
+  async getStats() {
+    const now = new Date();
+    const startOfThisWeek = new Date(now);
+    startOfThisWeek.setDate(now.getDate() - 7);
+    const startOfLastWeek = new Date(now);
+    startOfLastWeek.setDate(now.getDate() - 14);
+
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { ativo: true },
+      include: { stages: { orderBy: { ordem: 'asc' } } },
+    });
+
+    const stages: StageRow[] = pipeline?.stages ?? [];
+
+    const stageCounts = await Promise.all(
+      stages.map(async (s) => ({
+        stageId: s.id,
+        nome: s.nome,
+        cor: s.cor,
+        count: await this.prisma.lead.count({ where: { estagio_id: s.id } }),
+      })),
+    );
+
+    const totalLeads = await this.prisma.lead.count();
+    const leadsThisWeek = await this.prisma.lead.count({
+      where: { created_at: { gte: startOfThisWeek } },
+    });
+    const leadsLastWeek = await this.prisma.lead.count({
+      where: { created_at: { gte: startOfLastWeek, lt: startOfThisWeek } },
+    });
+
+    const wonStageIds = stages.filter((s: any) => (s as any).is_won).map((s) => s.id);
+    const wonCount = wonStageIds.length
+      ? await this.prisma.lead.count({ where: { estagio_id: { in: wonStageIds } } })
+      : 0;
+    const conversionRate = totalLeads > 0 ? Math.round((wonCount / totalLeads) * 100) : 0;
+
+    const tempGroup = await this.prisma.lead.groupBy({
+      by: ['temperatura'],
+      _count: { id: true },
+    });
+    const leadsByTemp = tempGroup.map((t) => ({
+      temperatura: String(t.temperatura),
+      count: t._count.id,
+    }));
+
+    const recentLeadActivities = await this.prisma.leadActivity.findMany({
+      orderBy: { created_at: 'desc' },
+      take: 10,
+      include: {
+        lead: { select: { nome: true } },
+        user: { select: { nome: true } },
+      },
+    });
+    const recentActivity = recentLeadActivities.map((a) => ({
+      id: a.id,
+      leadNome: a.lead?.nome ?? '',
+      action: a.tipo,
+      operatorNome: a.user?.nome ?? 'Sistema',
+      createdAt: a.created_at,
+    }));
+
+    const operatorGroup = await this.prisma.lead.groupBy({
+      by: ['responsavel_id'],
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
+    });
+    const operatorIds = operatorGroup.map((g) => g.responsavel_id);
+    const operators = operatorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: operatorIds } },
+          select: { id: true, nome: true },
+        })
+      : [];
+    const topOperators = await Promise.all(
+      operatorGroup.map(async (g) => {
+        const u = operators.find((o) => o.id === g.responsavel_id);
+        const messagesSent = await this.prisma.message.count({
+          where: { sent_by_user_id: g.responsavel_id, direction: 'OUTGOING' },
+        });
+        return {
+          id: g.responsavel_id,
+          nome: u?.nome ?? 'Desconhecido',
+          leadsCount: g._count.id,
+          messagesSent,
+          avgResponse: 0,
+        };
+      }),
+    );
+
+    return {
+      totalLeads,
+      leadsThisWeek,
+      leadsLastWeek,
+      avgResponseMinutes: 0,
+      conversionRate,
+      leadsByStage: stageCounts,
+      leadsByTemp,
+      recentActivity,
+      topOperators,
+    };
+  }
+
   async getVolume() {
     const last7days = new Date();
     last7days.setDate(last7days.getDate() - 7);

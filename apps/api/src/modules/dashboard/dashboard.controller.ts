@@ -9,6 +9,12 @@ import { Roles } from '../../common/decorators/roles.decorator';
 export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
 
+  @Get('stats')
+  @Roles('GERENTE' as any)
+  getStats() {
+    return this.dashboardService.getStats();
+  }
+
   @Get('funnel')
   @Roles('GERENTE' as any)
   getFunnel(@Query('pipelineId') pipelineId?: string) {
