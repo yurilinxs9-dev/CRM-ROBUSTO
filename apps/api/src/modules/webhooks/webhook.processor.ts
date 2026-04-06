@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LeadsService } from '../leads/leads.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
 
 @Processor('webhooks', { concurrency: 3 })
 export class WebhookProcessor extends WorkerHost {
@@ -11,6 +12,7 @@ export class WebhookProcessor extends WorkerHost {
   constructor(
     private prisma: PrismaService,
     private leadsService: LeadsService,
+    private gateway: CrmGateway,
   ) {
     super();
   }
@@ -121,7 +123,7 @@ export class WebhookProcessor extends WorkerHost {
     });
 
     if (messageId) {
-      await this.prisma.message.upsert({
+      const message = await this.prisma.message.upsert({
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
@@ -135,6 +137,7 @@ export class WebhookProcessor extends WorkerHost {
         },
         update: {},
       });
+      this.gateway.emitNewMessage(lead.id, message);
     }
 
     this.logger.log(`Mensagem WPP processada: lead ${lead.id}, phone ${phone}`);
@@ -213,7 +216,7 @@ export class WebhookProcessor extends WorkerHost {
     });
 
     if (messageId) {
-      await this.prisma.message.upsert({
+      const message = await this.prisma.message.upsert({
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
@@ -227,6 +230,7 @@ export class WebhookProcessor extends WorkerHost {
         },
         update: {},
       });
+      this.gateway.emitNewMessage(lead.id, message);
     }
   }
 
@@ -341,7 +345,7 @@ export class WebhookProcessor extends WorkerHost {
     });
 
     if (messageId) {
-      await this.prisma.message.upsert({
+      const message = await this.prisma.message.upsert({
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
@@ -355,6 +359,7 @@ export class WebhookProcessor extends WorkerHost {
         },
         update: {},
       });
+      this.gateway.emitNewMessage(lead.id, message);
     }
 
     // Fire-and-forget: sync profile if nome==telefone or foto_url ausente

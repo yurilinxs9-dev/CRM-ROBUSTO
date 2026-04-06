@@ -194,12 +194,18 @@ export class LeadsService {
   }
 
   async getMessages(leadId: string, cursor?: string, limit = 50) {
-    return this.prisma.message.findMany({
+    const rows = await this.prisma.message.findMany({
       where: { lead_id: leadId },
       orderBy: { created_at: 'desc' },
-      take: limit,
+      take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
+    const hasMore = rows.length > limit;
+    const messages = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      messages,
+      nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
+    };
   }
 
   async markAsRead(leadId: string) {
