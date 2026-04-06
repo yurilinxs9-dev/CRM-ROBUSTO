@@ -521,7 +521,7 @@ export default function ChatDetailPage() {
         });
         return res.data;
       }
-      const res = await api.post('/api/messages/text', {
+      const res = await api.post('/api/messages/send-text', {
         lead_id: leadId,
         content,
       });
@@ -530,8 +530,12 @@ export default function ChatDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
     },
-    onError: () => {
-      toast.error('Erro ao enviar mensagem.');
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+        (err as { message?: string })?.message ??
+        'Erro ao enviar mensagem.';
+      toast.error(msg);
     },
   });
 
@@ -579,7 +583,7 @@ export default function ChatDetailPage() {
     };
 
     const handleStatusUpdate = (data: {
-      message_id: string;
+      messageId: string;
       status: MessageStatus;
     }) => {
       queryClient.setQueryData<{ pages: MessagesResponse[]; pageParams: (string | undefined)[] }>(
@@ -591,7 +595,7 @@ export default function ChatDetailPage() {
             pages: old.pages.map((page) => ({
               ...page,
               messages: page.messages.map((m) =>
-                m.id === data.message_id ? { ...m, status: data.status } : m,
+                m.id === data.messageId ? { ...m, status: data.status } : m,
               ),
             })),
           };
@@ -599,13 +603,13 @@ export default function ChatDetailPage() {
       );
     };
 
-    socket.on('new_message', handleNewMessage);
-    socket.on('message_status_updated', handleStatusUpdate);
+    socket.on('message:new', handleNewMessage);
+    socket.on('message:status-updated', handleStatusUpdate);
 
     return () => {
       leaveLead(leadId);
-      socket.off('new_message', handleNewMessage);
-      socket.off('message_status_updated', handleStatusUpdate);
+      socket.off('message:new', handleNewMessage);
+      socket.off('message:status-updated', handleStatusUpdate);
     };
   }, [leadId, queryClient]);
 

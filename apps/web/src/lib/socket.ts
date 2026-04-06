@@ -31,14 +31,17 @@ export function disconnectSocket(): void {
 
 export function joinLead(leadId: string): void {
   const s = getSocket();
+  const emitJoin = () => s.emit('join:lead', leadId);
   if (s.connected) {
-    s.emit('join_lead', { leadId });
+    emitJoin();
+  } else {
+    s.once('connect', emitJoin);
   }
 }
 
 export function leaveLead(leadId: string): void {
   const s = getSocket();
   if (s.connected) {
-    s.emit('leave_lead', { leadId });
+    s.emit('leave:lead', leadId);
   }
 }

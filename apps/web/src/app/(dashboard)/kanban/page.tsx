@@ -633,24 +633,24 @@ export default function KanbanPage() {
       );
     };
 
-    const handleNewMessage = (data: { lead_id: string }) => {
+    const handleNewMessage = (data: { leadId: string }) => {
       queryClient.setQueryData<Lead[]>(
         ['leads', searchTerm, tempFilter],
         (old) =>
           old?.map((l) =>
-            l.id === data.lead_id
+            l.id === data.leadId
               ? { ...l, mensagens_nao_lidas: l.mensagens_nao_lidas + 1 }
               : l,
           ),
       );
     };
 
-    socket.on('lead:stage_changed', handleStageChanged);
-    socket.on('new_message', handleNewMessage);
+    socket.on('lead:stage-changed', handleStageChanged);
+    socket.on('lead:new-message', handleNewMessage);
 
     return () => {
-      socket.off('lead:stage_changed', handleStageChanged);
-      socket.off('new_message', handleNewMessage);
+      socket.off('lead:stage-changed', handleStageChanged);
+      socket.off('lead:new-message', handleNewMessage);
     };
   }, [queryClient, searchTerm, tempFilter]);
 

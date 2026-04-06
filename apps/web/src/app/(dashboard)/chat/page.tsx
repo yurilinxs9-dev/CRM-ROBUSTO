@@ -210,19 +210,19 @@ export default function ChatPage() {
     const socket = getSocket();
     if (!socket.connected) return;
 
-    const handleNewMessage = (data: { lead_id: string }) => {
+    const handleNewMessage = (data: { leadId: string }) => {
       queryClient.setQueryData<Lead[]>(['leads', search], (old) =>
         old?.map((l) =>
-          l.id === data.lead_id
+          l.id === data.leadId
             ? { ...l, mensagens_nao_lidas: l.mensagens_nao_lidas + 1 }
             : l,
         ),
       );
     };
 
-    socket.on('new_message', handleNewMessage);
+    socket.on('lead:new-message', handleNewMessage);
     return () => {
-      socket.off('new_message', handleNewMessage);
+      socket.off('lead:new-message', handleNewMessage);
     };
   }, [queryClient, search]);
 
