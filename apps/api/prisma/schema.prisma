@@ -56,6 +56,33 @@ enum MessageStatus {
   FAILED
 }
 
+model Tenant {
+  id         String   @id @default(uuid())
+  nome       String
+  owner_id   String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  owner           User               @relation("TenantOwner", fields: [owner_id], references: [id])
+  users           User[]             @relation("TenantMembers")
+  pipelines       Pipeline[]
+  stages          Stage[]
+  leads           Lead[]
+  messages        Message[]
+  lead_activities LeadActivity[]
+  instances       WhatsappInstance[]
+  user_instances  UserInstance[]
+  instance_logs   InstanceLog[]
+  tags            Tag[]
+  lead_tags       LeadTag[]
+  quick_replies   QuickReply[]
+  notifications   Notification[]
+  tasks           Task[]
+  webhook_logs    WebhookLog[]
+
+  @@index([owner_id])
+}
+
 model User {
   id         String   @id @default(uuid())
   nome       String
@@ -64,8 +91,10 @@ model User {
   role       UserRole @default(OPERADOR)
   avatar_url String?
   ativo      Boolean  @default(true)
-  team_id    String?
-  team       Team?    @relation(fields: [team_id], references: [id])
+  tenant_id  String
+  tenant     Tenant   @relation("TenantMembers", fields: [tenant_id], references: [id])
+  owned_tenants    Tenant[]           @relation("TenantOwner")
+  owned_instances  WhatsappInstance[] @relation("OwnedInstances")
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -78,14 +107,7 @@ model User {
   tasks          Task[]
 
   @@index([email])
-}
-
-model Team {
-  id         String   @id @default(uuid())
-  nome       String
-  descricao  String?
-  created_at DateTime @default(now())
-  users      User[]
+  @@index([tenant_id])
 }
 
 model Pipeline {
@@ -94,10 +116,15 @@ model Pipeline {
   descricao  String?
   ativo      Boolean  @default(true)
   ordem      Int      @default(0)
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id])
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
   stages     Stage[]
   leads      Lead[]
+
+  @@unique([tenant_id, nome])
+  @@index([tenant_id])
 }
 
 model Stage {
@@ -107,6 +134,8 @@ model Stage {
   ordem               Int
   pipeline_id         String
   pipeline            Pipeline @relation(fields: [pipeline_id], references: [id], onDelete: Cascade)
+  tenant_id           String
+  tenant              Tenant   @relation(fields: [tenant_id], references: [id])
   is_won              Boolean  @default(false)
   is_lost             Boolean  @default(false)
   auto_action         Json?
@@ -115,6 +144,7 @@ model Stage {
   leads               Lead[]
 
   @@index([pipeline_id, ordem])
+  @@index([tenant_id])
 }
 
 model Lead {
@@ -143,6 +173,8 @@ model Lead {
   estagio             Stage           @relation(fields: [estagio_id], references: [id])
   responsavel_id      String
   responsavel         User            @relation(fields: [responsavel_id], references: [id])
+  tenant_id           String
+  tenant              Tenant          @relation(fields: [tenant_id], references: [id])
   created_at          DateTime        @default(now())
   updated_at          DateTime        @updatedAt
 
@@ -157,6 +189,7 @@ model Lead {
   @@index([pipeline_id, estagio_id, position])
   @@index([ultima_interacao])
   @@index([score])
+  @@index([tenant_id])
 }
 
 model Message {
@@ -181,10 +214,14 @@ model Message {
   quoted_message         Message?         @relation("QuotedMessage", fields: [quoted_message_id], references: [id])
   replies                Message[]        @relation("QuotedMessage")
   metadata               Json?
+  tenant_id              String
+  tenant                 Tenant           @relation(fields: [tenant_id], references: [id])
   created_at             DateTime         @default(now())
 
   @@index([lead_id, created_at])
   @@index([instance_name, created_at])
+  @@index([status, created_at])
+  @@index([tenant_id])
 }
 
 model LeadActivity {
@@ -197,9 +234,12 @@ model LeadActivity {
   descricao    String
   dados_antes  Json?
   dados_depois Json?
+  tenant_id    String
+  tenant       Tenant   @relation(fields: [tenant_id], references: [id])
   created_at   DateTime @default(now())
 
   @@index([lead_id, created_at])
+  @@index([tenant_id])
 }
 
 model WhatsappInstance {
@@ -209,10 +249,16 @@ model WhatsappInstance {
   status         String    @default("disconnected")
   ultimo_check   DateTime?
   config         Json?
+  owner_user_id  String
+  owner          User      @relation("OwnedInstances", fields: [owner_user_id], references: [id])
+  tenant_id      String
+  tenant         Tenant    @relation(fields: [tenant_id], references: [id])
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt
   user_instances UserInstance[]
   instance_logs  InstanceLog[]
+
+  @@index([tenant_id])
 }
 
 model UserInstance {
@@ -221,8 +267,11 @@ model UserInstance {
   user        User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
   instance_id String
   instance    WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  tenant_id   String
+  tenant      Tenant           @relation(fields: [tenant_id], references: [id])
 
   @@unique([user_id, instance_id])
+  @@index([tenant_id])
 }
 
 model InstanceLog {
@@ -231,27 +280,38 @@ model InstanceLog {
   instance    WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
   evento      String
   detalhes    Json?
+  tenant_id   String
+  tenant      Tenant           @relation(fields: [tenant_id], references: [id])
   created_at  DateTime         @default(now())
 
   @@index([instance_id, created_at])
+  @@index([tenant_id])
 }
 
 model Tag {
   id         String    @id @default(uuid())
-  nome       String    @unique
+  nome       String
   cor        String    @default("#3498DB")
+  tenant_id  String
+  tenant     Tenant    @relation(fields: [tenant_id], references: [id])
   created_at DateTime  @default(now())
   lead_tags  LeadTag[]
+
+  @@unique([tenant_id, nome])
+  @@index([tenant_id])
 }
 
 model LeadTag {
-  id      String @id @default(uuid())
-  lead_id String
-  lead    Lead   @relation(fields: [lead_id], references: [id], onDelete: Cascade)
-  tag_id  String
-  tag     Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+  id        String @id @default(uuid())
+  lead_id   String
+  lead      Lead   @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  tag_id    String
+  tag       Tag    @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+  tenant_id String
+  tenant    Tenant @relation(fields: [tenant_id], references: [id])
 
   @@unique([lead_id, tag_id])
+  @@index([tenant_id])
 }
 
 model QuickReply {
@@ -262,9 +322,12 @@ model QuickReply {
   user_id    String?
   user       User?    @relation(fields: [user_id], references: [id])
   is_global  Boolean  @default(false)
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id])
   created_at DateTime @default(now())
 
   @@index([atalho])
+  @@index([tenant_id])
 }
 
 model WebhookLog {
@@ -275,10 +338,13 @@ model WebhookLog {
   processed          Boolean  @default(false)
   error              String?
   processing_time_ms Int?
+  tenant_id          String
+  tenant             Tenant   @relation(fields: [tenant_id], references: [id])
   created_at         DateTime @default(now())
 
   @@index([event, created_at])
   @@index([processed])
+  @@index([tenant_id])
 }
 
 model Notification {
@@ -290,9 +356,12 @@ model Notification {
   tipo       String
   lida       Boolean  @default(false)
   link       String?
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id])
   created_at DateTime @default(now())
 
   @@index([user_id, lida, created_at])
+  @@index([tenant_id])
 }
 
 enum TaskType {
@@ -332,10 +401,13 @@ model Task {
   lead           Lead?      @relation(fields: [lead_id], references: [id], onDelete: SetNull)
   responsavel_id String
   responsavel    User       @relation(fields: [responsavel_id], references: [id])
+  tenant_id      String
+  tenant         Tenant     @relation(fields: [tenant_id], references: [id])
   created_at     DateTime   @default(now())
   updated_at     DateTime   @updatedAt
 
   @@index([scheduled_at])
   @@index([responsavel_id, status])
   @@index([lead_id])
+  @@index([tenant_id])
 }
