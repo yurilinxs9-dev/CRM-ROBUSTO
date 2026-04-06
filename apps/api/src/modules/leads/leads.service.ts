@@ -121,16 +121,49 @@ export class LeadsService {
       ];
     }
 
-    return this.prisma.lead.findMany({
+    const leads = await this.prisma.lead.findMany({
       where,
       include: {
         responsavel: { select: { id: true, nome: true, avatar_url: true } },
         estagio: { select: { id: true, nome: true, cor: true } },
         lead_tags: { include: { tag: true } },
+        messages: {
+          orderBy: { created_at: 'desc' },
+          take: 1,
+          select: {
+            content: true,
+            type: true,
+            direction: true,
+            created_at: true,
+          },
+        },
       },
       orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }],
       take: filters.limit ? parseInt(filters.limit) : 200,
       skip: filters.offset ? parseInt(filters.offset) : 0,
+    });
+
+    return leads.map((lead) => {
+      const last = lead.messages[0];
+      let preview = '';
+      if (last) {
+        if (last.type === 'TEXT') {
+          preview = last.content ?? '';
+        } else if (last.type === 'IMAGE') preview = '📷 Imagem';
+        else if (last.type === 'VIDEO') preview = '🎥 Vídeo';
+        else if (last.type === 'AUDIO') preview = '🎵 Áudio';
+        else if (last.type === 'DOCUMENT') preview = '📄 Documento';
+        else if (last.type === 'STICKER') preview = 'Figurinha';
+        else if (last.type === 'LOCATION') preview = '📍 Localização';
+        else preview = last.content ?? '';
+      }
+      const { messages: _messages, ...rest } = lead;
+      void _messages;
+      return {
+        ...rest,
+        ultimo_mensagem: preview,
+        ultima_interacao: lead.ultima_interacao ?? last?.created_at ?? null,
+      };
     });
   }
 
