@@ -37,6 +37,11 @@ export class LeadsController {
     return this.leadsService.getMessages(id, cursor, limit ? parseInt(limit) : 50);
   }
 
+  @Post(':id/sync-profile')
+  syncProfile(@Param('id') id: string) {
+    return this.leadsService.syncProfile(id);
+  }
+
   @Patch(':id/mark-read')
   markAsRead(@Param('id') id: string) {
     return this.leadsService.markAsRead(id);

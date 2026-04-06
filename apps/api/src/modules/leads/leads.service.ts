@@ -1,7 +1,13 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { InstancesService } from '../instances/instances.service';
 import { UserRole } from '@/common/types/roles';
 import { z } from 'zod';
+
+interface InstanceConfig {
+  uazapi_token?: string;
+  [key: string]: unknown;
+}
 
 const updateStageSchema = z.object({ estagio_id: z.string().uuid() });
 const createLeadSchema = z.object({
@@ -36,7 +42,65 @@ interface LeadFilters {
 
 @Injectable()
 export class LeadsService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(LeadsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private instances: InstancesService,
+  ) {}
+
+  async syncProfile(leadId: string) {
+    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (!lead.instancia_whatsapp) return lead;
+
+    const instance = await this.prisma.whatsappInstance.findUnique({
+      where: { nome: lead.instancia_whatsapp },
+    });
+    const cfg = (instance?.config ?? {}) as InstanceConfig;
+    const token = cfg.uazapi_token;
+    if (!token) return lead;
+
+    const profile = await this.instances.fetchProfile(token, lead.telefone);
+    const data: { nome?: string; foto_url?: string } = {};
+    // Only overwrite nome if it is the raw phone (no custom name)
+    if (profile.name && lead.nome === lead.telefone) {
+      data.nome = profile.name;
+    }
+    if (profile.imageUrl) {
+      data.foto_url = profile.imageUrl;
+    }
+    if (Object.keys(data).length === 0) return lead;
+    return this.prisma.lead.update({ where: { id: leadId }, data });
+  }
+
+  async syncProfileSafe(leadId: string): Promise<void> {
+    try {
+      await this.syncProfile(leadId);
+    } catch (err) {
+      this.logger.warn(`syncProfileSafe(${leadId}) falhou: ${String(err)}`);
+    }
+  }
+
+  async syncActiveLeadsProfiles(limit = 50): Promise<{ synced: number }> {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const leads = await this.prisma.lead.findMany({
+      where: { ultima_interacao: { gte: thirtyDaysAgo } },
+      orderBy: { ultima_interacao: 'desc' },
+      take: limit,
+      select: { id: true },
+    });
+    let synced = 0;
+    for (const l of leads) {
+      try {
+        await this.syncProfile(l.id);
+        synced++;
+      } catch (err) {
+        this.logger.warn(`sync batch erro lead ${l.id}: ${String(err)}`);
+      }
+    }
+    return { synced };
+  }
 
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = {};

@@ -257,6 +257,52 @@ export class MessagesService {
     return message;
   }
 
+  async streamMedia(messageId: string): Promise<{
+    stream: NodeJS.ReadableStream;
+    contentType: string;
+    contentLength?: number;
+  }> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message) throw new NotFoundException('Mensagem nao encontrada');
+    if (!message.media_url && !message.media_filename) {
+      throw new NotFoundException('Midia nao disponivel');
+    }
+
+    // Prefer re-signing from the stored storage path (media_filename) so we never
+    // depend on potentially expired signed URLs stored in media_url.
+    let upstreamUrl: string | null = null;
+    if (message.media_filename && !/^https?:\/\//i.test(message.media_filename)) {
+      try {
+        upstreamUrl = await this.media.getSignedUrl(message.media_filename, 60 * 60);
+      } catch (err) {
+        this.logger.warn(
+          `Re-sign failed for ${message.media_filename}: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (!upstreamUrl && message.media_url) upstreamUrl = message.media_url;
+    if (!upstreamUrl) throw new NotFoundException('Midia nao disponivel');
+
+    try {
+      const response = await firstValueFrom(
+        this.http.get(upstreamUrl, { responseType: 'stream' }),
+      );
+      return {
+        stream: response.data as NodeJS.ReadableStream,
+        contentType:
+          (response.headers['content-type'] as string | undefined) ??
+          message.media_mimetype ??
+          'application/octet-stream',
+        contentLength: response.headers['content-length']
+          ? Number(response.headers['content-length'])
+          : message.media_size_bytes ?? undefined,
+      };
+    } catch (err) {
+      this.logger.error(`Fetch upstream media failed: ${(err as Error).message}`);
+      throw new BadGatewayException('Falha ao obter midia');
+    }
+  }
+
   async getHistory(leadId: string, cursor?: string, limit = 50) {
     return this.prisma.message.findMany({
       where: { lead_id: leadId },

@@ -4,7 +4,7 @@ import { forwardRef, type HTMLAttributes } from 'react';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { Card } from '@/components/ui/card';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
 
@@ -17,6 +17,7 @@ export interface Lead {
   temperatura: Temperatura;
   estagio_id: string;
   mensagens_nao_lidas: number;
+  foto_url?: string | null;
   valor_estimado?: string | null;
   ultima_interacao?: string | null;
   ultima_mensagem_preview?: string | null;
@@ -94,6 +95,9 @@ export const LeadCard = forwardRef<HTMLDivElement, LeadCardProps>(
       >
         <div className="flex items-start gap-2 mb-2">
           <Avatar className="h-8 w-8 shrink-0">
+            {lead.foto_url ? (
+              <AvatarImage src={lead.foto_url} alt={lead.nome} />
+            ) : null}
             <AvatarFallback className="text-xs font-semibold">
               {getInitials(lead.nome)}
             </AvatarFallback>

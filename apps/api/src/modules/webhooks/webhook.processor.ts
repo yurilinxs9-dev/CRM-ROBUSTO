@@ -2,12 +2,16 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { LeadsService } from '../leads/leads.service';
 
 @Processor('webhooks', { concurrency: 3 })
 export class WebhookProcessor extends WorkerHost {
   private readonly logger = new Logger(WebhookProcessor.name);
 
-  constructor(private prisma: PrismaService) {
+  constructor(
+    private prisma: PrismaService,
+    private leadsService: LeadsService,
+  ) {
     super();
   }
 
@@ -351,6 +355,11 @@ export class WebhookProcessor extends WorkerHost {
         },
         update: {},
       });
+    }
+
+    // Fire-and-forget: sync profile if nome==telefone or foto_url ausente
+    if (lead.nome === lead.telefone || !lead.foto_url) {
+      void this.leadsService.syncProfileSafe(lead.id);
     }
 
     this.logger.log(`Mensagem UazAPI processada: lead ${lead.id}, phone ${phone}`);

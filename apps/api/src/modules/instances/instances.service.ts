@@ -176,6 +176,37 @@ export class InstancesService {
     return data;
   }
 
+  async fetchProfile(
+    token: string,
+    number: string,
+  ): Promise<{ name?: string; imageUrl?: string }> {
+    if (!token || !number) return {};
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post<Record<string, unknown>>(
+          `${this.baseUrl}/chat/GetNameImageURL`,
+          { number, preview: false },
+          { headers: this.headers(token), timeout: 15000 },
+        ),
+      );
+      const name =
+        (data?.name as string | undefined) ??
+        (data?.pushName as string | undefined) ??
+        (data?.verifiedName as string | undefined);
+      const imageUrl =
+        (data?.image as string | undefined) ??
+        (data?.imageUrl as string | undefined) ??
+        (data?.profilePictureUrl as string | undefined);
+      return {
+        name: name && name.trim() ? name.trim() : undefined,
+        imageUrl: imageUrl && imageUrl.trim() ? imageUrl.trim() : undefined,
+      };
+    } catch (err) {
+      this.logger.warn(`fetchProfile falhou para ${number}: ${String(err)}`);
+      return {};
+    }
+  }
+
   async delete(nome: string) {
     const instance = await this.prisma.whatsappInstance.findUnique({ where: { nome } });
     const cfg = (instance?.config ?? {}) as InstanceConfig;

@@ -6,11 +6,13 @@ import {
   Param,
   Query,
   Req,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
@@ -51,6 +53,16 @@ export class MessagesController {
   createInternalNote(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     const user = req.user as { id: string };
     return this.messagesService.createInternalNote(body, user.id);
+  }
+
+  @Get(':id/media')
+  async getMedia(@Param('id') id: string, @Res() res: Response) {
+    const { stream, contentType, contentLength } =
+      await this.messagesService.streamMedia(id);
+    res.setHeader('Content-Type', contentType);
+    if (contentLength) res.setHeader('Content-Length', String(contentLength));
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    stream.pipe(res);
   }
 
   @Get('history/:leadId')

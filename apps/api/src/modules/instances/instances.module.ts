@@ -7,5 +7,6 @@ import { InstancesService } from './instances.service';
   imports: [HttpModule],
   controllers: [InstancesController],
   providers: [InstancesService],
+  exports: [InstancesService],
 })
 export class InstancesModule {}
