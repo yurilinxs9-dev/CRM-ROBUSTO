@@ -1,4 +1,16 @@
-import { Controller, Post, Get, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  Query,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
@@ -11,6 +23,28 @@ export class MessagesController {
   sendText(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     const user = req.user as { id: string };
     return this.messagesService.sendText(body, user.id);
+  }
+
+  @Post('send-audio')
+  @UseInterceptors(FileInterceptor('file'))
+  sendAudio(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: unknown,
+    @Req() req: Record<string, unknown>,
+  ) {
+    const user = req.user as { id: string };
+    return this.messagesService.sendAudio(file, body, user.id);
+  }
+
+  @Post('send-media')
+  @UseInterceptors(FileInterceptor('file'))
+  sendMedia(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: unknown,
+    @Req() req: Record<string, unknown>,
+  ) {
+    const user = req.user as { id: string };
+    return this.messagesService.sendMedia(file, body, user.id);
   }
 
   @Post('internal-note')
