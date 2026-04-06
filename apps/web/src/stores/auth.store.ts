@@ -5,6 +5,7 @@ interface User {
   nome: string;
   email: string;
   role: string;
+  tenantId: string;
   avatar_url?: string;
 }
 

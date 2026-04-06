@@ -49,9 +49,15 @@ export default function LoginPage() {
         typeof window !== 'undefined'
           ? atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'))
           : Buffer.from(payloadB64, 'base64').toString('utf-8');
-      const payload = JSON.parse(payloadJson) as { sub: string; email: string; role: string };
+      const payload = JSON.parse(payloadJson) as { sub: string; email: string; role: string; tenantId: string };
       setAuth(
-        { id: payload.sub, email: payload.email, role: payload.role, nome: payload.email.split('@')[0] },
+        {
+          id: payload.sub,
+          email: payload.email,
+          role: payload.role,
+          tenantId: payload.tenantId,
+          nome: payload.email.split('@')[0],
+        },
         token,
       );
       router.push('/dashboard');
@@ -151,8 +157,11 @@ export default function LoginPage() {
             </form>
           </CardContent>
           <CardFooter className="justify-center">
-            <span className="text-sm text-muted-foreground cursor-not-allowed opacity-60">
-              Esqueceu a senha?
+            <span className="text-sm text-muted-foreground">
+              Não tem conta?{' '}
+              <a href="/register" className="text-primary hover:underline font-medium">
+                Criar agora
+              </a>
             </span>
           </CardFooter>
         </Card>
