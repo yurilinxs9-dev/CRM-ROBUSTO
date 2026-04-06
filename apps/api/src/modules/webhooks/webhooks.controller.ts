@@ -45,4 +45,42 @@ export class WebhooksController {
 
     return { received: true };
   }
+
+  @Public()
+  @Post('uazapi')
+  async handleUazapi(@Body() body: unknown) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const rawEvent =
+      (payload.EventType as string | undefined) ??
+      (payload.event as string | undefined) ??
+      'unknown';
+    const normalizedEvent = `uazapi.${rawEvent}`;
+
+    const instanceField = payload.instance as Record<string, unknown> | undefined;
+    const instanceName =
+      (payload.instanceName as string | undefined) ??
+      (payload.instanceId as string | undefined) ??
+      (instanceField?.name as string | undefined) ??
+      null;
+
+    const normalized: Record<string, unknown> = {
+      ...payload,
+      event: normalizedEvent,
+    };
+
+    await this.prisma.webhookLog.create({
+      data: {
+        event: normalizedEvent,
+        instance: instanceName,
+        payload: JSON.parse(JSON.stringify(normalized)),
+        processed: false,
+      },
+    });
+
+    await this.webhookQueue.add(normalizedEvent, normalized, {
+      jobId: `${normalizedEvent}-${Date.now()}-${Math.random()}`,
+    });
+
+    return { received: true };
+  }
 }

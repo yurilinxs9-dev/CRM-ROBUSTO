@@ -9,10 +9,12 @@ import { LeadsModule } from '../leads/leads.module';
   imports: [
     BullModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      useFactory: (config: ConfigService) => {
+        const url = config.get<string>('UPSTASH_REDIS_TLS_URL') ?? '';
+        return {
         connection: {
-          url: config.get('UPSTASH_REDIS_TLS_URL'),
-          tls: { rejectUnauthorized: false },
+          url,
+          ...(url.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {}),
         },
         defaultJobOptions: {
           attempts: 3,
@@ -20,7 +22,8 @@ import { LeadsModule } from '../leads/leads.module';
           removeOnComplete: { count: 100 },
           removeOnFail: { count: 50 },
         },
-      }),
+      };
+      },
     }),
     BullModule.registerQueue({ name: 'webhooks' }),
     LeadsModule,

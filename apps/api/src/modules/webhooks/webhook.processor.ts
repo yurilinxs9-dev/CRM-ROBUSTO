@@ -35,6 +35,19 @@ export class WebhookProcessor extends WorkerHost {
         case 'contacts.upsert':
           await this.handleContactsUpsert(job.data);
           break;
+        // UazAPI events (UazAPI uses plural "messages" + EventType field)
+        case 'uazapi.messages':
+        case 'uazapi.message':
+          await this.handleUazapiMessage(job.data);
+          break;
+        case 'uazapi.messages_update':
+        case 'uazapi.message_ack':
+          await this.handleUazapiMessageAck(job.data);
+          break;
+        case 'uazapi.connection':
+        case 'uazapi.connection_update':
+          await this.handleUazapiConnectionUpdate(job.data);
+          break;
         default:
           this.logger.debug(`Evento nao processado: ${job.name}`);
       }
@@ -249,6 +262,153 @@ export class WebhookProcessor extends WorkerHost {
       where: { nome: instanceName },
       create: { nome: instanceName, status: state || 'disconnected' },
       update: { status: state || 'disconnected', ultimo_check: new Date() },
+    });
+  }
+
+  // ── UazAPI handlers ─────────────────────────────────────────────────────────
+
+  private async findInstanceByUazapiToken(token: string | undefined) {
+    if (!token) return null;
+    const all = await this.prisma.whatsappInstance.findMany();
+    return (
+      all.find((i) => {
+        const cfg = (i.config ?? {}) as Record<string, unknown>;
+        return cfg.uazapi_token === token;
+      }) ?? null
+    );
+  }
+
+  private async handleUazapiMessage(payload: Record<string, unknown>) {
+    // UazAPI flat format: { EventType, message: {...}, instanceName, owner, token }
+    const message = payload?.message as Record<string, unknown> | undefined;
+    if (!message) return;
+
+    // Skip group messages
+    if (message.isGroup === true) return;
+
+    const chatid = message.chatid as string | undefined;
+    if (!chatid) return;
+
+    const phone = chatid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    const messageId = (message.messageid as string | undefined) ?? (message.id as string | undefined);
+    const isFromMe = !!(message.fromMe as boolean | undefined);
+
+    const content =
+      (message.text as string | undefined) ??
+      ((message.content as Record<string, unknown> | undefined)?.text as string | undefined) ??
+      null;
+
+    const token = payload.token as string | undefined;
+    const matchedInstance = await this.findInstanceByUazapiToken(token);
+    const instanceName =
+      (payload.instanceName as string | undefined) ??
+      matchedInstance?.nome ??
+      (payload.instanceId as string | undefined) ??
+      'unknown';
+
+    const pipeline = await this.prisma.pipeline.findFirst({ where: { ativo: true } });
+    if (!pipeline) return;
+
+    const firstStage = await this.prisma.stage.findFirst({
+      where: { pipeline_id: pipeline.id },
+      orderBy: { ordem: 'asc' },
+    });
+    if (!firstStage) return;
+
+    const defaultUser = await this.prisma.user.findFirst({ where: { ativo: true } });
+    if (!defaultUser) return;
+
+    const lead = await this.prisma.lead.upsert({
+      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: pipeline.id } },
+      create: {
+        nome: (message.senderName as string | undefined) || (message.pushName as string | undefined) || phone,
+        telefone: phone,
+        origem: 'WHATSAPP_INCOMING',
+        instancia_whatsapp: instanceName,
+        pipeline_id: pipeline.id,
+        estagio_id: firstStage.id,
+        responsavel_id: defaultUser.id,
+        ultima_interacao: new Date(),
+      },
+      update: {
+        ultima_interacao: new Date(),
+        mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
+      },
+    });
+
+    if (messageId) {
+      await this.prisma.message.upsert({
+        where: { whatsapp_message_id: messageId },
+        create: {
+          lead_id: lead.id,
+          instance_name: instanceName,
+          whatsapp_message_id: messageId,
+          direction: isFromMe ? 'OUTGOING' : 'INCOMING',
+          type: 'TEXT',
+          content,
+          status: isFromMe ? 'SENT' : 'DELIVERED',
+          metadata: JSON.parse(JSON.stringify(payload)),
+        },
+        update: {},
+      });
+    }
+
+    this.logger.log(`Mensagem UazAPI processada: lead ${lead.id}, phone ${phone}`);
+  }
+
+  private async handleUazapiMessageAck(payload: Record<string, unknown>) {
+    const message = (payload?.message ?? payload?.data) as Record<string, unknown> | undefined;
+    if (!message) return;
+
+    const messageId =
+      (message.messageid as string | undefined) ?? (message.id as string | undefined);
+    if (!messageId) return;
+
+    const rawStatus = message.status as string | number | undefined;
+    const statusMap: Record<string, 'SENT' | 'DELIVERED' | 'READ'> = {
+      SENT: 'SENT',
+      DELIVERED: 'DELIVERED',
+      SERVER_ACK: 'SENT',
+      DELIVERY_ACK: 'DELIVERED',
+      READ: 'READ',
+      PLAYED: 'READ',
+      '2': 'SENT',
+      '3': 'DELIVERED',
+      '4': 'READ',
+    };
+    const mapped = rawStatus !== undefined ? statusMap[String(rawStatus)] : undefined;
+    if (!mapped) return;
+
+    await this.prisma.message.updateMany({
+      where: { whatsapp_message_id: messageId },
+      data: { status: mapped },
+    });
+  }
+
+  private async handleUazapiConnectionUpdate(payload: Record<string, unknown>) {
+    const instanceField = payload?.instance as Record<string, unknown> | undefined;
+    const data = payload?.data as Record<string, unknown> | undefined;
+    const rawState =
+      (instanceField?.status as string | undefined) ??
+      (data?.state as string | undefined) ??
+      (data?.status as string | undefined) ??
+      'disconnected';
+    const stateMap: Record<string, string> = {
+      connected: 'open',
+      open: 'open',
+      connecting: 'connecting',
+      disconnected: 'close',
+      close: 'close',
+    };
+    const status = stateMap[rawState] ?? rawState;
+
+    const token = payload.token as string | undefined;
+    const instance = await this.findInstanceByUazapiToken(token);
+    if (!instance) return;
+
+    await this.prisma.whatsappInstance.update({
+      where: { nome: instance.nome },
+      data: { status, ultimo_check: new Date() },
     });
   }
 

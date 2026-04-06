@@ -1,5 +1,5 @@
 /** @type {import('next').NextConfig} */
-const VPS_URL = process.env.VPS_URL || 'http://187.127.11.117:3001';
+const VPS_URL = process.env.VPS_URL || 'https://reduces-foot-alto-verbal.trycloudflare.com';
 
 const nextConfig = {
   reactStrictMode: true,
@@ -7,6 +7,7 @@ const nextConfig = {
     remotePatterns: [
       { protocol: 'https', hostname: '*.supabase.co' },
       { protocol: 'http', hostname: '187.127.11.117' },
+      { protocol: 'https', hostname: '*.trycloudflare.com' },
     ],
   },
   async rewrites() {

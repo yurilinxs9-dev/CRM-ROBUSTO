@@ -1,19 +1,5 @@
 version: '3.8'
 services:
-  wppconnect:
-    image: wppconnect/wppconnect-server:latest
-    container_name: wppconnect
-    restart: always
-    ports: ["21465:21465"]
-    environment:
-      - SECRET_KEY=${WPPCONNECT_SECRET}
-    volumes:
-      - wppconnect_tokens:/usr/src/wppconnect/tokens
-    networks: [crm-network]
-    deploy:
-      resources:
-        limits: { memory: 1G, cpus: '0.5' }
-
   crm-backend:
     build:
       context: ./apps/api
@@ -27,8 +13,9 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - DIRECT_URL=${DIRECT_URL}
       - UPSTASH_REDIS_TLS_URL=${UPSTASH_REDIS_TLS_URL}
-      - WPPCONNECT_URL_INTERNAL=http://wppconnect:21465
-      - WPPCONNECT_SECRET=${WPPCONNECT_SECRET}
+      - UAZAPI_BASE_URL=${UAZAPI_BASE_URL}
+      - UAZAPI_ADMIN_TOKEN=${UAZAPI_ADMIN_TOKEN}
+      - WEBHOOK_PUBLIC_URL=${WEBHOOK_PUBLIC_URL}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - SUPABASE_STORAGE_BUCKET=${SUPABASE_STORAGE_BUCKET:-crm-media}
@@ -39,7 +26,6 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - FFMPEG_PATH=/usr/bin/ffmpeg
-    depends_on: [wppconnect]
     networks: [crm-network]
     deploy:
       resources:
@@ -65,7 +51,6 @@ services:
     networks: [crm-network]
 
 volumes:
-  wppconnect_tokens:
   uptime_data:
 
 networks:

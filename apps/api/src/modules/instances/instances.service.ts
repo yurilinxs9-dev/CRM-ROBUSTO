@@ -1,48 +1,84 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
 
-const WPP_WEBHOOK_EVENTS = {
-  url: 'http://crm-backend:3001/api/webhook/wppconnect',
-  readMessage: true,
-  allUnreadOnStart: false,
-  listenAcks: true,
-  onPresenceChanged: false,
-  onParticipantsChanged: false,
-  onReactionMessage: false,
-  onPollResponse: false,
-  onRevokedMessage: true,
-  onLabelUpdated: false,
-  onSelfMessage: false,
-};
+interface UazApiCreateResponse {
+  instance: {
+    id: string;
+    token: string;
+    name: string;
+    status: string;
+    qrcode?: string;
+  };
+}
+
+interface UazApiConnectResponse {
+  instance: {
+    qrcode?: string;
+    status: string;
+  };
+  status: {
+    connected: boolean;
+    loggedIn: boolean;
+    jid: string | null;
+  };
+}
+
+interface UazApiStatusResponse {
+  instance: {
+    status: string;
+    profileName?: string;
+    owner?: string;
+    qrcode?: string;
+  };
+  status: {
+    connected: boolean;
+    loggedIn: boolean;
+    jid: string | null;
+  };
+}
+
+interface InstanceConfig {
+  uazapi_token?: string;
+  uazapi_id?: string;
+  [key: string]: unknown;
+}
 
 @Injectable()
 export class InstancesService {
   private readonly logger = new Logger(InstancesService.name);
-  private readonly apiUrl: string;
-  private readonly secretKey: string;
+  private readonly baseUrl: string;
+  private readonly adminToken: string;
+  private readonly webhookUrl: string;
 
   constructor(
     private http: HttpService,
     private config: ConfigService,
     private prisma: PrismaService,
   ) {
-    this.apiUrl = config.get('WPPCONNECT_URL_INTERNAL', 'http://wppconnect:21465') || 'http://wppconnect:21465';
-    this.secretKey = config.get('WPPCONNECT_SECRET', '') || '';
+    this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
+    this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
+    const publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
+    this.webhookUrl = `${publicUrl}/api/webhook/uazapi`;
   }
 
-  private async getToken(session: string): Promise<string> {
-    const { data } = await firstValueFrom(
-      this.http.post(`${this.apiUrl}/${this.secretKey}/generate-token`, { session }),
-    );
-    return (data as { token: string }).token;
+  private headers(instanceToken: string): Record<string, string> {
+    return { token: instanceToken };
   }
 
-  private async bearerHeaders(session: string) {
-    const token = await this.getToken(session);
-    return { Authorization: `Bearer ${token}` };
+  private adminHeaders(): Record<string, string> {
+    return { admintoken: this.adminToken };
+  }
+
+  private async loadInstanceToken(nome: string): Promise<string> {
+    const instance = await this.prisma.whatsappInstance.findUnique({ where: { nome } });
+    if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+    const cfg = (instance.config ?? {}) as InstanceConfig;
+    const token = cfg.uazapi_token;
+    if (!token) throw new NotFoundException(`Token UazAPI ausente para instancia ${nome}`);
+    return token;
   }
 
   async findAll() {
@@ -52,81 +88,113 @@ export class InstancesService {
   }
 
   async create(nome: string) {
-    const headers = await this.bearerHeaders(nome);
+    const { data: createData } = await firstValueFrom(
+      this.http.post<UazApiCreateResponse>(
+        `${this.baseUrl}/instance/create`,
+        { name: nome },
+        { headers: this.adminHeaders() },
+      ),
+    );
+
+    const uazapi_token = createData.instance.token;
+    const uazapi_id = createData.instance.id;
 
     await firstValueFrom(
       this.http.post(
-        `${this.apiUrl}/api/${nome}/start-session`,
-        { webhook: WPP_WEBHOOK_EVENTS },
-        { headers },
+        `${this.baseUrl}/webhook`,
+        {
+          url: this.webhookUrl,
+          enabled: true,
+          events: ['message', 'message_ack', 'connection_update'],
+        },
+        { headers: this.headers(uazapi_token) },
       ),
-    ).catch(() => null);
+    ).catch((err: unknown) => {
+      this.logger.warn(`Falha ao registrar webhook UazAPI para ${nome}: ${String(err)}`);
+      return null;
+    });
 
     await this.prisma.whatsappInstance.upsert({
       where: { nome },
-      create: { nome, status: 'connecting' },
-      update: { status: 'connecting' },
+      create: {
+        nome,
+        status: 'connecting',
+        config: { uazapi_token, uazapi_id },
+      },
+      update: {
+        status: 'connecting',
+        config: { uazapi_token, uazapi_id },
+      },
     });
 
     return { instanceName: nome, status: 'connecting' };
   }
 
   async getQrCode(nome: string) {
-    const headers = await this.bearerHeaders(nome);
+    const token = await this.loadInstanceToken(nome);
     const { data } = await firstValueFrom(
-      this.http.get(`${this.apiUrl}/api/${nome}/qrcode-session`, { headers }),
+      this.http.post<UazApiConnectResponse>(
+        `${this.baseUrl}/instance/connect`,
+        {},
+        { headers: this.headers(token) },
+      ),
     );
-    const d = data as Record<string, unknown>;
-    return { base64: d.qrcode ?? d.base64 ?? null };
+    return { base64: data.instance?.qrcode ?? null };
   }
 
   async reconnect(nome: string) {
-    const headers = await this.bearerHeaders(nome);
-    await firstValueFrom(
-      this.http.post(`${this.apiUrl}/api/${nome}/logout-session`, {}, { headers }),
-    ).catch(() => null);
-
-    await firstValueFrom(
-      this.http.post(
-        `${this.apiUrl}/api/${nome}/start-session`,
-        { webhook: WPP_WEBHOOK_EVENTS },
-        { headers },
-      ),
-    ).catch(() => null);
-
     return this.getQrCode(nome);
   }
 
   async checkStatus(nome: string) {
-    const headers = await this.bearerHeaders(nome);
+    const token = await this.loadInstanceToken(nome);
     const { data } = await firstValueFrom(
-      this.http.get(`${this.apiUrl}/api/${nome}/status-session`, { headers }),
+      this.http.get<UazApiStatusResponse>(`${this.baseUrl}/instance/status`, {
+        headers: this.headers(token),
+      }),
     );
-    const d = data as Record<string, unknown>;
+
+    const rawStatus = data.instance?.status ?? 'disconnected';
     const statusMap: Record<string, string> = {
-      CONNECTED: 'open',
-      QRCODE: 'connecting',
-      DISCONNECTED: 'close',
-      DESTROYED: 'close',
-      notLogged: 'close',
+      connected: 'open',
+      connecting: 'connecting',
+      disconnected: 'disconnected',
     };
-    const raw = String(d?.status || d?.state || 'DISCONNECTED');
-    const status = statusMap[raw] ?? 'disconnected';
+    const status = statusMap[rawStatus] ?? rawStatus;
+
+    const jid = data.status?.jid ?? null;
+    const telefone = jid ? jid.split('@')[0].split(':')[0] : undefined;
 
     await this.prisma.whatsappInstance.update({
       where: { nome },
-      data: { status, ultimo_check: new Date() },
+      data: {
+        status,
+        ultimo_check: new Date(),
+        ...(telefone ? { telefone } : {}),
+      },
     });
     return data;
   }
 
   async delete(nome: string) {
-    const headers = await this.bearerHeaders(nome).catch(() => null);
-    if (headers) {
+    const instance = await this.prisma.whatsappInstance.findUnique({ where: { nome } });
+    const cfg = (instance?.config ?? {}) as InstanceConfig;
+    const token = cfg.uazapi_token;
+
+    if (token) {
       await firstValueFrom(
-        this.http.post(`${this.apiUrl}/api/${nome}/close-session`, {}, { headers }),
-      ).catch(() => null);
+        this.http.delete(`${this.baseUrl}/instance`, {
+          headers: { ...this.adminHeaders(), ...this.headers(token) },
+        }),
+      ).catch((err: unknown) => {
+        this.logger.warn(`Falha ao deletar instancia UazAPI ${nome}: ${String(err)}`);
+        return null;
+      });
     }
-    await this.prisma.whatsappInstance.delete({ where: { nome } }).catch(() => null);
+
+    await this.prisma.whatsappInstance.delete({ where: { nome } }).catch((err: unknown) => {
+      this.logger.warn(`Falha ao deletar instancia DB ${nome}: ${String(err)}`);
+      return null;
+    });
   }
 }
