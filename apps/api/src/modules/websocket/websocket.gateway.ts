@@ -73,4 +73,16 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitQrCode(instanceName: string, qrCode: string) {
     this.server.emit('instance:qr-code', { instanceName, qrCode });
   }
+
+  emitTaskCreated(responsavelId: string, task: unknown) {
+    this.server.to(`user:${responsavelId}`).emit('task:created', task);
+  }
+
+  emitTaskUpdated(responsavelId: string, task: unknown) {
+    this.server.to(`user:${responsavelId}`).emit('task:updated', task);
+  }
+
+  emitTaskOverdue(responsavelId: string, payload: { taskId: string; titulo: string; responsavel_id: string }) {
+    this.server.to(`user:${responsavelId}`).emit('task:overdue', payload);
+  }
 }

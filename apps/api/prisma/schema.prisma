@@ -75,6 +75,7 @@ model User {
   quick_replies  QuickReply[]
   notifications  Notification[]
   user_instances UserInstance[]
+  tasks          Task[]
 
   @@index([email])
 }
@@ -148,6 +149,7 @@ model Lead {
   messages   Message[]
   activities LeadActivity[]
   lead_tags  LeadTag[]
+  tasks      Task[]
 
   @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
   @@index([responsavel_id, estagio_id])
@@ -291,4 +293,49 @@ model Notification {
   created_at DateTime @default(now())
 
   @@index([user_id, lida, created_at])
+}
+
+enum TaskType {
+  FOLLOW_UP
+  LIGACAO
+  REUNIAO
+  EMAIL
+  VISITA
+  OUTRO
+}
+
+enum TaskStatus {
+  PENDENTE
+  CONCLUIDA
+  CANCELADA
+  ATRASADA
+}
+
+enum Prioridade {
+  BAIXA
+  MEDIA
+  ALTA
+  URGENTE
+}
+
+model Task {
+  id             String     @id @default(uuid())
+  titulo         String
+  descricao      String?
+  tipo           TaskType   @default(FOLLOW_UP)
+  status         TaskStatus @default(PENDENTE)
+  prioridade     Prioridade @default(MEDIA)
+  scheduled_at   DateTime
+  completed_at   DateTime?
+  duracao_min    Int?
+  lead_id        String?
+  lead           Lead?      @relation(fields: [lead_id], references: [id], onDelete: SetNull)
+  responsavel_id String
+  responsavel    User       @relation(fields: [responsavel_id], references: [id])
+  created_at     DateTime   @default(now())
+  updated_at     DateTime   @updatedAt
+
+  @@index([scheduled_at])
+  @@index([responsavel_id, status])
+  @@index([lead_id])
 }

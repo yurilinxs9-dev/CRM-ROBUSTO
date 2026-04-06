@@ -1,13 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Bell, Menu, Search } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { Sidebar, NAV_ITEMS } from './sidebar';
 import { UserMenu } from './user-menu';
+import { api } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 
 function usePageTitle() {
   const pathname = usePathname();
@@ -20,6 +24,32 @@ function usePageTitle() {
 export function Header() {
   const [open, setOpen] = useState(false);
   const title = usePageTitle();
+  const qc = useQueryClient();
+
+  const { data: overdue = [] } = useQuery<Array<{ id: string; titulo: string }>>({
+    queryKey: ['tasks', 'overdue'],
+    queryFn: async () => (await api.get('/api/tasks/overdue')).data,
+    refetchInterval: 60_000,
+  });
+
+  useEffect(() => {
+    const s = getSocket();
+    const onOverdue = (p: { taskId: string; titulo: string }) => {
+      toast.warning(`Tarefa atrasada: ${p.titulo}`);
+      qc.invalidateQueries({ queryKey: ['tasks'] });
+    };
+    const onMutate = () => qc.invalidateQueries({ queryKey: ['tasks'] });
+    s.on('task:overdue', onOverdue);
+    s.on('task:created', onMutate);
+    s.on('task:updated', onMutate);
+    return () => {
+      s.off('task:overdue', onOverdue);
+      s.off('task:created', onMutate);
+      s.off('task:updated', onMutate);
+    };
+  }, [qc]);
+
+  const count = overdue.length;
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
@@ -53,10 +83,11 @@ export function Header() {
       {/* Notifications */}
       <Button variant="ghost" size="icon" className="relative" aria-label="Notificações">
         <Bell className="h-5 w-5" />
-        <span className="absolute right-1.5 top-1.5 flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-        </span>
+        {count > 0 && (
+          <span className="absolute right-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground">
+            {count > 9 ? '9+' : count}
+          </span>
+        )}
       </Button>
 
       <UserMenu variant="icon" />
