@@ -34,6 +34,14 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { ReplyPreview, type ReplyTarget } from './reply-preview';
 
 const EMOJIS = [
   '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
@@ -44,6 +52,10 @@ const EMOJIS = [
 interface ChatComposerProps {
   disabled?: boolean;
   sending?: boolean;
+  /** Resets state (focus, text) when this key changes — e.g. conversation id. */
+  conversationKey?: string;
+  replyTarget?: ReplyTarget | null;
+  onCancelReply?: () => void;
   onSendText: (content: string, isInternalNote: boolean) => void;
   onSendAudio: (blob: Blob, durationSec: number) => void;
   onSendMedia: (file: File, caption: string | undefined) => void;
@@ -58,6 +70,9 @@ function formatTimer(seconds: number): string {
 export function ChatComposer({
   disabled,
   sending,
+  conversationKey,
+  replyTarget,
+  onCancelReply,
   onSendText,
   onSendAudio,
   onSendMedia,
@@ -66,7 +81,19 @@ export function ChatComposer({
   const [isNote, setIsNote] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
 
+  // Image caption preview dialog state.
+  const [pendingImage, setPendingImage] = useState<File | null>(null);
+  const [pendingPreview, setPendingPreview] = useState<string | null>(null);
+  const [pendingCaption, setPendingCaption] = useState('');
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-focus when switching conversation.
+  useEffect(() => {
+    if (disabled) return;
+    const id = window.setTimeout(() => textareaRef.current?.focus(), 50);
+    return () => window.clearTimeout(id);
+  }, [conversationKey, disabled]);
 
   // Recording state
   const [recording, setRecording] = useState(false);
@@ -100,17 +127,38 @@ export function ChatComposer({
   const handleSendText = useCallback(() => {
     const content = text.trim();
     if (!content) return;
-    onSendText(content, isNote);
+    // Reply quoting: backend doesn't yet support structured replies, so we
+    // prefix the content visually. Frontend reply state is cleared on send.
+    const finalContent = replyTarget
+      ? `> ${replyTarget.author}: ${replyTarget.preview}\n\n${content}`
+      : content;
+    onSendText(finalContent, isNote);
     setText('');
+    onCancelReply?.();
     setTimeout(() => {
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }, 0);
-  }, [text, isNote, onSendText]);
+  }, [text, isNote, onSendText, replyTarget, onCancelReply]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleSendText();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendText();
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (recording) {
+        e.preventDefault();
+        cancelRecording();
+      } else if (replyTarget) {
+        e.preventDefault();
+        onCancelReply?.();
+      }
     }
   };
 
@@ -216,9 +264,32 @@ export function ChatComposer({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    // Images: open preview dialog with optional caption.
+    if (file.type.startsWith('image/')) {
+      const url = URL.createObjectURL(file);
+      setPendingImage(file);
+      setPendingPreview(url);
+      setPendingCaption(text.trim());
+      return;
+    }
     const caption = text.trim() || undefined;
     onSendMedia(file, caption);
     if (caption) setText('');
+  };
+
+  const clearPendingImage = useCallback(() => {
+    if (pendingPreview) URL.revokeObjectURL(pendingPreview);
+    setPendingImage(null);
+    setPendingPreview(null);
+    setPendingCaption('');
+  }, [pendingPreview]);
+
+  const confirmPendingImage = () => {
+    if (!pendingImage) return;
+    const caption = pendingCaption.trim() || undefined;
+    onSendMedia(pendingImage, caption);
+    if (text.trim() === pendingCaption.trim()) setText('');
+    clearPendingImage();
   };
 
   const canSendText = text.trim().length > 0;
@@ -230,6 +301,10 @@ export function ChatComposer({
         isNote && 'border-amber-400/30 bg-amber-400/5',
       )}
     >
+      {replyTarget && !recording && onCancelReply && (
+        <ReplyPreview target={replyTarget} onCancel={onCancelReply} />
+      )}
+
       {isNote && !recording && (
         <div className="flex items-center gap-2 border-b border-amber-400/20 px-4 py-1.5 text-[11px] text-amber-600 dark:text-amber-400">
           <NotebookPen size={12} />
@@ -422,6 +497,43 @@ export function ChatComposer({
           )}
         </div>
       )}
+
+      <Dialog
+        open={!!pendingImage}
+        onOpenChange={(v) => {
+          if (!v) clearPendingImage();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Enviar imagem</DialogTitle>
+          </DialogHeader>
+          {pendingPreview && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={pendingPreview}
+              alt="Pré-visualização"
+              className="max-h-[50vh] w-full rounded-md object-contain"
+            />
+          )}
+          <textarea
+            value={pendingCaption}
+            onChange={(e) => setPendingCaption(e.target.value)}
+            placeholder="Legenda (opcional)"
+            rows={2}
+            className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={clearPendingImage}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmPendingImage} disabled={sending}>
+              <Send size={14} className="mr-1.5" />
+              Enviar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

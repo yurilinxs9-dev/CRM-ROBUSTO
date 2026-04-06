@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageSquareOff, Plus, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -13,7 +14,6 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { ChatListItem, type ChatLead } from '@/components/chat/chat-list-item';
@@ -26,6 +26,9 @@ import {
 type FilterTab = 'all' | 'unread' | 'mine';
 
 const LEADS_QUERY_KEY = ['chat', 'leads'] as const;
+const LEADS_STALE = 30_000;
+const ROW_HEIGHT = 76;
+const SEARCH_DEBOUNCE_MS = 200;
 
 export default function ChatPage() {
   const router = useRouter();
@@ -34,8 +37,15 @@ export default function ChatPage() {
   const currentUser = useAuthStore((s) => s.user);
 
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [tab, setTab] = useState<FilterTab>('all');
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Debounce search input to avoid filtering on every keystroke.
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [search]);
 
   // Derive active chat id from URL (/chat/[id])
   const activeChatId = useMemo(() => {
@@ -50,6 +60,7 @@ export default function ChatPage() {
       const res = await api.get('/api/leads');
       return res.data;
     },
+    staleTime: LEADS_STALE,
   });
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
@@ -58,6 +69,7 @@ export default function ChatPage() {
       const res = await api.get('/api/pipelines');
       return res.data;
     },
+    staleTime: 5 * 60_000,
   });
 
   // --- Mutations ---
@@ -96,7 +108,7 @@ export default function ChatPage() {
 
   // --- Filtering + sorting ---
   const filteredLeads = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = debouncedSearch.trim().toLowerCase();
     const digits = term.replace(/\D/g, '');
 
     let list = leads.filter((lead) => {
@@ -125,18 +137,27 @@ export default function ChatPage() {
     });
 
     return list;
-  }, [leads, search, tab, currentUser?.id]);
+  }, [leads, debouncedSearch, tab, currentUser?.id]);
 
   const totalCount = leads.length;
 
+  // --- Virtualization ---
+  const scrollParentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: filteredLeads.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+  });
+
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-border">
-        <div className="flex items-center justify-between gap-3 mb-3">
+      <div className="flex-shrink-0 border-b border-border px-4 pb-3 pt-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-baseline gap-2">
             <h1 className="text-xl font-semibold text-foreground">Conversas</h1>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-xs tabular-nums text-muted-foreground">
               {totalCount}
             </span>
           </div>
@@ -148,19 +169,19 @@ export default function ChatPage() {
 
         {/* Search */}
         <div className="relative mb-3">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
             placeholder="Buscar por nome ou telefone..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 h-9"
+            className="h-9 pl-9"
           />
         </div>
 
         {/* Tabs */}
         <Tabs value={tab} onValueChange={(v) => setTab(v as FilterTab)}>
-          <TabsList className="grid w-full grid-cols-3 h-9">
+          <TabsList className="grid h-9 w-full grid-cols-3">
             <TabsTrigger value="all" className="text-xs">
               Todas
             </TabsTrigger>
@@ -174,13 +195,13 @@ export default function ChatPage() {
         </Tabs>
       </div>
 
-      {/* List */}
-      <ScrollArea className="flex-1">
+      {/* Virtualized List */}
+      <div ref={scrollParentRef} className="flex-1 overflow-y-auto">
         {isLoading ? (
           <div className="divide-y divide-border/50">
-            {Array.from({ length: 6 }).map((_, i) => (
+            {Array.from({ length: 8 }).map((_, i) => (
               <div key={i} className="flex items-start gap-3 px-4 py-3">
-                <Skeleton className="h-11 w-11 rounded-full flex-shrink-0" />
+                <Skeleton className="h-11 w-11 flex-shrink-0 rounded-full" />
                 <div className="flex-1 space-y-2">
                   <div className="flex justify-between">
                     <Skeleton className="h-3.5 w-32" />
@@ -193,32 +214,44 @@ export default function ChatPage() {
             ))}
           </div>
         ) : filteredLeads.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 px-6 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
             <MessageSquareOff className="h-10 w-10 text-muted-foreground/60" />
             <div>
               <p className="text-sm font-medium text-foreground">
                 Nenhuma conversa encontrada
               </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {search || tab !== 'all'
+              <p className="mt-1 text-xs text-muted-foreground">
+                {debouncedSearch || tab !== 'all'
                   ? 'Ajuste os filtros ou a busca'
                   : 'Crie uma nova conversa para começar'}
               </p>
             </div>
           </div>
         ) : (
-          <div>
-            {filteredLeads.map((lead) => (
-              <ChatListItem
-                key={lead.id}
-                lead={lead}
-                active={lead.id === activeChatId}
-                onClick={() => router.push(`/chat/${lead.id}`)}
-              />
-            ))}
+          <div
+            className="relative w-full"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualizer.getVirtualItems().map((vItem) => {
+              const lead = filteredLeads[vItem.index];
+              return (
+                <div
+                  key={lead.id}
+                  data-index={vItem.index}
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${vItem.start}px)` }}
+                >
+                  <ChatListItem
+                    lead={lead}
+                    active={lead.id === activeChatId}
+                    onClick={() => router.push(`/chat/${lead.id}`)}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
-      </ScrollArea>
+      </div>
 
       <NewChatDialog
         open={dialogOpen}

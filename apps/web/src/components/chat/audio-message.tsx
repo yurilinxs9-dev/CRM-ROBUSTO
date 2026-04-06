@@ -1,17 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Pause, Play } from 'lucide-react';
+import { memo, useEffect, useRef, useState } from 'react';
+import { AlertCircle, Loader2, Pause, Play } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
-type WaveSurferInstance = Awaited<
-  typeof import('wavesurfer.js')
->['default'] extends { create: (...args: unknown[]) => infer R }
-  ? R
-  : unknown;
-
 interface AudioMessageProps {
-  src: string;
+  messageId: string;
+  /** Legacy direct URL — used as fallback if the proxy fetch fails. */
+  src?: string;
   isOutgoing?: boolean;
 }
 
@@ -24,7 +20,7 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function AudioMessage({ src, isOutgoing = false }: AudioMessageProps) {
+function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMessageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wsRef = useRef<any>(null);
@@ -33,10 +29,51 @@ export function AudioMessage({ src, isOutgoing = false }: AudioMessageProps) {
   const [current, setCurrent] = useState(0);
   const [speedIdx, setSpeedIdx] = useState(0);
   const [ready, setReady] = useState(false);
+  const [error, setError] = useState(false);
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
 
+  // Fetch audio bytes via authenticated backend proxy, then expose as blob URL.
   useEffect(() => {
     let disposed = false;
-    let ws: unknown;
+    let createdUrl: string | null = null;
+    setError(false);
+    setReady(false);
+    setResolvedSrc(null);
+
+    (async () => {
+      try {
+        const token =
+          typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+        const res = await fetch(`/api/messages/${messageId}/media`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          credentials: 'include',
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const blob = await res.blob();
+        if (disposed) return;
+        createdUrl = URL.createObjectURL(blob);
+        setResolvedSrc(createdUrl);
+      } catch {
+        if (disposed) return;
+        if (src) {
+          setResolvedSrc(src);
+        } else {
+          setError(true);
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [messageId, src]);
+
+  useEffect(() => {
+    if (!resolvedSrc) return;
+    let disposed = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let ws: any;
 
     (async () => {
       if (!containerRef.current) return;
@@ -65,18 +102,18 @@ export function AudioMessage({ src, isOutgoing = false }: AudioMessageProps) {
         setPlaying(false);
         setCurrent(0);
       });
-      instance.load(src);
+      instance.on('error', () => setError(true));
+      instance.load(resolvedSrc);
       ws = instance;
       wsRef.current = instance;
     })();
 
     return () => {
       disposed = true;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (ws as any)?.destroy?.();
+      ws?.destroy?.();
       wsRef.current = null;
     };
-  }, [src, isOutgoing]);
+  }, [resolvedSrc, isOutgoing]);
 
   const toggle = () => {
     wsRef.current?.playPause();
@@ -88,24 +125,39 @@ export function AudioMessage({ src, isOutgoing = false }: AudioMessageProps) {
     wsRef.current?.setPlaybackRate(SPEEDS[next], false);
   };
 
+  if (error) {
+    return (
+      <div className="flex min-w-[220px] items-center gap-2 text-xs opacity-80">
+        <AlertCircle size={14} />
+        <span>Áudio não está mais disponível</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-3 min-w-[220px]">
+    <div className="flex min-w-[220px] items-center gap-3">
       <button
         type="button"
         onClick={toggle}
         disabled={!ready}
         aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'}
         className={cn(
-          'h-9 w-9 rounded-full flex items-center justify-center flex-shrink-0 transition-colors',
+          'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full transition-colors',
           isOutgoing
             ? 'bg-white/20 text-white hover:bg-white/30'
             : 'bg-primary text-primary-foreground hover:bg-primary/90',
           !ready && 'opacity-60',
         )}
       >
-        {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
+        {!ready ? (
+          <Loader2 size={16} className="animate-spin" />
+        ) : playing ? (
+          <Pause size={16} />
+        ) : (
+          <Play size={16} className="ml-0.5" />
+        )}
       </button>
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1">
         <div ref={containerRef} className="w-full" />
         <div className="mt-1 flex items-center justify-between text-[10px] opacity-80">
           <span>{formatDuration(playing || current > 0 ? current : duration)}</span>
@@ -122,3 +174,5 @@ export function AudioMessage({ src, isOutgoing = false }: AudioMessageProps) {
     </div>
   );
 }
+
+export const AudioMessage = memo(AudioMessageComponent);

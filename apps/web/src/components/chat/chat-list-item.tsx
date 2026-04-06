@@ -6,7 +6,7 @@ import { ptBR } from 'date-fns/locale';
 import { Flame } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 
 export type Temperatura = 'FRIO' | 'MORNO' | 'QUENTE' | 'MUITO_QUENTE';
@@ -18,6 +18,7 @@ export interface ChatLead {
   temperatura: Temperatura;
   estagio_id: string;
   mensagens_nao_lidas: number;
+  foto_url?: string | null;
   ultima_interacao?: string;
   ultimo_mensagem?: string;
   responsavel?: { id: string; nome: string };
@@ -79,6 +80,9 @@ function ChatListItemComponent({ lead, active, onClick }: ChatListItemProps) {
     >
       <div className="relative flex-shrink-0">
         <Avatar className="h-11 w-11">
+          {lead.foto_url ? (
+            <AvatarImage src={lead.foto_url} alt={lead.nome} />
+          ) : null}
           <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">
             {getInitials(lead.nome) || '?'}
           </AvatarFallback>

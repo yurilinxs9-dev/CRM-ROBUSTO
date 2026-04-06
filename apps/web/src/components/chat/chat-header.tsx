@@ -8,7 +8,7 @@ import {
   MoreVertical,
   Trash2,
 } from 'lucide-react';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -24,7 +24,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { formatDistanceToNowStrict } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { ChatLead, ChatStage, formatPhone, getInitials } from './types';
+
+/** "online" if interacted within 2min, else "visto por último há …". */
+function presenceLabel(lead: ChatLead): string {
+  if (!lead.ultima_interacao) return formatPhone(lead.telefone);
+  const last = new Date(lead.ultima_interacao);
+  if (Number.isNaN(last.getTime())) return formatPhone(lead.telefone);
+  const ageMs = Date.now() - last.getTime();
+  if (ageMs < 2 * 60_000) return 'online';
+  try {
+    return `visto por último há ${formatDistanceToNowStrict(last, { locale: ptBR })}`;
+  } catch {
+    return formatPhone(lead.telefone);
+  }
+}
 
 interface ChatHeaderProps {
   lead: ChatLead;
@@ -46,6 +62,8 @@ export function ChatHeader({
   onDeleteLead,
 }: ChatHeaderProps) {
   const router = useRouter();
+  const presence = presenceLabel(lead);
+  const isOnline = presence === 'online';
 
   return (
     <header
@@ -69,6 +87,9 @@ export function ChatHeader({
       </Button>
 
       <Avatar className="h-10 w-10 flex-shrink-0">
+        {lead.foto_url ? (
+          <AvatarImage src={lead.foto_url} alt={lead.nome} />
+        ) : null}
         <AvatarFallback className="bg-primary/15 text-primary font-semibold text-sm">
           {getInitials(lead.nome)}
         </AvatarFallback>
@@ -82,8 +103,14 @@ export function ChatHeader({
         <span className="truncate text-sm font-semibold text-foreground">
           {lead.nome}
         </span>
-        <span className="truncate text-[11px] text-muted-foreground">
-          {formatPhone(lead.telefone)}
+        <span
+          className={
+            isOnline
+              ? 'truncate text-[11px] font-medium text-green-600 dark:text-green-400'
+              : 'truncate text-[11px] text-muted-foreground'
+          }
+        >
+          {presence}
         </span>
       </button>
 

@@ -18,10 +18,15 @@ import { MessageCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
+import { Skeleton } from '@/components/ui/skeleton';
 import { ChatHeader } from '@/components/chat/chat-header';
 import { ChatComposer } from '@/components/chat/chat-composer';
+import { ChatWallpaper } from '@/components/chat/chat-wallpaper';
 import { MessageBubble } from '@/components/chat/message-bubble';
+import { TypingIndicator } from '@/components/chat/typing-indicator';
+import { ScrollToBottomButton } from '@/components/chat/scroll-to-bottom-button';
 import { LeadDetailsSheet } from '@/components/chat/lead-details-sheet';
+import type { ReplyTarget } from '@/components/chat/reply-preview';
 import {
   ChatLead,
   ChatMessage,
@@ -37,6 +42,10 @@ interface MessagesQueryData {
   pageParams: (string | undefined)[];
 }
 
+/** Fine-grained stale times: leads=30s, messages=10s. */
+const LEAD_STALE = 30_000;
+const MESSAGES_STALE = 10_000;
+
 export default function ChatDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -45,7 +54,15 @@ export default function ChatDetailPage() {
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const wasAtBottomRef = useRef(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
+  // Purely-client reactions map (backend not yet supported).
+  const [reactions, setReactions] = useState<Record<string, string[]>>({});
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [newCount, setNewCount] = useState(0);
+  // Placeholder — flip when `lead:typing` event wiring lands in the gateway.
+  const [isTyping] = useState(false);
 
   // --- Queries ---
   const { data: currentLead } = useQuery<ChatLead>({
@@ -55,6 +72,7 @@ export default function ChatDetailPage() {
       return res.data;
     },
     enabled: !!leadId,
+    staleTime: LEAD_STALE,
   });
 
   const { data: pipelines = [] } = useQuery<ChatPipeline[]>({
@@ -63,6 +81,7 @@ export default function ChatDetailPage() {
       const res = await api.get('/api/pipelines');
       return res.data;
     },
+    staleTime: 5 * 60_000,
   });
 
   const stages = useMemo(
@@ -75,6 +94,7 @@ export default function ChatDetailPage() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    isLoading: isMessagesLoading,
   } = useInfiniteQuery<MessagesPage>({
     queryKey: ['messages', leadId],
     queryFn: async ({ pageParam }) => {
@@ -86,6 +106,7 @@ export default function ChatDetailPage() {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     enabled: !!leadId,
+    staleTime: MESSAGES_STALE,
   });
 
   const messages = useMemo(() => {
@@ -258,13 +279,15 @@ export default function ChatDetailPage() {
           if (!old || old.pages.length === 0) return old;
           const pages = [...old.pages];
           const last = { ...pages[pages.length - 1] };
-          // Dedup by id
           if (last.messages.some((m) => m.id === data.id)) return old;
           last.messages = [...last.messages, data];
           pages[pages.length - 1] = last;
           return { ...old, pages };
         },
       );
+      if (!wasAtBottomRef.current) {
+        setNewCount((c) => c + 1);
+      }
       if (data.direction === 'INCOMING' || data.direction === 'INBOUND') {
         markReadMutation.mutate();
       }
@@ -299,20 +322,51 @@ export default function ChatDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, queryClient]);
 
-  // --- Auto-scroll on new message ---
+  // --- Smart auto-scroll: only follow if already at bottom ---
   const lastMessageId = messages[messages.length - 1]?.id;
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (wasAtBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [lastMessageId]);
 
-  // --- Infinite scroll up for older messages ---
+  // Scroll on conversation change — always jump to bottom instantly.
+  useEffect(() => {
+    wasAtBottomRef.current = true;
+    setShowJumpToBottom(false);
+    setNewCount(0);
+    setReplyTarget(null);
+    const id = window.setTimeout(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [leadId]);
+
+  // --- Infinite scroll up + bottom detection ---
   const handleScroll = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    if (container.scrollTop < 80 && hasNextPage && !isFetchingNextPage) {
+    // Eagerly prefetch next page of history at 80% from top.
+    const distanceFromTop = container.scrollTop;
+    const threshold = container.clientHeight * 0.2;
+    if (distanceFromTop < threshold && hasNextPage && !isFetchingNextPage) {
       fetchNextPage();
     }
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+    // Track "at bottom" with a small slack.
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    const atBottom = distanceFromBottom < 80;
+    wasAtBottomRef.current = atBottom;
+    setShowJumpToBottom(!atBottom);
+    if (atBottom && newCount > 0) setNewCount(0);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, newCount]);
+
+  const jumpToBottom = useCallback(() => {
+    wasAtBottomRef.current = true;
+    setNewCount(0);
+    setShowJumpToBottom(false);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
 
   // --- Composer handlers ---
   const handleSendText = useCallback(
@@ -342,6 +396,24 @@ export default function ChatDetailPage() {
     },
     [sendMediaMutation],
   );
+
+  const handleReply = useCallback((msg: ChatMessage) => {
+    setReplyTarget({
+      id: msg.id,
+      author: msg.direction === 'OUTGOING' || msg.direction === 'OUTBOUND'
+        ? 'Você'
+        : 'Cliente',
+      preview: (msg.content ?? '').slice(0, 80) || '[mídia]',
+    });
+  }, []);
+
+  const handleReact = useCallback((msg: ChatMessage, emoji: string) => {
+    setReactions((prev) => {
+      const current = prev[msg.id] ?? [];
+      if (current.includes(emoji)) return prev;
+      return { ...prev, [msg.id]: [...current, emoji] };
+    });
+  }, []);
 
   const handleClearConversation = () => {
     toast.info('Limpar conversa: em breve.');
@@ -373,62 +445,106 @@ export default function ChatDetailPage() {
         />
       )}
 
-      <div
-        ref={messagesContainerRef}
-        onScroll={handleScroll}
-        role="log"
-        aria-live="polite"
-        aria-label="Histórico de mensagens"
-        className="flex-1 overflow-y-auto bg-muted/20 px-3 py-4 sm:px-6"
-      >
-        {isFetchingNextPage && (
-          <div className="py-2 text-center text-[11px] text-muted-foreground">
-            Carregando mensagens anteriores…
-          </div>
-        )}
-        {hasNextPage && !isFetchingNextPage && (
-          <div className="flex justify-center py-2">
-            <button
-              type="button"
-              onClick={() => fetchNextPage()}
-              className="rounded-full border border-border bg-card px-3 py-1 text-[11px] text-muted-foreground hover:bg-muted"
-            >
-              Carregar anteriores
-            </button>
-          </div>
-        )}
+      <div className="relative flex flex-1 flex-col overflow-hidden">
+        <ChatWallpaper>
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleScroll}
+            role="log"
+            aria-live="polite"
+            aria-label="Histórico de mensagens"
+            className="h-full overflow-y-auto px-3 py-4 sm:px-6"
+          >
+            {isFetchingNextPage && (
+              <div className="py-2 text-center text-[11px] text-muted-foreground">
+                Carregando mensagens anteriores…
+              </div>
+            )}
 
-        {groupedMessages.map((group) => (
-          <div key={group.key}>
-            <div className="my-4 flex items-center justify-center">
-              <span className="rounded-full bg-card px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground shadow-sm">
-                {group.label}
-              </span>
-            </div>
-            {group.messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
-            ))}
-          </div>
-        ))}
+            {isMessagesLoading && messages.length === 0 && (
+              <div className="space-y-3">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className={
+                      i % 2 === 0 ? 'flex justify-start' : 'flex justify-end'
+                    }
+                  >
+                    <Skeleton
+                      className={
+                        i % 2 === 0
+                          ? 'h-12 w-48 rounded-2xl rounded-tl-sm'
+                          : 'h-12 w-56 rounded-2xl rounded-tr-sm'
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
 
-        {messages.length === 0 && !isFetchingNextPage && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 py-12 text-center">
-            <MessageCircle size={40} className="text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">
-              Nenhuma mensagem ainda
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Envie a primeira mensagem para iniciar a conversa
-            </p>
-          </div>
-        )}
+            {groupedMessages.map((group) => {
+              let prevSender: string | null = null;
+              let prevTime = 0;
+              return (
+                <div key={group.key}>
+                  <div className="my-4 flex items-center justify-center">
+                    <span className="rounded-full border border-border bg-card px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground shadow-sm">
+                      {group.label}
+                    </span>
+                  </div>
+                  {group.messages.map((msg) => {
+                    const sender = msg.direction;
+                    const time = new Date(msg.created_at).getTime();
+                    const isFirst =
+                      sender !== prevSender || time - prevTime > 60_000;
+                    prevSender = sender;
+                    prevTime = time;
+                    return (
+                      <MessageBubble
+                        key={msg.id}
+                        message={msg}
+                        isFirstInGroup={isFirst}
+                        onReply={handleReply}
+                        onReact={handleReact}
+                        reactions={reactions[msg.id]}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })}
 
-        <div ref={bottomRef} />
+            {isTyping && <TypingIndicator />}
+
+            {messages.length === 0 && !isMessagesLoading && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 py-12 text-center">
+                <MessageCircle size={40} className="text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma mensagem ainda
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Envie a primeira mensagem para iniciar a conversa
+                </p>
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+        </ChatWallpaper>
+
+        <ScrollToBottomButton
+          visible={showJumpToBottom}
+          unread={newCount}
+          onClick={jumpToBottom}
+        />
       </div>
 
       <ChatComposer
         disabled={!currentLead}
         sending={sending}
+        conversationKey={leadId}
+        replyTarget={replyTarget}
+        onCancelReply={() => setReplyTarget(null)}
         onSendText={handleSendText}
         onSendAudio={handleSendAudio}
         onSendMedia={handleSendMedia}

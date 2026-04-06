@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -9,14 +9,12 @@ import {
   Download,
   FileText,
   NotebookPen,
+  Reply,
 } from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogTrigger,
-} from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 import { AudioMessage } from './audio-message';
+import { ImagePreviewDialog } from './image-preview-dialog';
+import { ReactionsPopover } from './reactions-popover';
 import {
   ChatMessage,
   MessageStatus,
@@ -38,7 +36,7 @@ function renderText(text: string) {
           href={part}
           target="_blank"
           rel="noopener noreferrer"
-          className="underline underline-offset-2 break-all hover:opacity-80"
+          className="break-all underline underline-offset-2 hover:opacity-80"
         >
           {part}
         </a>
@@ -55,35 +53,34 @@ function StatusIcon({ status }: { status: MessageStatus }) {
     case 'SENT':
       return <Check size={14} className="opacity-70" aria-label="Enviada" />;
     case 'DELIVERED':
-      return (
-        <CheckCheck size={14} className="opacity-70" aria-label="Entregue" />
-      );
+      return <CheckCheck size={14} className="opacity-70" aria-label="Entregue" />;
     case 'READ':
-      return (
-        <CheckCheck
-          size={14}
-          className="text-sky-500"
-          aria-label="Lida"
-        />
-      );
+      return <CheckCheck size={14} className="text-sky-500" aria-label="Lida" />;
     case 'FAILED':
       return (
-        <AlertCircle
-          size={14}
-          className="text-destructive"
-          aria-label="Falhou"
-        />
+        <AlertCircle size={14} className="text-destructive" aria-label="Falhou" />
       );
     default:
       return null;
   }
 }
 
-interface MessageBubbleProps {
+export interface MessageBubbleProps {
   message: ChatMessage;
+  /** True if this is the first message of a sender sequence (tail corner). */
+  isFirstInGroup?: boolean;
+  onReply?: (message: ChatMessage) => void;
+  onReact?: (message: ChatMessage, emoji: string) => void;
+  reactions?: string[];
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubbleComponent({
+  message,
+  isFirstInGroup = true,
+  onReply,
+  onReact,
+  reactions,
+}: MessageBubbleProps) {
   const [imgOpen, setImgOpen] = useState(false);
   const outgoing = isOutgoingDir(message.direction);
   const note = message.is_internal_note;
@@ -94,7 +91,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       <div className="my-1.5 flex justify-center">
         <div className="max-w-[85%] rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2">
           <div className="flex items-start gap-2">
-            <NotebookPen size={14} className="mt-0.5 text-amber-500 flex-shrink-0" />
+            <NotebookPen size={14} className="mt-0.5 flex-shrink-0 text-amber-500" />
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-500">
                 Nota interna
@@ -112,51 +109,90 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     );
   }
 
+  // Bubble shape: outgoing = WhatsApp green-ish; incoming = white card.
+  // First-in-group gets the "tail" corner (squared on its origin side).
   const bubbleBase = cn(
     'relative max-w-[78%] rounded-2xl px-3 py-2 shadow-sm',
     outgoing
-      ? 'rounded-br-sm bg-primary/15 text-foreground'
-      : 'rounded-bl-sm border border-border bg-card text-foreground',
+      ? 'bg-[#d9fdd3] text-foreground dark:bg-[#005c4b] dark:text-white'
+      : 'border border-border bg-card text-foreground',
+    outgoing && isFirstInGroup && 'rounded-tr-sm',
+    !outgoing && isFirstInGroup && 'rounded-tl-sm',
   );
 
+  const handleReply = () => {
+    onReply?.(message);
+  };
+
+  const handleReact = (emoji: string) => {
+    onReact?.(message, emoji);
+  };
+
   return (
-    <div className={cn('my-0.5 flex', outgoing ? 'justify-end' : 'justify-start')}>
+    <div
+      className={cn(
+        'group/msg relative my-0.5 flex',
+        outgoing ? 'justify-end' : 'justify-start',
+      )}
+    >
       <div className={bubbleBase}>
+        {/* Hover actions */}
+        <div
+          className={cn(
+            'absolute top-1 flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100',
+            outgoing ? '-left-16' : '-right-16',
+          )}
+        >
+          {onReact && <ReactionsPopover onSelect={handleReact} />}
+          {onReply && (
+            <button
+              type="button"
+              onClick={handleReply}
+              aria-label="Responder"
+              className="flex h-6 w-6 items-center justify-center rounded-full bg-card/90 text-muted-foreground shadow-sm transition hover:bg-card hover:text-foreground"
+            >
+              <Reply size={12} />
+            </button>
+          )}
+        </div>
+
         {type === 'AUDIO' && message.media_url && (
-          <AudioMessage src={message.media_url} isOutgoing={outgoing} />
+          <AudioMessage messageId={message.id} src={message.media_url} isOutgoing={outgoing} />
         )}
 
         {type === 'IMAGE' && message.media_url && (
-          <Dialog open={imgOpen} onOpenChange={setImgOpen}>
-            <DialogTrigger asChild>
-              <button
-                type="button"
-                className="block overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
-                aria-label="Abrir imagem"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={message.media_url}
-                  alt={message.media_filename ?? 'Imagem'}
-                  className="max-h-72 max-w-xs object-cover"
-                />
-              </button>
-            </DialogTrigger>
-            <DialogContent className="max-w-3xl p-2">
+          <>
+            <button
+              type="button"
+              onClick={() => setImgOpen(true)}
+              className="block overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+              aria-label="Abrir imagem"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={message.media_url}
                 alt={message.media_filename ?? 'Imagem'}
-                className="h-auto w-full rounded-md"
+                width={288}
+                height={288}
+                loading="lazy"
+                decoding="async"
+                className="h-auto max-h-72 w-72 max-w-full object-cover"
               />
-            </DialogContent>
-          </Dialog>
+            </button>
+            <ImagePreviewDialog
+              src={message.media_url}
+              alt={message.media_filename ?? 'Imagem'}
+              open={imgOpen}
+              onOpenChange={setImgOpen}
+            />
+          </>
         )}
 
         {type === 'VIDEO' && message.media_url && (
           <video
             src={message.media_url}
             controls
+            preload="metadata"
             className="max-h-80 max-w-xs rounded-lg"
           />
         )}
@@ -184,7 +220,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </a>
         )}
 
-        {(type === 'TEXT' || !['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT'].includes(type)) && (
+        {(type === 'TEXT' ||
+          !['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT'].includes(type)) && (
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
             {renderText(message.content ?? '')}
           </p>
@@ -194,6 +231,19 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
             {renderText(message.content)}
           </p>
+        )}
+
+        {reactions && reactions.length > 0 && (
+          <div
+            className={cn(
+              'absolute -bottom-3 flex items-center gap-0.5 rounded-full border border-border bg-card px-1.5 py-0.5 text-xs shadow-sm',
+              outgoing ? 'right-2' : 'left-2',
+            )}
+          >
+            {reactions.map((r, i) => (
+              <span key={`${r}-${i}`}>{r}</span>
+            ))}
+          </div>
         )}
 
         <div
@@ -209,3 +259,5 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     </div>
   );
 }
+
+export const MessageBubble = memo(MessageBubbleComponent);

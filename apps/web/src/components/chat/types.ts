@@ -21,6 +21,7 @@ export interface ChatLead {
   temperatura: Temperatura;
   estagio_id: string;
   mensagens_nao_lidas: number;
+  foto_url?: string | null;
   valor_estimado?: string | number | null;
   ultima_interacao?: string;
   email?: string | null;
