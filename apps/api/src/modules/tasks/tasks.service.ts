@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/commo
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '@/common/types/roles';
+import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 import { Prisma, TaskStatus, TaskType, Prioridade } from '@prisma/client';
 
@@ -30,14 +31,6 @@ const updateTaskSchema = z.object({
   lead_id: z.string().uuid().nullable().optional(),
 });
 
-export interface AuthUser {
-  id: string;
-  nome: string;
-  email: string;
-  role: UserRole;
-  ativo: boolean;
-}
-
 export interface TaskFilters {
   from?: string;
   to?: string;
@@ -59,10 +52,11 @@ export class TasksService {
   ) {}
 
   private scopeWhere(user: AuthUser, where: Prisma.TaskWhereInput = {}): Prisma.TaskWhereInput {
+    const scoped: Prisma.TaskWhereInput = { ...where, tenant_id: user.tenantId };
     if (user.role === UserRole.OPERADOR) {
-      return { ...where, responsavel_id: user.id };
+      scoped.responsavel_id = user.id;
     }
-    return where;
+    return scoped;
   }
 
   async findAll(user: AuthUser, filters: TaskFilters) {
@@ -125,8 +119,8 @@ export class TasksService {
   }
 
   async findOne(id: string, user: AuthUser) {
-    const task = await this.prisma.task.findUnique({
-      where: { id },
+    const task = await this.prisma.task.findFirst({
+      where: { id, tenant_id: user.tenantId },
       include: taskInclude,
     });
     if (!task) throw new NotFoundException('Tarefa nao encontrada');
@@ -148,6 +142,7 @@ export class TasksService {
         duracao_min: parsed.duracao_min,
         lead_id: parsed.lead_id,
         responsavel_id: user.id,
+        tenant_id: user.tenantId,
       },
       include: taskInclude,
     });

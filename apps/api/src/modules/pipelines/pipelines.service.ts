@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
 const createPipelineSchema = z.object({
@@ -35,9 +36,9 @@ const reorderStagesSchema = z.object({
 export class PipelinesService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll() {
+  async findAll(user: AuthUser) {
     return this.prisma.pipeline.findMany({
-      where: { ativo: true },
+      where: { ativo: true, tenant_id: user.tenantId },
       include: {
         stages: { orderBy: { ordem: 'asc' } },
         _count: { select: { leads: true } },
@@ -46,9 +47,9 @@ export class PipelinesService {
     });
   }
 
-  async findOne(id: string) {
-    const pipeline = await this.prisma.pipeline.findUnique({
-      where: { id },
+  async findOne(id: string, user: AuthUser) {
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { id, tenant_id: user.tenantId },
       include: {
         stages: {
           orderBy: { ordem: 'asc' },
@@ -60,19 +61,20 @@ export class PipelinesService {
     return pipeline;
   }
 
-  async create(body: unknown) {
+  async create(body: unknown, user: AuthUser) {
     const data = createPipelineSchema.parse(body);
-    const count = await this.prisma.pipeline.count();
+    const count = await this.prisma.pipeline.count({ where: { tenant_id: user.tenantId } });
     return this.prisma.pipeline.create({
       data: {
         nome: data.nome,
         descricao: data.descricao ?? null,
         ordem: count,
+        tenant_id: user.tenantId,
         stages: {
           create: [
-            { nome: 'Novo Lead', cor: '#3498DB', ordem: 0 },
-            { nome: 'Em Negociacao', cor: '#F39C12', ordem: 1 },
-            { nome: 'Fechado', cor: '#27AE60', ordem: 2, is_won: true },
+            { nome: 'Novo Lead', cor: '#3498DB', ordem: 0, tenant_id: user.tenantId },
+            { nome: 'Em Negociacao', cor: '#F39C12', ordem: 1, tenant_id: user.tenantId },
+            { nome: 'Fechado', cor: '#27AE60', ordem: 2, is_won: true, tenant_id: user.tenantId },
           ],
         },
       },
@@ -80,9 +82,11 @@ export class PipelinesService {
     });
   }
 
-  async update(id: string, body: unknown) {
+  async update(id: string, body: unknown, user: AuthUser) {
     const data = updatePipelineSchema.parse(body);
-    const exists = await this.prisma.pipeline.findUnique({ where: { id } });
+    const exists = await this.prisma.pipeline.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
     if (!exists) throw new NotFoundException('Pipeline nao encontrado');
     return this.prisma.pipeline.update({
       where: { id },
@@ -91,10 +95,14 @@ export class PipelinesService {
     });
   }
 
-  async remove(id: string) {
-    const exists = await this.prisma.pipeline.findUnique({ where: { id } });
+  async remove(id: string, user: AuthUser) {
+    const exists = await this.prisma.pipeline.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
     if (!exists) throw new NotFoundException('Pipeline nao encontrado');
-    const leadsCount = await this.prisma.lead.count({ where: { pipeline_id: id } });
+    const leadsCount = await this.prisma.lead.count({
+      where: { pipeline_id: id, tenant_id: user.tenantId },
+    });
     if (leadsCount > 0) {
       throw new ConflictException('Nao e possivel excluir: existem leads neste pipeline');
     }
@@ -102,12 +110,14 @@ export class PipelinesService {
     return { success: true };
   }
 
-  async createStage(pipelineId: string, body: unknown) {
+  async createStage(pipelineId: string, body: unknown, user: AuthUser) {
     const data = createStageSchema.parse(body);
-    const pipeline = await this.prisma.pipeline.findUnique({ where: { id: pipelineId } });
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { id: pipelineId, tenant_id: user.tenantId },
+    });
     if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
     const last = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipelineId },
+      where: { pipeline_id: pipelineId, tenant_id: user.tenantId },
       orderBy: { ordem: 'desc' },
     });
     const ordem = data.ordem ?? (last ? last.ordem + 1 : 0);
@@ -117,21 +127,28 @@ export class PipelinesService {
         cor: data.cor,
         ordem,
         pipeline_id: pipelineId,
+        tenant_id: user.tenantId,
       },
     });
   }
 
-  async updateStage(id: string, body: unknown) {
+  async updateStage(id: string, body: unknown, user: AuthUser) {
     const data = updateStageSchema.parse(body);
-    const exists = await this.prisma.stage.findUnique({ where: { id } });
+    const exists = await this.prisma.stage.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
     if (!exists) throw new NotFoundException('Stage nao encontrada');
     return this.prisma.stage.update({ where: { id }, data });
   }
 
-  async removeStage(id: string) {
-    const stage = await this.prisma.stage.findUnique({ where: { id } });
+  async removeStage(id: string, user: AuthUser) {
+    const stage = await this.prisma.stage.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
     if (!stage) throw new NotFoundException('Stage nao encontrada');
-    const leadsCount = await this.prisma.lead.count({ where: { estagio_id: id } });
+    const leadsCount = await this.prisma.lead.count({
+      where: { estagio_id: id, tenant_id: user.tenantId },
+    });
     if (leadsCount > 0) {
       throw new ConflictException(
         'Nao e possivel excluir: existem leads nesta stage. Mova-os antes de excluir.',
@@ -141,10 +158,10 @@ export class PipelinesService {
     return { success: true };
   }
 
-  async reorderStages(pipelineId: string, body: unknown) {
+  async reorderStages(pipelineId: string, body: unknown, user: AuthUser) {
     const { stageIds } = reorderStagesSchema.parse(body);
     const stages = await this.prisma.stage.findMany({
-      where: { pipeline_id: pipelineId },
+      where: { pipeline_id: pipelineId, tenant_id: user.tenantId },
       select: { id: true },
     });
     const existing = new Set(stages.map((s) => s.id));

@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { AudioService } from '../media/audio.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
+import type { AuthUser } from '../../common/types/auth-user';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
@@ -42,19 +43,24 @@ export class MessagesService {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
   }
 
-  async sendText(data: unknown, userId: string) {
-    const { lead_id, content } = sendTextSchema.parse(data);
-
-    const lead = await this.prisma.lead.findUnique({ where: { id: lead_id } });
+  private async resolveLeadAndToken(leadId: string, user: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+    });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-
-    const instance = await this.prisma.whatsappInstance.findUnique({
-      where: { nome: lead.instancia_whatsapp },
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
     if (!instance) throw new NotFoundException('Instancia WhatsApp nao encontrada');
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
+    return { lead, token };
+  }
+
+  async sendText(data: unknown, user: AuthUser) {
+    const { lead_id, content } = sendTextSchema.parse(data);
+    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
 
     const { data: response } = await firstValueFrom(
       this.http.post<Record<string, unknown>>(
@@ -80,7 +86,8 @@ export class MessagesService {
         type: 'TEXT',
         content,
         status: 'SENT',
-        sent_by_user_id: userId,
+        sent_by_user_id: user.id,
+        tenant_id: user.tenantId,
       },
     });
 
@@ -89,12 +96,17 @@ export class MessagesService {
       data: { ultima_interacao: new Date() },
     });
 
-    this.gateway.emitNewMessage(lead_id, message);
+    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     return message;
   }
 
-  async createInternalNote(data: unknown, userId: string) {
+  async createInternalNote(data: unknown, user: AuthUser) {
     const { lead_id, content } = internalNoteSchema.parse(data);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: lead_id, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
     return this.prisma.message.create({
       data: {
         lead_id,
@@ -105,22 +117,10 @@ export class MessagesService {
         content,
         status: 'READ',
         is_internal_note: true,
-        sent_by_user_id: userId,
+        sent_by_user_id: user.id,
+        tenant_id: user.tenantId,
       },
     });
-  }
-
-  private async resolveLeadAndToken(leadId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const instance = await this.prisma.whatsappInstance.findUnique({
-      where: { nome: lead.instancia_whatsapp },
-    });
-    if (!instance) throw new NotFoundException('Instancia WhatsApp nao encontrada');
-    const cfg = (instance.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
-    if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
-    return { lead, token };
   }
 
   private detectMediaType(mimetype: string): { type: MessageType; uazType: 'image' | 'video' | 'document' } {
@@ -129,11 +129,11 @@ export class MessagesService {
     return { type: MessageType.DOCUMENT, uazType: 'document' };
   }
 
-  async sendAudio(file: Express.Multer.File, body: unknown, userId: string) {
+  async sendAudio(file: Express.Multer.File, body: unknown, user: AuthUser) {
     const { lead_id } = z.object({ lead_id: z.string().uuid() }).parse(body);
     if (!file) throw new NotFoundException('Arquivo de audio ausente');
 
-    const { lead, token } = await this.resolveLeadAndToken(lead_id);
+    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
 
     const opusBuffer = await this.audio.convertToOpus(file.buffer, file.mimetype);
     const filename = `audio/${lead_id}/${uuid()}.ogg`;
@@ -175,7 +175,8 @@ export class MessagesService {
         media_filename: filename,
         media_size_bytes: opusBuffer.length,
         status: 'SENT',
-        sent_by_user_id: userId,
+        sent_by_user_id: user.id,
+        tenant_id: user.tenantId,
       },
     });
 
@@ -184,17 +185,17 @@ export class MessagesService {
       data: { ultima_interacao: new Date() },
     });
 
-    this.gateway.emitNewMessage(lead_id, message);
+    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     return message;
   }
 
-  async sendMedia(file: Express.Multer.File, body: unknown, userId: string) {
+  async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser) {
     const { lead_id, caption } = z
       .object({ lead_id: z.string().uuid(), caption: z.string().optional() })
       .parse(body);
     if (!file) throw new NotFoundException('Arquivo ausente');
 
-    const { lead, token } = await this.resolveLeadAndToken(lead_id);
+    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
     const { type, uazType } = this.detectMediaType(file.mimetype);
 
     const safeName = file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ?? 'file';
@@ -245,7 +246,8 @@ export class MessagesService {
         media_filename: file.originalname ?? null,
         media_size_bytes: file.size,
         status: 'SENT',
-        sent_by_user_id: userId,
+        sent_by_user_id: user.id,
+        tenant_id: user.tenantId,
       },
     });
 
@@ -254,23 +256,23 @@ export class MessagesService {
       data: { ultima_interacao: new Date() },
     });
 
-    this.gateway.emitNewMessage(lead_id, message);
+    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     return message;
   }
 
-  async streamMedia(messageId: string): Promise<{
+  async streamMedia(messageId: string, user: AuthUser): Promise<{
     stream: NodeJS.ReadableStream;
     contentType: string;
     contentLength?: number;
   }> {
-    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    const message = await this.prisma.message.findFirst({
+      where: { id: messageId, tenant_id: user.tenantId },
+    });
     if (!message) throw new NotFoundException('Mensagem nao encontrada');
     if (!message.media_url && !message.media_filename) {
       throw new NotFoundException('Midia nao disponivel');
     }
 
-    // Prefer re-signing from the stored storage path (media_filename) so we never
-    // depend on potentially expired signed URLs stored in media_url.
     let upstreamUrl: string | null = null;
     if (message.media_filename && !/^https?:\/\//i.test(message.media_filename)) {
       try {
@@ -304,9 +306,14 @@ export class MessagesService {
     }
   }
 
-  async getHistory(leadId: string, cursor?: string, limit = 50) {
+  async getHistory(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
     const rows = await this.prisma.message.findMany({
-      where: { lead_id: leadId },
+      where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

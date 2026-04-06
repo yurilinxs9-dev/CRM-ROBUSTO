@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nest
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { InstancesService } from '../instances/instances.service';
 import { UserRole } from '@/common/types/roles';
+import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
 interface InstanceConfig {
@@ -20,14 +21,6 @@ const createLeadSchema = z.object({
   instancia_whatsapp: z.string(),
   responsavel_id: z.string().uuid().optional(),
 });
-
-interface AuthUser {
-  id: string;
-  nome: string;
-  email: string;
-  role: UserRole;
-  ativo: boolean;
-}
 
 interface LeadFilters {
   pipeline_id?: string;
@@ -49,13 +42,15 @@ export class LeadsService {
     private instances: InstancesService,
   ) {}
 
-  async syncProfile(leadId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+  async syncProfile(leadId: string, user?: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: user ? { id: leadId, tenant_id: user.tenantId } : { id: leadId },
+    });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     if (!lead.instancia_whatsapp) return lead;
 
-    const instance = await this.prisma.whatsappInstance.findUnique({
-      where: { nome: lead.instancia_whatsapp },
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: lead.instancia_whatsapp, tenant_id: lead.tenant_id },
     });
     const cfg = (instance?.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
@@ -63,23 +58,10 @@ export class LeadsService {
 
     const profile = await this.instances.fetchProfile(token, lead.telefone);
     const data: { nome?: string; foto_url?: string } = {};
-    // Only overwrite nome if it is the raw phone (no custom name)
-    if (profile.name && lead.nome === lead.telefone) {
-      data.nome = profile.name;
-    }
-    if (profile.imageUrl) {
-      data.foto_url = profile.imageUrl;
-    }
+    if (profile.name && lead.nome === lead.telefone) data.nome = profile.name;
+    if (profile.imageUrl) data.foto_url = profile.imageUrl;
     if (Object.keys(data).length === 0) return lead;
     return this.prisma.lead.update({ where: { id: leadId }, data });
-  }
-
-  async syncProfileSafe(leadId: string): Promise<void> {
-    try {
-      await this.syncProfile(leadId);
-    } catch (err) {
-      this.logger.warn(`syncProfileSafe(${leadId}) falhou: ${String(err)}`);
-    }
   }
 
   async syncActiveLeadsProfiles(limit = 50): Promise<{ synced: number }> {
@@ -102,8 +84,16 @@ export class LeadsService {
     return { synced };
   }
 
+  async syncProfileSafe(leadId: string): Promise<void> {
+    try {
+      await this.syncProfile(leadId);
+    } catch (err) {
+      this.logger.warn(`syncProfileSafe(${leadId}) falhou: ${String(err)}`);
+    }
+  }
+
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
-    const where: Record<string, unknown> = {};
+    const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
     if (user.role === UserRole.OPERADOR) {
       where.responsavel_id = user.id;
@@ -130,16 +120,11 @@ export class LeadsService {
         messages: {
           orderBy: { created_at: 'desc' },
           take: 1,
-          select: {
-            content: true,
-            type: true,
-            direction: true,
-            created_at: true,
-          },
+          select: { content: true, type: true, direction: true, created_at: true },
         },
       },
       orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }],
-      take: filters.limit ? parseInt(filters.limit) : 200,
+      take: filters.limit ? Math.min(parseInt(filters.limit), 200) : 50,
       skip: filters.offset ? parseInt(filters.offset) : 0,
     });
 
@@ -147,9 +132,8 @@ export class LeadsService {
       const last = lead.messages[0];
       let preview = '';
       if (last) {
-        if (last.type === 'TEXT') {
-          preview = last.content ?? '';
-        } else if (last.type === 'IMAGE') preview = '📷 Imagem';
+        if (last.type === 'TEXT') preview = last.content ?? '';
+        else if (last.type === 'IMAGE') preview = '📷 Imagem';
         else if (last.type === 'VIDEO') preview = '🎥 Vídeo';
         else if (last.type === 'AUDIO') preview = '🎵 Áudio';
         else if (last.type === 'DOCUMENT') preview = '📄 Documento';
@@ -168,8 +152,8 @@ export class LeadsService {
   }
 
   async findOne(id: string, user: AuthUser) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id },
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, tenant_id: user.tenantId },
       include: {
         responsavel: { select: { id: true, nome: true, avatar_url: true } },
         estagio: true,
@@ -196,6 +180,7 @@ export class LeadsService {
         ...parsed,
         responsavel_id: parsed.responsavel_id || user.id,
         origem: 'MANUAL',
+        tenant_id: user.tenantId,
       },
     });
   }
@@ -203,14 +188,13 @@ export class LeadsService {
   async updateStage(id: string, data: unknown, user: AuthUser) {
     const { estagio_id } = updateStageSchema.parse(data);
 
-    const lead = await this.prisma.lead.findUnique({ where: { id } });
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
     if (!lead) throw new NotFoundException();
 
     const [updatedLead] = await this.prisma.$transaction([
-      this.prisma.lead.update({
-        where: { id },
-        data: { estagio_id },
-      }),
+      this.prisma.lead.update({ where: { id }, data: { estagio_id } }),
       this.prisma.leadActivity.create({
         data: {
           lead_id: id,
@@ -219,6 +203,7 @@ export class LeadsService {
           descricao: 'Movido para novo estagio',
           dados_antes: { estagio_id: lead.estagio_id },
           dados_depois: { estagio_id },
+          tenant_id: user.tenantId,
         },
       }),
     ]);
@@ -226,9 +211,14 @@ export class LeadsService {
     return updatedLead;
   }
 
-  async getMessages(leadId: string, cursor?: string, limit = 50) {
+  async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
     const rows = await this.prisma.message.findMany({
-      where: { lead_id: leadId },
+      where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -241,7 +231,12 @@ export class LeadsService {
     };
   }
 
-  async markAsRead(leadId: string) {
+  async markAsRead(leadId: string, user: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
     await this.prisma.lead.update({
       where: { id: leadId },
       data: { mensagens_nao_lidas: 0 },

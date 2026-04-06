@@ -6,68 +6,60 @@ import {
   Delete,
   Param,
   Body,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { PipelinesService } from './pipelines.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { UserRole } from '../../common/types/roles';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 export class PipelinesController {
   constructor(private pipelinesService: PipelinesService) {}
 
   @Get('pipelines')
-  findAll() {
-    return this.pipelinesService.findAll();
+  findAll(@Req() req: Record<string, unknown>) {
+    return this.pipelinesService.findAll(req.user as AuthUser);
   }
 
   @Get('pipelines/:id')
-  findOne(@Param('id') id: string) {
-    return this.pipelinesService.findOne(id);
+  findOne(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.findOne(id, req.user as AuthUser);
   }
 
   @Post('pipelines')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  create(@Body() body: unknown) {
-    return this.pipelinesService.create(body);
+  create(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.create(body, req.user as AuthUser);
   }
 
   @Patch('pipelines/:id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  update(@Param('id') id: string, @Body() body: unknown) {
-    return this.pipelinesService.update(id, body);
+  update(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.update(id, body, req.user as AuthUser);
   }
 
   @Delete('pipelines/:id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  remove(@Param('id') id: string) {
-    return this.pipelinesService.remove(id);
+  remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.remove(id, req.user as AuthUser);
   }
 
   @Post('pipelines/:id/stages')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  createStage(@Param('id') id: string, @Body() body: unknown) {
-    return this.pipelinesService.createStage(id, body);
+  createStage(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.createStage(id, body, req.user as AuthUser);
   }
 
   @Post('pipelines/:id/stages/reorder')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  reorderStages(@Param('id') id: string, @Body() body: unknown) {
-    return this.pipelinesService.reorderStages(id, body);
+  reorderStages(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.reorderStages(id, body, req.user as AuthUser);
   }
 
   @Patch('stages/:id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  updateStage(@Param('id') id: string, @Body() body: unknown) {
-    return this.pipelinesService.updateStage(id, body);
+  updateStage(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.updateStage(id, body, req.user as AuthUser);
   }
 
   @Delete('stages/:id')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.GERENTE)
-  removeStage(@Param('id') id: string) {
-    return this.pipelinesService.removeStage(id);
+  removeStage(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.removeStage(id, req.user as AuthUser);
   }
 }

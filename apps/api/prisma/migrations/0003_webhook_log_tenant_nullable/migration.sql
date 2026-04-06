@@ -1,0 +1,1 @@
+ALTER TABLE "WebhookLog" ALTER COLUMN "tenant_id" DROP NOT NULL;

@@ -1,5 +1,6 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 
 async function main() {
   const prisma = new PrismaClient();
@@ -7,6 +8,32 @@ async function main() {
   const senha = process.env.ADMIN_SENHA || 'Admin@2026';
 
   const senha_hash = await bcrypt.hash(senha, 12);
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  let tenantId: string;
+  let userId: string;
+
+  if (existing) {
+    userId = existing.id;
+    tenantId = existing.tenant_id;
+    await prisma.user.update({
+      where: { id: userId },
+      data: { senha_hash, role: 'SUPER_ADMIN' },
+    });
+  } else {
+    tenantId = randomUUID();
+    userId = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(Prisma.sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.$executeRaw(
+        Prisma.sql`INSERT INTO "User" ("id", "nome", "email", "senha_hash", "role", "ativo", "tenant_id", "created_at", "updated_at")
+          VALUES (${userId}, ${'Administrador'}, ${email}, ${senha_hash}, ${'SUPER_ADMIN'}, true, ${tenantId}, NOW(), NOW())`,
+      );
+      await tx.tenant.create({
+        data: { id: tenantId, nome: 'Admin Tenant', owner_id: userId },
+      });
+    });
+  }
 
   const pipeline = await prisma.pipeline.upsert({
     where: { id: 'pipeline-default' },
@@ -16,6 +43,7 @@ async function main() {
       descricao: 'Funil de vendas padrao',
       ativo: true,
       ordem: 0,
+      tenant_id: tenantId,
     },
     update: {},
   });
@@ -33,18 +61,13 @@ async function main() {
   for (const stage of stages) {
     await prisma.stage.upsert({
       where: { id: `stage-${stage.ordem}` },
-      create: { id: `stage-${stage.ordem}`, ...stage, pipeline_id: pipeline.id },
+      create: { id: `stage-${stage.ordem}`, ...stage, pipeline_id: pipeline.id, tenant_id: tenantId },
       update: {},
     });
   }
 
-  const admin = await prisma.user.upsert({
-    where: { email },
-    create: { nome: 'Administrador', email, senha_hash, role: 'SUPER_ADMIN' },
-    update: { senha_hash, role: 'SUPER_ADMIN' },
-  });
-
-  console.log('Admin criado:', admin.email);
+  console.log('Admin criado:', email);
+  console.log('Tenant:', tenantId);
   console.log('Pipeline criado:', pipeline.nome);
   console.log('7 estagios criados');
   console.log('\nCredenciais:');

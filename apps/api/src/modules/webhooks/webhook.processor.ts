@@ -21,14 +21,12 @@ export class WebhookProcessor extends WorkerHost {
     const start = Date.now();
     try {
       switch (job.name) {
-        // WPPConnect events
         case 'onmessage':
           await this.handleWppMessage(job.data);
           break;
         case 'status-find':
           await this.handleWppStatus(job.data);
           break;
-        // Legacy Evolution API events (kept for compatibility)
         case 'messages.upsert':
           await this.handleMessageUpsert(job.data);
           break;
@@ -41,7 +39,6 @@ export class WebhookProcessor extends WorkerHost {
         case 'contacts.upsert':
           await this.handleContactsUpsert(job.data);
           break;
-        // UazAPI events (UazAPI uses plural "messages" + EventType field)
         case 'uazapi.messages':
         case 'uazapi.message':
           await this.handleUazapiMessage(job.data);
@@ -73,18 +70,49 @@ export class WebhookProcessor extends WorkerHost {
     }
   }
 
+  private async findInstanceByName(name: string | undefined) {
+    if (!name) return null;
+    return this.prisma.whatsappInstance.findFirst({ where: { nome: name } });
+  }
+
+  private async findInstanceByUazapiToken(token: string | undefined) {
+    if (!token) return null;
+    return this.prisma.whatsappInstance.findFirst({
+      where: { config: { path: ['uazapi_token'], equals: token } },
+    });
+  }
+
+  private async ensurePipelineAndStage(tenantId: string) {
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { ativo: true, tenant_id: tenantId },
+    });
+    if (!pipeline) return null;
+    const firstStage = await this.prisma.stage.findFirst({
+      where: { pipeline_id: pipeline.id, tenant_id: tenantId },
+      orderBy: { ordem: 'asc' },
+    });
+    if (!firstStage) return null;
+    return { pipeline, firstStage };
+  }
+
   // ── WPPConnect handlers ──────────────────────────────────────────────────────
 
   private async handleWppMessage(payload: Record<string, unknown>) {
     const instanceName = payload?.instance as string | undefined;
     const msg = payload?.data as Record<string, unknown> | undefined;
     if (!msg) return;
-
-    // Skip group messages
     if (msg.isGroupMsg === true) return;
 
     const from = msg.from as string | undefined;
     if (!from) return;
+
+    const instance = await this.findInstanceByName(instanceName);
+    if (!instance) {
+      this.logger.warn(`WPP message para instancia desconhecida: ${instanceName}`);
+      return;
+    }
+    const tenantId = instance.tenant_id;
+    const ownerId = instance.owner_user_id;
 
     const phone = from.replace('@c.us', '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
     const msgIdObj = msg.id as Record<string, unknown> | undefined;
@@ -92,29 +120,21 @@ export class WebhookProcessor extends WorkerHost {
     const isFromMe = (msg.fromMe as boolean) || false;
     const content = (msg.body as string) || null;
 
-    const pipeline = await this.prisma.pipeline.findFirst({ where: { ativo: true } });
-    if (!pipeline) return;
-
-    const firstStage = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipeline.id },
-      orderBy: { ordem: 'asc' },
-    });
-    if (!firstStage) return;
-
-    const defaultUser = await this.prisma.user.findFirst({ where: { ativo: true } });
-    if (!defaultUser) return;
+    const ctx = await this.ensurePipelineAndStage(tenantId);
+    if (!ctx) return;
 
     const lead = await this.prisma.lead.upsert({
-      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: pipeline.id } },
+      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
       create: {
         nome: (msg.pushName as string) || phone,
         telefone: phone,
         origem: 'WHATSAPP_INCOMING',
-        instancia_whatsapp: instanceName || '',
-        pipeline_id: pipeline.id,
-        estagio_id: firstStage.id,
-        responsavel_id: defaultUser.id,
+        instancia_whatsapp: instance.nome,
+        pipeline_id: ctx.pipeline.id,
+        estagio_id: ctx.firstStage.id,
+        responsavel_id: ownerId,
         ultima_interacao: new Date(),
+        tenant_id: tenantId,
       },
       update: {
         ultima_interacao: new Date(),
@@ -127,27 +147,25 @@ export class WebhookProcessor extends WorkerHost {
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
-          instance_name: instanceName || '',
+          instance_name: instance.nome,
           whatsapp_message_id: messageId,
           direction: isFromMe ? 'OUTGOING' : 'INCOMING',
           type: 'TEXT',
           content,
           status: isFromMe ? 'SENT' : 'DELIVERED',
           metadata: JSON.parse(JSON.stringify(payload)),
+          tenant_id: tenantId,
         },
         update: {},
       });
-      this.gateway.emitNewMessage(lead.id, message);
+      this.gateway.emitNewMessage(lead.id, message, tenantId);
     }
-
-    this.logger.log(`Mensagem WPP processada: lead ${lead.id}, phone ${phone}`);
   }
 
   private async handleWppStatus(payload: Record<string, unknown>) {
     const instanceName = payload?.instance as string | undefined;
     if (!instanceName) return;
 
-    // WPPConnect sends data as a string: "CONNECTED", "QRCODE", "notLogged", etc.
     const rawStatus = payload?.data as string | undefined;
     const statusMap: Record<string, string> = {
       CONNECTED: 'open',
@@ -158,12 +176,13 @@ export class WebhookProcessor extends WorkerHost {
     };
     const status = (rawStatus && statusMap[rawStatus]) || 'disconnected';
 
-    await this.prisma.whatsappInstance.upsert({
+    const instance = await this.findInstanceByName(instanceName);
+    if (!instance) return;
+    await this.prisma.whatsappInstance.update({
       where: { nome: instanceName },
-      create: { nome: instanceName, status },
-      update: { status, ultimo_check: new Date() },
+      data: { status, ultimo_check: new Date() },
     });
-    this.logger.log(`Instancia ${instanceName}: ${rawStatus} → ${status}`);
+    this.gateway.emitInstanceStatusChanged(instanceName, status, instance.tenant_id);
   }
 
   // ── Legacy Evolution API handlers ───────────────────────────────────────────
@@ -178,6 +197,10 @@ export class WebhookProcessor extends WorkerHost {
     const remoteJid = key?.remoteJid as string | undefined;
     if (!remoteJid || remoteJid.includes('@g.us')) return;
 
+    const instance = await this.findInstanceByName(instanceName);
+    if (!instance) return;
+    const tenantId = instance.tenant_id;
+
     const phone = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
     const messageId = key?.id as string | undefined;
     const isFromMe = key?.fromMe as boolean;
@@ -185,29 +208,21 @@ export class WebhookProcessor extends WorkerHost {
     const content = (messageContent?.conversation ||
                     (messageContent?.extendedTextMessage as Record<string, unknown>)?.text || null) as string | null;
 
-    const pipeline = await this.prisma.pipeline.findFirst({ where: { ativo: true } });
-    if (!pipeline) return;
-
-    const firstStage = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipeline.id },
-      orderBy: { ordem: 'asc' },
-    });
-    if (!firstStage) return;
-
-    const defaultUser = await this.prisma.user.findFirst({ where: { ativo: true } });
-    if (!defaultUser) return;
+    const ctx = await this.ensurePipelineAndStage(tenantId);
+    if (!ctx) return;
 
     const lead = await this.prisma.lead.upsert({
-      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: pipeline.id } },
+      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
       create: {
         nome: (msg?.pushName as string) || phone,
         telefone: phone,
         origem: 'WHATSAPP_INCOMING',
-        instancia_whatsapp: instanceName || '',
-        pipeline_id: pipeline.id,
-        estagio_id: firstStage.id,
-        responsavel_id: defaultUser.id,
+        instancia_whatsapp: instance.nome,
+        pipeline_id: ctx.pipeline.id,
+        estagio_id: ctx.firstStage.id,
+        responsavel_id: instance.owner_user_id,
         ultima_interacao: new Date(),
+        tenant_id: tenantId,
       },
       update: {
         ultima_interacao: new Date(),
@@ -220,17 +235,18 @@ export class WebhookProcessor extends WorkerHost {
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
-          instance_name: instanceName || '',
+          instance_name: instance.nome,
           whatsapp_message_id: messageId,
           direction: isFromMe ? 'OUTGOING' : 'INCOMING',
           type: 'TEXT',
           content,
           status: isFromMe ? 'SENT' : 'DELIVERED',
           metadata: JSON.parse(JSON.stringify(data)),
+          tenant_id: tenantId,
         },
         update: {},
       });
-      this.gateway.emitNewMessage(lead.id, message);
+      this.gateway.emitNewMessage(lead.id, message, tenantId);
     }
   }
 
@@ -245,10 +261,10 @@ export class WebhookProcessor extends WorkerHost {
       if (!messageId || !status) continue;
 
       const statusMap: Record<string, string> = {
-        'DELIVERY_ACK': 'DELIVERED',
-        'READ': 'READ',
-        'PLAYED': 'READ',
-        'ERROR': 'FAILED',
+        DELIVERY_ACK: 'DELIVERED',
+        READ: 'READ',
+        PLAYED: 'READ',
+        ERROR: 'FAILED',
       };
       const mappedStatus = statusMap[status];
       if (mappedStatus) {
@@ -266,32 +282,20 @@ export class WebhookProcessor extends WorkerHost {
     const state = connectionData?.state as string | undefined;
     if (!instanceName) return;
 
-    await this.prisma.whatsappInstance.upsert({
+    const instance = await this.findInstanceByName(instanceName);
+    if (!instance) return;
+    await this.prisma.whatsappInstance.update({
       where: { nome: instanceName },
-      create: { nome: instanceName, status: state || 'disconnected' },
-      update: { status: state || 'disconnected', ultimo_check: new Date() },
+      data: { status: state || 'disconnected', ultimo_check: new Date() },
     });
+    this.gateway.emitInstanceStatusChanged(instanceName, state || 'disconnected', instance.tenant_id);
   }
 
   // ── UazAPI handlers ─────────────────────────────────────────────────────────
 
-  private async findInstanceByUazapiToken(token: string | undefined) {
-    if (!token) return null;
-    const all = await this.prisma.whatsappInstance.findMany();
-    return (
-      all.find((i) => {
-        const cfg = (i.config ?? {}) as Record<string, unknown>;
-        return cfg.uazapi_token === token;
-      }) ?? null
-    );
-  }
-
   private async handleUazapiMessage(payload: Record<string, unknown>) {
-    // UazAPI flat format: { EventType, message: {...}, instanceName, owner, token }
     const message = payload?.message as Record<string, unknown> | undefined;
     if (!message) return;
-
-    // Skip group messages
     if (message.isGroup === true) return;
 
     const chatid = message.chatid as string | undefined;
@@ -307,36 +311,29 @@ export class WebhookProcessor extends WorkerHost {
       null;
 
     const token = payload.token as string | undefined;
-    const matchedInstance = await this.findInstanceByUazapiToken(token);
-    const instanceName =
-      (payload.instanceName as string | undefined) ??
-      matchedInstance?.nome ??
-      (payload.instanceId as string | undefined) ??
-      'unknown';
+    const instance = await this.findInstanceByUazapiToken(token);
+    if (!instance) {
+      this.logger.warn(`UazAPI message com token desconhecido`);
+      return;
+    }
+    const tenantId = instance.tenant_id;
+    const instanceName = instance.nome;
 
-    const pipeline = await this.prisma.pipeline.findFirst({ where: { ativo: true } });
-    if (!pipeline) return;
-
-    const firstStage = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipeline.id },
-      orderBy: { ordem: 'asc' },
-    });
-    if (!firstStage) return;
-
-    const defaultUser = await this.prisma.user.findFirst({ where: { ativo: true } });
-    if (!defaultUser) return;
+    const ctx = await this.ensurePipelineAndStage(tenantId);
+    if (!ctx) return;
 
     const lead = await this.prisma.lead.upsert({
-      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: pipeline.id } },
+      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
       create: {
         nome: (message.senderName as string | undefined) || (message.pushName as string | undefined) || phone,
         telefone: phone,
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instanceName,
-        pipeline_id: pipeline.id,
-        estagio_id: firstStage.id,
-        responsavel_id: defaultUser.id,
+        pipeline_id: ctx.pipeline.id,
+        estagio_id: ctx.firstStage.id,
+        responsavel_id: instance.owner_user_id,
         ultima_interacao: new Date(),
+        tenant_id: tenantId,
       },
       update: {
         ultima_interacao: new Date(),
@@ -345,7 +342,7 @@ export class WebhookProcessor extends WorkerHost {
     });
 
     if (messageId) {
-      const message = await this.prisma.message.upsert({
+      const stored = await this.prisma.message.upsert({
         where: { whatsapp_message_id: messageId },
         create: {
           lead_id: lead.id,
@@ -356,18 +353,16 @@ export class WebhookProcessor extends WorkerHost {
           content,
           status: isFromMe ? 'SENT' : 'DELIVERED',
           metadata: JSON.parse(JSON.stringify(payload)),
+          tenant_id: tenantId,
         },
         update: {},
       });
-      this.gateway.emitNewMessage(lead.id, message);
+      this.gateway.emitNewMessage(lead.id, stored, tenantId);
     }
 
-    // Fire-and-forget: sync profile if nome==telefone or foto_url ausente
     if (lead.nome === lead.telefone || !lead.foto_url) {
       void this.leadsService.syncProfileSafe(lead.id);
     }
-
-    this.logger.log(`Mensagem UazAPI processada: lead ${lead.id}, phone ${phone}`);
   }
 
   private async handleUazapiMessageAck(payload: Record<string, unknown>) {
@@ -424,6 +419,7 @@ export class WebhookProcessor extends WorkerHost {
       where: { nome: instance.nome },
       data: { status, ultimo_check: new Date() },
     });
+    this.gateway.emitInstanceStatusChanged(instance.nome, status, instance.tenant_id);
   }
 
   private async handleContactsUpsert(data: Record<string, unknown>) {

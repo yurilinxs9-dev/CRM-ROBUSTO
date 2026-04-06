@@ -19,16 +19,35 @@ export class WebhooksController {
     private prisma: PrismaService,
   ) {}
 
+  private async resolveTenantByInstanceName(name: string | null): Promise<string | null> {
+    if (!name) return null;
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: name },
+      select: { tenant_id: true },
+    });
+    return inst?.tenant_id ?? null;
+  }
+
+  private async resolveTenantByUazapiToken(token: string | undefined): Promise<string | null> {
+    if (!token) return null;
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { config: { path: ['uazapi_token'], equals: token } },
+      select: { tenant_id: true },
+    });
+    return inst?.tenant_id ?? null;
+  }
+
   @Public()
   @Post('wppconnect')
   async handleWppConnect(@Body() body: unknown) {
     const payload = webhookSchema.parse(body);
 
-    // Normalize: WPPConnect uses `session`, Evolution used `instance`
     const normalized = {
       ...payload,
       instance: payload.session ?? payload.instance,
     };
+
+    const tenantId = await this.resolveTenantByInstanceName(normalized.instance ?? null);
 
     await this.prisma.webhookLog.create({
       data: {
@@ -36,6 +55,7 @@ export class WebhooksController {
         instance: normalized.instance,
         payload: JSON.parse(JSON.stringify(normalized)),
         processed: false,
+        tenant_id: tenantId,
       },
     });
 
@@ -68,12 +88,17 @@ export class WebhooksController {
       event: normalizedEvent,
     };
 
+    const tenantId =
+      (await this.resolveTenantByUazapiToken(payload.token as string | undefined)) ??
+      (await this.resolveTenantByInstanceName(instanceName));
+
     await this.prisma.webhookLog.create({
       data: {
         event: normalizedEvent,
         instance: instanceName,
         payload: JSON.parse(JSON.stringify(normalized)),
         processed: false,
+        tenant_id: tenantId,
       },
     });
 

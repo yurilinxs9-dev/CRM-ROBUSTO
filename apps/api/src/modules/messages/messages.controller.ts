@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller('messages')
 @UseGuards(JwtAuthGuard)
@@ -23,8 +24,7 @@ export class MessagesController {
 
   @Post('send-text')
   sendText(@Body() body: unknown, @Req() req: Record<string, unknown>) {
-    const user = req.user as { id: string };
-    return this.messagesService.sendText(body, user.id);
+    return this.messagesService.sendText(body, req.user as AuthUser);
   }
 
   @Post('send-audio')
@@ -34,8 +34,7 @@ export class MessagesController {
     @Body() body: unknown,
     @Req() req: Record<string, unknown>,
   ) {
-    const user = req.user as { id: string };
-    return this.messagesService.sendAudio(file, body, user.id);
+    return this.messagesService.sendAudio(file, body, req.user as AuthUser);
   }
 
   @Post('send-media')
@@ -45,20 +44,18 @@ export class MessagesController {
     @Body() body: unknown,
     @Req() req: Record<string, unknown>,
   ) {
-    const user = req.user as { id: string };
-    return this.messagesService.sendMedia(file, body, user.id);
+    return this.messagesService.sendMedia(file, body, req.user as AuthUser);
   }
 
   @Post('internal-note')
   createInternalNote(@Body() body: unknown, @Req() req: Record<string, unknown>) {
-    const user = req.user as { id: string };
-    return this.messagesService.createInternalNote(body, user.id);
+    return this.messagesService.createInternalNote(body, req.user as AuthUser);
   }
 
   @Get(':id/media')
-  async getMedia(@Param('id') id: string, @Res() res: Response) {
+  async getMedia(@Param('id') id: string, @Req() req: Record<string, unknown>, @Res() res: Response) {
     const { stream, contentType, contentLength } =
-      await this.messagesService.streamMedia(id);
+      await this.messagesService.streamMedia(id, req.user as AuthUser);
     res.setHeader('Content-Type', contentType);
     if (contentLength) res.setHeader('Content-Length', String(contentLength));
     res.setHeader('Cache-Control', 'private, max-age=3600');
@@ -68,9 +65,10 @@ export class MessagesController {
   @Get('history/:leadId')
   getHistory(
     @Param('leadId') leadId: string,
+    @Req() req: Record<string, unknown>,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.messagesService.getHistory(leadId, cursor, limit ? parseInt(limit) : 50);
+    return this.messagesService.getHistory(leadId, req.user as AuthUser, cursor, limit ? parseInt(limit) : 50);
   }
 }

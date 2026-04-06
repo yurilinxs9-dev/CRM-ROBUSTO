@@ -1,35 +1,30 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller('dashboard')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
 
   @Get('stats')
-  @Roles('GERENTE' as any)
-  getStats() {
-    return this.dashboardService.getStats();
+  getStats(@Req() req: Record<string, unknown>) {
+    return this.dashboardService.getStats(req.user as AuthUser);
   }
 
   @Get('funnel')
-  @Roles('GERENTE' as any)
-  getFunnel(@Query('pipelineId') pipelineId?: string) {
-    return this.dashboardService.getFunnel(pipelineId);
+  getFunnel(@Req() req: Record<string, unknown>, @Query('pipelineId') pipelineId?: string) {
+    return this.dashboardService.getFunnel(req.user as AuthUser, pipelineId);
   }
 
   @Get('performance')
-  @Roles('GERENTE' as any)
-  getPerformance() {
-    return this.dashboardService.getPerformance();
+  getPerformance(@Req() req: Record<string, unknown>) {
+    return this.dashboardService.getPerformance(req.user as AuthUser);
   }
 
   @Get('volume')
-  @Roles('GERENTE' as any)
-  getVolume() {
-    return this.dashboardService.getVolume();
+  getVolume(@Req() req: Record<string, unknown>) {
+    return this.dashboardService.getVolume(req.user as AuthUser);
   }
 }

@@ -338,8 +338,8 @@ model WebhookLog {
   processed          Boolean  @default(false)
   error              String?
   processing_time_ms Int?
-  tenant_id          String
-  tenant             Tenant   @relation(fields: [tenant_id], references: [id])
+  tenant_id          String?
+  tenant             Tenant?  @relation(fields: [tenant_id], references: [id])
   created_at         DateTime @default(now())
 
   @@index([event, created_at])

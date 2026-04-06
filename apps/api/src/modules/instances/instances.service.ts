@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
+import type { AuthUser } from '../../common/types/auth-user';
 
 interface UazApiCreateResponse {
   instance: {
@@ -72,8 +73,10 @@ export class InstancesService {
     return { admintoken: this.adminToken };
   }
 
-  private async loadInstanceToken(nome: string): Promise<string> {
-    const instance = await this.prisma.whatsappInstance.findUnique({ where: { nome } });
+  private async loadInstanceTokenScoped(nome: string, tenantId: string): Promise<string> {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: tenantId },
+    });
     if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
@@ -81,13 +84,14 @@ export class InstancesService {
     return token;
   }
 
-  async findAll() {
+  async findAll(user: AuthUser) {
     return this.prisma.whatsappInstance.findMany({
+      where: { tenant_id: user.tenantId },
       orderBy: { created_at: 'asc' },
     });
   }
 
-  async create(nome: string) {
+  async create(nome: string, user: AuthUser) {
     const { data: createData } = await firstValueFrom(
       this.http.post<UazApiCreateResponse>(
         `${this.baseUrl}/instance/create`,
@@ -120,6 +124,8 @@ export class InstancesService {
         nome,
         status: 'connecting',
         config: { uazapi_token, uazapi_id },
+        owner_user_id: user.id,
+        tenant_id: user.tenantId,
       },
       update: {
         status: 'connecting',
@@ -130,8 +136,8 @@ export class InstancesService {
     return { instanceName: nome, status: 'connecting' };
   }
 
-  async getQrCode(nome: string) {
-    const token = await this.loadInstanceToken(nome);
+  async getQrCode(nome: string, user: AuthUser) {
+    const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.post<UazApiConnectResponse>(
         `${this.baseUrl}/instance/connect`,
@@ -142,12 +148,12 @@ export class InstancesService {
     return { base64: data.instance?.qrcode ?? null };
   }
 
-  async reconnect(nome: string) {
-    return this.getQrCode(nome);
+  async reconnect(nome: string, user: AuthUser) {
+    return this.getQrCode(nome, user);
   }
 
-  async checkStatus(nome: string) {
-    const token = await this.loadInstanceToken(nome);
+  async checkStatus(nome: string, user: AuthUser) {
+    const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.get<UazApiStatusResponse>(`${this.baseUrl}/instance/status`, {
         headers: this.headers(token),
@@ -207,9 +213,12 @@ export class InstancesService {
     }
   }
 
-  async delete(nome: string) {
-    const instance = await this.prisma.whatsappInstance.findUnique({ where: { nome } });
-    const cfg = (instance?.config ?? {}) as InstanceConfig;
+  async delete(nome: string, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+    });
+    if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+    const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
 
     if (token) {

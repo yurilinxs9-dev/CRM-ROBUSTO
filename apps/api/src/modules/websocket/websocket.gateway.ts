@@ -32,8 +32,10 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
         secret: this.config.get('JWT_SECRET'),
       });
       client.data.userId = payload.sub;
+      client.data.tenantId = payload.tenant_id;
       client.join(`user:${payload.sub}`);
-      this.logger.log(`Client connected: ${client.id} (user: ${payload.sub})`);
+      if (payload.tenant_id) client.join(`tenant:${payload.tenant_id}`);
+      this.logger.log(`Client connected: ${client.id} (user: ${payload.sub} tenant: ${payload.tenant_id})`);
     } catch {
       client.disconnect();
     }
@@ -53,25 +55,29 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.leave(`lead:${leadId}`);
   }
 
-  emitLeadStageChanged(leadId: string, data: unknown) {
-    this.server.emit('lead:stage-changed', { leadId, ...data as object });
+  private toTenant(tenantId: string | undefined) {
+    return tenantId ? this.server.to(`tenant:${tenantId}`) : this.server;
   }
 
-  emitNewMessage(leadId: string, message: unknown) {
+  emitLeadStageChanged(leadId: string, data: unknown, tenantId?: string) {
+    this.toTenant(tenantId).emit('lead:stage-changed', { leadId, ...(data as object) });
+  }
+
+  emitNewMessage(leadId: string, message: unknown, tenantId?: string) {
     this.server.to(`lead:${leadId}`).emit('message:new', message);
-    this.server.emit('lead:new-message', { leadId, message });
+    this.toTenant(tenantId).emit('lead:new-message', { leadId, message });
   }
 
   emitMessageStatusUpdate(leadId: string, messageId: string, status: string) {
     this.server.to(`lead:${leadId}`).emit('message:status-updated', { messageId, status });
   }
 
-  emitInstanceStatusChanged(instanceName: string, status: string) {
-    this.server.emit('instance:status-changed', { instanceName, status });
+  emitInstanceStatusChanged(instanceName: string, status: string, tenantId?: string) {
+    this.toTenant(tenantId).emit('instance:status-changed', { instanceName, status });
   }
 
-  emitQrCode(instanceName: string, qrCode: string) {
-    this.server.emit('instance:qr-code', { instanceName, qrCode });
+  emitQrCode(instanceName: string, qrCode: string, tenantId?: string) {
+    this.toTenant(tenantId).emit('instance:qr-code', { instanceName, qrCode });
   }
 
   emitTaskCreated(responsavelId: string, task: unknown) {

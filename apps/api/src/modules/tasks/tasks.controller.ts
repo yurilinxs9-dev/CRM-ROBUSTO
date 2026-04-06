@@ -10,8 +10,9 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { TasksService, type AuthUser, type TaskFilters } from './tasks.service';
+import { TasksService, type TaskFilters } from './tasks.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller('tasks')
 @UseGuards(JwtAuthGuard)
