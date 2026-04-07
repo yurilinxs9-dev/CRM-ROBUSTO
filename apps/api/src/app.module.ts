@@ -18,6 +18,7 @@ import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module
 import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
 import { PrismaModule } from './common/prisma/prisma.module';
+import { CacheModule } from './common/cache/cache.module';
 
 @Module({
   controllers: [HealthController],
@@ -29,6 +30,7 @@ import { PrismaModule } from './common/prisma/prisma.module';
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     PrismaModule,
+    CacheModule,
     TasksModule,
     AuthModule,
     LeadsModule,
