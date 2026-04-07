@@ -23,18 +23,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [hydrated, isAuthenticated, accessToken, router]);
 
-  if (!hydrated) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
-    );
-  }
-
   // Mantém o Socket.IO conectado durante toda a sessao do dashboard.
   // Sem isso, o socket so conecta quando o usuario abre uma conversa,
   // entao a lista de chats nao recebe `lead:new-message` em tempo real
   // e o usuario precisa clicar em "Sincronizar" para ver mensagens novas.
+  // IMPORTANTE: mantem TODOS os hooks antes de qualquer `return` condicional
+  // pra evitar React error #310 (hooks order mismatch) no flip de hydrated.
   useEffect(() => {
     if (!accessToken) return;
     connectSocket(accessToken);
@@ -42,6 +36,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       disconnectSocket();
     };
   }, [accessToken]);
+
+  if (!hydrated) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
     <TooltipProvider delayDuration={200}>
