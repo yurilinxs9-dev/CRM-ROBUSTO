@@ -13,6 +13,26 @@ export class LeadsController {
     return this.leadsService.findAll(req.user as AuthUser, filters);
   }
 
+  @Post('bulk/move-stage')
+  bulkMoveStage(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.bulkMoveStage(body, req.user as AuthUser);
+  }
+
+  @Post('bulk/assign')
+  bulkAssign(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.bulkAssign(body, req.user as AuthUser);
+  }
+
+  @Post('bulk/tag')
+  bulkTag(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.bulkTag(body, req.user as AuthUser);
+  }
+
+  @Post('bulk/archive')
+  bulkArchive(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.bulkArchive(body, req.user as AuthUser);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.findOne(id, req.user as AuthUser);

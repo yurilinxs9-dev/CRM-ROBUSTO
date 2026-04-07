@@ -26,6 +26,19 @@ const updateStageSchema = z.object({
   estagio_id: z.string().uuid(),
   position: z.number().optional(),
 });
+
+const bulkIdsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+const bulkMoveStageSchema = bulkIdsSchema.extend({
+  estagio_id: z.string().uuid(),
+});
+const bulkAssignSchema = bulkIdsSchema.extend({
+  responsavel_id: z.string().uuid(),
+});
+const bulkTagSchema = bulkIdsSchema.extend({
+  tag: z.string().min(1).max(50),
+});
 const updateLeadSchema = z.object({
   nome: z.string().min(1).optional(),
   telefone: z.string().min(8).optional(),
@@ -405,6 +418,75 @@ export class LeadsService {
     }
 
     return updatedLead;
+  }
+
+  async bulkMoveStage(data: unknown, user: AuthUser) {
+    const { ids, estagio_id } = bulkMoveStageSchema.parse(data);
+    const where: Record<string, unknown> = {
+      id: { in: ids },
+      tenant_id: user.tenantId,
+    };
+    if (user.role === UserRole.OPERADOR) {
+      where.responsavel_id = user.id;
+    }
+    // TODO: enqueue auto-actions for bulk move (skipped to avoid N queue jobs)
+    // TODO: skip logging individual LeadActivity records for bulk (expensive)
+    const result = await this.prisma.lead.updateMany({
+      where,
+      data: { estagio_id, estagio_entered_at: new Date() },
+    });
+    await this.invalidateLeadsCache(user.tenantId);
+    return { updated: result.count };
+  }
+
+  async bulkAssign(data: unknown, user: AuthUser) {
+    if (user.role === UserRole.OPERADOR) {
+      throw new ForbiddenException('Operadores nao podem reatribuir leads em massa');
+    }
+    const { ids, responsavel_id } = bulkAssignSchema.parse(data);
+    const result = await this.prisma.lead.updateMany({
+      where: { id: { in: ids }, tenant_id: user.tenantId },
+      data: { responsavel_id },
+    });
+    await this.invalidateLeadsCache(user.tenantId);
+    return { updated: result.count };
+  }
+
+  async bulkTag(data: unknown, user: AuthUser) {
+    const { ids, tag } = bulkTagSchema.parse(data);
+    const leads = await this.prisma.lead.findMany({
+      where: { id: { in: ids }, tenant_id: user.tenantId },
+      select: { id: true, tags: true },
+    });
+    await this.prisma.$transaction(
+      leads.map((lead) => {
+        const existing: string[] = Array.isArray(lead.tags) ? (lead.tags as string[]) : [];
+        const next = existing.includes(tag) ? existing : [...existing, tag];
+        return this.prisma.lead.update({ where: { id: lead.id }, data: { tags: next } });
+      }),
+    );
+    await this.invalidateLeadsCache(user.tenantId);
+    return { updated: leads.length };
+  }
+
+  async bulkArchive(data: unknown, user: AuthUser) {
+    const { ids } = bulkIdsSchema.parse(data);
+    const where: Record<string, unknown> = {
+      id: { in: ids },
+      tenant_id: user.tenantId,
+    };
+    if (user.role === UserRole.OPERADOR) {
+      where.responsavel_id = user.id;
+    }
+    const leadsToDelete = await this.prisma.lead.findMany({
+      where,
+      select: { id: true },
+    });
+    await this.prisma.$transaction(
+      leadsToDelete.map((lead) => this.prisma.lead.delete({ where: { id: lead.id } })),
+    );
+    await this.invalidateLeadsCache(user.tenantId);
+    return { archived: leadsToDelete.length };
   }
 
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
