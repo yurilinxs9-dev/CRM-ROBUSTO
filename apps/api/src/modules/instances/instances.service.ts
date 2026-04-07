@@ -27,7 +27,7 @@ interface UazApiConnectResponse {
   };
 }
 
-interface UazApiStatusResponse {
+export interface UazApiStatusResponse {
   instance: {
     status: string;
     profileName?: string;
@@ -109,7 +109,10 @@ export class InstancesService {
         {
           url: this.webhookUrl,
           enabled: true,
-          events: ['message', 'message_ack', 'connection_update'],
+          events: ['messages', 'messages_update', 'connection', 'presence', 'contacts', 'chats'],
+          addUrlEvents: false,
+          addUrlTypesMessages: false,
+          excludeMessages: [],
         },
         { headers: this.headers(uazapi_token) },
       ),

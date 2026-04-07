@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { AudioService } from '../media/audio.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
@@ -39,6 +40,7 @@ export class MessagesService {
     private media: MediaService,
     private audio: AudioService,
     private gateway: CrmGateway,
+    private cache: RedisCacheService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
   }
@@ -97,6 +99,7 @@ export class MessagesService {
     });
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
+    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
     return message;
   }
 
@@ -186,6 +189,7 @@ export class MessagesService {
     });
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
+    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
     return message;
   }
 
@@ -257,6 +261,7 @@ export class MessagesService {
     });
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
+    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
     return message;
   }
 

@@ -23,6 +23,11 @@ export class InstancesController {
     return this.instancesService.getQrCode(nome, req.user as AuthUser);
   }
 
+  @Get(':nome/status')
+  status(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
+    return this.instancesService.checkStatus(nome, req.user as AuthUser);
+  }
+
   @Post(':nome/reconnect')
   reconnect(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.reconnect(nome, req.user as AuthUser);

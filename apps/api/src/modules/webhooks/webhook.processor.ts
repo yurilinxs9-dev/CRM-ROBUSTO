@@ -159,6 +159,7 @@ export class WebhookProcessor extends WorkerHost {
         update: {},
       });
       this.gateway.emitNewMessage(lead.id, message, tenantId);
+      if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
     }
   }
 
@@ -247,6 +248,7 @@ export class WebhookProcessor extends WorkerHost {
         update: {},
       });
       this.gateway.emitNewMessage(lead.id, message, tenantId);
+      if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
     }
   }
 
@@ -358,6 +360,7 @@ export class WebhookProcessor extends WorkerHost {
         update: {},
       });
       this.gateway.emitNewMessage(lead.id, stored, tenantId);
+      if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
     }
 
     if (lead.nome === lead.telefone || !lead.foto_url) {

@@ -12,7 +12,9 @@ import { ConfigService } from '@nestjs/config';
 
 @WebSocketGateway({
   cors: { origin: '*', credentials: true },
-  transports: ['websocket', 'polling'],
+  transports: ['websocket'],
+  pingInterval: 20000,
+  pingTimeout: 25000,
 })
 export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
@@ -31,11 +33,12 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const payload = this.jwtService.verify(token, {
         secret: this.config.get('JWT_SECRET'),
       });
+      const tenantId = payload.tenantId ?? payload.tenant_id;
       client.data.userId = payload.sub;
-      client.data.tenantId = payload.tenant_id;
+      client.data.tenantId = tenantId;
       client.join(`user:${payload.sub}`);
-      if (payload.tenant_id) client.join(`tenant:${payload.tenant_id}`);
-      this.logger.log(`Client connected: ${client.id} (user: ${payload.sub} tenant: ${payload.tenant_id})`);
+      if (tenantId) client.join(`tenant:${tenantId}`);
+      this.logger.log(`Client connected: ${client.id} (user: ${payload.sub} tenant: ${tenantId})`);
     } catch {
       client.disconnect();
     }
