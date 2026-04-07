@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save } from 'lucide-react';
+import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
@@ -28,6 +28,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 import { api } from '@/lib/api';
 import { TEMP_LABELS, formatPhone, type Temperatura } from './lead-card';
+import { ActivityTimeline } from './activity-timeline';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -416,6 +417,19 @@ export function LeadDetailDrawer({
                   )}
                 </div>
               </section>
+
+              {/* Atividades */}
+              {leadId && (
+                <section className="space-y-3">
+                  <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide flex items-center gap-1.5">
+                    <Activity className="h-3.5 w-3.5" />
+                    Atividades
+                  </p>
+                  <div className="max-h-72 overflow-y-auto pr-1">
+                    <ActivityTimeline leadId={leadId} />
+                  </div>
+                </section>
+              )}
             </>
           )}
         </div>
