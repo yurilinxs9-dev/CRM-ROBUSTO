@@ -306,6 +306,42 @@ export class WebhookProcessor extends WorkerHost {
       ...(extracted.contact ? { contact: extracted.contact } : {}),
     };
 
+    // Echo dedup: when isFromMe=true, this webhook is the UazAPI echo of a
+    // message we just sent from the CRM. The send-* endpoints already created
+    // the row and emitted message:new — but UazAPI sometimes returns no id in
+    // the send response, so the locally-created row has a uuid as
+    // whatsapp_message_id while the webhook brings the REAL wa id, causing a
+    // duplicate row + duplicate bubble in the UI. Detect the recent local row
+    // by content+lead+direction within 2 minutes and link it to the real id.
+    if (isFromMe) {
+      const existingByWaId = await this.prisma.message.findUnique({
+        where: { whatsapp_message_id: messageId },
+      });
+      if (existingByWaId) {
+        // Already linked — webhook arrived twice, nothing to do.
+        return;
+      }
+      const recentLocal = await this.prisma.message.findFirst({
+        where: {
+          lead_id: lead.id,
+          direction: 'OUTGOING',
+          type: extracted.type as MessageType,
+          content: extracted.content,
+          created_at: { gte: new Date(Date.now() - 2 * 60 * 1000) },
+        },
+        orderBy: { created_at: 'desc' },
+      });
+      if (recentLocal && recentLocal.whatsapp_message_id !== messageId) {
+        await this.prisma.message.update({
+          where: { id: recentLocal.id },
+          data: { whatsapp_message_id: messageId },
+        });
+        // Frontend already rendered this message via the send mutation +
+        // socket emit from messages.service. Skip re-emit to avoid duplicates.
+        return;
+      }
+    }
+
     // Persist the message WITHOUT media first — keeps the realtime emit fast.
     const message = await this.prisma.message.upsert({
       where: { whatsapp_message_id: messageId },
