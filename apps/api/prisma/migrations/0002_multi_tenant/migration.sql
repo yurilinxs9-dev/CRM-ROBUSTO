@@ -16,24 +16,24 @@ ALTER TABLE "User" DROP CONSTRAINT IF EXISTS "User_team_id_fkey";
 ALTER TABLE "User" DROP COLUMN IF EXISTS "team_id";
 DROP TABLE IF EXISTS "Team";
 
--- 3. Add tenant_id (nullable for now) + new columns
-ALTER TABLE "User"             ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Pipeline"         ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Stage"            ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Lead"             ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Message"          ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "LeadActivity"     ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "WhatsappInstance" ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "WhatsappInstance" ADD COLUMN "owner_user_id" TEXT;
-ALTER TABLE "WhatsappInstance" ADD COLUMN "updated_at" TIMESTAMP(3);
-ALTER TABLE "UserInstance"     ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "InstanceLog"      ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Tag"              ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "LeadTag"          ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "QuickReply"       ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Notification"     ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "Task"             ADD COLUMN "tenant_id" TEXT;
-ALTER TABLE "WebhookLog"       ADD COLUMN "tenant_id" TEXT;
+-- 3. Add tenant_id (nullable for now) + new columns (idempotent)
+ALTER TABLE "User"             ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Pipeline"         ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Stage"            ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Lead"             ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Message"          ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "LeadActivity"     ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "WhatsappInstance" ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "WhatsappInstance" ADD COLUMN IF NOT EXISTS "owner_user_id" TEXT;
+ALTER TABLE "WhatsappInstance" ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMP(3);
+ALTER TABLE "UserInstance"     ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "InstanceLog"      ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Tag"              ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "LeadTag"          ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "QuickReply"       ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Notification"     ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "Task"             ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
+ALTER TABLE "WebhookLog"       ADD COLUMN IF NOT EXISTS "tenant_id" TEXT;
 
 -- 4. Backfill: one Tenant per existing User (owned by that user)
 DO $$

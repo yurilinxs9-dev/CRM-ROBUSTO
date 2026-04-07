@@ -1,6 +1,7 @@
 generator client {
-  provider      = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -116,6 +117,9 @@ model Pipeline {
   descricao  String?
   ativo      Boolean  @default(true)
   ordem      Int      @default(0)
+  cor        String?  @default("#3b82f6")
+  icone      String?
+  arquivado  Boolean  @default(false)
   tenant_id  String
   tenant     Tenant   @relation(fields: [tenant_id], references: [id])
   created_at DateTime @default(now())
@@ -140,6 +144,7 @@ model Stage {
   is_lost             Boolean  @default(false)
   auto_action         Json?
   campos_obrigatorios Json?
+  max_dias            Int?
   created_at          DateTime @default(now())
   leads               Lead[]
 
@@ -161,6 +166,7 @@ model Lead {
   tags                Json?           @default("[]")
   dados_custom        Json?           @default("{}")
   ultima_interacao    DateTime?
+  estagio_entered_at  DateTime?
   proximo_followup    DateTime?
   motivo_perda        String?
   position            Float           @default(0)
@@ -187,6 +193,7 @@ model Lead {
   @@index([responsavel_id, estagio_id])
   @@index([instancia_whatsapp])
   @@index([pipeline_id, estagio_id, position])
+  @@index([tenant_id, pipeline_id, estagio_id, position])
   @@index([ultima_interacao])
   @@index([score])
   @@index([tenant_id])
