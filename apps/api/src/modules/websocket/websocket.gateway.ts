@@ -75,6 +75,17 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(`lead:${leadId}`).emit('message:status-updated', { messageId, status });
   }
 
+  /**
+   * Emitted when deferred media upload finishes. Frontend patches the message
+   * already in cache so the audio/image renders without a refresh.
+   */
+  emitMessageMediaReady(
+    leadId: string,
+    payload: { messageId: string; media_url: string; media_mimetype?: string | null },
+  ) {
+    this.server.to(`lead:${leadId}`).emit('message:media-ready', payload);
+  }
+
   emitInstanceStatusChanged(instanceName: string, status: string, tenantId?: string) {
     this.toTenant(tenantId).emit('instance:status-changed', { instanceName, status });
   }

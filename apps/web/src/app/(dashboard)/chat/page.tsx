@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { MessageSquareOff, Plus, Search } from 'lucide-react';
+import { MessageSquareOff, Plus, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -92,6 +92,26 @@ export default function ChatPage() {
     },
   });
 
+  // One-shot data repair: re-fetch name + photo for every lead from UazAPI.
+  // Used to clean up legacy rows corrupted by the pushName overwrite bug.
+  const syncProfilesMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.post('/api/leads/sync-profiles');
+      return res.data as { total: number; synced: number; failed: number };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
+      toast.success(
+        `Sincronização: ${data.synced}/${data.total} contatos atualizados${
+          data.failed > 0 ? ` (${data.failed} falhas)` : ''
+        }`,
+      );
+    },
+    onError: () => {
+      toast.error('Erro ao sincronizar contatos');
+    },
+  });
+
   // --- Socket realtime ---
   useEffect(() => {
     const socket = getSocket();
@@ -161,10 +181,29 @@ export default function ChatPage() {
               {totalCount}
             </span>
           </div>
-          <Button size="sm" onClick={() => setDialogOpen(true)} className="gap-1.5">
-            <Plus className="h-4 w-4" />
-            Nova conversa
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => syncProfilesMutation.mutate()}
+              disabled={syncProfilesMutation.isPending}
+              className="gap-1.5"
+              title="Re-sincroniza nome e foto de todos os contatos"
+            >
+              <RefreshCw
+                className={
+                  syncProfilesMutation.isPending
+                    ? 'h-4 w-4 animate-spin'
+                    : 'h-4 w-4'
+                }
+              />
+              {syncProfilesMutation.isPending ? 'Sincronizando...' : 'Sincronizar'}
+            </Button>
+            <Button size="sm" onClick={() => setDialogOpen(true)} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              Nova conversa
+            </Button>
+          </div>
         </div>
 
         {/* Search */}

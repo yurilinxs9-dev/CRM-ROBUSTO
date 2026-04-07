@@ -83,6 +83,16 @@ export class LeadsController {
     return this.leadsService.syncProfile(id, req.user as AuthUser);
   }
 
+  /**
+   * One-shot data repair: re-fetches name + photo from UazAPI for every lead
+   * in the current tenant and force-overwrites local fields. Used after
+   * shipping the pushName corruption fix to clean up legacy bad data.
+   */
+  @Post('sync-profiles')
+  syncAllProfiles(@Req() req: Record<string, unknown>) {
+    return this.leadsService.syncAllProfilesForTenant(req.user as AuthUser);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.remove(id, req.user as AuthUser);

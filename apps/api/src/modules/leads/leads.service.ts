@@ -124,7 +124,7 @@ export class LeadsService {
     return `leads:list:${tenantId}:${hash}`;
   }
 
-  async syncProfile(leadId: string, user?: AuthUser) {
+  async syncProfile(leadId: string, user?: AuthUser, opts?: { force?: boolean }) {
     const lead = await this.prisma.lead.findFirst({
       where: user ? { id: leadId, tenant_id: user.tenantId } : { id: leadId },
     });
@@ -140,10 +140,55 @@ export class LeadsService {
 
     const profile = await this.instances.fetchProfile(token, lead.telefone);
     const data: { nome?: string; foto_url?: string } = {};
-    if (profile.name && lead.nome === lead.telefone) data.nome = profile.name;
+    // With force=true (data-repair sweep) we always trust UazAPI's name.
+    // Otherwise only fill the placeholder name (digits-only) to avoid
+    // clobbering a name the user manually edited.
+    if (profile.name && (opts?.force || lead.nome === lead.telefone)) {
+      data.nome = profile.name;
+    }
     if (profile.imageUrl) data.foto_url = profile.imageUrl;
     if (Object.keys(data).length === 0) return lead;
     return this.prisma.lead.update({ where: { id: leadId }, data });
+  }
+
+  /**
+   * Repair sweep: force-resync name + photo from UazAPI for all active leads
+   * in the tenant. Used to recover from the historical pushName corruption
+   * bug. Runs in batches with bounded concurrency to avoid hammering UazAPI.
+   */
+  async syncAllProfilesForTenant(
+    user: AuthUser,
+  ): Promise<{ total: number; synced: number; failed: number }> {
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const leads = await this.prisma.lead.findMany({
+      where: {
+        tenant_id: user.tenantId,
+        ultima_interacao: { gte: ninetyDaysAgo },
+      },
+      orderBy: { ultima_interacao: 'desc' },
+      select: { id: true },
+    });
+
+    let synced = 0;
+    let failed = 0;
+    const concurrency = 4;
+    for (let i = 0; i < leads.length; i += concurrency) {
+      const slice = leads.slice(i, i + concurrency);
+      await Promise.all(
+        slice.map(async (l) => {
+          try {
+            await this.syncProfile(l.id, user, { force: true });
+            synced++;
+          } catch (err) {
+            failed++;
+            this.logger.warn(`syncAll erro lead ${l.id}: ${String(err)}`);
+          }
+        }),
+      );
+    }
+
+    await this.invalidateLeadsCache(user.tenantId);
+    return { total: leads.length, synced, failed };
   }
 
   async syncActiveLeadsProfiles(limit = 50): Promise<{ synced: number }> {

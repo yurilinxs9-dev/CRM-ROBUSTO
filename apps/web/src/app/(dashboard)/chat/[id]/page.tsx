@@ -367,13 +367,47 @@ export default function ChatDetailPage() {
       );
     };
 
+    // Backend defers media upload off the realtime path. When the upload
+    // finishes the API emits this event so we can patch the cached message
+    // with the signed URL — the AudioMessage / image bubble re-renders
+    // automatically without a refresh.
+    const handleMediaReady = (evt: {
+      messageId: string;
+      media_url: string;
+      media_mimetype?: string | null;
+    }) => {
+      queryClient.setQueryData<MessagesQueryData>(
+        ['messages', leadId],
+        (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((p) => ({
+              ...p,
+              messages: p.messages.map((m) =>
+                m.id === evt.messageId
+                  ? {
+                      ...m,
+                      media_url: evt.media_url,
+                      media_mimetype: evt.media_mimetype ?? m.media_mimetype,
+                    }
+                  : m,
+              ),
+            })),
+          };
+        },
+      );
+    };
+
     socket.on('message:new', handleNew);
     socket.on('message:status-updated', handleStatus);
+    socket.on('message:media-ready', handleMediaReady);
 
     return () => {
       leaveLead(leadId);
       socket.off('message:new', handleNew);
       socket.off('message:status-updated', handleStatus);
+      socket.off('message:media-ready', handleMediaReady);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, queryClient]);
