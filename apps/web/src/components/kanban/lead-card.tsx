@@ -1,8 +1,9 @@
 'use client';
 
-import { forwardRef, type HTMLAttributes } from 'react';
-import { formatDistanceToNowStrict } from 'date-fns';
+import { forwardRef, memo, type HTMLAttributes, type MouseEvent } from 'react';
+import { formatDistanceToNowStrict, differenceInCalendarDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { MessageCircle, CheckSquare, Archive, AlertTriangle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -23,6 +24,8 @@ export interface Lead {
   ultima_mensagem_preview?: string | null;
   responsavel?: { id: string; nome: string } | null;
   tags?: string[];
+  estagio_entered_at?: string | null;
+  pending_tasks_count?: number;
 }
 
 export const TEMP_LABELS: Record<Temperatura, string> = {
@@ -76,35 +79,76 @@ function timeAgo(date?: string | null): string {
   }
 }
 
+function daysInStage(date?: string | null): number | null {
+  if (!date) return null;
+  try {
+    return differenceInCalendarDays(new Date(), new Date(date));
+  } catch {
+    return null;
+  }
+}
+
 interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   lead: Lead;
   isDragging?: boolean;
+  stageMaxDias?: number | null;
+  onOpenChat?: (leadId: string) => void;
+  onQuickTask?: (leadId: string) => void;
+  onArchiveLead?: (leadId: string) => void;
 }
 
-export const LeadCard = forwardRef<HTMLDivElement, LeadCardProps>(
-  ({ lead, isDragging, className, ...props }, ref) => {
+const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
+  (
+    { lead, isDragging, stageMaxDias, onOpenChat, onQuickTask, onArchiveLead, className, ...props },
+    ref,
+  ) => {
+    const hasUnread = lead.mensagens_nao_lidas > 0;
+    const dis = daysInStage(lead.estagio_entered_at);
+    const overdue = dis !== null && stageMaxDias != null && dis > stageMaxDias;
+    const pendingTasks = lead.pending_tasks_count ?? 0;
+
+    const stop = (e: MouseEvent) => e.stopPropagation();
+
     return (
       <Card
         ref={ref}
         className={cn(
-          'p-3 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
+          'group relative p-3 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
           isDragging && 'opacity-50 rotate-1 shadow-xl',
-          className
+          className,
         )}
         {...props}
       >
+        {/* SLA pulsing badge */}
+        {overdue && (
+          <div
+            className="absolute -top-1.5 -right-1.5 flex h-5 items-center gap-1 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold text-white shadow ring-2 ring-background animate-pulse"
+            title={`SLA estourado: ${dis} dias na etapa (max ${stageMaxDias})`}
+          >
+            <AlertTriangle className="h-3 w-3" />
+            {dis}d
+          </div>
+        )}
+
+        {/* Unread blue dot */}
+        {hasUnread && !overdue && (
+          <div
+            className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-blue-500 ring-2 ring-background"
+            title={`${lead.mensagens_nao_lidas} mensagens nao lidas`}
+          />
+        )}
+
         <div className="flex items-start gap-2 mb-2">
           <Avatar className="h-8 w-8 shrink-0">
-            {lead.foto_url ? (
-              <AvatarImage src={lead.foto_url} alt={lead.nome} />
-            ) : null}
+            {lead.foto_url ? <AvatarImage src={lead.foto_url} alt={lead.nome} /> : null}
             <AvatarFallback className="text-xs font-semibold">
               {getInitials(lead.nome)}
             </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">{lead.nome}</p>
-            <p className="text-xs text-muted-foreground truncate">
+            <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+              <MessageCircle className="h-3 w-3 text-emerald-500" />
               {formatPhone(lead.telefone)}
             </p>
           </div>
@@ -119,9 +163,18 @@ export const LeadCard = forwardRef<HTMLDivElement, LeadCardProps>(
           </p>
         )}
 
-        {lead.tags && lead.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mb-2">
-            {lead.tags.slice(0, 3).map((t) => (
+        {((lead.tags && lead.tags.length > 0) || pendingTasks > 0) && (
+          <div className="flex flex-wrap items-center gap-1 mb-2">
+            {pendingTasks > 0 && (
+              <Badge
+                variant="outline"
+                className="text-[10px] px-1.5 py-0 border-amber-500/40 bg-amber-500/10 text-amber-500"
+              >
+                <CheckSquare className="mr-0.5 h-2.5 w-2.5" />
+                {pendingTasks}
+              </Badge>
+            )}
+            {lead.tags?.slice(0, 3).map((t) => (
               <Badge key={t} variant="outline" className="text-[10px] px-1.5 py-0">
                 {t}
               </Badge>
@@ -130,14 +183,59 @@ export const LeadCard = forwardRef<HTMLDivElement, LeadCardProps>(
         )}
 
         <div className="flex items-center justify-between text-xs">
-          <span className="font-medium text-emerald-500">
-            {formatBRL(lead.valor_estimado)}
-          </span>
+          <span className="font-medium text-emerald-500">{formatBRL(lead.valor_estimado)}</span>
           <span className="text-muted-foreground">{timeAgo(lead.ultima_interacao)}</span>
         </div>
+
+        {/* Hover action buttons */}
+        {(onOpenChat || onQuickTask || onArchiveLead) && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 rounded-b-lg bg-gradient-to-t from-background/95 via-background/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            {onOpenChat && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  stop(e);
+                  onOpenChat(lead.id);
+                }}
+                className="rounded p-1 text-emerald-500 hover:bg-emerald-500/10"
+                title="Abrir conversa"
+              >
+                <MessageCircle className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {onQuickTask && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  stop(e);
+                  onQuickTask(lead.id);
+                }}
+                className="rounded p-1 text-amber-500 hover:bg-amber-500/10"
+                title="Nova tarefa"
+              >
+                <CheckSquare className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {onArchiveLead && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  stop(e);
+                  onArchiveLead(lead.id);
+                }}
+                className="rounded p-1 text-muted-foreground hover:bg-accent"
+                title="Arquivar lead"
+              >
+                <Archive className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </Card>
     );
-  }
+  },
 );
 
-LeadCard.displayName = 'LeadCard';
+LeadCardImpl.displayName = 'LeadCard';
+
+export const LeadCard = memo(LeadCardImpl);

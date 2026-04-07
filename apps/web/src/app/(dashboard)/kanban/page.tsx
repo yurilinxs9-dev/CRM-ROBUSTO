@@ -2,7 +2,12 @@
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from '@tanstack/react-query';
 import {
   DndContext,
   DragOverlay,
@@ -13,11 +18,17 @@ import {
   type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable';
 import { Search, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { useAuthStore } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -29,16 +40,40 @@ import {
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 
-import { LeadCard, type Lead, type Temperatura, TEMP_LABELS } from '@/components/kanban/lead-card';
+import {
+  LeadCard,
+  formatBRL,
+  type Lead,
+  type Temperatura,
+  TEMP_LABELS,
+} from '@/components/kanban/lead-card';
 import { StageColumn, type Stage } from '@/components/kanban/stage-column';
 import {
   NewLeadDialog,
   type NewLeadFormData,
 } from '@/components/kanban/new-lead-dialog';
+import {
+  PipelineSwitcher,
+  type PipelineSummary,
+} from '@/components/kanban/pipeline-switcher';
+import { NewPipelineDialog } from '@/components/kanban/new-pipeline-dialog';
+import { DeleteWithMoveDialog } from '@/components/kanban/delete-with-move-dialog';
+import {
+  StageConfigDialog,
+  type StageAutoActionForm,
+  type StageConfig,
+} from '@/components/kanban/stage-config-dialog';
+import {
+  QuickTaskDialog,
+  type QuickTaskFormData,
+} from '@/components/kanban/quick-task-dialog';
+import { ConfirmDialog } from '@/components/kanban/confirm-dialog';
 
 interface Pipeline {
   id: string;
   nome: string;
+  cor?: string | null;
+  arquivado?: boolean;
   stages: Stage[];
 }
 
@@ -47,6 +82,7 @@ const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
 export default function KanbanPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const currentUserId = useAuthStore((s) => s.user?.id);
 
   const [activePipelineId, setActivePipelineId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -55,10 +91,16 @@ export default function KanbanPage() {
   const [activeDragLead, setActiveDragLead] = useState<Lead | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [defaultStageId, setDefaultStageId] = useState<string | null>(null);
+  const [newPipelineOpen, setNewPipelineOpen] = useState(false);
+  const [deletePipelineId, setDeletePipelineId] = useState<string | null>(null);
+  const [stageConfigId, setStageConfigId] = useState<string | null>(null);
+  const [quickTaskLeadId, setQuickTaskLeadId] = useState<string | null>(null);
+  const [archiveLeadId, setArchiveLeadId] = useState<string | null>(null);
+  const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
   const leadsSnapshotRef = useRef<Lead[] | null>(null);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
   // --- Pipelines ---
@@ -78,12 +120,40 @@ export default function KanbanPage() {
 
   const activePipeline = useMemo(
     () => pipelines.find((p) => p.id === activePipelineId) ?? pipelines[0],
-    [pipelines, activePipelineId]
+    [pipelines, activePipelineId],
   );
 
   const stages = useMemo<Stage[]>(
     () => [...(activePipeline?.stages ?? [])].sort((a, b) => a.ordem - b.ordem),
-    [activePipeline]
+    [activePipeline],
+  );
+
+  // local state for column ordering during drag (optimistic)
+  const [stageOrderOverride, setStageOrderOverride] = useState<string[] | null>(null);
+  useEffect(() => {
+    setStageOrderOverride(null);
+  }, [activePipelineId, activePipeline?.stages]);
+
+  const orderedStages = useMemo<Stage[]>(() => {
+    if (!stageOrderOverride) return stages;
+    const map = new Map(stages.map((s) => [s.id, s]));
+    const out: Stage[] = [];
+    for (const id of stageOrderOverride) {
+      const s = map.get(id);
+      if (s) out.push(s);
+    }
+    return out.length === stages.length ? out : stages;
+  }, [stages, stageOrderOverride]);
+
+  const pipelineSummaries = useMemo<PipelineSummary[]>(
+    () =>
+      pipelines.map((p) => ({
+        id: p.id,
+        nome: p.nome,
+        cor: p.cor ?? '#3b82f6',
+        arquivado: p.arquivado ?? false,
+      })),
+    [pipelines],
   );
 
   // --- Leads ---
@@ -97,6 +167,7 @@ export default function KanbanPage() {
       return res.data;
     },
     enabled: !!activePipelineId,
+    placeholderData: keepPreviousData,
   });
 
   // --- Filtered leads ---
@@ -121,7 +192,121 @@ export default function KanbanPage() {
     return Array.from(map.entries());
   }, [leads]);
 
-  // --- Mutations ---
+  // --- Metrics ---
+  const metrics = useMemo(() => {
+    const total = leads.length;
+    const sumValor = leads.reduce((acc, l) => acc + (Number(l.valor_estimado) || 0), 0);
+    const wonStageIds = new Set(stages.filter((s) => s.is_won).map((s) => s.id));
+    const wonCount = leads.filter((l) => wonStageIds.has(l.estagio_id)).length;
+    const conversion = total > 0 ? (wonCount / total) * 100 : 0;
+    return { total, sumValor, conversion };
+  }, [leads, stages]);
+
+  // --- Mutations: Pipeline ---
+  const createPipelineMutation = useMutation({
+    mutationFn: async (data: { nome: string; cor: string }) => {
+      const res = await api.post('/api/pipelines', data);
+      return res.data;
+    },
+    onSuccess: (data: Pipeline) => {
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      setNewPipelineOpen(false);
+      setActivePipelineId(data.id);
+      toast.success('Funil criado!');
+    },
+    onError: () => toast.error('Erro ao criar funil.'),
+  });
+
+  const renamePipelineMutation = useMutation({
+    mutationFn: async ({ id, nome }: { id: string; nome: string }) => {
+      await api.patch(`/api/pipelines/${id}`, { nome });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: () => toast.error('Erro ao renomear funil.'),
+  });
+
+  const duplicatePipelineMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await api.post(`/api/pipelines/${id}/duplicate`);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      toast.success('Funil duplicado!');
+    },
+    onError: () => toast.error('Erro ao duplicar funil.'),
+  });
+
+  const archivePipelineMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.post(`/api/pipelines/${id}/archive`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      toast.success('Funil arquivado.');
+    },
+    onError: () => toast.error('Erro ao arquivar funil.'),
+  });
+
+  const deleteWithMoveMutation = useMutation({
+    mutationFn: async ({ id, targetPipelineId }: { id: string; targetPipelineId: string }) => {
+      await api.post(`/api/pipelines/${id}/delete-with-move`, { targetPipelineId });
+    },
+    onSuccess: (_d, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      setDeletePipelineId(null);
+      if (activePipelineId === vars.id) setActivePipelineId(vars.targetPipelineId);
+      toast.success('Funil excluido e leads movidos.');
+    },
+    onError: () => toast.error('Erro ao excluir funil.'),
+  });
+
+  // --- Mutations: Stage ---
+  const createStageMutation = useMutation({
+    mutationFn: async (nome: string) => {
+      if (!activePipelineId) return;
+      await api.post(`/api/pipelines/${activePipelineId}/stages`, { nome, cor: '#3498DB' });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: () => toast.error('Erro ao criar etapa.'),
+  });
+
+  const updateStageMutation = useMutation({
+    mutationFn: async ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: Record<string, unknown>;
+    }) => {
+      await api.patch(`/api/stages/${id}`, patch);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: () => toast.error('Erro ao atualizar etapa.'),
+  });
+
+  const deleteStageMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/api/stages/${id}`);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: () => toast.error('Erro ao excluir etapa.'),
+  });
+
+  const reorderStagesMutation = useMutation({
+    mutationFn: async (stageIds: string[]) => {
+      if (!activePipelineId) return;
+      await api.post(`/api/pipelines/${activePipelineId}/stages/reorder`, { stageIds });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
+    onError: () => {
+      setStageOrderOverride(null);
+      toast.error('Erro ao reordenar etapas.');
+    },
+  });
+
+  // --- Mutations: Leads ---
   const stageMutation = useMutation({
     mutationFn: async ({ leadId, estagioId }: { leadId: string; estagioId: string }) => {
       await api.patch(`/api/leads/${leadId}/stage`, { estagio_id: estagioId });
@@ -131,7 +316,7 @@ export default function KanbanPage() {
         queryClient.setQueryData(leadsQueryKey, leadsSnapshotRef.current);
         leadsSnapshotRef.current = null;
       }
-      toast.error('Erro ao mover lead. Tente novamente.');
+      toast.error('Erro ao mover lead.');
     },
     onSuccess: () => {
       leadsSnapshotRef.current = null;
@@ -156,19 +341,41 @@ export default function KanbanPage() {
       setDialogOpen(false);
       toast.success('Lead criado com sucesso!');
     },
-    onError: () => {
-      toast.error('Erro ao criar lead.');
+    onError: () => toast.error('Erro ao criar lead.'),
+  });
+
+  const archiveLeadMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/api/leads/${id}`);
     },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      setArchiveLeadId(null);
+      toast.success('Lead arquivado.');
+    },
+    onError: () => toast.error('Erro ao arquivar lead.'),
+  });
+
+  const quickTaskMutation = useMutation({
+    mutationFn: async ({ leadId, data }: { leadId: string; data: QuickTaskFormData }) => {
+      await api.post('/api/tasks', { ...data, lead_id: leadId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      setQuickTaskLeadId(null);
+      toast.success('Tarefa criada.');
+    },
+    onError: () => toast.error('Erro ao criar tarefa.'),
   });
 
   // --- Socket ---
   useEffect(() => {
     const socket = getSocket();
-
-    const handleStageChanged = () => {
+    const handleStageChanged = (payload: { triggeredByUserId?: string }) => {
+      // Skip invalidation for own drag-drop — the optimistic update + stageMutation already handle it.
+      if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     };
-
     const handleNewMessage = (data: { leadId: string; message?: { conteudo?: string } }) => {
       queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) =>
         old?.map((l) =>
@@ -179,26 +386,27 @@ export default function KanbanPage() {
                 ultima_mensagem_preview: data.message?.conteudo ?? l.ultima_mensagem_preview,
                 ultima_interacao: new Date().toISOString(),
               }
-            : l
-        )
+            : l,
+        ),
       );
     };
-
     socket.on('lead:stage-changed', handleStageChanged);
     socket.on('lead:new-message', handleNewMessage);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
       socket.off('lead:new-message', handleNewMessage);
     };
-  }, [queryClient, leadsQueryKey]);
+  }, [queryClient, leadsQueryKey, currentUserId]);
 
   // --- DnD ---
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
-      const lead = leads.find((l) => l.id === event.active.id);
+      const id = String(event.active.id);
+      if (id.startsWith('stage-')) return;
+      const lead = leads.find((l) => l.id === id);
       if (lead) setActiveDragLead(lead);
     },
-    [leads]
+    [leads],
   );
 
   const handleDragEnd = useCallback(
@@ -207,82 +415,170 @@ export default function KanbanPage() {
       const { active, over } = event;
       if (!over) return;
 
-      const leadId = active.id as string;
-      const lead = leads.find((l) => l.id === leadId);
-      if (!lead) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
 
+      // Stage column reorder
+      if (activeId.startsWith('stage-') && overId.startsWith('stage-')) {
+        if (activeId === overId) return;
+        const ids = orderedStages.map((s) => s.id);
+        const fromId = activeId.replace('stage-', '');
+        const toId = overId.replace('stage-', '');
+        const from = ids.indexOf(fromId);
+        const to = ids.indexOf(toId);
+        if (from < 0 || to < 0) return;
+        const next = arrayMove(ids, from, to);
+        setStageOrderOverride(next);
+        reorderStagesMutation.mutate(next);
+        return;
+      }
+
+      // Lead drag
+      const lead = leads.find((l) => l.id === activeId);
+      if (!lead) return;
       let targetStageId: string | null = null;
-      const overId = over.id as string;
       if (overId.startsWith('column-')) {
         targetStageId = overId.replace('column-', '');
       } else {
         const overLead = leads.find((l) => l.id === overId);
         if (overLead) targetStageId = overLead.estagio_id;
       }
-
       if (!targetStageId || targetStageId === lead.estagio_id) return;
 
-      // Optimistic update
       leadsSnapshotRef.current = leads;
       const finalTarget = targetStageId;
       queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) =>
-        old?.map((l) => (l.id === leadId ? { ...l, estagio_id: finalTarget } : l))
+        old?.map((l) => (l.id === activeId ? { ...l, estagio_id: finalTarget } : l)),
       );
-      stageMutation.mutate({ leadId, estagioId: finalTarget });
+      stageMutation.mutate({ leadId: activeId, estagioId: finalTarget });
     },
-    [leads, queryClient, leadsQueryKey, stageMutation]
+    [leads, queryClient, leadsQueryKey, stageMutation, orderedStages, reorderStagesMutation],
   );
 
   // --- Group ---
   const leadsByStage = useMemo(() => {
     const map: Record<string, Lead[]> = {};
-    for (const stage of stages) map[stage.id] = [];
+    for (const stage of orderedStages) map[stage.id] = [];
     for (const lead of filteredLeads) {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
     }
     return map;
-  }, [filteredLeads, stages]);
+  }, [filteredLeads, orderedStages]);
 
   const openNewLead = (stageId: string | null) => {
     setDefaultStageId(stageId);
     setDialogOpen(true);
   };
 
+  // --- Stage handlers ---
+  const handleRenameStage = useCallback(
+    (id: string, nome: string) => updateStageMutation.mutate({ id, patch: { nome } }),
+    [updateStageMutation],
+  );
+  const handleChangeColor = useCallback(
+    (id: string, cor: string) => updateStageMutation.mutate({ id, patch: { cor } }),
+    [updateStageMutation],
+  );
+  const handleDuplicateStage = useCallback(
+    (id: string) => {
+      const s = stages.find((x) => x.id === id);
+      if (!s) return;
+      createStageMutation.mutate(`${s.nome} (copia)`);
+    },
+    [stages, createStageMutation],
+  );
+  const handleDeleteStage = useCallback((id: string) => {
+    setDeleteStageId(id);
+  }, []);
+  const handleConfigureStage = useCallback((id: string) => {
+    setStageConfigId(id);
+  }, []);
+  const handleMoveStage = useCallback(
+    (id: string, dir: -1 | 1) => {
+      const ids = orderedStages.map((s) => s.id);
+      const idx = ids.indexOf(id);
+      if (idx < 0) return;
+      const j = idx + dir;
+      if (j < 0 || j >= ids.length) return;
+      const next = arrayMove(ids, idx, j);
+      setStageOrderOverride(next);
+      reorderStagesMutation.mutate(next);
+    },
+    [orderedStages, reorderStagesMutation],
+  );
+
+  const stageBeingConfigured = useMemo<StageConfig | null>(() => {
+    if (!stageConfigId) return null;
+    const s = stages.find((x) => x.id === stageConfigId);
+    if (!s) return null;
+    return {
+      id: s.id,
+      nome: s.nome,
+      cor: s.cor,
+      is_won: s.is_won ?? false,
+      is_lost: s.is_lost ?? false,
+      max_dias: s.max_dias ?? null,
+      auto_action: (s.auto_action as StageAutoActionForm | null) ?? null,
+    };
+  }, [stageConfigId, stages]);
+
+  const handleSubmitStageConfig = (patch: {
+    is_won: boolean;
+    is_lost: boolean;
+    max_dias: number | null;
+    auto_action: StageAutoActionForm | null;
+  }) => {
+    if (!stageConfigId) return;
+    updateStageMutation.mutate(
+      { id: stageConfigId, patch },
+      { onSuccess: () => setStageConfigId(null) },
+    );
+  };
+
   // --- Render ---
   const isLoading = pipelinesLoading || leadsLoading;
+  const stageSortableIds = useMemo(() => orderedStages.map((s) => `stage-${s.id}`), [orderedStages]);
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
+      {/* Header with PipelineSwitcher */}
       <div className="flex items-center gap-3 px-4 py-3 border-b">
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-lg font-semibold">Pipeline</h1>
-          {activePipeline && (
-            <span className="text-sm text-muted-foreground">/ {activePipeline.nome}</span>
-          )}
+        <h1 className="text-lg font-semibold shrink-0">Pipeline</h1>
+        <div className="flex-1 min-w-0">
+          <PipelineSwitcher
+            pipelines={pipelineSummaries}
+            activeId={activePipelineId}
+            onSelect={setActivePipelineId}
+            onCreate={() => setNewPipelineOpen(true)}
+            onRename={(id, nome) => renamePipelineMutation.mutate({ id, nome })}
+            onDuplicate={(id) => duplicatePipelineMutation.mutate(id)}
+            onArchive={(id) => archivePipelineMutation.mutate(id)}
+            onDeleteWithMove={(id) => setDeletePipelineId(id)}
+          />
         </div>
-        {pipelines.length > 1 && (
-          <Select
-            value={activePipelineId ?? ''}
-            onValueChange={(v) => setActivePipelineId(v)}
-          >
-            <SelectTrigger className="h-8 w-48">
-              <SelectValue placeholder="Pipeline" />
-            </SelectTrigger>
-            <SelectContent>
-              {pipelines.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.nome}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        <div className="ml-auto">
-          <Button onClick={() => openNewLead(null)} disabled={stages.length === 0}>
-            <Plus className="h-4 w-4 mr-1" />
-            Novo Lead
-          </Button>
+        <Button onClick={() => openNewLead(null)} disabled={stages.length === 0}>
+          <Plus className="h-4 w-4 mr-1" />
+          Novo Lead
+        </Button>
+      </div>
+
+      {/* Metrics header */}
+      <div className="grid grid-cols-3 gap-2 px-4 py-2 border-b bg-muted/20">
+        <div className="rounded-md border bg-background px-3 py-2">
+          <p className="text-[11px] uppercase text-muted-foreground">Total de leads</p>
+          <p className="text-lg font-semibold tabular-nums">{metrics.total}</p>
+        </div>
+        <div className="rounded-md border bg-background px-3 py-2">
+          <p className="text-[11px] uppercase text-muted-foreground">Valor total</p>
+          <p className="text-lg font-semibold tabular-nums text-emerald-500">
+            {formatBRL(String(metrics.sumValor))}
+          </p>
+        </div>
+        <div className="rounded-md border bg-background px-3 py-2">
+          <p className="text-[11px] uppercase text-muted-foreground">Conversao</p>
+          <p className="text-lg font-semibold tabular-nums">
+            {metrics.conversion.toFixed(1)}%
+          </p>
         </div>
       </div>
 
@@ -316,7 +612,7 @@ export default function KanbanPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="ALL">Todos responsáveis</SelectItem>
+              <SelectItem value="ALL">Todos responsaveis</SelectItem>
               {responsaveis.map(([id, nome]) => (
                 <SelectItem key={id} value={id}>
                   {nome}
@@ -340,7 +636,7 @@ export default function KanbanPage() {
               </div>
             ))}
           </div>
-        ) : stages.length === 0 ? (
+        ) : orderedStages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-sm text-muted-foreground">Nenhum pipeline configurado.</p>
           </div>
@@ -351,17 +647,40 @@ export default function KanbanPage() {
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <div className="flex gap-4 p-4 h-full min-w-max">
-              {stages.map((stage) => (
-                <StageColumn
-                  key={stage.id}
-                  stage={stage}
-                  leads={leadsByStage[stage.id] ?? []}
-                  onClickLead={(leadId) => router.push(`/chat/${leadId}`)}
-                  onAddLead={(stageId) => openNewLead(stageId)}
-                />
-              ))}
-            </div>
+            <SortableContext items={stageSortableIds} strategy={horizontalListSortingStrategy}>
+              <div className="flex gap-4 p-4 h-full min-w-max">
+                {orderedStages.map((stage, idx) => (
+                  <StageColumn
+                    key={stage.id}
+                    stage={stage}
+                    leads={leadsByStage[stage.id] ?? []}
+                    onClickLead={(leadId) => router.push(`/chat/${leadId}`)}
+                    onAddLead={(stageId) => openNewLead(stageId)}
+                    onRenameStage={handleRenameStage}
+                    onChangeColor={handleChangeColor}
+                    onDuplicateStage={handleDuplicateStage}
+                    onDeleteStage={handleDeleteStage}
+                    onConfigureStage={handleConfigureStage}
+                    onMoveStage={handleMoveStage}
+                    canMoveLeft={idx > 0}
+                    canMoveRight={idx < orderedStages.length - 1}
+                    onQuickTaskLead={(leadId) => setQuickTaskLeadId(leadId)}
+                    onArchiveLead={(leadId) => setArchiveLeadId(leadId)}
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nome = prompt('Nome da nova etapa:');
+                    if (nome && nome.trim()) createStageMutation.mutate(nome.trim());
+                  }}
+                  className="flex-shrink-0 w-56 h-12 flex items-center justify-center gap-1.5 rounded-lg border border-dashed text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors self-start"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Adicionar Etapa
+                </button>
+              </div>
+            </SortableContext>
             <DragOverlay>
               {activeDragLead ? (
                 <div className="w-80">
@@ -380,6 +699,69 @@ export default function KanbanPage() {
         defaultStageId={defaultStageId}
         isLoading={createLeadMutation.isPending}
         onSubmit={(data) => createLeadMutation.mutate(data)}
+      />
+
+      <NewPipelineDialog
+        open={newPipelineOpen}
+        onOpenChange={setNewPipelineOpen}
+        isLoading={createPipelineMutation.isPending}
+        onSubmit={(data) => createPipelineMutation.mutate(data)}
+      />
+
+      <DeleteWithMoveDialog
+        open={!!deletePipelineId}
+        onOpenChange={(o) => !o && setDeletePipelineId(null)}
+        sourceId={deletePipelineId}
+        pipelines={pipelineSummaries}
+        isLoading={deleteWithMoveMutation.isPending}
+        onSubmit={(targetPipelineId) =>
+          deletePipelineId &&
+          deleteWithMoveMutation.mutate({ id: deletePipelineId, targetPipelineId })
+        }
+      />
+
+      <StageConfigDialog
+        open={!!stageConfigId}
+        onOpenChange={(o) => !o && setStageConfigId(null)}
+        stage={stageBeingConfigured}
+        isLoading={updateStageMutation.isPending}
+        onSubmit={handleSubmitStageConfig}
+      />
+
+      <QuickTaskDialog
+        open={!!quickTaskLeadId}
+        onOpenChange={(o) => !o && setQuickTaskLeadId(null)}
+        isLoading={quickTaskMutation.isPending}
+        onSubmit={(data) =>
+          quickTaskLeadId && quickTaskMutation.mutate({ leadId: quickTaskLeadId, data })
+        }
+      />
+
+      <ConfirmDialog
+        open={!!archiveLeadId}
+        onOpenChange={(o) => !o && setArchiveLeadId(null)}
+        title="Arquivar lead?"
+        description="O lead sera removido do funil. Esta acao nao pode ser desfeita."
+        confirmLabel="Arquivar"
+        destructive
+        isLoading={archiveLeadMutation.isPending}
+        onConfirm={() => archiveLeadId && archiveLeadMutation.mutate(archiveLeadId)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteStageId}
+        onOpenChange={(o) => !o && setDeleteStageId(null)}
+        title="Excluir etapa?"
+        description="Leads desta etapa precisarao ser movidos antes. Esta acao nao pode ser desfeita."
+        confirmLabel="Excluir"
+        destructive
+        isLoading={deleteStageMutation.isPending}
+        onConfirm={() =>
+          deleteStageId &&
+          deleteStageMutation.mutate(deleteStageId, {
+            onSuccess: () => setDeleteStageId(null),
+          })
+        }
       />
     </div>
   );
