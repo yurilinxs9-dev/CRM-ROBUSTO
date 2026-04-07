@@ -160,7 +160,7 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMess
       <div className="min-w-0 flex-1">
         <div ref={containerRef} className="w-full" />
         <div className="mt-1 flex items-center justify-between text-[10px] opacity-80">
-          <span>{formatDuration(playing || current > 0 ? current : duration)}</span>
+          <span>{formatDuration(current > 0 ? current : duration)}</span>
           <button
             type="button"
             onClick={cycleSpeed}

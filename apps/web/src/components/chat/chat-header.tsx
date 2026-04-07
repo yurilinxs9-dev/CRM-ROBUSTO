@@ -64,6 +64,11 @@ export function ChatHeader({
   const router = useRouter();
   const presence = presenceLabel(lead);
   const isOnline = presence === 'online';
+  // Format digit-only placeholder names so unresolved WhatsApp contacts don't
+  // render as raw numbers in the header. Real names are left untouched.
+  const displayName = /^\+?\d{8,}$/.test(lead.nome.trim())
+    ? formatPhone(lead.nome)
+    : lead.nome;
 
   return (
     <header
@@ -88,10 +93,10 @@ export function ChatHeader({
 
       <Avatar className="h-10 w-10 flex-shrink-0">
         {lead.foto_url ? (
-          <AvatarImage src={lead.foto_url} alt={lead.nome} />
+          <AvatarImage src={lead.foto_url} alt={displayName} />
         ) : null}
         <AvatarFallback className="bg-primary/15 text-primary font-semibold text-sm">
-          {getInitials(lead.nome)}
+          {getInitials(displayName)}
         </AvatarFallback>
       </Avatar>
 
@@ -101,7 +106,7 @@ export function ChatHeader({
         className="flex min-w-0 flex-1 flex-col items-start text-left hover:opacity-90 focus:outline-none"
       >
         <span className="truncate text-sm font-semibold text-foreground">
-          {lead.nome}
+          {displayName}
         </span>
         <span
           className={

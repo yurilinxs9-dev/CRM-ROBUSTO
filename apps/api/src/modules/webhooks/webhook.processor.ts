@@ -297,7 +297,28 @@ export class WebhookProcessor extends WorkerHost {
       update: {},
     });
 
-    this.gateway.emitNewMessage(lead.id, message, tenantId);
+    // Resolve a signed URL for realtime clients so images/audio/video render
+    // immediately without a page refresh. DB keeps the bare storage path
+    // (cheap to re-sign on demand via leads.getMessages / streamMedia).
+    let realtimeMediaUrl: string | null = message.media_url;
+    if (storagePath) {
+      try {
+        realtimeMediaUrl = await this.mediaService.getSignedUrl(
+          storagePath,
+          60 * 60,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Falha assinando media ${storagePath} para realtime: ${String(err)}`,
+        );
+      }
+    }
+
+    this.gateway.emitNewMessage(
+      lead.id,
+      { ...message, media_url: realtimeMediaUrl },
+      tenantId,
+    );
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
 
     if (lead.nome === lead.telefone || !lead.foto_url) {
@@ -558,17 +579,58 @@ export class WebhookProcessor extends WorkerHost {
   private async handleContactsUpsert(data: Obj) {
     const contacts = data?.data as Array<Obj> | undefined;
     if (!Array.isArray(contacts)) return;
+
+    // SECURITY: scope updates to the instance's tenant. Without this, a contacts
+    // webhook from one tenant would overwrite lead names/photos in all tenants
+    // that happen to share the same phone number (cross-tenant data leakage
+    // and the root cause of the "nomes iguais" bug seen in the chat list).
+    const instanceName = data?.instance as string | undefined;
+    const instance = await this.findInstanceByName(instanceName);
+    if (!instance) {
+      this.logger.warn(
+        `contacts.upsert ignorado — instancia desconhecida: ${instanceName}`,
+      );
+      return;
+    }
+
     for (const contact of contacts) {
       const contactId = contact?.id as string | undefined;
       const phone = contactId?.replace('@s.whatsapp.net', '').replace(/\D/g, '');
       if (!phone) continue;
+
+      const nome = (contact?.pushName || contact?.name || undefined) as
+        | string
+        | undefined;
+      const foto_url = (contact?.profilePictureUrl || undefined) as
+        | string
+        | undefined;
+
+      const updateData: { nome?: string; foto_url?: string } = {};
+      // Only overwrite `nome` when the existing name is the bare phone digits
+      // (i.e. placeholder). Never clobber a real human name already set.
+      if (foto_url) updateData.foto_url = foto_url;
+      if (Object.keys(updateData).length === 0 && !nome) continue;
+
       await this.prisma.lead.updateMany({
-        where: { telefone: phone },
-        data: {
-          nome: (contact?.pushName || contact?.name || undefined) as string | undefined,
-          foto_url: (contact?.profilePictureUrl || undefined) as string | undefined,
+        where: {
+          telefone: phone,
+          tenant_id: instance.tenant_id,
+          instancia_whatsapp: instance.nome,
         },
+        data: updateData,
       });
+
+      if (nome) {
+        await this.prisma.lead.updateMany({
+          where: {
+            telefone: phone,
+            tenant_id: instance.tenant_id,
+            instancia_whatsapp: instance.nome,
+            nome: phone, // only when still the placeholder
+          },
+          data: { nome },
+        });
+      }
     }
   }
 }

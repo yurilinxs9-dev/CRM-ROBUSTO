@@ -67,6 +67,12 @@ function formatPhone(phone: string): string {
 function ChatListItemComponent({ lead, active, onClick }: ChatListItemProps) {
   const isHot = lead.temperatura === 'QUENTE' || lead.temperatura === 'MUITO_QUENTE';
   const hasUnread = lead.mensagens_nao_lidas > 0;
+  // When the backend could not resolve a pushName, the lead is created with
+  // `nome = telefone` (raw digits). Format such placeholder names so two
+  // different contacts don't render as identical "5531999999999" rows.
+  const displayName = /^\+?\d{8,}$/.test(lead.nome.trim())
+    ? formatPhone(lead.nome)
+    : lead.nome;
 
   return (
     <button
@@ -84,7 +90,7 @@ function ChatListItemComponent({ lead, active, onClick }: ChatListItemProps) {
             <AvatarImage src={lead.foto_url} alt={lead.nome} />
           ) : null}
           <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">
-            {getInitials(lead.nome) || '?'}
+            {getInitials(displayName) || '?'}
           </AvatarFallback>
         </Avatar>
         {isHot && (
@@ -100,7 +106,7 @@ function ChatListItemComponent({ lead, active, onClick }: ChatListItemProps) {
               hasUnread ? 'font-semibold text-foreground' : 'font-medium text-foreground'
             )}
           >
-            {lead.nome}
+            {displayName}
           </span>
           <span
             className={cn(
