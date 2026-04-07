@@ -92,23 +92,17 @@ export class DashboardService {
     const startOfLastWeek = new Date(now);
     startOfLastWeek.setDate(now.getDate() - 14);
 
-    const pipeline = await this.prisma.pipeline.findFirst({
-      where: { ativo: true, tenant_id: user.tenantId },
-      include: { stages: { orderBy: { ordem: 'asc' } } },
-    });
-
-    const stages = (pipeline?.stages ?? []) as StageRow[];
-    const stageIds = stages.map((s) => s.id);
-
+    // Group ALL tenant leads by their actual estagio_id — the previous
+    // implementation filtered by the stages of the "ativo: true" pipeline,
+    // so leads sitting in any other pipeline (or with a stale active flag)
+    // rendered as zero in the funnel even when totalLeads > 0.
     const [stageGroup, totalLeads, leadsThisWeek, leadsLastWeek, tempGroup, recentLeadActivities, operatorGroup] =
       await Promise.all([
-        stageIds.length
-          ? this.prisma.lead.groupBy({
-              by: ['estagio_id'],
-              where: { estagio_id: { in: stageIds }, tenant_id: user.tenantId },
-              _count: { id: true },
-            })
-          : Promise.resolve([] as { estagio_id: string; _count: { id: number } }[]),
+        this.prisma.lead.groupBy({
+          by: ['estagio_id'],
+          where: { tenant_id: user.tenantId, estagio_id: { not: null } },
+          _count: { id: true },
+        }),
         this.prisma.lead.count({ where: { tenant_id: user.tenantId } }),
         this.prisma.lead.count({
           where: { created_at: { gte: startOfThisWeek }, tenant_id: user.tenantId },
@@ -142,17 +136,32 @@ export class DashboardService {
         }),
       ]);
 
-    const stageCountMap = new Map(stageGroup.map((g) => [g.estagio_id, g._count.id]));
-    const stageCounts = stages.map((s) => ({
+    // Resolve only the stages that actually have leads attached.
+    const usedStageIds = stageGroup
+      .map((g) => g.estagio_id)
+      .filter((id): id is string => !!id);
+    const usedStages = usedStageIds.length
+      ? ((await this.prisma.stage.findMany({
+          where: { id: { in: usedStageIds }, tenant_id: user.tenantId },
+          orderBy: { ordem: 'asc' },
+        })) as StageRow[])
+      : [];
+
+    const stageCountMap = new Map(
+      stageGroup.map((g) => [g.estagio_id, g._count.id]),
+    );
+    const stageCounts = usedStages.map((s) => ({
       stageId: s.id,
       nome: s.nome,
       cor: s.cor,
       count: stageCountMap.get(s.id) ?? 0,
     }));
 
-    const wonStageIds = stages.filter((s) => s.is_won).map((s) => s.id);
+    const wonStageIds = usedStages.filter((s) => s.is_won).map((s) => s.id);
     const wonCount = wonStageIds.length
-      ? (stageGroup.filter((g) => wonStageIds.includes(g.estagio_id)).reduce((a, g) => a + g._count.id, 0))
+      ? stageGroup
+          .filter((g) => g.estagio_id && wonStageIds.includes(g.estagio_id))
+          .reduce((a, g) => a + g._count.id, 0)
       : 0;
     const conversionRate = totalLeads > 0 ? Math.round((wonCount / totalLeads) * 100) : 0;
 
