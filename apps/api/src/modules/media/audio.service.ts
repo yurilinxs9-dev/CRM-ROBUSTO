@@ -24,10 +24,16 @@ export class AudioService {
 
       await execFileAsync(process.env.FFMPEG_PATH ?? 'ffmpeg', [
         '-i', inputPath,
+        '-vn',
+        '-map_metadata', '-1',
         '-c:a', 'libopus',
-        '-b:a', '64k',
+        '-b:a', '32k',
         '-ar', '48000',
         '-ac', '1',
+        '-application', 'voip',
+        '-vbr', 'on',
+        '-compression_level', '10',
+        '-f', 'ogg',
         '-y',
         outputPath,
       ]);

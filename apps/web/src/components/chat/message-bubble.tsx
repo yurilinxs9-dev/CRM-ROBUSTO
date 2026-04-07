@@ -8,8 +8,10 @@ import {
   Clock,
   Download,
   FileText,
+  MapPin,
   NotebookPen,
   Reply,
+  User as UserIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { AudioMessage } from './audio-message';
@@ -220,8 +222,48 @@ function MessageBubbleComponent({
           </a>
         )}
 
+        {type === 'STICKER' && message.media_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={message.media_url}
+            alt="Sticker"
+            width={128}
+            height={128}
+            loading="lazy"
+            className="h-32 w-32 object-contain"
+          />
+        )}
+
+        {type === 'LOCATION' && (
+          <div className="flex min-w-[220px] items-center gap-3 rounded-lg bg-background/40 p-2">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+              <MapPin size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">Localização</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {message.content ?? 'Compartilhada via WhatsApp'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {type === 'CONTACT' && (
+          <div className="flex min-w-[220px] items-center gap-3 rounded-lg bg-background/40 p-2">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+              <UserIcon size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {message.content ?? 'Contato'}
+              </p>
+              <p className="text-[11px] text-muted-foreground">Cartão de contato</p>
+            </div>
+          </div>
+        )}
+
         {(type === 'TEXT' ||
-          !['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT'].includes(type)) && (
+          !['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT', 'STICKER', 'LOCATION', 'CONTACT'].includes(type)) && (
           <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
             {renderText(message.content ?? '')}
           </p>

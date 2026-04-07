@@ -12,6 +12,7 @@ import {
 } from '../pipelines/auto-actions.processor';
 import { InstancesService } from '../instances/instances.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
+import { MediaService } from '../media/media.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -90,9 +91,21 @@ export class LeadsService {
     private instances: InstancesService,
     private cache: RedisCacheService,
     private gateway: CrmGateway,
+    private media: MediaService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
+
+  private async resolveMediaUrl(path: string | null): Promise<string | null> {
+    if (!path) return null;
+    if (/^https?:\/\//i.test(path)) return path;
+    try {
+      return await this.media.getSignedUrl(path, 3600);
+    } catch (err) {
+      this.logger.warn(`Falha ao gerar signed URL para ${path}: ${String(err)}`);
+      return null;
+    }
+  }
 
   async invalidateLeadsCache(tenantId: string): Promise<void> {
     await this.cache.delPattern(leadsListPattern(tenantId));
@@ -513,7 +526,13 @@ export class LeadsService {
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
     const hasMore = rows.length > limit;
-    const messages = hasMore ? rows.slice(0, limit) : rows;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const messages = await Promise.all(
+      sliced.map(async (m) => ({
+        ...m,
+        media_url: await this.resolveMediaUrl(m.media_url),
+      })),
+    );
     return {
       messages,
       nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
