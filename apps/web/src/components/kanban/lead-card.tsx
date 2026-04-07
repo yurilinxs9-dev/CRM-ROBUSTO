@@ -26,6 +26,7 @@ export interface Lead {
   tags?: string[];
   estagio_entered_at?: string | null;
   pending_tasks_count?: number;
+  position?: number | null;
 }
 
 export const TEMP_LABELS: Record<Temperatura, string> = {

@@ -310,8 +310,19 @@ export default function KanbanPage() {
 
   // --- Mutations: Leads ---
   const stageMutation = useMutation({
-    mutationFn: async ({ leadId, estagioId }: { leadId: string; estagioId: string }) => {
-      await api.patch(`/api/leads/${leadId}/stage`, { estagio_id: estagioId });
+    mutationFn: async ({
+      leadId,
+      estagioId,
+      position,
+    }: {
+      leadId: string;
+      estagioId: string;
+      position?: number;
+    }) => {
+      await api.patch(`/api/leads/${leadId}/stage`, {
+        estagio_id: estagioId,
+        ...(position !== undefined ? { position } : {}),
+      });
     },
     onError: () => {
       if (leadsSnapshotRef.current) {
@@ -445,9 +456,59 @@ export default function KanbanPage() {
         const overLead = leads.find((l) => l.id === overId);
         if (overLead) targetStageId = overLead.estagio_id;
       }
-      if (!targetStageId || targetStageId === lead.estagio_id) return;
+      if (!targetStageId) return;
 
       leadsSnapshotRef.current = leads;
+
+      if (targetStageId === lead.estagio_id) {
+        // Same-stage reorder: compute fractional position between neighbors.
+        const stageLeads = leads
+          .filter((l) => l.estagio_id === targetStageId)
+          .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER));
+
+        const fromIdx = stageLeads.findIndex((l) => l.id === activeId);
+        const overLead = leads.find((l) => l.id === overId);
+        const toIdx = overLead ? stageLeads.findIndex((l) => l.id === overId) : stageLeads.length - 1;
+
+        if (fromIdx < 0 || fromIdx === toIdx) {
+          leadsSnapshotRef.current = null;
+          return;
+        }
+
+        // Compute neighbors in the final sorted array (after the move) to derive the new position.
+        const reorderedForPos = arrayMove(stageLeads, fromIdx, toIdx);
+        const prev = reorderedForPos[toIdx - 1];
+        const next = reorderedForPos[toIdx + 1];
+
+        let newPosition: number;
+        if (!prev && !next) {
+          newPosition = 1000;
+        } else if (!prev) {
+          newPosition = (next.position ?? toIdx * 1000) - 1000;
+        } else if (!next) {
+          newPosition = (prev.position ?? toIdx * 1000) + 1000;
+        } else {
+          const prevPos = prev.position ?? (toIdx - 1) * 1000;
+          const nextPos = next.position ?? (toIdx + 1) * 1000;
+          newPosition = (prevPos + nextPos) / 2;
+        }
+
+        // Optimistic update: reorder leads in cache.
+        queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
+          if (!old) return old;
+          const stageSet = new Set(stageLeads.map((l) => l.id));
+          const others = old.filter((l) => !stageSet.has(l.id));
+          const updated = reorderedForPos.map((l) =>
+            l.id === activeId ? { ...l, position: newPosition } : l,
+          );
+          return [...others, ...updated];
+        });
+
+        stageMutation.mutate({ leadId: activeId, estagioId: targetStageId, position: newPosition });
+        return;
+      }
+
+      // Cross-stage move
       const finalTarget = targetStageId;
       queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) =>
         old?.map((l) => (l.id === activeId ? { ...l, estagio_id: finalTarget } : l)),
@@ -463,6 +524,12 @@ export default function KanbanPage() {
     for (const stage of orderedStages) map[stage.id] = [];
     for (const lead of filteredLeads) {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
+    }
+    for (const stageId of Object.keys(map)) {
+      map[stageId].sort(
+        (a, b) =>
+          (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER),
+      );
     }
     return map;
   }, [filteredLeads, orderedStages]);
