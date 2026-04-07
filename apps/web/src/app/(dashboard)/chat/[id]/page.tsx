@@ -333,9 +333,40 @@ export default function ChatDetailPage() {
         ['messages', leadId],
         (old) => {
           if (!old || old.pages.length === 0) return old;
-          const pages = [...old.pages];
+          // Dedup: if this exact server message already exists, skip.
+          // Also dedup OUTGOING echoes of our own send mutation — the
+          // optimistic bubble has `id` = `temp-xxx`, so matching by id
+          // fails and we'd render the same text twice (one temp + one
+          // real) until the POST onSuccess swaps the temp. Replace any
+          // matching temp bubble in place instead of appending.
+          const isOutgoingEcho =
+            data.direction === 'OUTGOING' || data.direction === 'OUTBOUND';
+          let replaced = false;
+          const pages = old.pages.map((p) => {
+            const messages = p.messages.map((m) => {
+              if (m.id === data.id) {
+                replaced = true;
+                return data;
+              }
+              if (
+                !replaced &&
+                isOutgoingEcho &&
+                typeof m.id === 'string' &&
+                m.id.startsWith('temp-') &&
+                (m.direction === 'OUTGOING' || m.direction === 'OUTBOUND') &&
+                (m.content ?? '') === (data.content ?? '') &&
+                m.type === data.type
+              ) {
+                replaced = true;
+                return data;
+              }
+              return m;
+            });
+            return { ...p, messages };
+          });
+          if (replaced) return { ...old, pages };
+          // Not a dup — append to the most recent page.
           const last = { ...pages[pages.length - 1] };
-          if (last.messages.some((m) => m.id === data.id)) return old;
           last.messages = [...last.messages, data];
           pages[pages.length - 1] = last;
           return { ...old, pages };
