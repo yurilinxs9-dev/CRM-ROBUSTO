@@ -60,6 +60,7 @@ function SortableLeadImpl({
   onOpenChat?: (leadId: string) => void;
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
+  onOpenDetail?: (leadId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: lead.id, data: { type: 'lead', lead } });
@@ -106,6 +107,7 @@ interface StageColumnProps {
   canMoveRight: boolean;
   onQuickTaskLead?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
+  onOpenDetail?: (leadId: string) => void;
 }
 
 function StageColumnImpl({
@@ -123,6 +125,7 @@ function StageColumnImpl({
   canMoveRight,
   onQuickTaskLead,
   onArchiveLead,
+  onOpenDetail,
 }: StageColumnProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(stage.nome);
@@ -303,10 +306,11 @@ function StageColumnImpl({
                 key={lead.id}
                 lead={lead}
                 stage={stage}
-                onClick={() => onClickLead(lead.id)}
+                onClick={() => onOpenDetail ? onOpenDetail(lead.id) : onClickLead(lead.id)}
                 onOpenChat={onClickLead}
                 onQuickTask={onQuickTaskLead}
                 onArchiveLead={onArchiveLead}
+                onOpenDetail={onOpenDetail}
               />
             ))}
           </SortableContext>

@@ -68,6 +68,7 @@ import {
   type QuickTaskFormData,
 } from '@/components/kanban/quick-task-dialog';
 import { ConfirmDialog } from '@/components/kanban/confirm-dialog';
+import { LeadDetailDrawer } from '@/components/kanban/lead-detail-drawer';
 
 interface Pipeline {
   id: string;
@@ -97,6 +98,7 @@ export default function KanbanPage() {
   const [quickTaskLeadId, setQuickTaskLeadId] = useState<string | null>(null);
   const [archiveLeadId, setArchiveLeadId] = useState<string | null>(null);
   const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
+  const [detailLeadId, setDetailLeadId] = useState<string | null>(null);
   const leadsSnapshotRef = useRef<Lead[] | null>(null);
 
   const sensors = useSensors(
@@ -666,6 +668,7 @@ export default function KanbanPage() {
                     canMoveRight={idx < orderedStages.length - 1}
                     onQuickTaskLead={(leadId) => setQuickTaskLeadId(leadId)}
                     onArchiveLead={(leadId) => setArchiveLeadId(leadId)}
+                    onOpenDetail={(leadId) => setDetailLeadId(leadId)}
                   />
                 ))}
                 <button
@@ -762,6 +765,14 @@ export default function KanbanPage() {
             onSuccess: () => setDeleteStageId(null),
           })
         }
+      />
+
+      <LeadDetailDrawer
+        leadId={detailLeadId}
+        open={!!detailLeadId}
+        onClose={() => setDetailLeadId(null)}
+        activePipelineId={activePipelineId}
+        onArchive={(id) => setArchiveLeadId(id)}
       />
     </div>
   );
