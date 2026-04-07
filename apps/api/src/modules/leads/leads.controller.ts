@@ -43,6 +43,11 @@ export class LeadsController {
     return this.leadsService.getMessages(id, req.user as AuthUser, cursor, limit ? parseInt(limit) : 50);
   }
 
+  @Get(':id/activities')
+  getActivities(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.leadsService.getActivities(id, req.user as AuthUser);
+  }
+
   @Post(':id/sync-profile')
   syncProfile(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.syncProfile(id, req.user as AuthUser);

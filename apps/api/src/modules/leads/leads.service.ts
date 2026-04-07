@@ -391,6 +391,31 @@ export class LeadsService {
     };
   }
 
+  async getActivities(leadId: string, user: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException();
+    }
+    return this.prisma.leadActivity.findMany({
+      where: { lead_id: leadId, tenant_id: user.tenantId },
+      orderBy: { created_at: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        tipo: true,
+        descricao: true,
+        dados_antes: true,
+        dados_depois: true,
+        created_at: true,
+        user: { select: { id: true, nome: true } },
+      },
+    });
+  }
+
   async markAsRead(leadId: string, user: AuthUser) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
