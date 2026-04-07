@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Injectable()
 export class UsersService {
@@ -15,6 +16,19 @@ export class UsersService {
         ativo: true,
         avatar_url: true,
         created_at: true,
+      },
+      orderBy: { nome: 'asc' },
+    });
+  }
+
+  findAllForTenant(user: AuthUser) {
+    return this.prisma.user.findMany({
+      where: { tenant_id: user.tenantId, ativo: true },
+      select: {
+        id: true,
+        nome: true,
+        email: true,
+        role: true,
       },
       orderBy: { nome: 'asc' },
     });

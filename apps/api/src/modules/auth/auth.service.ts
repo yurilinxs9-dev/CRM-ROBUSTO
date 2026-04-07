@@ -61,7 +61,8 @@ export class AuthService {
     const senha_hash = await bcrypt.hash(data.senha, 12);
     const userId = randomUUID();
     const tenantId = randomUUID();
-    const role = (data.role as 'SUPER_ADMIN' | 'GERENTE' | 'OPERADOR' | 'VISUALIZADOR') ?? 'OPERADOR';
+    // Public signup: new user owns their tenant, so they get SUPER_ADMIN.
+    const role = (data.role as 'SUPER_ADMIN' | 'GERENTE' | 'OPERADOR' | 'VISUALIZADOR') ?? 'SUPER_ADMIN';
     const workspaceName = data.workspace_name ?? `${data.nome}'s workspace`;
 
     return this.prisma.$transaction(async (tx) => {
