@@ -146,27 +146,83 @@ export default function ChatDetailPage() {
     mutationFn: async ({
       content,
       isNote,
+      tempId: _tempId,
     }: {
       content: string;
       isNote: boolean;
+      tempId: string;
     }) => {
       if (isNote) {
         const res = await api.post(`/api/leads/${leadId}/messages`, {
           content,
           is_internal_note: true,
         });
-        return res.data;
+        return res.data as ChatMessage;
       }
       const res = await api.post('/api/messages/send-text', {
         lead_id: leadId,
         content,
       });
-      return res.data;
+      return res.data as ChatMessage;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+    onMutate: async ({ content, isNote, tempId }) => {
+      const tempMessage: ChatMessage = {
+        id: tempId,
+        lead_id: leadId,
+        content,
+        type: 'TEXT',
+        direction: 'OUTGOING',
+        status: 'PENDING',
+        is_internal_note: isNote,
+        created_at: new Date().toISOString(),
+      };
+      queryClient.setQueryData<MessagesQueryData>(['messages', leadId], (old) => {
+        if (!old || old.pages.length === 0) {
+          return {
+            pages: [{ messages: [tempMessage] }],
+            pageParams: [undefined],
+          };
+        }
+        const pages = [...old.pages];
+        const last = { ...pages[pages.length - 1] };
+        last.messages = [...last.messages, tempMessage];
+        pages[pages.length - 1] = last;
+        return { ...old, pages };
+      });
+      wasAtBottomRef.current = true;
+      return { tempId };
     },
-    onError: (err: unknown) => {
+    onSuccess: (serverMsg, _vars, ctx) => {
+      const tempId = ctx?.tempId;
+      queryClient.setQueryData<MessagesQueryData>(['messages', leadId], (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((p) => ({
+            ...p,
+            messages: p.messages.map((m) =>
+              m.id === tempId ? { ...serverMsg, status: serverMsg.status ?? 'SENT' } : m,
+            ),
+          })),
+        };
+      });
+    },
+    onError: (err: unknown, _vars, ctx) => {
+      const tempId = ctx?.tempId;
+      if (tempId) {
+        queryClient.setQueryData<MessagesQueryData>(['messages', leadId], (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((p) => ({
+              ...p,
+              messages: p.messages.map((m) =>
+                m.id === tempId ? { ...m, status: 'FAILED' as MessageStatus } : m,
+              ),
+            })),
+          };
+        });
+      }
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data
           ?.message ?? 'Erro ao enviar mensagem.';
@@ -371,7 +427,8 @@ export default function ChatDetailPage() {
   // --- Composer handlers ---
   const handleSendText = useCallback(
     (content: string, isNote: boolean) => {
-      sendTextMutation.mutate({ content, isNote });
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      sendTextMutation.mutate({ content, isNote, tempId });
     },
     [sendTextMutation],
   );

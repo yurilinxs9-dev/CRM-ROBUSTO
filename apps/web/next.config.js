@@ -3,6 +3,14 @@ const VPS_URL = process.env.VPS_URL || 'https://reduces-foot-alto-verbal.tryclou
 
 const nextConfig = {
   reactStrictMode: true,
+  experimental: {
+    optimizePackageImports: [
+      'lucide-react',
+      '@dnd-kit/core',
+      '@dnd-kit/sortable',
+      'date-fns',
+    ],
+  },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '*.supabase.co' },

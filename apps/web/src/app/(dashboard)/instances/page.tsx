@@ -109,6 +109,26 @@ export default function InstancesPage() {
     setQrBase64(null);
   }, []);
 
+  // Poll UazAPI status while QR modal is open (works without webhook tunnel)
+  useEffect(() => {
+    if (!qrTarget) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        await api.get(`/api/instances/${qrTarget}/status`);
+        if (!cancelled) queryClient.invalidateQueries({ queryKey: ['instances'] });
+      } catch {
+        // ignore transient errors
+      }
+    };
+    const id = setInterval(tick, 3_000);
+    void tick();
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [qrTarget, queryClient]);
+
   // Socket: real-time status + QR
   useEffect(() => {
     const socket = getSocket();
@@ -144,6 +164,14 @@ export default function InstancesPage() {
 
   const qrInstance = qrTarget ? instances.find((i) => i.nome === qrTarget) : null;
   const qrStatus = qrInstance?.status ?? 'disconnected';
+
+  // Auto-close QR modal once polled status reports connected
+  useEffect(() => {
+    if (qrTarget && (qrStatus === 'open' || qrStatus === 'connected')) {
+      toast.success(`${qrTarget} conectado!`);
+      closeQr();
+    }
+  }, [qrTarget, qrStatus, closeQr]);
 
   return (
     <div className="container mx-auto p-6 space-y-6">
