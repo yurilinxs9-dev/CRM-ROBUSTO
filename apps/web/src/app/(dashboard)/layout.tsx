@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { TaskNotifications } from '@/components/layout/task-notifications';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { accessToken, isAuthenticated } = useAuthStore();
@@ -19,6 +20,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <TooltipProvider delayDuration={200}>
+      <TaskNotifications />
       <div className="flex h-screen overflow-hidden bg-background text-foreground">
         <div className="hidden md:block">
           <Sidebar />
