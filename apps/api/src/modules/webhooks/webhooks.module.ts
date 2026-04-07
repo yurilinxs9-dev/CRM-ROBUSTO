@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from './webhooks.controller';
 import { WebhookProcessor } from './webhook.processor';
 import { LeadsModule } from '../leads/leads.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { LeadsModule } from '../leads/leads.module';
     }),
     BullModule.registerQueue({ name: 'webhooks' }),
     LeadsModule,
+    MediaModule,
   ],
   controllers: [WebhooksController],
   providers: [WebhookProcessor],
