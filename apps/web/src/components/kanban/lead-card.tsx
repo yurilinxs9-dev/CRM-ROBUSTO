@@ -96,11 +96,26 @@ interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   onOpenChat?: (leadId: string) => void;
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  showCheckbox?: boolean;
 }
 
 const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
   (
-    { lead, isDragging, stageMaxDias, onOpenChat, onQuickTask, onArchiveLead, className, ...props },
+    {
+      lead,
+      isDragging,
+      stageMaxDias,
+      onOpenChat,
+      onQuickTask,
+      onArchiveLead,
+      selected,
+      onToggleSelect,
+      showCheckbox,
+      className,
+      ...props
+    },
     ref,
   ) => {
     const hasUnread = lead.mensagens_nao_lidas > 0;
@@ -116,10 +131,34 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         className={cn(
           'group relative p-3 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
           isDragging && 'opacity-50 rotate-1 shadow-xl',
+          selected && 'ring-2 ring-primary border-primary',
           className,
         )}
         {...props}
       >
+        {/* Bulk-select checkbox */}
+        {(showCheckbox || selected) && onToggleSelect && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect(lead.id);
+            }}
+            className={cn(
+              'absolute top-1.5 left-1.5 z-10 flex h-4 w-4 items-center justify-center rounded border bg-background shadow transition-opacity',
+              selected ? 'border-primary opacity-100' : 'border-muted-foreground/40 opacity-0 group-hover:opacity-100',
+            )}
+            aria-label={selected ? 'Desselecionar lead' : 'Selecionar lead'}
+            title={selected ? 'Desselecionar' : 'Selecionar'}
+          >
+            {selected && (
+              <svg viewBox="0 0 10 10" className="h-2.5 w-2.5 fill-primary" aria-hidden>
+                <path d="M1 5l3 3 5-5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        )}
+
         {/* SLA pulsing badge */}
         {overdue && (
           <div

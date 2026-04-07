@@ -69,6 +69,7 @@ import {
 } from '@/components/kanban/quick-task-dialog';
 import { ConfirmDialog } from '@/components/kanban/confirm-dialog';
 import { LeadDetailDrawer } from '@/components/kanban/lead-detail-drawer';
+import { BulkActionBar } from '@/components/kanban/bulk-action-bar';
 
 interface Pipeline {
   id: string;
@@ -76,6 +77,13 @@ interface Pipeline {
   cor?: string | null;
   arquivado?: boolean;
   stages: Stage[];
+}
+
+interface TenantUser {
+  id: string;
+  nome: string;
+  email: string;
+  role: string;
 }
 
 const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
@@ -99,7 +107,21 @@ export default function KanbanPage() {
   const [archiveLeadId, setArchiveLeadId] = useState<string | null>(null);
   const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
   const [detailLeadId, setDetailLeadId] = useState<string | null>(null);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
   const leadsSnapshotRef = useRef<Lead[] | null>(null);
+
+  const toggleLead = useCallback((id: string) => {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedLeadIds(new Set());
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -170,6 +192,27 @@ export default function KanbanPage() {
     },
     enabled: !!activePipelineId,
     placeholderData: keepPreviousData,
+  });
+
+  const selectAllInStage = useCallback(
+    (stageId: string) => {
+      const stageLeadIds = leads.filter((l) => l.estagio_id === stageId).map((l) => l.id);
+      setSelectedLeadIds((prev) => {
+        const next = new Set(prev);
+        for (const id of stageLeadIds) next.add(id);
+        return next;
+      });
+    },
+    [leads],
+  );
+
+  // --- Tenant users (for bulk assign) ---
+  const { data: tenantUsers = [] } = useQuery<TenantUser[]>({
+    queryKey: ['users'],
+    queryFn: async () => {
+      const res = await api.get('/api/users/list');
+      return res.data as TenantUser[];
+    },
   });
 
   // --- Filtered leads ---
@@ -447,6 +490,7 @@ export default function KanbanPage() {
       }
 
       // Lead drag
+      // TODO: bulk drag not implemented — only single drag works; bulk move via BulkActionBar
       const lead = leads.find((l) => l.id === activeId);
       if (!lead) return;
       let targetStageId: string | null = null;
@@ -736,6 +780,9 @@ export default function KanbanPage() {
                     onQuickTaskLead={(leadId) => setQuickTaskLeadId(leadId)}
                     onArchiveLead={(leadId) => setArchiveLeadId(leadId)}
                     onOpenDetail={(leadId) => setDetailLeadId(leadId)}
+                    selectedLeadIds={selectedLeadIds}
+                    onToggleSelect={toggleLead}
+                    onSelectAllInStage={selectAllInStage}
                   />
                 ))}
                 <button
@@ -841,6 +888,18 @@ export default function KanbanPage() {
         activePipelineId={activePipelineId}
         onArchive={(id) => setArchiveLeadId(id)}
       />
+
+      {selectedLeadIds.size > 0 && activePipelineId && (
+        <BulkActionBar
+          selectedCount={selectedLeadIds.size}
+          selectedIds={Array.from(selectedLeadIds)}
+          stages={stages}
+          users={tenantUsers}
+          onClear={clearSelection}
+          activePipelineId={activePipelineId}
+          queryClient={queryClient}
+        />
+      )}
     </div>
   );
 }

@@ -53,6 +53,9 @@ function SortableLeadImpl({
   onOpenChat,
   onQuickTask,
   onArchiveLead,
+  selected,
+  onToggleSelect,
+  showCheckbox,
 }: {
   lead: Lead;
   stage: Stage;
@@ -61,6 +64,9 @@ function SortableLeadImpl({
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
   onOpenDetail?: (leadId: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  showCheckbox?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: lead.id, data: { type: 'lead', lead } });
@@ -85,6 +91,9 @@ function SortableLeadImpl({
         onOpenChat={onOpenChat}
         onQuickTask={onQuickTask}
         onArchiveLead={onArchiveLead}
+        selected={selected}
+        onToggleSelect={onToggleSelect}
+        showCheckbox={showCheckbox}
       />
     </div>
   );
@@ -108,6 +117,9 @@ interface StageColumnProps {
   onQuickTaskLead?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
   onOpenDetail?: (leadId: string) => void;
+  selectedLeadIds?: Set<string>;
+  onToggleSelect?: (leadId: string) => void;
+  onSelectAllInStage?: (stageId: string) => void;
 }
 
 function StageColumnImpl({
@@ -126,7 +138,11 @@ function StageColumnImpl({
   onQuickTaskLead,
   onArchiveLead,
   onOpenDetail,
+  selectedLeadIds,
+  onToggleSelect,
+  onSelectAllInStage,
 }: StageColumnProps) {
+  const bulkActive = selectedLeadIds !== undefined && selectedLeadIds.size > 0;
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(stage.nome);
 
@@ -216,6 +232,16 @@ function StageColumnImpl({
             </button>
           )}
           <span className="text-xs text-muted-foreground tabular-nums">({leads.length})</span>
+          {bulkActive && onSelectAllInStage && leads.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onSelectAllInStage(stage.id)}
+              className="rounded px-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              title="Selecionar todos nesta etapa"
+            >
+              Sel. todos
+            </button>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -311,6 +337,9 @@ function StageColumnImpl({
                 onQuickTask={onQuickTaskLead}
                 onArchiveLead={onArchiveLead}
                 onOpenDetail={onOpenDetail}
+                selected={selectedLeadIds?.has(lead.id)}
+                onToggleSelect={onToggleSelect}
+                showCheckbox={bulkActive}
               />
             ))}
           </SortableContext>
