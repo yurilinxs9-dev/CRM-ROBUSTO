@@ -23,7 +23,7 @@ import {
   horizontalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { Search, Plus } from 'lucide-react';
+import { Search, Plus, Download } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -583,6 +583,29 @@ export default function KanbanPage() {
     setDialogOpen(true);
   };
 
+  const handleExportLeads = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (activePipelineId) params.set('pipeline_id', activePipelineId);
+    if (tempFilter !== 'ALL') params.set('temperatura', tempFilter);
+    if (responsavelFilter !== 'ALL') params.set('responsavel_id', responsavelFilter);
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    try {
+      const response = await fetch(`/api/leads/export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) throw new Error('Falha ao exportar');
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `leads-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(downloadUrl);
+    } catch {
+      toast.error('Erro ao exportar leads.');
+    }
+  }, [activePipelineId, tempFilter, responsavelFilter]);
+
   // --- Stage handlers ---
   const handleRenameStage = useCallback(
     (id: string, nome: string) => updateStageMutation.mutate({ id, patch: { nome } }),
@@ -734,6 +757,10 @@ export default function KanbanPage() {
             </SelectContent>
           </Select>
         )}
+        <Button variant="outline" size="sm" className="h-9 gap-1.5" onClick={handleExportLeads}>
+          <Download className="h-4 w-4" />
+          Exportar CSV
+        </Button>
       </div>
 
       {/* Board */}
