@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import type { Response } from 'express';
+import { toCsv } from '../../common/csv/csv.util';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '@/common/types/roles';
@@ -37,6 +39,14 @@ export interface TaskFilters {
   status?: string;
   lead_id?: string;
   responsavel_id?: string;
+}
+
+export interface ExportTaskFilters {
+  from?: string;
+  to?: string;
+  status?: string;
+  responsavel_id?: string;
+  lead_id?: string;
 }
 
 const taskInclude = {
@@ -190,6 +200,71 @@ export class TasksService {
     });
     this.gateway.emitTaskUpdated(task.responsavel_id, task);
     return task;
+  }
+
+  async exportCsv(user: AuthUser, filters: ExportTaskFilters, res: Response): Promise<void> {
+    const where: Prisma.TaskWhereInput = {};
+    if (filters.from || filters.to) {
+      where.scheduled_at = {};
+      if (filters.from) (where.scheduled_at as Prisma.DateTimeFilter).gte = new Date(filters.from);
+      if (filters.to) (where.scheduled_at as Prisma.DateTimeFilter).lte = new Date(filters.to);
+    }
+    if (filters.status) where.status = filters.status as TaskStatus;
+    if (filters.lead_id) where.lead_id = filters.lead_id;
+    if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
+
+    const tasks = await this.prisma.task.findMany({
+      where: this.scopeWhere(user, where),
+      select: {
+        id: true,
+        titulo: true,
+        tipo: true,
+        status: true,
+        prioridade: true,
+        scheduled_at: true,
+        completed_at: true,
+        duracao_min: true,
+        created_at: true,
+        lead: { select: { nome: true } },
+        responsavel: { select: { nome: true } },
+      },
+      orderBy: { scheduled_at: 'asc' },
+      take: 10000,
+    });
+
+    const headers = [
+      'id',
+      'titulo',
+      'tipo',
+      'status',
+      'prioridade',
+      'scheduled_at',
+      'completed_at',
+      'duracao_min',
+      'lead_nome',
+      'responsavel',
+      'created_at',
+    ];
+
+    const rows = tasks.map((t) => ({
+      id: t.id,
+      titulo: t.titulo,
+      tipo: t.tipo,
+      status: t.status,
+      prioridade: t.prioridade,
+      scheduled_at: t.scheduled_at,
+      completed_at: t.completed_at,
+      duracao_min: t.duracao_min,
+      lead_nome: t.lead?.nome ?? '',
+      responsavel: t.responsavel?.nome ?? '',
+      created_at: t.created_at,
+    }));
+
+    const csv = toCsv(rows, headers);
+    const timestamp = Date.now();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="tasks-${timestamp}.csv"`);
+    res.send(csv);
   }
 
   async markOverdueBatch() {

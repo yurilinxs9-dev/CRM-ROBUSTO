@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
-import { LeadsService } from './leads.service';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { LeadsService, type ExportLeadFilters } from './leads.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
+import type { Response } from 'express';
 
 @Controller('leads')
 @UseGuards(JwtAuthGuard)
@@ -31,6 +32,15 @@ export class LeadsController {
   @Post('bulk/archive')
   bulkArchive(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.leadsService.bulkArchive(body, req.user as AuthUser);
+  }
+
+  @Get('export')
+  exportCsv(
+    @Req() req: Record<string, unknown>,
+    @Res() res: Response,
+    @Query() filters: ExportLeadFilters,
+  ) {
+    return this.leadsService.exportCsv(req.user as AuthUser, filters, res);
   }
 
   @Get(':id')

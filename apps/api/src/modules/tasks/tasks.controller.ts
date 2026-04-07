@@ -8,11 +8,13 @@ import {
   Param,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { TasksService, type TaskFilters } from './tasks.service';
+import { TasksService, type TaskFilters, type ExportTaskFilters } from './tasks.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
+import type { Response } from 'express';
 
 @Controller('tasks')
 @UseGuards(JwtAuthGuard)
@@ -37,6 +39,15 @@ export class TasksController {
   @Get('overdue')
   findOverdue(@Req() req: Record<string, unknown>) {
     return this.tasks.findOverdue(req.user as AuthUser);
+  }
+
+  @Get('export')
+  exportCsv(
+    @Req() req: Record<string, unknown>,
+    @Res() res: Response,
+    @Query() filters: ExportTaskFilters,
+  ) {
+    return this.tasks.exportCsv(req.user as AuthUser, filters, res);
   }
 
   @Get(':id')

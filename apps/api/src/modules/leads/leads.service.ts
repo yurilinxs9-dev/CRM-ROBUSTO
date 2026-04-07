@@ -1,4 +1,6 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import type { Response } from 'express';
+import { toCsv } from '../../common/csv/csv.util';
 import { createHash } from 'node:crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -68,6 +70,15 @@ interface LeadFilters {
   search?: string;
   limit?: string;
   offset?: string;
+}
+
+export interface ExportLeadFilters {
+  pipeline_id?: string;
+  estagio_id?: string;
+  responsavel_id?: string;
+  temperatura?: string;
+  from?: string;
+  to?: string;
 }
 
 @Injectable()
@@ -532,6 +543,84 @@ export class LeadsService {
         user: { select: { id: true, nome: true } },
       },
     });
+  }
+
+  async exportCsv(user: AuthUser, filters: ExportLeadFilters, res: Response): Promise<void> {
+    const where: Record<string, unknown> = { tenant_id: user.tenantId };
+
+    if (user.role === UserRole.OPERADOR) {
+      where.responsavel_id = user.id;
+    }
+
+    if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
+    if (filters.estagio_id) where.estagio_id = filters.estagio_id;
+    if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
+    if (filters.temperatura) where.temperatura = filters.temperatura;
+    if (filters.from || filters.to) {
+      const createdAt: Record<string, Date> = {};
+      if (filters.from) createdAt.gte = new Date(filters.from);
+      if (filters.to) createdAt.lte = new Date(filters.to);
+      where.created_at = createdAt;
+    }
+
+    const leads = await this.prisma.lead.findMany({
+      where,
+      select: {
+        id: true,
+        nome: true,
+        telefone: true,
+        email: true,
+        temperatura: true,
+        valor_estimado: true,
+        mensagens_nao_lidas: true,
+        ultima_interacao: true,
+        created_at: true,
+        tags: true,
+        pipeline: { select: { nome: true } },
+        estagio: { select: { nome: true } },
+        responsavel: { select: { nome: true } },
+      },
+      orderBy: { created_at: 'desc' },
+      take: 10000,
+    });
+
+    const headers = [
+      'id',
+      'nome',
+      'telefone',
+      'email',
+      'temperatura',
+      'valor_estimado',
+      'pipeline',
+      'stage',
+      'responsavel',
+      'tags',
+      'created_at',
+      'ultima_interacao',
+      'mensagens_nao_lidas',
+    ];
+
+    const rows = leads.map((l) => ({
+      id: l.id,
+      nome: l.nome,
+      telefone: l.telefone,
+      email: l.email,
+      temperatura: l.temperatura,
+      valor_estimado: l.valor_estimado,
+      pipeline: l.pipeline.nome,
+      stage: l.estagio.nome,
+      responsavel: l.responsavel.nome,
+      tags: Array.isArray(l.tags) ? (l.tags as string[]).join(';') : '',
+      created_at: l.created_at,
+      ultima_interacao: l.ultima_interacao,
+      mensagens_nao_lidas: l.mensagens_nao_lidas,
+    }));
+
+    const csv = toCsv(rows, headers);
+    const timestamp = Date.now();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${timestamp}.csv"`);
+    res.send(csv);
   }
 
   async markAsRead(leadId: string, user: AuthUser) {
