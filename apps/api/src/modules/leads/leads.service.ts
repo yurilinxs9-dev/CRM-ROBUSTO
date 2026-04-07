@@ -1,9 +1,21 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import {
+  PIPELINE_AUTO_ACTIONS_QUEUE,
+  type AutoActionJobData,
+} from '../pipelines/auto-actions.processor';
 import { InstancesService } from '../instances/instances.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
+
+const LEADS_LIST_TTL_SECONDS = 15;
+const leadsListPattern = (tenantId: string) => `leads:list:${tenantId}:*`;
 
 interface InstanceConfig {
   uazapi_token?: string;
@@ -40,7 +52,28 @@ export class LeadsService {
   constructor(
     private prisma: PrismaService,
     private instances: InstancesService,
+    private cache: RedisCacheService,
+    private gateway: CrmGateway,
+    @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
+    private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
+
+  async invalidateLeadsCache(tenantId: string): Promise<void> {
+    await this.cache.delPattern(leadsListPattern(tenantId));
+  }
+
+  private buildLeadsListKey(
+    tenantId: string,
+    filters: LeadFilters,
+    role: string,
+    userId: string,
+  ): string {
+    const hash = createHash('sha1')
+      .update(JSON.stringify({ filters, role, userId }))
+      .digest('hex')
+      .slice(0, 16);
+    return `leads:list:${tenantId}:${hash}`;
+  }
 
   async syncProfile(leadId: string, user?: AuthUser) {
     const lead = await this.prisma.lead.findFirst({
@@ -111,9 +144,28 @@ export class LeadsService {
       ];
     }
 
+    const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
+    const cached = await this.cache.get<unknown[]>(cacheKey);
+    if (cached) return cached;
+
     const leads = await this.prisma.lead.findMany({
+      relationLoadStrategy: 'join',
       where,
-      include: {
+      select: {
+        id: true,
+        nome: true,
+        telefone: true,
+        foto_url: true,
+        temperatura: true,
+        valor_estimado: true,
+        mensagens_nao_lidas: true,
+        ultima_interacao: true,
+        updated_at: true,
+        estagio_id: true,
+        estagio_entered_at: true,
+        pipeline_id: true,
+        tags: true,
+        position: true,
         responsavel: { select: { id: true, nome: true, avatar_url: true } },
         estagio: { select: { id: true, nome: true, cor: true } },
         lead_tags: { include: { tag: true } },
@@ -122,13 +174,16 @@ export class LeadsService {
           take: 1,
           select: { content: true, type: true, direction: true, created_at: true },
         },
+        _count: {
+          select: { tasks: { where: { status: 'PENDENTE' } } },
+        },
       },
       orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }],
       take: filters.limit ? Math.min(parseInt(filters.limit), 200) : 50,
       skip: filters.offset ? parseInt(filters.offset) : 0,
     });
 
-    return leads.map((lead) => {
+    const result = leads.map((lead) => {
       const last = lead.messages[0];
       let preview = '';
       if (last) {
@@ -141,14 +196,18 @@ export class LeadsService {
         else if (last.type === 'LOCATION') preview = '📍 Localização';
         else preview = last.content ?? '';
       }
-      const { messages: _messages, ...rest } = lead;
+      const { messages: _messages, _count, ...rest } = lead;
       void _messages;
       return {
         ...rest,
         ultimo_mensagem: preview,
         ultima_interacao: lead.ultima_interacao ?? last?.created_at ?? null,
+        pending_tasks_count: _count?.tasks ?? 0,
       };
     });
+
+    await this.cache.set(cacheKey, result, LEADS_LIST_TTL_SECONDS);
+    return result;
   }
 
   async findOne(id: string, user: AuthUser) {
@@ -173,9 +232,23 @@ export class LeadsService {
     return lead;
   }
 
+  async remove(id: string, user: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, tenant_id: user.tenantId },
+      select: { id: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException();
+    }
+    await this.prisma.lead.delete({ where: { id } });
+    await this.invalidateLeadsCache(user.tenantId);
+    return { success: true };
+  }
+
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
-    return this.prisma.lead.create({
+    const lead = await this.prisma.lead.create({
       data: {
         ...parsed,
         responsavel_id: parsed.responsavel_id || user.id,
@@ -183,6 +256,8 @@ export class LeadsService {
         tenant_id: user.tenantId,
       },
     });
+    await this.invalidateLeadsCache(user.tenantId);
+    return lead;
   }
 
   async updateStage(id: string, data: unknown, user: AuthUser) {
@@ -194,7 +269,10 @@ export class LeadsService {
     if (!lead) throw new NotFoundException();
 
     const [updatedLead] = await this.prisma.$transaction([
-      this.prisma.lead.update({ where: { id }, data: { estagio_id } }),
+      this.prisma.lead.update({
+        where: { id },
+        data: { estagio_id, estagio_entered_at: new Date() },
+      }),
       this.prisma.leadActivity.create({
         data: {
           lead_id: id,
@@ -207,6 +285,36 @@ export class LeadsService {
         },
       }),
     ]);
+
+    await this.invalidateLeadsCache(user.tenantId);
+
+    try {
+      this.gateway.emitLeadStageChanged(
+        id,
+        { newStageId: estagio_id, oldStageId: lead.estagio_id, leadId: id, triggeredByUserId: user.id },
+        user.tenantId,
+      );
+    } catch (err) {
+      this.logger.warn(`emitLeadStageChanged failed for lead ${id}: ${String(err)}`);
+    }
+
+    // Fire-and-forget enqueue of stage auto-actions; failure must not break the move.
+    if (estagio_id !== lead.estagio_id) {
+      try {
+        await this.autoActionsQueue.add(
+          'on-stage-enter',
+          {
+            leadId: id,
+            newStageId: estagio_id,
+            tenantId: user.tenantId,
+            triggeredByUserId: user.id,
+          },
+          { removeOnComplete: true, removeOnFail: 50 },
+        );
+      } catch (err) {
+        this.logger.warn(`auto-actions enqueue failed for lead ${id}: ${String(err)}`);
+      }
+    }
 
     return updatedLead;
   }
@@ -245,5 +353,6 @@ export class LeadsService {
       where: { lead_id: leadId, direction: 'INCOMING', status: { not: 'READ' } },
       data: { status: 'READ' },
     });
+    await this.invalidateLeadsCache(user.tenantId);
   }
 }

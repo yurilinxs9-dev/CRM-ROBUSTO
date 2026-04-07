@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { LeadsService } from './leads.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -41,6 +41,11 @@ export class LeadsController {
   @Post(':id/sync-profile')
   syncProfile(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.syncProfile(id, req.user as AuthUser);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.leadsService.remove(id, req.user as AuthUser);
   }
 
   @Patch(':id/mark-read')
