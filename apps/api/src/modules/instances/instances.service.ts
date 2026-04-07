@@ -193,17 +193,22 @@ export class InstancesService {
     try {
       const { data } = await firstValueFrom(
         this.http.post<Record<string, unknown>>(
-          `${this.baseUrl}/chat/GetNameImageURL`,
+          `${this.baseUrl}/chat/GetNameAndImageURL`,
           { number, preview: false },
           { headers: this.headers(token), timeout: 15000 },
         ),
       );
+      // UazAPI returns: { name, wa_name, wa_contactName, image, imagePreview, ... }
+      // Prefer the real WhatsApp contact/profile name over any local labels.
       const name =
+        (data?.wa_contactName as string | undefined) ??
+        (data?.wa_name as string | undefined) ??
         (data?.name as string | undefined) ??
         (data?.pushName as string | undefined) ??
         (data?.verifiedName as string | undefined);
       const imageUrl =
         (data?.image as string | undefined) ??
+        (data?.imagePreview as string | undefined) ??
         (data?.imageUrl as string | undefined) ??
         (data?.profilePictureUrl as string | undefined);
       return {
