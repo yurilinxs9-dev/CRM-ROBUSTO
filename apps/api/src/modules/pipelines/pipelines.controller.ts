@@ -6,6 +6,7 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,8 +20,14 @@ export class PipelinesController {
   constructor(private pipelinesService: PipelinesService) {}
 
   @Get('pipelines')
-  findAll(@Req() req: Record<string, unknown>) {
-    return this.pipelinesService.findAll(req.user as AuthUser);
+  findAll(
+    @Req() req: Record<string, unknown>,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    return this.pipelinesService.findAll(
+      req.user as AuthUser,
+      includeArchived === 'true' || includeArchived === '1',
+    );
   }
 
   @Get('pipelines/:id')
@@ -33,6 +40,11 @@ export class PipelinesController {
     return this.pipelinesService.create(body, req.user as AuthUser);
   }
 
+  @Post('pipelines/reorder')
+  reorderPipelines(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.reorderPipelines(body, req.user as AuthUser);
+  }
+
   @Patch('pipelines/:id')
   update(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.update(id, body, req.user as AuthUser);
@@ -41,6 +53,30 @@ export class PipelinesController {
   @Delete('pipelines/:id')
   remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.remove(id, req.user as AuthUser);
+  }
+
+  @Post('pipelines/:id/duplicate')
+  duplicate(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.duplicate(id, req.user as AuthUser);
+  }
+
+  @Post('pipelines/:id/archive')
+  archive(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.archive(id, req.user as AuthUser);
+  }
+
+  @Post('pipelines/:id/unarchive')
+  unarchive(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.pipelinesService.unarchive(id, req.user as AuthUser);
+  }
+
+  @Post('pipelines/:id/delete-with-move')
+  deleteWithMove(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() req: Record<string, unknown>,
+  ) {
+    return this.pipelinesService.deleteWithMoveLeads(id, body, req.user as AuthUser);
   }
 
   @Post('pipelines/:id/stages')
