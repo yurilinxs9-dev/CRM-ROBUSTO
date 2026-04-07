@@ -17,13 +17,13 @@ const dateRangeSchema = z.object({
 });
 
 const pipelineSchema = z.object({
-  pipeline_id: z.string().uuid(),
+  pipeline_id: z.string().min(1),
 });
 
 const pipelineDateSchema = pipelineSchema.merge(dateRangeSchema);
 
 const performanceSchema = dateRangeSchema.extend({
-  pipeline_id: z.string().uuid().optional(),
+  pipeline_id: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
