@@ -72,3 +72,5 @@ coverage/
 
 # ---- Arquivos locais com credenciais embutidas ----
 PROMPT-MASTER-CRM.md
+
+apps/web/tsconfig.tsbuildinfo
