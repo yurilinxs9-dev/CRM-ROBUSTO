@@ -22,7 +22,10 @@ interface InstanceConfig {
   [key: string]: unknown;
 }
 
-const updateStageSchema = z.object({ estagio_id: z.string().uuid() });
+const updateStageSchema = z.object({
+  estagio_id: z.string().uuid(),
+  position: z.number().optional(),
+});
 const updateLeadSchema = z.object({
   nome: z.string().min(1).optional(),
   telefone: z.string().min(8).optional(),
@@ -187,7 +190,7 @@ export class LeadsService {
           select: { tasks: { where: { status: 'PENDENTE' } } },
         },
       },
-      orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }],
+      orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }, { created_at: 'desc' }],
       take: filters.limit ? Math.min(parseInt(filters.limit), 200) : 50,
       skip: filters.offset ? parseInt(filters.offset) : 0,
     });
@@ -257,12 +260,27 @@ export class LeadsService {
 
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
+
+    // Compute initial position so new leads append at the bottom of the stage.
+    let initialPosition = 1000;
+    if (parsed.estagio_id) {
+      const maxResult = await this.prisma.lead.aggregate({
+        where: { estagio_id: parsed.estagio_id, tenant_id: user.tenantId },
+        _max: { position: true },
+      });
+      const maxPos = maxResult._max.position;
+      if (maxPos !== null && maxPos !== undefined) {
+        initialPosition = maxPos + 1000;
+      }
+    }
+
     const lead = await this.prisma.lead.create({
       data: {
         ...parsed,
         responsavel_id: parsed.responsavel_id || user.id,
         origem: 'MANUAL',
         tenant_id: user.tenantId,
+        position: initialPosition,
       },
     });
     await this.invalidateLeadsCache(user.tenantId);
@@ -313,17 +331,37 @@ export class LeadsService {
   }
 
   async updateStage(id: string, data: unknown, user: AuthUser) {
-    const { estagio_id } = updateStageSchema.parse(data);
+    const { estagio_id, position } = updateStageSchema.parse(data);
 
     const lead = await this.prisma.lead.findFirst({
       where: { id, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException();
 
+    const stageChanged = estagio_id !== lead.estagio_id;
+
+    if (!stageChanged) {
+      // Position-only reorder within the same stage — no activity, no auto-actions, no estagio_entered_at reset.
+      const updateData: { position?: number } = {};
+      if (position !== undefined) updateData.position = position;
+      const updatedLead = await this.prisma.lead.update({
+        where: { id },
+        data: updateData,
+      });
+      await this.invalidateLeadsCache(user.tenantId);
+      return updatedLead;
+    }
+
+    const leadUpdateData: { estagio_id: string; estagio_entered_at: Date; position?: number } = {
+      estagio_id,
+      estagio_entered_at: new Date(),
+    };
+    if (position !== undefined) leadUpdateData.position = position;
+
     const [updatedLead] = await this.prisma.$transaction([
       this.prisma.lead.update({
         where: { id },
-        data: { estagio_id, estagio_entered_at: new Date() },
+        data: leadUpdateData,
       }),
       this.prisma.leadActivity.create({
         data: {
@@ -351,21 +389,19 @@ export class LeadsService {
     }
 
     // Fire-and-forget enqueue of stage auto-actions; failure must not break the move.
-    if (estagio_id !== lead.estagio_id) {
-      try {
-        await this.autoActionsQueue.add(
-          'on-stage-enter',
-          {
-            leadId: id,
-            newStageId: estagio_id,
-            tenantId: user.tenantId,
-            triggeredByUserId: user.id,
-          },
-          { removeOnComplete: true, removeOnFail: 50 },
-        );
-      } catch (err) {
-        this.logger.warn(`auto-actions enqueue failed for lead ${id}: ${String(err)}`);
-      }
+    try {
+      await this.autoActionsQueue.add(
+        'on-stage-enter',
+        {
+          leadId: id,
+          newStageId: estagio_id,
+          tenantId: user.tenantId,
+          triggeredByUserId: user.id,
+        },
+        { removeOnComplete: true, removeOnFail: 50 },
+      );
+    } catch (err) {
+      this.logger.warn(`auto-actions enqueue failed for lead ${id}: ${String(err)}`);
     }
 
     return updatedLead;
