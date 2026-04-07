@@ -94,4 +94,8 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitTaskOverdue(responsavelId: string, payload: { taskId: string; titulo: string; responsavel_id: string }) {
     this.server.to(`user:${responsavelId}`).emit('task:overdue', payload);
   }
+
+  emitLeadUpdated(leadId: string, data: unknown, tenantId?: string) {
+    this.toTenant(tenantId).emit('lead:updated', { leadId, ...(data as object) });
+  }
 }

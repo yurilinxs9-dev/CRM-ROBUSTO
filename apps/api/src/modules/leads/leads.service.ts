@@ -23,6 +23,15 @@ interface InstanceConfig {
 }
 
 const updateStageSchema = z.object({ estagio_id: z.string().uuid() });
+const updateLeadSchema = z.object({
+  nome: z.string().min(1).optional(),
+  telefone: z.string().min(8).optional(),
+  email: z.string().email().optional().nullable(),
+  temperatura: z.enum(['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']).optional(),
+  valor_estimado: z.string().optional().nullable(),
+  responsavel_id: z.string().uuid().optional(),
+  tags: z.array(z.string()).optional(),
+});
 const createLeadSchema = z.object({
   nome: z.string().min(1),
   telefone: z.string().min(10),
@@ -258,6 +267,49 @@ export class LeadsService {
     });
     await this.invalidateLeadsCache(user.tenantId);
     return lead;
+  }
+
+  async update(id: string, data: unknown, user: AuthUser) {
+    const parsed = updateLeadSchema.parse(data);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, tenant_id: user.tenantId },
+      select: { id: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException();
+    }
+
+    const updateData: Record<string, unknown> = {};
+    if (parsed.nome !== undefined) updateData.nome = parsed.nome;
+    if (parsed.telefone !== undefined) updateData.telefone = parsed.telefone;
+    if (parsed.email !== undefined) updateData.email = parsed.email ?? null;
+    if (parsed.temperatura !== undefined) updateData.temperatura = parsed.temperatura;
+    if (parsed.valor_estimado !== undefined) updateData.valor_estimado = parsed.valor_estimado ?? null;
+    if (parsed.responsavel_id !== undefined) updateData.responsavel_id = parsed.responsavel_id;
+    if (parsed.tags !== undefined) updateData.tags = parsed.tags;
+
+    const updated = await this.prisma.lead.update({
+      where: { id },
+      data: updateData,
+      include: {
+        responsavel: { select: { id: true, nome: true, avatar_url: true } },
+        estagio: true,
+        pipeline: true,
+        lead_tags: { include: { tag: true } },
+      },
+    });
+
+    await this.invalidateLeadsCache(user.tenantId);
+
+    try {
+      this.gateway.emitLeadUpdated(id, { leadId: id, triggeredByUserId: user.id }, user.tenantId);
+    } catch (err) {
+      this.logger.warn(`emitLeadUpdated failed for lead ${id}: ${String(err)}`);
+    }
+
+    return updated;
   }
 
   async updateStage(id: string, data: unknown, user: AuthUser) {

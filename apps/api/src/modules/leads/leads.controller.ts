@@ -23,6 +23,11 @@ export class LeadsController {
     return this.leadsService.create(body, req.user as AuthUser);
   }
 
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.update(id, body, req.user as AuthUser);
+  }
+
   @Patch(':id/stage')
   updateStage(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.leadsService.updateStage(id, body, req.user as AuthUser);
