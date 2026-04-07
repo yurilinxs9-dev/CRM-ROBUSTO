@@ -17,6 +17,7 @@ import { TagsModule } from './modules/tags/tags.module';
 import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module';
 import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -45,6 +46,7 @@ import { CacheModule } from './common/cache/cache.module';
     QuickRepliesModule,
     UsersModule,
     MediaModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}
