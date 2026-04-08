@@ -1,14 +1,36 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import type { AuthUser } from '../../common/types/auth-user';
 
 export interface StageRow { id: string; nome: string; cor: string; ordem: number; is_won?: boolean; }
 
+// Dashboard data changes slowly relative to render frequency — a short TTL
+// makes the first hit pay the cost and everyone else gets sub-10ms responses.
+const DASHBOARD_TTL_SECONDS = 30;
+
 @Injectable()
 export class DashboardService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private cache: RedisCacheService,
+  ) {}
+
+  private async cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    const hit = await this.cache.get<T>(key);
+    if (hit !== null) return hit;
+    const value = await loader();
+    await this.cache.set(key, value, DASHBOARD_TTL_SECONDS);
+    return value;
+  }
 
   async getFunnel(user: AuthUser, pipelineId?: string) {
+    return this.cached(`dash:funnel:${user.tenantId}:${pipelineId ?? 'active'}`, () =>
+      this.computeFunnel(user, pipelineId),
+    );
+  }
+
+  private async computeFunnel(user: AuthUser, pipelineId?: string) {
     const pipeline = pipelineId
       ? await this.prisma.pipeline.findFirst({
           where: { id: pipelineId, tenant_id: user.tenantId },
@@ -41,6 +63,10 @@ export class DashboardService {
   }
 
   async getPerformance(user: AuthUser) {
+    return this.cached(`dash:perf:${user.tenantId}`, () => this.computePerformance(user));
+  }
+
+  private async computePerformance(user: AuthUser) {
     const users = await this.prisma.user.findMany({
       where: { ativo: true, role: { not: 'VISUALIZADOR' }, tenant_id: user.tenantId },
       select: { id: true, nome: true, avatar_url: true },
@@ -86,6 +112,10 @@ export class DashboardService {
   }
 
   async getStats(user: AuthUser) {
+    return this.cached(`dash:stats:${user.tenantId}`, () => this.computeStats(user));
+  }
+
+  private async computeStats(user: AuthUser) {
     const now = new Date();
     const startOfThisWeek = new Date(now);
     startOfThisWeek.setDate(now.getDate() - 7);
@@ -224,6 +254,10 @@ export class DashboardService {
   }
 
   async getVolume(user: AuthUser) {
+    return this.cached(`dash:volume:${user.tenantId}`, () => this.computeVolume(user));
+  }
+
+  private async computeVolume(user: AuthUser) {
     const last7days = new Date();
     last7days.setDate(last7days.getDate() - 7);
 
