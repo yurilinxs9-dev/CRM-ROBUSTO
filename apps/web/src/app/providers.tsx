@@ -10,8 +10,13 @@ export default function Providers({ children }: { children: ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 30_000,
+            // staleTime alto evita refetch toda navegacao — dados chegam
+            // via socket, nao precisa revalidar por polling.
+            staleTime: 5 * 60_000,
+            gcTime: 10 * 60_000,
             refetchOnWindowFocus: false,
+            refetchOnMount: false,
+            refetchOnReconnect: false,
             retry: 1,
           },
         },

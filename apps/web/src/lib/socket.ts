@@ -5,11 +5,16 @@ let socket: Socket | null = null;
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(process.env.NEXT_PUBLIC_WS_URL || 'http://187.127.11.117:3001', {
-      transports: ['websocket', 'polling'],
+      // Forca websocket puro: sem isso o cliente tenta long-polling primeiro,
+      // o que adiciona ~1-2s de handshake e aumenta a carga no backend.
+      transports: ['websocket'],
+      upgrade: false,
       auth: {
         token: typeof window !== 'undefined' ? localStorage.getItem('accessToken') : '',
       },
       autoConnect: false,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 3000,
     });
   }
   return socket;
