@@ -135,7 +135,7 @@ export class DashboardService {
       (await Promise.all([
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
-          where: { tenant_id: user.tenantId, estagio_id: { not: null } } as any,
+          where: { tenant_id: user.tenantId },
           _count: { id: true },
         }),
         this.prisma.lead.count({ where: { tenant_id: user.tenantId } }),
