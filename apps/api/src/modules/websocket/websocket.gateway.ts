@@ -67,6 +67,9 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   emitNewMessage(leadId: string, message: unknown, tenantId?: string) {
+    this.logger.log(
+      `emitNewMessage → lead:${leadId} tenant:${tenantId ?? '-'}`,
+    );
     this.server.to(`lead:${leadId}`).emit('message:new', message);
     this.toTenant(tenantId).emit('lead:new-message', { leadId, message });
   }

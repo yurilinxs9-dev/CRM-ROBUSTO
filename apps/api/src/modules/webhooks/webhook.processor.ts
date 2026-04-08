@@ -1,4 +1,4 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import type { MessageType, Prisma, WhatsappInstance } from '@prisma/client';
@@ -43,6 +43,16 @@ export class WebhookProcessor extends WorkerHost {
     private mediaService: MediaService,
   ) {
     super();
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job | undefined, err: Error) {
+    // Surface silent BullMQ failures in container logs so bugs like the
+    // stale Prisma Client / missing column don't hide as queue "failed" count.
+    this.logger.error(
+      `Webhook job FAILED name=${job?.name ?? '?'} id=${job?.id ?? '?'} attempts=${job?.attemptsMade ?? 0}: ${err?.message ?? err}`,
+      err?.stack,
+    );
   }
 
   async process(job: Job) {
@@ -561,12 +571,23 @@ export class WebhookProcessor extends WorkerHost {
         ERROR: 'FAILED',
       };
       const mappedStatus = statusMap[status];
-      if (mappedStatus) {
-        await this.prisma.message.updateMany({
-          where: { whatsapp_message_id: messageId },
-          data: { status: mappedStatus as 'DELIVERED' | 'READ' | 'FAILED' },
-        });
-      }
+      if (!mappedStatus) continue;
+
+      const existing = await this.prisma.message.findUnique({
+        where: { whatsapp_message_id: messageId },
+        select: { id: true, lead_id: true },
+      });
+      if (!existing) continue;
+
+      await this.prisma.message.update({
+        where: { id: existing.id },
+        data: { status: mappedStatus as 'DELIVERED' | 'READ' | 'FAILED' },
+      });
+      this.gateway.emitMessageStatusUpdate(
+        existing.lead_id,
+        existing.id,
+        mappedStatus,
+      );
     }
   }
 
@@ -650,10 +671,17 @@ export class WebhookProcessor extends WorkerHost {
     const mapped = rawStatus !== undefined ? statusMap[String(rawStatus)] : undefined;
     if (!mapped) return;
 
-    await this.prisma.message.updateMany({
+    const existing = await this.prisma.message.findUnique({
       where: { whatsapp_message_id: messageId },
+      select: { id: true, lead_id: true },
+    });
+    if (!existing) return;
+
+    await this.prisma.message.update({
+      where: { id: existing.id },
       data: { status: mapped },
     });
+    this.gateway.emitMessageStatusUpdate(existing.lead_id, existing.id, mapped);
   }
 
   private async handleUazapiConnectionUpdate(payload: Obj) {
