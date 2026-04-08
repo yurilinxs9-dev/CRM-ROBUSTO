@@ -126,11 +126,16 @@ export class DashboardService {
     // implementation filtered by the stages of the "ativo: true" pipeline,
     // so leads sitting in any other pipeline (or with a stale active flag)
     // rendered as zero in the funnel even when totalLeads > 0.
+    // Prisma's groupBy return types get lost through Promise.all in some TS
+    // versions, so we type the rows locally to keep the downstream code safe.
+    type GroupRow<K extends string> = { [P in K]: string | null } & {
+      _count: { id: number };
+    };
     const [stageGroup, totalLeads, leadsThisWeek, leadsLastWeek, tempGroup, recentLeadActivities, operatorGroup] =
-      await Promise.all([
+      (await Promise.all([
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
-          where: { tenant_id: user.tenantId, estagio_id: { not: null } },
+          where: { tenant_id: user.tenantId, estagio_id: { not: null } } as any,
           _count: { id: true },
         }),
         this.prisma.lead.count({ where: { tenant_id: user.tenantId } }),
@@ -164,7 +169,15 @@ export class DashboardService {
           orderBy: { _count: { id: 'desc' } },
           take: 5,
         }),
-      ]);
+      ])) as [
+        GroupRow<'estagio_id'>[],
+        number,
+        number,
+        number,
+        GroupRow<'temperatura'>[],
+        Array<{ id: string; tipo: string; created_at: Date; lead: { nome: string } | null; user: { nome: string } | null }>,
+        GroupRow<'responsavel_id'>[],
+      ];
 
     // Resolve only the stages that actually have leads attached.
     const usedStageIds = stageGroup
@@ -208,8 +221,10 @@ export class DashboardService {
       createdAt: a.created_at,
     }));
 
-    const operatorIds = operatorGroup.map((g) => g.responsavel_id);
-    const [operators, msgsByOp] = await Promise.all([
+    const operatorIds = operatorGroup
+      .map((g) => g.responsavel_id)
+      .filter((id): id is string => !!id);
+    const [operators, msgsByOp] = (await Promise.all([
       operatorIds.length
         ? this.prisma.user.findMany({
             where: { id: { in: operatorIds }, tenant_id: user.tenantId },
@@ -227,7 +242,10 @@ export class DashboardService {
             _count: { id: true },
           })
         : Promise.resolve([] as { sent_by_user_id: string | null; _count: { id: number } }[]),
-    ]);
+    ])) as [
+      Array<{ id: string; nome: string }>,
+      Array<{ sent_by_user_id: string | null; _count: { id: number } }>,
+    ];
     const msgsMap = new Map(msgsByOp.map((m) => [m.sent_by_user_id, m._count.id]));
     const topOperators = operatorGroup.map((g) => {
       const u = operators.find((o) => o.id === g.responsavel_id);
