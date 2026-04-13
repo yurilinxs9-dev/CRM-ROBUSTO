@@ -273,7 +273,7 @@ export class LeadsService {
         },
       },
       orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }, { created_at: 'desc' }],
-      take: filters.limit ? Math.min(parseInt(filters.limit), 200) : 50,
+      take: filters.limit ? parseInt(filters.limit) : 10000,
       skip: filters.offset ? parseInt(filters.offset) : 0,
     });
 

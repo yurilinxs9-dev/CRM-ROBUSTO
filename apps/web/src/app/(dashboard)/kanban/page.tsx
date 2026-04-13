@@ -187,7 +187,7 @@ export default function KanbanPage() {
     queryKey: leadsQueryKey,
     queryFn: async () => {
       if (!activePipelineId) return [];
-      const res = await api.get('/api/leads', { params: { pipeline_id: activePipelineId } });
+      const res = await api.get('/api/leads', { params: { pipeline_id: activePipelineId, limit: '10000' } });
       return res.data;
     },
     enabled: !!activePipelineId,
