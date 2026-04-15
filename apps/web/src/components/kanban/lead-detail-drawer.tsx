@@ -205,6 +205,7 @@ export function LeadDetailDrawer({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
       setDirty(false);
       toast.success('Lead atualizado.');
     },

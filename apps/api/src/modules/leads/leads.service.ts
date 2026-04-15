@@ -356,15 +356,28 @@ export class LeadsService {
       }
     }
 
-    const lead = await this.prisma.lead.create({
+    const [lead] = await this.prisma.$transaction([
+      this.prisma.lead.create({
+        data: {
+          ...parsed,
+          responsavel_id: parsed.responsavel_id || user.id,
+          origem: 'MANUAL',
+          tenant_id: user.tenantId,
+          position: initialPosition,
+        },
+      }),
+    ]);
+
+    await this.prisma.leadActivity.create({
       data: {
-        ...parsed,
-        responsavel_id: parsed.responsavel_id || user.id,
-        origem: 'MANUAL',
+        lead_id: lead.id,
+        user_id: user.id,
+        tipo: 'lead_created',
+        descricao: 'Lead criado manualmente',
         tenant_id: user.tenantId,
-        position: initialPosition,
       },
     });
+
     await this.invalidateLeadsCache(user.tenantId);
     return lead;
   }
@@ -374,7 +387,16 @@ export class LeadsService {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true },
+      select: {
+        id: true,
+        responsavel_id: true,
+        nome: true,
+        telefone: true,
+        email: true,
+        temperatura: true,
+        valor_estimado: true,
+        tags: true,
+      },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
@@ -390,15 +412,61 @@ export class LeadsService {
     if (parsed.responsavel_id !== undefined) updateData.responsavel_id = parsed.responsavel_id;
     if (parsed.tags !== undefined) updateData.tags = parsed.tags;
 
-    const updated = await this.prisma.lead.update({
-      where: { id },
-      data: updateData,
-      include: {
-        responsavel: { select: { id: true, nome: true, avatar_url: true } },
-        estagio: true,
-        pipeline: true,
-        lead_tags: { include: { tag: true } },
-      },
+    // Detect which fields actually changed for the activity log.
+    const changedFields: string[] = [];
+    const dadosAntes: Record<string, string | number | boolean | null> = {};
+    const dadosDepois: Record<string, string | number | boolean | null> = {};
+    for (const key of Object.keys(updateData)) {
+      const oldVal = (lead as Record<string, unknown>)[key];
+      const newVal = updateData[key];
+      // JSON.stringify handles arrays (tags) and null comparison
+      if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        changedFields.push(key);
+        dadosAntes[key] = JSON.parse(JSON.stringify(oldVal ?? null));
+        dadosDepois[key] = JSON.parse(JSON.stringify(newVal ?? null));
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.lead.update({
+        where: { id },
+        data: updateData,
+        include: {
+          responsavel: { select: { id: true, nome: true, avatar_url: true } },
+          estagio: true,
+          pipeline: true,
+          lead_tags: { include: { tag: true } },
+        },
+      });
+
+      if (changedFields.length > 0) {
+        const FIELD_LABELS: Record<string, string> = {
+          nome: 'Nome',
+          telefone: 'Telefone',
+          email: 'Email',
+          temperatura: 'Temperatura',
+          valor_estimado: 'Valor estimado',
+          responsavel_id: 'Responsavel',
+          tags: 'Tags',
+        };
+        const descricao = changedFields
+          .map((f) => FIELD_LABELS[f] ?? f)
+          .join(', ') + ' atualizado(s)';
+
+        await tx.leadActivity.create({
+          data: {
+            lead_id: id,
+            user_id: user.id,
+            tipo: 'lead_updated',
+            descricao,
+            dados_antes: dadosAntes,
+            dados_depois: dadosDepois,
+            tenant_id: user.tenantId,
+          },
+        });
+      }
+
+      return result;
     });
 
     await this.invalidateLeadsCache(user.tenantId);
@@ -440,6 +508,15 @@ export class LeadsService {
     };
     if (position !== undefined) leadUpdateData.position = position;
 
+    // Fetch stage names for a readable activity description.
+    const [oldStage, newStage] = await Promise.all([
+      this.prisma.stage.findUnique({ where: { id: lead.estagio_id }, select: { nome: true } }),
+      this.prisma.stage.findUnique({ where: { id: estagio_id }, select: { nome: true } }),
+    ]);
+    const descricao = oldStage && newStage
+      ? `Movido de "${oldStage.nome}" para "${newStage.nome}"`
+      : 'Movido para novo estagio';
+
     const [updatedLead] = await this.prisma.$transaction([
       this.prisma.lead.update({
         where: { id },
@@ -450,7 +527,7 @@ export class LeadsService {
           lead_id: id,
           user_id: user.id,
           tipo: 'stage_change',
-          descricao: 'Movido para novo estagio',
+          descricao,
           dados_antes: { estagio_id: lead.estagio_id },
           dados_depois: { estagio_id },
           tenant_id: user.tenantId,

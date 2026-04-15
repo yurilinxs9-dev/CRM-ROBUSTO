@@ -79,6 +79,10 @@ export function ActivityTimeline({ leadId }: ActivityTimelineProps) {
       return res.data as LeadActivityItem[];
     },
     enabled: !!leadId,
+    // Override global staleTime — activities must always refetch when the
+    // drawer opens so the user sees the latest entries immediately.
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   if (isLoading) {

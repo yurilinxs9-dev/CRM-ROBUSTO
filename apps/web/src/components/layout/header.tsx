@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Sidebar, NAV_ITEMS } from './sidebar';
 import { UserMenu } from './user-menu';
 import { api } from '@/lib/api';
@@ -61,6 +61,8 @@ export function Header() {
           </Button>
         </SheetTrigger>
         <SheetContent side="left" className="w-[260px] p-0">
+          <SheetTitle className="sr-only">Menu de navegacao</SheetTitle>
+          <SheetDescription className="sr-only">Navegacao principal do CRM</SheetDescription>
           <Sidebar onNavigate={() => setOpen(false)} />
         </SheetContent>
       </Sheet>

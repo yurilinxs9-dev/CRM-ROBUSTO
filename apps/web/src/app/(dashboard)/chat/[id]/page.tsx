@@ -153,9 +153,9 @@ export default function ChatDetailPage() {
       tempId: string;
     }) => {
       if (isNote) {
-        const res = await api.post(`/api/leads/${leadId}/messages`, {
+        const res = await api.post('/api/messages/internal-note', {
+          lead_id: leadId,
           content,
-          is_internal_note: true,
         });
         return res.data as ChatMessage;
       }

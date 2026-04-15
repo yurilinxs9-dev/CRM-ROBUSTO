@@ -23,8 +23,24 @@ export function getSocket(): Socket {
 export function connectSocket(token: string): Socket {
   const s = getSocket();
   s.auth = { token };
-  s.connect();
+  if (!s.connected) {
+    s.connect();
+  }
   return s;
+}
+
+/**
+ * Reconnect the socket with a fresh token. Called after token refresh
+ * so the gateway accepts the new connection with a valid JWT.
+ */
+export function reconnectSocket(token: string): void {
+  const s = getSocket();
+  s.auth = { token };
+  if (s.connected) {
+    // Force a clean reconnect so the gateway validates the new token.
+    s.disconnect();
+  }
+  s.connect();
 }
 
 export function disconnectSocket(): void {

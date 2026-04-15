@@ -374,9 +374,10 @@ export default function KanbanPage() {
       }
       toast.error('Erro ao mover lead.');
     },
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       leadsSnapshotRef.current = null;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['lead-activities', vars.leadId] });
     },
   });
 
@@ -432,19 +433,27 @@ export default function KanbanPage() {
       if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     };
-    const handleNewMessage = (data: { leadId: string; message?: { conteudo?: string } }) => {
-      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) =>
-        old?.map((l) =>
-          l.id === data.leadId
-            ? {
-                ...l,
-                mensagens_nao_lidas: l.mensagens_nao_lidas + 1,
-                ultima_mensagem_preview: data.message?.conteudo ?? l.ultima_mensagem_preview,
-                ultima_interacao: new Date().toISOString(),
-              }
-            : l,
-        ),
-      );
+    const handleNewMessage = (data: { leadId: string; message?: { content?: string } }) => {
+      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
+        if (!old) return old;
+        let matched = false;
+        const updated = old.map((l) => {
+          if (l.id !== data.leadId) return l;
+          matched = true;
+          return {
+            ...l,
+            mensagens_nao_lidas: l.mensagens_nao_lidas + 1,
+            ultima_mensagem_preview: data.message?.content ?? l.ultima_mensagem_preview,
+            ultima_interacao: new Date().toISOString(),
+          };
+        });
+        // If lead isn't in the current pipeline cache (e.g. new lead created
+        // by the webhook), refetch so it appears on the board.
+        if (!matched) {
+          queryClient.invalidateQueries({ queryKey: leadsQueryKey });
+        }
+        return updated;
+      });
     };
     socket.on('lead:stage-changed', handleStageChanged);
     socket.on('lead:new-message', handleNewMessage);
