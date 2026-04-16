@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { APP_FILTER } from '@nestjs/core';
+import { LoggerModule } from 'nestjs-pino';
+import { AllExceptionFilter } from './common/filters/all-exception.filter';
 import { HealthController } from './modules/health/health.controller';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { TasksModule } from './modules/tasks/tasks.module';
@@ -28,6 +31,48 @@ import { CacheModule } from './common/cache/cache.module';
       isGlobal: true,
       envFilePath: ['.env', '../../.env'],
     }),
+    LoggerModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: () => {
+        const isProd = process.env.NODE_ENV === 'production';
+        return {
+          pinoHttp: {
+            transport: isProd ? undefined : {
+              target: 'pino-pretty',
+              options: { singleLine: true, translateTime: 'HH:MM:ss.l', ignore: 'pid,hostname,req,res' },
+            },
+            level: process.env.LOG_LEVEL ?? (isProd ? 'info' : 'debug'),
+            redact: {
+              paths: [
+                'req.headers.authorization',
+                'req.headers.cookie',
+                'req.headers["x-api-key"]',
+                'req.body.password',
+                'req.body.senha',
+                'req.body.token',
+                'req.body.newPassword',
+                'req.body.currentPassword',
+                'req.body.confirmPassword',
+                'req.body.secret',
+                '*.password',
+                '*.senha',
+                '*.token',
+                '*.secret',
+                '*.uazapi_token',
+              ],
+              remove: false,
+            },
+            customProps: (req: import('http').IncomingMessage) => ({
+              requestId: (req.headers['x-request-id'] as string | undefined),
+            }),
+            autoLogging: {
+              ignore: (req: import('http').IncomingMessage) =>
+                req.url === '/api/health' || req.url === '/health',
+            },
+          },
+        };
+      },
+    }),
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     PrismaModule,
@@ -47,6 +92,9 @@ import { CacheModule } from './common/cache/cache.module';
     UsersModule,
     MediaModule,
     AnalyticsModule,
+  ],
+  providers: [
+    { provide: APP_FILTER, useClass: AllExceptionFilter },
   ],
 })
 export class AppModule {}

@@ -3,9 +3,21 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './common/socket/redis-io.adapter';
 import { json, raw, urlencoded } from 'express';
+import helmet from 'helmet';
+import { Logger as PinoLogger } from 'nestjs-pino';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Replace Nest default logger with Pino (must run before anything logs).
+  app.useLogger(app.get(PinoLogger));
+
+  // Security headers. API-only (no HTML) → we disable CSP & cross-origin-resource-policy
+  // since they only matter for browser-rendered responses.
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: false,
+  }));
 
   // Increase body size limits to support base64-encoded audio uploads (~40MB binary → ~53MB base64).
   app.use(json({ limit: '50mb' }));

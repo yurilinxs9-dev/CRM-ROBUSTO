@@ -10,8 +10,13 @@ import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 
+const rawFrontendUrl = process.env['FRONTEND_URL'] ?? '';
+const wsOrigins = rawFrontendUrl
+  ? rawFrontendUrl.split(',').map((s) => s.trim()).filter(Boolean)
+  : ['http://localhost:3000'];
+
 @WebSocketGateway({
-  cors: { origin: '*', credentials: true },
+  cors: { origin: wsOrigins, credentials: true },
   transports: ['websocket'],
   pingInterval: 20000,
   pingTimeout: 25000,
