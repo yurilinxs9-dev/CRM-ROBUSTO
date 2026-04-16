@@ -9,6 +9,7 @@ import {
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { ZodError } from 'zod';
+import { Sentry, isSentryEnabled } from '../sentry';
 
 interface ErrorBody {
   error: string;
@@ -87,6 +88,19 @@ export class AllExceptionFilter implements ExceptionFilter {
     // Log at appropriate level. 5xx = error, 4xx = warn.
     if (status >= 500) {
       this.logger.error(`${req.method} ${req.url} -> ${status} ${code}`, exception instanceof Error ? exception.stack : undefined);
+      // Ship 5xx (and truly unknown errors) to Sentry; 4xx is noise.
+      if (isSentryEnabled()) {
+        Sentry.withScope((scope) => {
+          scope.setTag('code', code);
+          scope.setTag('statusCode', String(status));
+          scope.setContext('request', {
+            method: req.method,
+            url: req.url,
+            requestId: body.requestId,
+          });
+          Sentry.captureException(exception);
+        });
+      }
     } else {
       this.logger.warn(`${req.method} ${req.url} -> ${status} ${code} ${message}`);
     }

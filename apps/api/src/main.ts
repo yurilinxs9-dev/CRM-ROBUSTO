@@ -5,8 +5,13 @@ import { RedisIoAdapter } from './common/socket/redis-io.adapter';
 import { json, raw, urlencoded } from 'express';
 import helmet from 'helmet';
 import { Logger as PinoLogger } from 'nestjs-pino';
+import { initSentry } from './common/sentry';
 
 async function bootstrap() {
+  // Initialize Sentry BEFORE the Nest app so SDK instrumentation patches
+  // http/express handlers at module-load time. Silently no-ops without SENTRY_DSN.
+  initSentry();
+
   const app = await NestFactory.create(AppModule);
 
   // Replace Nest default logger with Pino (must run before anything logs).
