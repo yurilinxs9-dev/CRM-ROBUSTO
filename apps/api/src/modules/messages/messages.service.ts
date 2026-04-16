@@ -1,16 +1,20 @@
 import { BadGatewayException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { AudioService } from '../media/audio.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { MediaPipelineService } from '../media/media-pipeline.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
 import { MessageType } from '@prisma/client';
+import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 
 const sendTextSchema = z.object({
   lead_id: z.string().uuid(),
@@ -28,6 +32,35 @@ interface InstanceConfig {
   [key: string]: unknown;
 }
 
+type MediaKind = 'image' | 'video' | 'audio' | 'document';
+
+function kindToMessageType(kind: MediaKind): MessageType {
+  switch (kind) {
+    case 'image':    return MessageType.IMAGE;
+    case 'video':    return MessageType.VIDEO;
+    case 'audio':    return MessageType.AUDIO;
+    case 'document': return MessageType.DOCUMENT;
+  }
+}
+
+function mimeToExt(mimetype: string): string {
+  const map: Record<string, string> = {
+    'image/webp':       'webp',
+    'image/jpeg':       'jpg',
+    'image/png':        'png',
+    'image/gif':        'gif',
+    'video/mp4':        'mp4',
+    'video/webm':       'webm',
+    'video/quicktime':  'mov',
+    'audio/ogg':        'ogg',
+    'audio/mpeg':       'mp3',
+    'audio/mp4':        'm4a',
+    'audio/wav':        'wav',
+    'application/pdf':  'pdf',
+  };
+  return map[mimetype] ?? mimetype.split('/')[1]?.split(';')[0] ?? 'bin';
+}
+
 @Injectable()
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
@@ -41,6 +74,8 @@ export class MessagesService {
     private audio: AudioService,
     private gateway: CrmGateway,
     private cache: RedisCacheService,
+    private mediaPipeline: MediaPipelineService,
+    @InjectQueue(MESSAGES_SEND_QUEUE) private readonly sendQueue: Queue<SendMessageJobData>,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
   }
@@ -57,37 +92,25 @@ export class MessagesService {
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
-    return { lead, token };
+    return { lead, token, instanceName: instance.nome };
   }
 
   async sendText(data: unknown, user: AuthUser) {
     const { lead_id, content } = sendTextSchema.parse(data);
-    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
+    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
-    const { data: response } = await firstValueFrom(
-      this.http.post<Record<string, unknown>>(
-        `${this.baseUrl}/send/text`,
-        { number: lead.telefone, text: content },
-        { headers: { token } },
-      ),
-    );
-
-    const respKey = response?.key as Record<string, unknown> | undefined;
-    const whatsappMessageId =
-      (response?.id as string | undefined) ??
-      (response?.messageId as string | undefined) ??
-      (respKey?.id as string | undefined) ??
-      uuid();
+    const localId = uuid();
 
     const message = await this.prisma.message.create({
       data: {
+        id: localId,
         lead_id,
         instance_name: lead.instancia_whatsapp,
-        whatsapp_message_id: whatsappMessageId,
+        whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: 'TEXT',
         content,
-        status: 'SENT',
+        status: 'PENDING',
         sent_by_user_id: user.id,
         tenant_id: user.tenantId,
       },
@@ -100,6 +123,19 @@ export class MessagesService {
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+
+    await this.sendQueue.add('send-text', {
+      kind: 'text',
+      messageId: localId,
+      leadId: lead_id,
+      tenantId: user.tenantId,
+      instanceName,
+      telefone: lead.telefone,
+      uazBaseUrl: this.baseUrl,
+      uazToken: token,
+      content,
+    });
+
     return message;
   }
 
@@ -126,120 +162,32 @@ export class MessagesService {
     });
   }
 
-  private detectMediaType(mimetype: string): { type: MessageType; uazType: 'image' | 'video' | 'document' } {
-    if (mimetype.startsWith('image/')) return { type: MessageType.IMAGE, uazType: 'image' };
-    if (mimetype.startsWith('video/')) return { type: MessageType.VIDEO, uazType: 'video' };
-    return { type: MessageType.DOCUMENT, uazType: 'document' };
-  }
-
   async sendAudio(file: Express.Multer.File, body: unknown, user: AuthUser) {
     const { lead_id } = z.object({ lead_id: z.string().uuid() }).parse(body);
     if (!file) throw new NotFoundException('Arquivo de audio ausente');
 
-    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
+    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
     const opusBuffer = await this.audio.convertToOpus(file.buffer, file.mimetype);
-
-    // Probe duration via ffprobe. Client-provided duration_seconds handled in Phase 4.
     const probedDuration = await this.audio.probeDurationSeconds(opusBuffer, 'audio/ogg');
 
     const filename = `audio/${lead_id}/${uuid()}.ogg`;
     await this.media.upload(filename, opusBuffer, 'audio/ogg');
     const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
 
-    // PTT send strategy — controlled via env vars for zero-downtime tuning.
-    // UAZAPI_PTT_FIELD: 'ptt' (default, type:ptt) | 'audio+ptt' (legacy fallback, type:audio+ptt:true)
-    // AUDIO_SEND_STRATEGY: 'auto' (URL→base64 fallback) | 'url' | 'base64'
-    const pttField = process.env.UAZAPI_PTT_FIELD ?? 'ptt';
-    const rawStrategy = process.env.AUDIO_SEND_STRATEGY ?? 'auto';
-    const strategy: 'auto' | 'url' | 'base64' =
-      rawStrategy === 'url' || rawStrategy === 'base64' ? rawStrategy : 'auto';
-
-    const buildPayload = (fileRef: string): Record<string, unknown> => {
-      if (pttField === 'audio+ptt') {
-        return { number: lead.telefone, type: 'audio', ptt: true, file: fileRef };
-      }
-      // default: pttField === 'ptt' — real PTT blue-mic voice note
-      return { number: lead.telefone, type: 'ptt', file: fileRef };
-    };
-
-    const base64DataUri = (): string =>
-      `data:audio/ogg;base64,${opusBuffer.toString('base64')}`;
-
-    let uazRes: { data: Record<string, unknown> };
-    let chosenStrategy: 'url' | 'base64';
-
-    try {
-      if (strategy === 'base64') {
-        chosenStrategy = 'base64';
-        uazRes = await firstValueFrom(
-          this.http.post<Record<string, unknown>>(
-            `${this.baseUrl}/send/media`,
-            buildPayload(base64DataUri()),
-            { headers: { token } },
-          ),
-        );
-      } else {
-        // 'url' or 'auto': try signed URL first
-        chosenStrategy = 'url';
-        try {
-          uazRes = await firstValueFrom(
-            this.http.post<Record<string, unknown>>(
-              `${this.baseUrl}/send/media`,
-              buildPayload(signedUrl),
-              { headers: { token } },
-            ),
-          );
-        } catch (urlErr: unknown) {
-          if (strategy === 'auto') {
-            const status = (urlErr as { response?: { status?: number } })?.response?.status;
-            this.logger.warn(
-              `[sendAudio] URL strategy failed (${status ?? 'no-status'}); retrying with base64`,
-            );
-            chosenStrategy = 'base64';
-            uazRes = await firstValueFrom(
-              this.http.post<Record<string, unknown>>(
-                `${this.baseUrl}/send/media`,
-                buildPayload(base64DataUri()),
-                { headers: { token } },
-              ),
-            );
-          } else {
-            throw urlErr;
-          }
-        }
-      }
-    } catch (err) {
-      this.logger.error(`UazAPI send audio failed: ${(err as Error).message}`);
-      throw new BadGatewayException('Falha ao enviar audio via UazAPI');
-    }
-
-    this.logger.log(
-      `[sendAudio] strategy=${chosenStrategy} duration=${probedDuration}s size=${opusBuffer.length}B`,
-    );
-
-    const response = uazRes.data;
-    const respKey = response?.key as Record<string, unknown> | undefined;
-    const whatsappMessageId =
-      (response?.id as string | undefined) ??
-      (response?.messageId as string | undefined) ??
-      (respKey?.id as string | undefined) ??
-      uuid();
-
     const message = await this.prisma.message.create({
       data: {
         lead_id,
         instance_name: lead.instancia_whatsapp,
-        whatsapp_message_id: whatsappMessageId,
+        whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: MessageType.AUDIO,
         content: null,
-        media_url: filename,          // storage path (Phase 1) — streamMedia re-signs on read
+        media_url: filename,
         media_mimetype: 'audio/ogg',
-        // media_filename deprecated — storage path now lives in media_url (Phase 1)
         media_size_bytes: opusBuffer.length,
         media_duration_seconds: probedDuration,
-        status: 'SENT',
+        status: 'PENDING',
         sent_by_user_id: user.id,
         tenant_id: user.tenantId,
       },
@@ -252,6 +200,21 @@ export class MessagesService {
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+
+    await this.sendQueue.add('send-audio', {
+      kind: 'audio',
+      messageId: message.id,
+      leadId: lead_id,
+      tenantId: user.tenantId,
+      instanceName,
+      telefone: lead.telefone,
+      uazBaseUrl: this.baseUrl,
+      uazToken: token,
+      storagePath: filename,
+      signedUrl,
+      durationSeconds: probedDuration,
+    });
+
     return message;
   }
 
@@ -261,57 +224,56 @@ export class MessagesService {
       .parse(body);
     if (!file) throw new NotFoundException('Arquivo ausente');
 
-    const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
-    const { type, uazType } = this.detectMediaType(file.mimetype);
+    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
-    const safeName = file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ?? 'file';
-    const filename = `media/${lead_id}/${uuid()}-${safeName}`;
-    await this.media.upload(filename, file.buffer, file.mimetype);
-    const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
-
-    let response: Record<string, unknown>;
+    let processed: Awaited<ReturnType<MediaPipelineService['processMultipart']>>;
     try {
-      const payload: Record<string, unknown> = {
-        number: lead.telefone,
-        type: uazType,
-        file: signedUrl,
-      };
-      if (caption) payload.text = caption;
-      if (uazType === 'document') payload.docName = file.originalname;
-
-      const res = await firstValueFrom(
-        this.http.post<Record<string, unknown>>(
-          `${this.baseUrl}/send/media`,
-          payload,
-          { headers: { token } },
-        ),
-      );
-      response = res.data;
+      processed = await this.mediaPipeline.processMultipart(file.buffer, file.mimetype);
     } catch (err) {
-      this.logger.error(`UazAPI send media failed: ${(err as Error).message}`);
-      throw new BadGatewayException('Falha ao enviar midia via UazAPI');
+      this.logger.error(`Media pipeline failed: ${(err as Error).message}`);
+      throw new BadGatewayException('Falha ao processar midia');
     }
 
-    const respKey = response?.key as Record<string, unknown> | undefined;
-    const whatsappMessageId =
-      (response?.id as string | undefined) ??
-      (response?.messageId as string | undefined) ??
-      (respKey?.id as string | undefined) ??
-      uuid();
+    const fileId = uuid();
+    const ext = mimeToExt(processed.mimetype);
+    const storagePath = `${processed.kind}/${lead_id}/${fileId}.${ext}`;
+
+    await this.media.upload(storagePath, processed.buffer, processed.mimetype);
+
+    let thumbnailPath: string | undefined;
+    if (processed.thumbnail) {
+      thumbnailPath = `${processed.kind}/${lead_id}/${fileId}${processed.thumbnail.path_suffix}`;
+      await this.media.upload(thumbnailPath, processed.thumbnail.buffer, processed.thumbnail.mimetype);
+    }
+
+    let posterPath: string | undefined;
+    if (processed.poster) {
+      posterPath = `${processed.kind}/${lead_id}/${fileId}${processed.poster.path_suffix}`;
+      await this.media.upload(posterPath, processed.poster.buffer, processed.poster.mimetype);
+    }
+
+    const signedUrl = await this.media.getSignedUrl(storagePath, 60 * 60 * 24 * 7);
+
+    const msgType = kindToMessageType(processed.kind);
+    const uazMediaType: 'image' | 'video' | 'audio' | 'document' = processed.kind === 'document' ? 'document' : processed.kind;
 
     const message = await this.prisma.message.create({
       data: {
         lead_id,
         instance_name: lead.instancia_whatsapp,
-        whatsapp_message_id: whatsappMessageId,
+        whatsapp_message_id: null,
         direction: 'OUTGOING',
-        type,
+        type: msgType,
         content: caption ?? null,
-        media_url: signedUrl,
-        media_mimetype: file.mimetype,
-        media_filename: file.originalname ?? null,
-        media_size_bytes: file.size,
-        status: 'SENT',
+        media_url: storagePath,
+        media_mimetype: processed.mimetype,
+        media_size_bytes: processed.size_bytes,
+        media_duration_seconds: processed.duration_seconds ?? null,
+        media_width: processed.width ?? null,
+        media_height: processed.height ?? null,
+        media_thumbnail_path: thumbnailPath ?? null,
+        media_poster_path: posterPath ?? null,
+        status: 'PENDING',
         sent_by_user_id: user.id,
         tenant_id: user.tenantId,
       },
@@ -324,6 +286,24 @@ export class MessagesService {
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+
+    await this.sendQueue.add('send-media', {
+      kind: 'media',
+      messageId: message.id,
+      leadId: lead_id,
+      tenantId: user.tenantId,
+      instanceName,
+      telefone: lead.telefone,
+      uazBaseUrl: this.baseUrl,
+      uazToken: token,
+      storagePath,
+      signedUrl,
+      mimetype: processed.mimetype,
+      mediaType: uazMediaType,
+      caption,
+      filename: file.originalname,
+    });
+
     return message;
   }
 

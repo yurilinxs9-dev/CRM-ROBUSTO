@@ -6,6 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { LeadsService } from '../leads/leads.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
+import { MediaPipelineService } from '../media/media-pipeline.service';
 import {
   type ExtractedMessage,
   extractFromEvolution,
@@ -41,6 +42,7 @@ export class WebhookProcessor extends WorkerHost {
     private leadsService: LeadsService,
     private gateway: CrmGateway,
     private mediaService: MediaService,
+    private mediaPipeline: MediaPipelineService,
   ) {
     super();
   }
@@ -401,6 +403,9 @@ export class WebhookProcessor extends WorkerHost {
    * Off-critical-path: download remote media → upload to Supabase Storage →
    * update message row → emit `message:media-ready` so the client patches
    * the cached message and the audio/image renders without a refresh.
+   *
+   * For IMAGE and VIDEO messages, also runs MediaPipelineService to extract
+   * thumbnail/poster and dimension metadata.
    */
   private async processMediaInBackground(input: {
     tenantId: string;
@@ -410,16 +415,57 @@ export class WebhookProcessor extends WorkerHost {
     extracted: ExtractedMessage;
   }): Promise<void> {
     try {
-      const storagePath = await this.storeMedia(
-        input.extracted,
-        input.tenantId,
-        input.whatsappMessageId,
-      );
-      if (!storagePath) return;
+      // Download the raw buffer once so we can reuse it for pipeline processing.
+      const mediaUrl = input.extracted.media?.url;
+      if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) return;
+
+      const buf = await this.downloadMedia(mediaUrl);
+      if (!buf) return;
+
+      const mimetype = input.extracted.media?.mimetype ?? 'application/octet-stream';
+      const ext = this.extFromMime(mimetype, 'bin');
+      const folder = input.extracted.type.toLowerCase();
+      const storagePath = `${input.tenantId}/${folder}/${input.whatsappMessageId}.${ext}`;
+
+      try {
+        await this.mediaService.upload(storagePath, buf, mimetype);
+      } catch (err) {
+        this.logger.warn(`Falha upload media ${storagePath}: ${String(err)}`);
+        return;
+      }
+
+      // Base DB update.
+      const dbUpdate: Record<string, unknown> = { media_url: storagePath };
+
+      // Enhanced processing for IMAGE and VIDEO.
+      if (input.extracted.type === 'IMAGE') {
+        try {
+          const pipe = await this.mediaPipeline.processImage(buf);
+          const thumbPath = `${input.tenantId}/image/${input.whatsappMessageId}.thumb.jpg`;
+          await this.mediaService.upload(thumbPath, pipe.thumbnail.buffer, pipe.thumbnail.mimetype);
+          dbUpdate['media_thumbnail_path'] = thumbPath;
+          if (pipe.width != null)  dbUpdate['media_width']  = pipe.width;
+          if (pipe.height != null) dbUpdate['media_height'] = pipe.height;
+        } catch (err) {
+          this.logger.warn(`Image pipeline failed for ${input.whatsappMessageId}: ${String(err)}`);
+        }
+      } else if (input.extracted.type === 'VIDEO') {
+        try {
+          const pipe = await this.mediaPipeline.processVideo(buf, mimetype);
+          const posterPath = `${input.tenantId}/video/${input.whatsappMessageId}.poster.jpg`;
+          await this.mediaService.upload(posterPath, pipe.poster.buffer, pipe.poster.mimetype);
+          dbUpdate['media_poster_path'] = posterPath;
+          if (pipe.width != null)             dbUpdate['media_width']            = pipe.width;
+          if (pipe.height != null)            dbUpdate['media_height']           = pipe.height;
+          if (pipe.duration_seconds != null)  dbUpdate['media_duration_seconds'] = pipe.duration_seconds;
+        } catch (err) {
+          this.logger.warn(`Video pipeline failed for ${input.whatsappMessageId}: ${String(err)}`);
+        }
+      }
 
       await this.prisma.message.update({
         where: { id: input.messageId },
-        data: { media_url: storagePath },
+        data: dbUpdate as Prisma.MessageUpdateInput,
       });
 
       let signedUrl: string | null = null;

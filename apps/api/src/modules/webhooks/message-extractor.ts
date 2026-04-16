@@ -10,6 +10,8 @@ export interface ExtractedMessage {
     filename?: string;
     duration_seconds?: number;
     size_bytes?: number;
+    width?: number;
+    height?: number;
   };
   location?: { latitude?: number; longitude?: number; name?: string };
   contact?: { display_name?: string; vcard?: string };
@@ -52,6 +54,8 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         url: asStr(img.url) ?? asStr(img.directPath),
         mimetype: asStr(img.mimetype) ?? 'image/jpeg',
         size_bytes: asNum(img.fileLength),
+        width: asNum(img.width),
+        height: asNum(img.height),
       },
     };
   }
@@ -67,6 +71,8 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         mimetype: asStr(vid.mimetype) ?? 'video/mp4',
         duration_seconds: asNum(vid.seconds),
         size_bytes: asNum(vid.fileLength),
+        width: asNum(vid.width),
+        height: asNum(vid.height),
       },
     };
   }

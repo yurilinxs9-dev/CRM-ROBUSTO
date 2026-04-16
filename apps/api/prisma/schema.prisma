@@ -213,6 +213,11 @@ model Message {
   media_duration_seconds Int?
   media_filename         String?
   media_size_bytes       Int?
+  media_width            Int?
+  media_height           Int?
+  media_thumbnail_path   String?
+  media_poster_path      String?
+  media_waveform_peaks   Json?
   status                 MessageStatus    @default(PENDING)
   is_internal_note       Boolean          @default(false)
   sent_by_user_id        String?
