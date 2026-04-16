@@ -6,8 +6,10 @@ import type { AuthUser } from '../../common/types/auth-user';
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
-  findAll() {
+  findAll(user: AuthUser) {
+    // Tenant-scoped: prevents cross-tenant user enumeration.
     return this.prisma.user.findMany({
+      where: { tenant_id: user.tenantId },
       select: {
         id: true,
         nome: true,

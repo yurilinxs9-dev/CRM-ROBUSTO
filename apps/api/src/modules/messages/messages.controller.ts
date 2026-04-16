@@ -15,19 +15,24 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller('messages')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class MessagesController {
   constructor(private messagesService: MessagesService) {}
 
   @Post('send-text')
+  @Roles(UserRole.OPERADOR)
   sendText(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.messagesService.sendText(body, req.user as AuthUser);
   }
 
   @Post('send-audio')
+  @Roles(UserRole.OPERADOR)
   @UseInterceptors(FileInterceptor('file'))
   sendAudio(
     @UploadedFile() file: Express.Multer.File,
@@ -38,6 +43,7 @@ export class MessagesController {
   }
 
   @Post('send-media')
+  @Roles(UserRole.OPERADOR)
   @UseInterceptors(FileInterceptor('file'))
   sendMedia(
     @UploadedFile() file: Express.Multer.File,
@@ -48,6 +54,7 @@ export class MessagesController {
   }
 
   @Post('internal-note')
+  @Roles(UserRole.OPERADOR)
   createInternalNote(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.messagesService.createInternalNote(body, req.user as AuthUser);
   }

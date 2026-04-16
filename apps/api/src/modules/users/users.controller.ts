@@ -3,6 +3,7 @@ import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
 @Controller('users')
@@ -11,9 +12,9 @@ export class UsersController {
   constructor(private usersService: UsersService) {}
 
   @Get()
-  @Roles('GERENTE' as any)
-  findAll() {
-    return this.usersService.findAll();
+  @Roles(UserRole.GERENTE)
+  findAll(@Req() req: Record<string, unknown>) {
+    return this.usersService.findAll(req.user as AuthUser);
   }
 
   @Get('list')

@@ -18,6 +18,9 @@
     "db:seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
+    "@bull-board/api": "^7.0.0",
+    "@bull-board/express": "^7.0.0",
+    "@bull-board/nestjs": "^7.0.0",
     "@nestjs/axios": "^3.0.0",
     "@nestjs/bullmq": "^10.0.0",
     "@nestjs/common": "^10.0.0",
