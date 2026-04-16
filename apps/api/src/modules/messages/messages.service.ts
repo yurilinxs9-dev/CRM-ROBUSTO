@@ -139,25 +139,86 @@ export class MessagesService {
     const { lead, token } = await this.resolveLeadAndToken(lead_id, user);
 
     const opusBuffer = await this.audio.convertToOpus(file.buffer, file.mimetype);
+
+    // Probe duration via ffprobe. Client-provided duration_seconds handled in Phase 4.
+    const probedDuration = await this.audio.probeDurationSeconds(opusBuffer, 'audio/ogg');
+
     const filename = `audio/${lead_id}/${uuid()}.ogg`;
     await this.media.upload(filename, opusBuffer, 'audio/ogg');
     const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
 
-    let response: Record<string, unknown>;
+    // PTT send strategy — controlled via env vars for zero-downtime tuning.
+    // UAZAPI_PTT_FIELD: 'ptt' (default, type:ptt) | 'audio+ptt' (legacy fallback, type:audio+ptt:true)
+    // AUDIO_SEND_STRATEGY: 'auto' (URL→base64 fallback) | 'url' | 'base64'
+    const pttField = process.env.UAZAPI_PTT_FIELD ?? 'ptt';
+    const rawStrategy = process.env.AUDIO_SEND_STRATEGY ?? 'auto';
+    const strategy: 'auto' | 'url' | 'base64' =
+      rawStrategy === 'url' || rawStrategy === 'base64' ? rawStrategy : 'auto';
+
+    const buildPayload = (fileRef: string): Record<string, unknown> => {
+      if (pttField === 'audio+ptt') {
+        return { number: lead.telefone, type: 'audio', ptt: true, file: fileRef };
+      }
+      // default: pttField === 'ptt' — real PTT blue-mic voice note
+      return { number: lead.telefone, type: 'ptt', file: fileRef };
+    };
+
+    const base64DataUri = (): string =>
+      `data:audio/ogg;base64,${opusBuffer.toString('base64')}`;
+
+    let uazRes: { data: Record<string, unknown> };
+    let chosenStrategy: 'url' | 'base64';
+
     try {
-      const res = await firstValueFrom(
-        this.http.post<Record<string, unknown>>(
-          `${this.baseUrl}/send/media`,
-          { number: lead.telefone, type: 'audio', ptt: true, file: signedUrl },
-          { headers: { token } },
-        ),
-      );
-      response = res.data;
+      if (strategy === 'base64') {
+        chosenStrategy = 'base64';
+        uazRes = await firstValueFrom(
+          this.http.post<Record<string, unknown>>(
+            `${this.baseUrl}/send/media`,
+            buildPayload(base64DataUri()),
+            { headers: { token } },
+          ),
+        );
+      } else {
+        // 'url' or 'auto': try signed URL first
+        chosenStrategy = 'url';
+        try {
+          uazRes = await firstValueFrom(
+            this.http.post<Record<string, unknown>>(
+              `${this.baseUrl}/send/media`,
+              buildPayload(signedUrl),
+              { headers: { token } },
+            ),
+          );
+        } catch (urlErr: unknown) {
+          if (strategy === 'auto') {
+            const status = (urlErr as { response?: { status?: number } })?.response?.status;
+            this.logger.warn(
+              `[sendAudio] URL strategy failed (${status ?? 'no-status'}); retrying with base64`,
+            );
+            chosenStrategy = 'base64';
+            uazRes = await firstValueFrom(
+              this.http.post<Record<string, unknown>>(
+                `${this.baseUrl}/send/media`,
+                buildPayload(base64DataUri()),
+                { headers: { token } },
+              ),
+            );
+          } else {
+            throw urlErr;
+          }
+        }
+      }
     } catch (err) {
       this.logger.error(`UazAPI send audio failed: ${(err as Error).message}`);
       throw new BadGatewayException('Falha ao enviar audio via UazAPI');
     }
 
+    this.logger.log(
+      `[sendAudio] strategy=${chosenStrategy} duration=${probedDuration}s size=${opusBuffer.length}B`,
+    );
+
+    const response = uazRes.data;
     const respKey = response?.key as Record<string, unknown> | undefined;
     const whatsappMessageId =
       (response?.id as string | undefined) ??
@@ -173,10 +234,11 @@ export class MessagesService {
         direction: 'OUTGOING',
         type: MessageType.AUDIO,
         content: null,
-        media_url: signedUrl,
+        media_url: filename,          // storage path (Phase 1) — streamMedia re-signs on read
         media_mimetype: 'audio/ogg',
-        media_filename: filename,
+        // media_filename deprecated — storage path now lives in media_url (Phase 1)
         media_size_bytes: opusBuffer.length,
+        media_duration_seconds: probedDuration,
         status: 'SENT',
         sent_by_user_id: user.id,
         tenant_id: user.tenantId,
