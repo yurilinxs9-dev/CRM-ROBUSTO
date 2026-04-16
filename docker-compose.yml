@@ -26,6 +26,18 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - FFMPEG_PATH=/usr/bin/ffmpeg
+      - FFPROBE_PATH=${FFPROBE_PATH:-/usr/bin/ffprobe}
+      - TMP_VIDEO_DIR=${TMP_VIDEO_DIR:-/tmp/video}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Audio PTT (Phase 1)
+      - UAZAPI_PTT_FIELD=${UAZAPI_PTT_FIELD:-ptt}
+      - AUDIO_SEND_STRATEGY=${AUDIO_SEND_STRATEGY:-auto}
+      # Sentry (Phase 3) — deixe SENTRY_DSN vazio para desabilitar
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_ENV=${SENTRY_ENV:-production}
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
+      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+      - SENTRY_PROFILES_SAMPLE_RATE=${SENTRY_PROFILES_SAMPLE_RATE:-0.0}
     networks: [crm-network]
     deploy:
       resources:
