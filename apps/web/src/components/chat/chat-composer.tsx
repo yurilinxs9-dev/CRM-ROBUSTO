@@ -57,7 +57,7 @@ interface ChatComposerProps {
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
   onSendText: (content: string, isInternalNote: boolean) => void;
-  onSendAudio: (blob: Blob, durationSec: number) => void;
+  onSendAudio: (blob: Blob, durationSec: number, waveformPeaks?: number[]) => void;
   onSendMedia: (file: File, caption: string | undefined) => void;
 }
 
@@ -98,11 +98,17 @@ export function ChatComposer({
   // Recording state
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
+  const [waveformBars, setWaveformBars] = useState<number[]>(() =>
+    Array.from({ length: 30 }, () => 0),
+  );
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number>(0);
 
   // File inputs
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -181,11 +187,79 @@ export function ChatComposer({
     }
   };
 
+  const cleanupAnalyser = () => {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = 0;
+    }
+    analyserRef.current = null;
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+  };
+
+  const computePeaks = async (blob: Blob): Promise<number[]> => {
+    try {
+      const ctx = new AudioContext();
+      const arrayBuf = await blob.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+      const raw = audioBuffer.getChannelData(0);
+      const peakCount = 40;
+      const segLen = Math.floor(raw.length / peakCount);
+      const peaks: number[] = [];
+      for (let i = 0; i < peakCount; i++) {
+        let sum = 0;
+        const start = i * segLen;
+        const end = Math.min(start + segLen, raw.length);
+        for (let j = start; j < end; j++) {
+          sum += raw[j] * raw[j];
+        }
+        peaks.push(Math.sqrt(sum / (end - start)));
+      }
+      const max = Math.max(...peaks, 0.001);
+      await ctx.close();
+      return peaks.map((p) => Math.round((p / max) * 100) / 100);
+    } catch {
+      return [];
+    }
+  };
+
   const startRecording = async () => {
     if (recording || disabled) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+
+      // Setup AudioContext + AnalyserNode for live waveform
+      const actx = new AudioContext();
+      const source = actx.createMediaStreamSource(stream);
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      audioCtxRef.current = actx;
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteTimeDomainData(dataArray);
+        // Compute RMS for 30 segments of the time-domain buffer
+        const segLen = Math.floor(dataArray.length / 30);
+        const bars: number[] = [];
+        for (let i = 0; i < 30; i++) {
+          let sum = 0;
+          for (let j = 0; j < segLen; j++) {
+            const v = (dataArray[i * segLen + j] - 128) / 128;
+            sum += v * v;
+          }
+          bars.push(Math.sqrt(sum / segLen));
+        }
+        setWaveformBars(bars);
+        animFrameRef.current = requestAnimationFrame(tick);
+      };
+      animFrameRef.current = requestAnimationFrame(tick);
+
       const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : MediaRecorder.isTypeSupported('audio/webm')
@@ -202,6 +276,8 @@ export function ChatComposer({
       rec.onstop = () => {
         stopStream();
         clearTimer();
+        cleanupAnalyser();
+        setWaveformBars(Array.from({ length: 30 }, () => 0));
         const capturedDuration = duration;
         if (cancelRef.current) {
           chunksRef.current = [];
@@ -212,7 +288,9 @@ export function ChatComposer({
         });
         chunksRef.current = [];
         if (blob.size > 0) {
-          onSendAudio(blob, capturedDuration);
+          computePeaks(blob).then((peaks) => {
+            onSendAudio(blob, capturedDuration, peaks.length > 0 ? peaks : undefined);
+          });
         }
       };
       rec.start();
@@ -224,6 +302,7 @@ export function ChatComposer({
       console.error('[recorder] getUserMedia failed', err);
       alert('Não foi possível acessar o microfone.');
       stopStream();
+      cleanupAnalyser();
     }
   };
 
@@ -237,6 +316,8 @@ export function ChatComposer({
   const cancelRecording = () => {
     if (!recorderRef.current) return;
     cancelRef.current = true;
+    cleanupAnalyser();
+    setWaveformBars(Array.from({ length: 30 }, () => 0));
     try {
       recorderRef.current.stop();
     } catch {
@@ -250,6 +331,7 @@ export function ChatComposer({
     return () => {
       clearTimer();
       stopStream();
+      cleanupAnalyser();
     };
   }, []);
 
@@ -337,11 +419,11 @@ export function ChatComposer({
               {formatTimer(duration)}
             </span>
             <div className="flex flex-1 items-center gap-0.5 overflow-hidden">
-              {Array.from({ length: 30 }).map((_, i) => (
+              {waveformBars.map((level, i) => (
                 <span
                   key={i}
-                  className="h-4 w-0.5 animate-pulse rounded-full bg-primary/60"
-                  // eslint-disable-next-line react/forbid-dom-props
+                  className="w-0.5 rounded-full bg-primary/60 transition-[height] duration-75"
+                  style={{ height: `${Math.max(2, level * 24)}px` }}
                 />
               ))}
             </div>

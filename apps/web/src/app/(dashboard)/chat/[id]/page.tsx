@@ -14,10 +14,18 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { MessageCircle } from 'lucide-react';
+import { MessageCircle, Send, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ChatHeader } from '@/components/chat/chat-header';
 import { ChatComposer } from '@/components/chat/chat-composer';
@@ -63,6 +71,13 @@ export default function ChatDetailPage() {
   const [newCount, setNewCount] = useState(0);
   // Placeholder — flip when `lead:typing` event wiring lands in the gateway.
   const [isTyping] = useState(false);
+  // Drag-drop state
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
+  // Dropped image preview dialog
+  const [droppedImage, setDroppedImage] = useState<File | null>(null);
+  const [droppedPreview, setDroppedPreview] = useState<string | null>(null);
+  const [droppedCaption, setDroppedCaption] = useState('');
 
   // --- Queries ---
   const { data: currentLead } = useQuery<ChatLead>({
@@ -231,10 +246,19 @@ export default function ChatDetailPage() {
   });
 
   const sendAudioMutation = useMutation({
-    mutationFn: async (blob: Blob) => {
+    mutationFn: async ({
+      blob,
+      waveformPeaks,
+    }: {
+      blob: Blob;
+      waveformPeaks?: number[];
+    }) => {
       const fd = new FormData();
       fd.append('file', blob, 'audio.webm');
       fd.append('lead_id', leadId);
+      if (waveformPeaks && waveformPeaks.length > 0) {
+        fd.append('waveform_peaks', JSON.stringify(waveformPeaks));
+      }
       const res = await api.post('/api/messages/send-audio', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -499,11 +523,12 @@ export default function ChatDetailPage() {
   );
 
   const handleSendAudio = useCallback(
-    (blob: Blob) => {
+    (blob: Blob, _durationSec: number, waveformPeaks?: number[]) => {
       toast.loading('Enviando áudio…', { id: 'audio-upload' });
-      sendAudioMutation.mutate(blob, {
-        onSettled: () => toast.dismiss('audio-upload'),
-      });
+      sendAudioMutation.mutate(
+        { blob, waveformPeaks },
+        { onSettled: () => toast.dismiss('audio-upload') },
+      );
     },
     [sendAudioMutation],
   );
@@ -548,13 +573,117 @@ export default function ChatDetailPage() {
     deleteLeadMutation.mutate();
   };
 
+  // --- Paste image handler ---
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          e.preventDefault();
+          const file = items[i].getAsFile();
+          if (!file) return;
+          const url = URL.createObjectURL(file);
+          setDroppedImage(file);
+          setDroppedPreview(url);
+          setDroppedCaption('');
+          return;
+        }
+      }
+    };
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, []);
+
+  // --- Drag-drop handlers ---
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+
+      const file = e.dataTransfer.files?.[0];
+      if (!file) return;
+
+      if (file.type.startsWith('image/')) {
+        const url = URL.createObjectURL(file);
+        setDroppedImage(file);
+        setDroppedPreview(url);
+        setDroppedCaption('');
+        return;
+      }
+
+      // Videos and documents: send directly
+      if (
+        file.type.startsWith('video/') ||
+        file.type.startsWith('application/') ||
+        file.type.startsWith('text/')
+      ) {
+        handleSendMedia(file, undefined);
+      }
+    },
+    [handleSendMedia],
+  );
+
+  const clearDroppedImage = useCallback(() => {
+    if (droppedPreview) URL.revokeObjectURL(droppedPreview);
+    setDroppedImage(null);
+    setDroppedPreview(null);
+    setDroppedCaption('');
+  }, [droppedPreview]);
+
+  const confirmDroppedImage = useCallback(() => {
+    if (!droppedImage) return;
+    handleSendMedia(droppedImage, droppedCaption.trim() || undefined);
+    clearDroppedImage();
+  }, [droppedImage, droppedCaption, handleSendMedia, clearDroppedImage]);
+
   const sending =
     sendTextMutation.isPending ||
     sendAudioMutation.isPending ||
     sendMediaMutation.isPending;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div
+      className="relative flex h-full flex-col bg-background"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-primary p-10">
+            <Upload size={40} className="text-primary" />
+            <p className="text-lg font-medium text-primary">Solte para enviar</p>
+          </div>
+        </div>
+      )}
+
       {currentLead && (
         <ChatHeader
           lead={currentLead}
@@ -677,6 +806,43 @@ export default function ChatDetailPage() {
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
       />
+
+      <Dialog
+        open={!!droppedImage}
+        onOpenChange={(v) => {
+          if (!v) clearDroppedImage();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Enviar imagem</DialogTitle>
+          </DialogHeader>
+          {droppedPreview && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={droppedPreview}
+              alt="Pré-visualização"
+              className="max-h-[50vh] w-full rounded-md object-contain"
+            />
+          )}
+          <textarea
+            value={droppedCaption}
+            onChange={(e) => setDroppedCaption(e.target.value)}
+            placeholder="Legenda (opcional)"
+            rows={2}
+            className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={clearDroppedImage}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmDroppedImage} disabled={sending}>
+              <Send size={14} className="mr-1.5" />
+              Enviar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
