@@ -56,6 +56,12 @@ export interface Stage {
   pipeline_id: string;
   is_won: boolean;
   is_lost: boolean;
+  max_dias?: number | null;
+  auto_action?: any;
+  sla_config?: any;
+  idle_alert_config?: any;
+  on_entry_config?: any;
+  cadence_config?: any;
 }
 
 export interface WhatsappInstance {

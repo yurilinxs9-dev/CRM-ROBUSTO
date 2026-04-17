@@ -24,6 +24,10 @@ const createStageSchema = z.object({
   nome: z.string().min(1).max(100),
   cor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default('#3498DB'),
   ordem: z.number().int().optional(),
+  sla_config: z.any().optional(),
+  idle_alert_config: z.any().optional(),
+  on_entry_config: z.any().optional(),
+  cadence_config: z.any().optional(),
 });
 
 const updateStageSchema = z.object({
@@ -34,6 +38,10 @@ const updateStageSchema = z.object({
   is_lost: z.boolean().optional(),
   max_dias: z.number().int().positive().nullable().optional(),
   auto_action: z.unknown().optional(),
+  sla_config: z.any().optional(),
+  idle_alert_config: z.any().optional(),
+  on_entry_config: z.any().optional(),
+  cadence_config: z.any().optional(),
 });
 
 const reorderStagesSchema = z.object({
