@@ -664,15 +664,14 @@ export default function KanbanPage() {
       is_lost: s.is_lost ?? false,
       max_dias: s.max_dias ?? null,
       auto_action: (s.auto_action as StageAutoActionForm | null) ?? null,
+      sla_config: s.sla_config ?? null,
+      idle_alert_config: s.idle_alert_config ?? null,
+      on_entry_config: s.on_entry_config ?? null,
+      cadence_config: s.cadence_config ?? null,
     };
   }, [stageConfigId, stages]);
 
-  const handleSubmitStageConfig = (patch: {
-    is_won: boolean;
-    is_lost: boolean;
-    max_dias: number | null;
-    auto_action: StageAutoActionForm | null;
-  }) => {
+  const handleSubmitStageConfig = (patch: any) => {
     if (!stageConfigId) return;
     updateStageMutation.mutate(
       { id: stageConfigId, patch },

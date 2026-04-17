@@ -44,6 +44,10 @@ export interface Stage {
   is_lost?: boolean;
   max_dias?: number | null;
   auto_action?: unknown;
+  sla_config?: any;
+  idle_alert_config?: any;
+  on_entry_config?: any;
+  cadence_config?: any;
 }
 
 function SortableLeadImpl({

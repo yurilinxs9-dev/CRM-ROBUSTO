@@ -36,7 +36,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { cn } from '@/lib/cn';
 
 interface TenantUser {
   id: string;
@@ -64,6 +64,14 @@ export interface CadenceStep {
   };
 }
 
+export interface StageAutoActionForm {
+  on_enter?: {
+    create_task?: { titulo: string; tipo: any; offset_min: number };
+    send_message?: { content: string };
+    assign_user?: { user_id: string };
+  };
+}
+
 export interface StageConfig {
   id: string;
   nome: string;
@@ -71,7 +79,7 @@ export interface StageConfig {
   is_won: boolean;
   is_lost: boolean;
   max_dias: number | null;
-  auto_action: any;
+  auto_action: StageAutoActionForm | null;
   sla_config?: any;
   idle_alert_config?: any;
   on_entry_config?: any;
