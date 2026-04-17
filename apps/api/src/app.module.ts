@@ -22,6 +22,7 @@ import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { AutomationModule } from './modules/automation/automation.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -94,6 +95,7 @@ import { CacheModule } from './common/cache/cache.module';
     MediaModule,
     AnalyticsModule,
     AdminModule,
+    AutomationModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },

@@ -280,10 +280,12 @@ export class WebhookProcessor extends WorkerHost {
         estagio_id: ctx.firstStage.id,
         responsavel_id: instance.owner_user_id,
         ultima_interacao: new Date(),
+        last_customer_message_at: isFromMe ? undefined : new Date(),
         tenant_id: tenantId,
       },
       update: {
         ultima_interacao: new Date(),
+        last_customer_message_at: isFromMe ? undefined : new Date(),
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
       },
     });

@@ -145,6 +145,13 @@ model Stage {
   auto_action         Json?
   campos_obrigatorios Json?
   max_dias            Int?
+  
+  // Novos campos do Painel Dinâmico
+  sla_config        Json?   // { duration, unit, action, targetStageId }
+  idle_alert_config Json?   // { duration, unit }
+  on_entry_config   Json?   // { createTask, sendInitialMessage, assignResponsible }
+  cadence_config    Json?   // Array de degraus de cadência
+
   created_at          DateTime @default(now())
   leads               Lead[]
 
@@ -167,6 +174,11 @@ model Lead {
   dados_custom        Json?           @default("{}")
   ultima_interacao    DateTime?
   estagio_entered_at  DateTime?
+  
+  // Novos rastreadores para o Painel Dinâmico
+  last_customer_message_at DateTime?
+  cadence_step_index       Int       @default(0)
+
   proximo_followup    DateTime?
   motivo_perda        String?
   position            Float           @default(0)
