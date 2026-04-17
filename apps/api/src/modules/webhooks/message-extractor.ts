@@ -247,7 +247,10 @@ export function extractFromWpp(msg: Obj): ExtractedMessage {
  * Extract from UazAPI message payload.
  */
 export function extractFromUazapi(message: Obj): ExtractedMessage {
-  const messageType = asStr(message.messageType) ?? asStr(message.type);
+  const rawType = asStr(message.messageType) ?? asStr(message.type);
+  // UazAPI sometimes sends PascalCase (e.g. "StickerMessage", "ImageMessage").
+  // Normalize to lowercase so the switch matches all variants.
+  const messageType = rawType?.toLowerCase();
   const text = asStr(message.text);
   const caption = asStr(message.caption);
   const mediaUrl = asStr(message.mediaUrl) ?? asStr(message.url);
@@ -260,21 +263,21 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
     case 'conversation':
       return { type: 'TEXT', content: text ?? null };
     case 'image':
-    case 'imageMessage':
+    case 'imagemessage':
       return {
         type: 'IMAGE',
         content: caption ?? text ?? null,
         media: { url: mediaUrl, mimetype: mimetype ?? 'image/jpeg' },
       };
     case 'video':
-    case 'videoMessage':
+    case 'videomessage':
       return {
         type: 'VIDEO',
         content: caption ?? text ?? null,
         media: { url: mediaUrl, mimetype: mimetype ?? 'video/mp4', duration_seconds: duration },
       };
     case 'audio':
-    case 'audioMessage':
+    case 'audiomessage':
     case 'ptt':
       return {
         type: 'AUDIO',
@@ -282,7 +285,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
         media: { url: mediaUrl, mimetype: mimetype ?? 'audio/ogg', duration_seconds: duration },
       };
     case 'document':
-    case 'documentMessage':
+    case 'documentmessage':
       return {
         type: 'DOCUMENT',
         content: caption ?? null,
@@ -293,14 +296,14 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
         },
       };
     case 'sticker':
-    case 'stickerMessage':
+    case 'stickermessage':
       return {
         type: 'STICKER',
         content: null,
         media: { url: mediaUrl, mimetype: mimetype ?? 'image/webp' },
       };
     case 'location':
-    case 'locationMessage':
+    case 'locationmessage':
       return {
         type: 'LOCATION',
         content: asStr(message.name) ?? null,
@@ -311,7 +314,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
         },
       };
     case 'contact':
-    case 'contactMessage':
+    case 'contactmessage':
       return {
         type: 'CONTACT',
         content: asStr(message.displayName) ?? null,
@@ -323,7 +326,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
     default:
       // Fallback: try text
       if (text) return { type: 'TEXT', content: text };
-      return { type: 'TEXT', content: messageType ? `[unsupported: ${messageType}]` : null };
+      return { type: 'TEXT', content: rawType ? `[unsupported: ${rawType}]` : null };
   }
 }
 

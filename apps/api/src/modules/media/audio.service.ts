@@ -27,13 +27,10 @@ export class AudioService {
         '-vn',
         '-map_metadata', '-1',
         '-c:a', 'libopus',
-        '-b:a', '24k',          // PTT: 24k (was 32k)
-        '-ar', '16000',         // PTT: 16kHz narrowband (was 48kHz)
+        '-b:a', '32k',
+        '-ar', '48000',
         '-ac', '1',
-        '-application', 'voip',
         '-vbr', 'on',
-        '-compression_level', '10',
-        '-frame_duration', '60', // PTT: 60ms frames for WhatsApp compatibility
         '-f', 'ogg',
         '-y',
         outputPath,
