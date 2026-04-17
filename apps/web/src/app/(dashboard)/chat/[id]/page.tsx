@@ -326,6 +326,14 @@ export default function ChatDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['leads'] });
       queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      
+      // Update cache optimistically so the sidebar UI updates instantly without waiting for a re-fetch
+      queryClient.setQueryData<ChatLead[]>(['chat', 'leads'], (old) => {
+        if (!old) return old;
+        return old.map((lead) => 
+          lead.id === leadId ? { ...lead, mensagens_nao_lidas: 0 } : lead
+        );
+      });
     },
   });
 
