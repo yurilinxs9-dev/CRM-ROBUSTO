@@ -86,6 +86,7 @@ interface StageConfigDialogProps {
   onSubmit: (data: any) => void;
 }
 
+// --- Build Trigger: Banco de dados sincronizado na VPS ---
 export function StageConfigDialog({
   open,
   onOpenChange,
