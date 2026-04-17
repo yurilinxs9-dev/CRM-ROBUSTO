@@ -26,11 +26,13 @@ export class AutomationService {
   }
 
   private async processSLAs() {
-    // Buscar etapas que possuem SLA configurado
+    // Buscar etapas que possuem SLA configurado e ação de auto-mover
     const stagesWithSla = await this.prisma.stage.findMany({
       where: {
-        sla_config: { path: ['enabled'], equals: true },
-        sla_config: { path: ['action'], equals: 'AUTO_MOVE' }
+        AND: [
+          { sla_config: { path: ['enabled'], equals: true } },
+          { sla_config: { path: ['action'], equals: 'AUTO_MOVE' } }
+        ]
       }
     });
 
