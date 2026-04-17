@@ -44,6 +44,9 @@ export interface ChatMessage {
   media_mimetype?: string | null;
   media_filename?: string | null;
   media_size_bytes?: number | null;
+  media_waveform_peaks?: number[] | null;
+  media_poster_path?: string | null;
+  media_thumbnail_path?: string | null;
   created_at: string;
 }
 

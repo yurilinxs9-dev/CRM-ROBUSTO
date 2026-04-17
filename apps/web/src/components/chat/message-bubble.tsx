@@ -17,6 +17,7 @@ import { cn } from '@/lib/cn';
 import { AudioMessage } from './audio-message';
 import { ImagePreviewDialog } from './image-preview-dialog';
 import { ReactionsPopover } from './reactions-popover';
+import { VideoBubble } from './video-bubble';
 import {
   ChatMessage,
   MessageStatus,
@@ -159,7 +160,12 @@ function MessageBubbleComponent({
         </div>
 
         {type === 'AUDIO' && message.media_url && (
-          <AudioMessage messageId={message.id} src={message.media_url} isOutgoing={outgoing} />
+          <AudioMessage
+            messageId={message.id}
+            src={message.media_url}
+            isOutgoing={outgoing}
+            waveformPeaks={message.media_waveform_peaks}
+          />
         )}
 
         {type === 'IMAGE' && message.media_url && (
@@ -191,11 +197,10 @@ function MessageBubbleComponent({
         )}
 
         {type === 'VIDEO' && message.media_url && (
-          <video
+          <VideoBubble
             src={message.media_url}
-            controls
-            preload="metadata"
-            className="max-h-80 max-w-xs rounded-lg"
+            poster={message.media_poster_path}
+            thumbnail={message.media_thumbnail_path}
           />
         )}
 

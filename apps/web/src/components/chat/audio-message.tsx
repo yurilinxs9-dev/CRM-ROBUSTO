@@ -9,6 +9,8 @@ interface AudioMessageProps {
   /** Legacy direct URL — used as fallback if the proxy fetch fails. */
   src?: string;
   isOutgoing?: boolean;
+  /** Pre-computed waveform peaks (0-1 normalized). Skips WaveSurfer decode. */
+  waveformPeaks?: number[] | null;
 }
 
 const SPEEDS = [1, 1.5, 2] as const;
@@ -20,7 +22,7 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMessageProps) {
+function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPeaks }: AudioMessageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wsRef = useRef<any>(null);
@@ -79,6 +81,7 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMess
       if (!containerRef.current) return;
       const WaveSurfer = (await import('wavesurfer.js')).default;
       if (disposed || !containerRef.current) return;
+      const hasPeaks = waveformPeaks && waveformPeaks.length > 0;
       const instance = WaveSurfer.create({
         container: containerRef.current,
         waveColor: isOutgoing ? 'rgba(255,255,255,0.4)' : 'rgba(148,163,184,0.5)',
@@ -89,6 +92,7 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMess
         barGap: 2,
         barRadius: 2,
         normalize: true,
+        ...(hasPeaks ? { peaks: [waveformPeaks] } : {}),
       });
       instance.on('ready', () => {
         setDuration(instance.getDuration());
@@ -113,7 +117,8 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false }: AudioMess
       ws?.destroy?.();
       wsRef.current = null;
     };
-  }, [resolvedSrc, isOutgoing]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedSrc, isOutgoing, waveformPeaks]);
 
   const toggle = () => {
     wsRef.current?.playPause();
