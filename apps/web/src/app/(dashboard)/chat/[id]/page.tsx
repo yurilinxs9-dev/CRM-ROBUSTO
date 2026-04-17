@@ -312,6 +312,7 @@ export default function ChatDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
       toast.success('Etapa atualizada');
     },
     onError: () => toast.error('Erro ao mover etapa.'),
@@ -323,6 +324,7 @@ export default function ChatDetailPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
     },
   });
