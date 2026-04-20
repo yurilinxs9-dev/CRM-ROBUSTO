@@ -384,24 +384,24 @@ export function StageConfigDialog({
                 </div>
               )}
 
-              {/* Idle Alert */}
+              {/* Alerta de Ociosidade — NÓS sem responder o cliente */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
                   <Label className="text-sm font-semibold">Alerta de Ociosidade</Label>
-                  <p className="text-xs text-muted-foreground">Avisar se o cliente ficar muito tempo sem resposta.</p>
+                  <p className="text-xs text-muted-foreground">Avisar se nós ficarmos muito tempo sem responder o cliente.</p>
                 </div>
-                <Switch checked={idleEnabled} onCheckedChange={setIdleEnabled} />
+                <Switch checked={respEnabled} onCheckedChange={setRespEnabled} />
               </div>
 
-              {idleEnabled && (
+              {respEnabled && (
                 <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-orange-400/40 py-1">
                   <div>
-                    <Label className="text-[10px] uppercase mb-1 block">Sem resposta há</Label>
-                    <Input type="number" value={idleValue} onChange={e => setIdleValue(e.target.value)} />
+                    <Label className="text-[10px] uppercase mb-1 block">Sem responder há</Label>
+                    <Input type="number" value={respValue} onChange={e => setRespValue(e.target.value)} />
                   </div>
                   <div>
                     <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
-                    <Select value={idleUnit} onValueChange={setIdleUnit}>
+                    <Select value={respUnit} onValueChange={setRespUnit}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {TIME_UNITS.map(u => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}
@@ -411,24 +411,24 @@ export function StageConfigDialog({
                 </div>
               )}
 
-              {/* Alerta de Resposta — nós sem responder */}
+              {/* Alerta de Cliente Sem Retorno — CLIENTE não respondeu após nossa mensagem */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
-                  <Label className="text-sm font-semibold">Alerta de Demora na Resposta</Label>
-                  <p className="text-xs text-muted-foreground">Avisar se nós ficarmos muito tempo sem responder o cliente.</p>
+                  <Label className="text-sm font-semibold">Alerta de Cliente Sem Retorno</Label>
+                  <p className="text-xs text-muted-foreground">Avisar se o cliente não responder após nossa mensagem.</p>
                 </div>
-                <Switch checked={respEnabled} onCheckedChange={setRespEnabled} />
+                <Switch checked={idleEnabled} onCheckedChange={setIdleEnabled} />
               </div>
 
-              {respEnabled && (
-                <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-red-400/40 py-1">
+              {idleEnabled && (
+                <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-purple-400/40 py-1">
                   <div>
-                    <Label className="text-[10px] uppercase mb-1 block">Aguardando há</Label>
-                    <Input type="number" value={respValue} onChange={e => setRespValue(e.target.value)} />
+                    <Label className="text-[10px] uppercase mb-1 block">Sem retorno há</Label>
+                    <Input type="number" value={idleValue} onChange={e => setIdleValue(e.target.value)} />
                   </div>
                   <div>
                     <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
-                    <Select value={respUnit} onValueChange={setRespUnit}>
+                    <Select value={idleUnit} onValueChange={setIdleUnit}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {TIME_UNITS.map(u => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}

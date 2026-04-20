@@ -208,28 +208,36 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
-        {/* Idle alert badge */}
-        {idleOverdue && !overdue && (
+        {/* Ocioso badge — NÓS sem responder o cliente (tem mensagem não lida e estourou threshold) */}
+        {hasUnread && !overdue && responseOverdue && (
           <div
-            className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-orange-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`Cliente sem resposta há ${idleElapsedMs ? formatElapsed(idleElapsedMs) : '?'} — limite configurado: ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
+            className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-orange-500 animate-pulse px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`Sem resposta nossa há ${waitingMs ? formatElapsed(waitingMs) : '?'} — limite: ${responseAlertConfig?.duration} ${responseAlertConfig?.unit?.toLowerCase()}`}
           >
             <Clock className="h-3 w-3 shrink-0" />
-            <span>Ocioso {idleElapsedMs ? formatElapsed(idleElapsedMs) : ''}</span>
+            <span>Ocioso {waitingMs ? formatElapsed(waitingMs) : ''}</span>
           </div>
         )}
 
-        {/* Unread / aguardando badge */}
-        {hasUnread && !overdue && (
+        {/* Sem retorno badge — CLIENTE não respondeu após nossa mensagem */}
+        {!hasUnread && !overdue && idleOverdue && (
           <div
-            className={cn(
-              'absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background',
-              responseOverdue ? 'bg-red-500 animate-pulse' : 'bg-blue-500',
-            )}
-            title={`${lead.mensagens_nao_lidas} mensagem(ns) sem resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
+            className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-purple-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`Cliente sem retorno há ${idleElapsedMs ? formatElapsed(idleElapsedMs) : '?'} — limite: ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
+          >
+            <Clock className="h-3 w-3 shrink-0" />
+            <span>Sem retorno {idleElapsedMs ? formatElapsed(idleElapsedMs) : ''}</span>
+          </div>
+        )}
+
+        {/* Aguardando badge — estado normal: cliente enviou mensagem, dentro do prazo */}
+        {hasUnread && !overdue && !responseOverdue && (
+          <div
+            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-blue-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`${lead.mensagens_nao_lidas} mensagem(ns) aguardando resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
           >
             <MessageCircle className="h-3 w-3 shrink-0" />
-            <span>{responseOverdue ? '⚠ ' : ''}Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
+            <span>Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
           </div>
         )}
 
