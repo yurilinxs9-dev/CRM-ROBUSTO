@@ -148,7 +148,9 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
             tenant_id: tenantId,
           },
         });
-        this.gateway.emitTaskCreated(task.responsavel_id, task);
+        if (task.responsavel_id) {
+          this.gateway.emitTaskCreated(task.responsavel_id, task);
+        }
       } catch (err) {
         this.logger.warn(`createTask falhou para lead ${leadId}: ${String(err)}`);
       }
@@ -208,7 +210,7 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
               tenant_id: tenantId,
             },
           });
-          this.gateway.emitTaskCreated(task.responsavel_id, task);
+          this.gateway.emitTaskCreated(taskOwner, task);
         } catch (err) {
           this.logger.warn(`create_task falhou para lead ${leadId}: ${String(err)}`);
         }
