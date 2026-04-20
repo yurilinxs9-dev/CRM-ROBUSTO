@@ -28,7 +28,7 @@ export class AudioService {
         '-map_metadata', '-1',
         '-c:a', 'libopus',
         '-b:a', '32k',
-        '-ar', '48000',
+        '-ar', '16000',
         '-ac', '1',
         '-vbr', 'on',
         '-f', 'ogg',
