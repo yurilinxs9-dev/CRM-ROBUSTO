@@ -326,7 +326,7 @@ export function StageConfigDialog({
           </div>
 
           {/* Seção 1: SLA e Ociosidade */}
-          <Section id="sla" title="SLA e Alertas de Ociosidade" icon={Clock}>
+          <Section id="sla" title="SLA e Alertas" icon={Clock}>
             <div className="space-y-6">
               {/* SLA */}
               <div className="flex items-start justify-between gap-4">
@@ -384,11 +384,11 @@ export function StageConfigDialog({
                 </div>
               )}
 
-              {/* Alerta de Ociosidade — NÓS sem responder o cliente */}
+              {/* Alerta 1: NÓS sem responder */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
-                  <Label className="text-sm font-semibold">Alerta de Ociosidade</Label>
-                  <p className="text-xs text-muted-foreground">Avisar se nós ficarmos muito tempo sem responder o cliente.</p>
+                  <Label className="text-sm font-semibold">🟠 Alerta de Ociosidade</Label>
+                  <p className="text-xs text-muted-foreground">Badge laranja pulsante quando NÓS ficamos sem responder o cliente além do limite.</p>
                 </div>
                 <Switch checked={respEnabled} onCheckedChange={setRespEnabled} />
               </div>
@@ -396,8 +396,8 @@ export function StageConfigDialog({
               {respEnabled && (
                 <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-orange-400/40 py-1">
                   <div>
-                    <Label className="text-[10px] uppercase mb-1 block">Sem responder há</Label>
-                    <Input type="number" value={respValue} onChange={e => setRespValue(e.target.value)} />
+                    <Label className="text-[10px] uppercase mb-1 block">Limite de resposta</Label>
+                    <Input type="number" min="1" value={respValue} onChange={e => setRespValue(e.target.value)} />
                   </div>
                   <div>
                     <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
@@ -411,11 +411,11 @@ export function StageConfigDialog({
                 </div>
               )}
 
-              {/* Alerta de Cliente Sem Retorno — CLIENTE não respondeu após nossa mensagem */}
+              {/* Alerta 2: CLIENTE sem retorno */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
-                  <Label className="text-sm font-semibold">Alerta de Cliente Sem Retorno</Label>
-                  <p className="text-xs text-muted-foreground">Avisar se o cliente não responder após nossa mensagem.</p>
+                  <Label className="text-sm font-semibold">🟣 Alerta de Cliente Sem Retorno</Label>
+                  <p className="text-xs text-muted-foreground">Badge roxo quando o cliente não retorna após nossa última mensagem.</p>
                 </div>
                 <Switch checked={idleEnabled} onCheckedChange={setIdleEnabled} />
               </div>
@@ -423,8 +423,8 @@ export function StageConfigDialog({
               {idleEnabled && (
                 <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-purple-400/40 py-1">
                   <div>
-                    <Label className="text-[10px] uppercase mb-1 block">Sem retorno há</Label>
-                    <Input type="number" value={idleValue} onChange={e => setIdleValue(e.target.value)} />
+                    <Label className="text-[10px] uppercase mb-1 block">Limite de retorno</Label>
+                    <Input type="number" min="1" value={idleValue} onChange={e => setIdleValue(e.target.value)} />
                   </div>
                   <div>
                     <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
