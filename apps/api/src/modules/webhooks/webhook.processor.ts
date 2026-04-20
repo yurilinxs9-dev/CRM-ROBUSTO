@@ -283,6 +283,7 @@ export class WebhookProcessor extends WorkerHost {
         instancia_whatsapp: instance.nome,
         pipeline_id: ctx.pipeline.id,
         estagio_id: ctx.firstStage.id,
+        estagio_entered_at: new Date(),
         responsavel_id: instance.owner_user_id,
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),

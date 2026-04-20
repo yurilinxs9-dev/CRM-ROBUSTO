@@ -257,6 +257,7 @@ export class LeadsService {
         updated_at: true,
         estagio_id: true,
         estagio_entered_at: true,
+        last_customer_message_at: true,
         pipeline_id: true,
         tags: true,
         position: true,

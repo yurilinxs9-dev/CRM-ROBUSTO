@@ -1,9 +1,9 @@
 'use client';
 
 import { forwardRef, memo, type HTMLAttributes, type MouseEvent } from 'react';
-import { formatDistanceToNowStrict, differenceInCalendarDays } from 'date-fns';
+import { formatDistanceToNowStrict } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { MessageCircle, CheckSquare, Archive, AlertTriangle } from 'lucide-react';
+import { MessageCircle, CheckSquare, Archive, AlertTriangle, Clock } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +25,7 @@ export interface Lead {
   responsavel?: { id: string; nome: string } | null;
   tags?: string[];
   estagio_entered_at?: string | null;
+  last_customer_message_at?: string | null;
   pending_tasks_count?: number;
   position?: number | null;
 }
@@ -83,16 +84,23 @@ function timeAgo(date?: string | null): string {
 function daysInStage(date?: string | null): number | null {
   if (!date) return null;
   try {
-    return differenceInCalendarDays(new Date(), new Date(date));
+    return (Date.now() - new Date(date).getTime()) / 86_400_000; // fractional days
   } catch {
     return null;
   }
+}
+
+function durationToMs(duration: number, unit: string): number {
+  if (unit === 'MINUTES') return duration * 60_000;
+  if (unit === 'HOURS') return duration * 3_600_000;
+  return duration * 86_400_000; // DAYS
 }
 
 interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   lead: Lead;
   isDragging?: boolean;
   stageMaxDias?: number | null;
+  idleAlertConfig?: { enabled?: boolean; duration?: number; unit?: string } | null;
   onOpenChat?: (leadId: string) => void;
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
@@ -107,6 +115,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       lead,
       isDragging,
       stageMaxDias,
+      idleAlertConfig,
       onOpenChat,
       onQuickTask,
       onArchiveLead,
@@ -121,6 +130,11 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     const hasUnread = lead.mensagens_nao_lidas > 0;
     const dis = daysInStage(lead.estagio_entered_at);
     const overdue = dis !== null && stageMaxDias != null && dis > stageMaxDias;
+    const idleOverdue = (() => {
+      if (!idleAlertConfig?.enabled || !lead.last_customer_message_at) return false;
+      const elapsed = Date.now() - new Date(lead.last_customer_message_at).getTime();
+      return elapsed > durationToMs(idleAlertConfig.duration ?? 2, idleAlertConfig.unit ?? 'HOURS');
+    })();
     const pendingTasks = lead.pending_tasks_count ?? 0;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -163,10 +177,20 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         {overdue && (
           <div
             className="absolute -top-1.5 -right-1.5 flex h-5 items-center gap-1 rounded-full bg-red-500 px-1.5 text-[10px] font-semibold text-white shadow ring-2 ring-background animate-pulse"
-            title={`SLA estourado: ${dis} dias na etapa (max ${stageMaxDias})`}
+            title={`SLA estourado: ${Math.floor(dis!)} dias na etapa (max ${Math.round(stageMaxDias! * 24)}h)`}
           >
             <AlertTriangle className="h-3 w-3" />
-            {dis}d
+            {Math.floor(dis!)}d
+          </div>
+        )}
+
+        {/* Idle alert badge */}
+        {idleOverdue && !overdue && (
+          <div
+            className="absolute -top-1.5 -left-1.5 flex h-5 items-center gap-1 rounded-full bg-orange-500 px-1.5 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`Cliente sem resposta há mais de ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
+          >
+            <Clock className="h-3 w-3" />
           </div>
         )}
 

@@ -6,9 +6,10 @@ import {
   PipelineAutoActionsProcessor,
   PIPELINE_AUTO_ACTIONS_QUEUE,
 } from './auto-actions.processor';
+import { MessagesModule } from '../messages/messages.module';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE })],
+  imports: [BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }), MessagesModule],
   controllers: [PipelinesController],
   providers: [PipelinesService, PipelineAutoActionsProcessor],
   exports: [PipelinesService, BullModule],

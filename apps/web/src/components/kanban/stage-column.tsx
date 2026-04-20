@@ -50,6 +50,17 @@ export interface Stage {
   cadence_config?: any;
 }
 
+function getSlaThresholdDays(stage: Stage): number | null {
+  const sla = stage.sla_config as any;
+  if (sla?.enabled && sla?.action === 'ALERT') {
+    const d = Number(sla.duration);
+    if (sla.unit === 'DAYS') return d;
+    if (sla.unit === 'HOURS') return d / 24;
+    if (sla.unit === 'MINUTES') return d / 1440;
+  }
+  return stage.max_dias ?? null;
+}
+
 function SortableLeadImpl({
   lead,
   stage,
@@ -91,7 +102,8 @@ function SortableLeadImpl({
     >
       <LeadCard
         lead={lead}
-        stageMaxDias={stage.max_dias ?? null}
+        stageMaxDias={getSlaThresholdDays(stage)}
+        idleAlertConfig={stage.idle_alert_config}
         onOpenChat={onOpenChat}
         onQuickTask={onQuickTask}
         onArchiveLead={onArchiveLead}
