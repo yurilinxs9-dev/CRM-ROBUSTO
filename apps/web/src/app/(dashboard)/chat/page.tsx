@@ -120,9 +120,15 @@ export default function ChatPage() {
       queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
     };
 
+    const handleUnreadReset = () => {
+      queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
+    };
+
     socket.on('lead:new-message', handleNewMessage);
+    socket.on('lead:unread-reset', handleUnreadReset);
     return () => {
       socket.off('lead:new-message', handleNewMessage);
+      socket.off('lead:unread-reset', handleUnreadReset);
     };
   }, [queryClient]);
 

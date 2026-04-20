@@ -75,8 +75,10 @@ export interface WhatsappInstance {
 export interface ServerToClientEvents {
   'lead:stage-changed': (data: { leadId: string; estagio_id: string }) => void;
   'lead:new-message': (data: { leadId: string; message: Message }) => void;
+  'lead:unread-reset': (data: { leadId: string; mensagens_nao_lidas: 0 }) => void;
   'message:new': (message: Message) => void;
   'message:status-updated': (data: { messageId: string; status: MessageStatus }) => void;
+  'message:media-ready': (data: { messageId: string; media_url: string; media_mimetype?: string | null }) => void;
   'instance:status-changed': (data: { instanceName: string; status: InstanceStatus }) => void;
   'instance:qr-code': (data: { instanceName: string; qrCode: string }) => void;
 }

@@ -455,11 +455,21 @@ export default function KanbanPage() {
         return updated;
       });
     };
+    const handleUnreadReset = (data: { leadId: string }) => {
+      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
+        if (!old) return old;
+        return old.map((l) =>
+          l.id === data.leadId ? { ...l, mensagens_nao_lidas: 0 } : l,
+        );
+      });
+    };
     socket.on('lead:stage-changed', handleStageChanged);
     socket.on('lead:new-message', handleNewMessage);
+    socket.on('lead:unread-reset', handleUnreadReset);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
       socket.off('lead:new-message', handleNewMessage);
+      socket.off('lead:unread-reset', handleUnreadReset);
     };
   }, [queryClient, leadsQueryKey, currentUserId]);
 

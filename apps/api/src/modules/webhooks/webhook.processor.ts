@@ -96,8 +96,11 @@ export class WebhookProcessor extends WorkerHost {
         case 'uazapi.connection_update':
           await this.handleUazapiConnectionUpdate(job.data);
           break;
+        case 'uazapi.chats':
+          await this.handleUazapiChats(job.data);
+          break;
         default:
-          this.logger.warn(`Evento nao suportado: ${job.name} payload=${JSON.stringify(job.data).slice(0, 2000)}`);
+          this.logger.warn(`Evento nao suportado: ${job.name}`);
       }
 
       const processingTime = Date.now() - start;
@@ -791,6 +794,41 @@ export class WebhookProcessor extends WorkerHost {
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instance.nome, status, instance.tenant_id);
+  }
+
+  private async handleUazapiChats(payload: Obj) {
+    const chat = payload?.chat as Obj | undefined;
+    if (!chat) return;
+    if (chat.wa_isGroup === true) return;
+
+    const unreadCount = chat.wa_unreadCount as number | undefined;
+    if (unreadCount !== 0) return; // Only act when conversation was read (unread → 0)
+
+    // Extract phone: prefer wa_chatid (already normalized), fall back to chat.phone
+    const chatId = chat.wa_chatid as string | undefined;
+    const rawPhone = chat.phone as string | undefined;
+    const phone = chatId
+      ? chatId.split('@')[0].replace(/\D/g, '')
+      : rawPhone?.replace(/\D/g, '') ?? '';
+    if (!phone) return;
+
+    const token = payload.token as string | undefined;
+    const instance = await this.findInstanceByUazapiToken(token);
+    if (!instance) return;
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { telefone: phone, tenant_id: instance.tenant_id },
+      select: { id: true, mensagens_nao_lidas: true },
+    });
+    if (!lead) return; // Lead doesn't exist in CRM — ignore
+    if (lead.mensagens_nao_lidas === 0) return; // Already zero — no-op
+
+    await this.prisma.lead.update({
+      where: { id: lead.id },
+      data: { mensagens_nao_lidas: 0 },
+    });
+
+    this.gateway.emitLeadUnreadReset(lead.id, instance.tenant_id);
   }
 
   private async handleContactsUpsert(data: Obj) {
