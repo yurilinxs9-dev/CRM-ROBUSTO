@@ -300,6 +300,7 @@ export class WebhookProcessor extends WorkerHost {
       update: {
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),
+        last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
       },
     });
