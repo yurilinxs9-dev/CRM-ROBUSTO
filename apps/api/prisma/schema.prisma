@@ -182,6 +182,7 @@ model Lead {
   
   // Novos rastreadores para o Painel Dinâmico
   last_customer_message_at DateTime?
+  last_agent_message_at    DateTime?
   cadence_step_index       Int       @default(0)
 
   proximo_followup    DateTime?

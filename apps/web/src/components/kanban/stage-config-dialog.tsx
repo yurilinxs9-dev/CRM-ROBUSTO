@@ -82,6 +82,7 @@ export interface StageConfig {
   auto_action: StageAutoActionForm | null;
   sla_config?: any;
   idle_alert_config?: any;
+  response_alert_config?: any;
   on_entry_config?: any;
   cadence_config?: any;
 }
@@ -173,7 +174,7 @@ export function StageConfigDialog({
     setIdleUnit(idle?.unit ?? 'HOURS');
 
     // Response alert (nós sem responder)
-    const resp = (stage as any).response_alert_config;
+    const resp = stage.response_alert_config;
     setRespEnabled(!!resp?.enabled);
     setRespValue(String(resp?.duration ?? '2'));
     setRespUnit(resp?.unit ?? 'HOURS');
@@ -387,8 +388,8 @@ export function StageConfigDialog({
               {/* Alerta 1: NÓS sem responder */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
-                  <Label className="text-sm font-semibold">🟠 Alerta de Ociosidade</Label>
-                  <p className="text-xs text-muted-foreground">Badge laranja pulsante quando NÓS ficamos sem responder o cliente além do limite.</p>
+                  <Label className="text-sm font-semibold">🟠 Tempo Sem Resposta</Label>
+                  <p className="text-xs text-muted-foreground">Badge laranja quando NÓS ficamos sem responder o cliente além do limite.</p>
                 </div>
                 <Switch checked={respEnabled} onCheckedChange={setRespEnabled} />
               </div>

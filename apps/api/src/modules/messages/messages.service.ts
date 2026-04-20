@@ -122,7 +122,7 @@ export class MessagesService {
 
     await this.prisma.lead.update({
       where: { id: lead_id },
-      data: { ultima_interacao: new Date() },
+      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
     });
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
@@ -199,7 +199,7 @@ export class MessagesService {
 
     await this.prisma.lead.update({
       where: { id: lead_id },
-      data: { ultima_interacao: new Date() },
+      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
     });
 
     // Emit with signed URL so the frontend can render media immediately.
@@ -286,7 +286,7 @@ export class MessagesService {
 
     await this.prisma.lead.update({
       where: { id: lead_id },
-      data: { ultima_interacao: new Date() },
+      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
     });
 
     // Emit with signed URL so the frontend can render media immediately.

@@ -676,6 +676,7 @@ export default function KanbanPage() {
       auto_action: (s.auto_action as StageAutoActionForm | null) ?? null,
       sla_config: s.sla_config ?? null,
       idle_alert_config: s.idle_alert_config ?? null,
+      response_alert_config: (s as any).response_alert_config ?? null,
       on_entry_config: s.on_entry_config ?? null,
       cadence_config: s.cadence_config ?? null,
     };

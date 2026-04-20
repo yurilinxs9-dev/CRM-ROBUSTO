@@ -26,6 +26,7 @@ export interface Lead {
   tags?: string[];
   estagio_entered_at?: string | null;
   last_customer_message_at?: string | null;
+  last_agent_message_at?: string | null;
   created_at?: string | null;
   pending_tasks_count?: number;
   position?: number | null;
@@ -143,26 +144,26 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     const dis = daysInStage(enteredAt);
     const overdue = dis !== null && stageMaxDias != null && dis > stageMaxDias;
 
-    // Melhor estimativa de quando o cliente enviou a última mensagem. Usa ultima_interacao como fallback
-    // para leads que ainda não têm last_customer_message_at preenchido.
-    const customerTs = lead.last_customer_message_at ?? (hasUnread ? lead.ultima_interacao : null);
-    const waitingMs = hasUnread && customerTs
-      ? Date.now() - new Date(customerTs).getTime()
-      : null;
-    const idleElapsedMs = lead.last_customer_message_at
-      ? Date.now() - new Date(lead.last_customer_message_at).getTime()
-      : null;
+    const agentTs = lead.last_agent_message_at ? new Date(lead.last_agent_message_at).getTime() : null;
+    const customerTs = lead.last_customer_message_at ? new Date(lead.last_customer_message_at).getTime() : null;
 
-    const idleOverdue =
-      !hasUnread &&
-      !!idleAlertConfig?.enabled &&
-      idleElapsedMs !== null &&
-      idleElapsedMs > durationToMs(idleAlertConfig.duration ?? 2, idleAlertConfig.unit ?? 'HOURS');
+    // "Nós sem responder": cliente enviou depois de nós (ou nós nunca enviamos e há unread)
+    const clientSentAfterUs = customerTs !== null && (agentTs === null || customerTs > agentTs);
+    const waitingMs = clientSentAfterUs && customerTs ? Date.now() - customerTs : null;
+
+    // "Cliente sem retorno": nós enviamos depois do cliente (cliente não respondeu desde então)
+    const weSentAfterClient = agentTs !== null && (customerTs === null || agentTs > customerTs);
+    const idleElapsedMs = weSentAfterClient && agentTs ? Date.now() - agentTs : null;
+
     const responseOverdue =
-      hasUnread &&
       !!responseAlertConfig?.enabled &&
       waitingMs !== null &&
       waitingMs > durationToMs(responseAlertConfig?.duration ?? 2, responseAlertConfig?.unit ?? 'HOURS');
+
+    const idleOverdue =
+      !!idleAlertConfig?.enabled &&
+      idleElapsedMs !== null &&
+      idleElapsedMs > durationToMs(idleAlertConfig?.duration ?? 2, idleAlertConfig?.unit ?? 'HOURS');
     const pendingTasks = lead.pending_tasks_count ?? 0;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -212,36 +213,36 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
-        {/* Aguardando badge — tem mensagens não lidas mas dentro do prazo (ou sem config de alerta) */}
-        {hasUnread && !overdue && !responseOverdue && (
-          <div
-            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-blue-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`${lead.mensagens_nao_lidas} mensagem(ns) aguardando resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
-          >
-            <MessageCircle className="h-3 w-3 shrink-0" />
-            <span>Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
-          </div>
-        )}
-
-        {/* Ocioso badge — NÓS sem responder: tem mensagem não lida e estourou o threshold */}
-        {hasUnread && !overdue && responseOverdue && (
+        {/* Ocioso badge — NÓS sem responder (alerta estourado) */}
+        {!overdue && responseOverdue && (
           <div
             className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-orange-500 animate-pulse px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`Sem resposta nossa há ${waitingMs ? formatElapsed(waitingMs) : '?'} — limite: ${responseAlertConfig?.duration} ${responseAlertConfig?.unit?.toLowerCase()}`}
+            title={`Sem resposta nossa há ${waitingMs ? formatElapsed(waitingMs) : '?'}`}
           >
             <Clock className="h-3 w-3 shrink-0" />
             <span>Ocioso {waitingMs ? formatElapsed(waitingMs) : ''}</span>
           </div>
         )}
 
-        {/* Sem retorno badge — CLIENTE sem retorno: não há mensagens não lidas e passou o threshold desde a última mensagem do cliente */}
-        {!hasUnread && !overdue && idleOverdue && (
+        {/* Sem retorno badge — CLIENTE sem responder após nossa mensagem (alerta estourado) */}
+        {!overdue && !responseOverdue && idleOverdue && (
           <div
             className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-purple-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`Cliente sem retorno há ${idleElapsedMs ? formatElapsed(idleElapsedMs) : '?'} — limite: ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
+            title={`Cliente sem retorno há ${idleElapsedMs ? formatElapsed(idleElapsedMs) : '?'}`}
           >
             <Clock className="h-3 w-3 shrink-0" />
             <span>Sem retorno {idleElapsedMs ? formatElapsed(idleElapsedMs) : ''}</span>
+          </div>
+        )}
+
+        {/* Aguardando badge — cliente enviou depois de nós, dentro do prazo */}
+        {!overdue && !responseOverdue && clientSentAfterUs && hasUnread && (
+          <div
+            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-blue-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`${lead.mensagens_nao_lidas} msg aguardando resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
+          >
+            <MessageCircle className="h-3 w-3 shrink-0" />
+            <span>Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
           </div>
         )}
 
