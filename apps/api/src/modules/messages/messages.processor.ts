@@ -69,26 +69,16 @@ export class MessagesSendProcessor extends WorkerHost {
       `${d.uazBaseUrl}/send/media`, payload(ref), { headers: { token: d.uazToken } },
     ));
 
-    // ── Diagnostic logging ──────────────────────────────────────────────────
-    const logFileRef = (ref: string) => ref.startsWith('data:') ? `data:audio/ogg;base64,[${Math.round(ref.length * 0.75 / 1024)}KB]` : `...${ref.slice(-50)}`;
-
     let res: Awaited<ReturnType<typeof postPayload>>;
-    const t0 = Date.now();
-    let usedStrategy = strategy;
     if (strategy === 'base64') {
       const buf = await this.fetchAsBase64(freshUrl);
-      const fileRef = `data:audio/ogg;base64,${buf}`;
-      this.logger.log(`[handleAudio] REQ strategy=base64 payload=${JSON.stringify({ ...payload(logFileRef(fileRef)), msgId: d.messageId })}`);
-      res = await postPayload(fileRef);
+      res = await postPayload(`data:audio/ogg;base64,${buf}`);
     } else {
-      const reqPayload = payload(freshUrl);
-      this.logger.log(`[handleAudio] REQ strategy=${strategy} payload=${JSON.stringify({ ...reqPayload, file: logFileRef(freshUrl), msgId: d.messageId })}`);
       try {
         res = await postPayload(freshUrl);
       } catch (err) {
         if (strategy === 'auto') {
-          this.logger.warn(`[handleAudio] URL strategy failed (${(err as Error).message}); retrying with base64`);
-          usedStrategy = 'base64-fallback';
+          this.logger.warn(`[handleAudio] URL strategy failed, retrying with base64`);
           const buf = await this.fetchAsBase64(freshUrl);
           res = await postPayload(`data:audio/ogg;base64,${buf}`);
         } else {
@@ -96,9 +86,6 @@ export class MessagesSendProcessor extends WorkerHost {
         }
       }
     }
-    const elapsed = Date.now() - t0;
-    this.logger.log(`[handleAudio] RES status=${res.status} elapsed=${elapsed}ms strategy=${usedStrategy} body=${JSON.stringify(res.data)}`);
-    // ── End diagnostic logging ────────���─────────────────────────────────────
 
     const waId = this.extractWhatsappMessageId(res.data);
     await this.prisma.message.update({
