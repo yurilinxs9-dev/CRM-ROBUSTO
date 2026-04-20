@@ -115,6 +115,7 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   emitLeadUnreadReset(leadId: string, tenantId?: string) {
+    this.logger.log(`[ws] emit lead:unread-reset leadId=${leadId} tenantId=${tenantId} room=${tenantId ? `tenant:${tenantId}` : 'broadcast'}`);
     this.toTenant(tenantId).emit('lead:unread-reset', { leadId, mensagens_nao_lidas: 0 });
   }
 

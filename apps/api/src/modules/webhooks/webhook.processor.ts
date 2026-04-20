@@ -828,7 +828,9 @@ export class WebhookProcessor extends WorkerHost {
       data: { mensagens_nao_lidas: 0 },
     });
 
+    this.logger.log(`[unread-reset] ABOUT TO EMIT leadId=${lead.id} tenantId=${instance.tenant_id}`);
     this.gateway.emitLeadUnreadReset(lead.id, instance.tenant_id);
+    this.logger.log(`[unread-reset] EMITTED`);
   }
 
   private async handleContactsUpsert(data: Obj) {
