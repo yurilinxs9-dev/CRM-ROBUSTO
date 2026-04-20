@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -14,6 +14,7 @@ import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
 import { MessageType } from '@prisma/client';
+import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 
 const sendTextSchema = z.object({
@@ -85,6 +86,9 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Sem acesso a este lead');
+    }
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
@@ -373,9 +377,12 @@ export class MessagesService {
   async getHistory(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true },
+      select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Sem acesso a este lead');
+    }
     const rows = await this.prisma.message.findMany({
       where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },

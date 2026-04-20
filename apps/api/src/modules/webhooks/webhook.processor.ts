@@ -277,6 +277,11 @@ export class WebhookProcessor extends WorkerHost {
     // duplicate of the owner's name. Only trust pushName for incoming.
     const incomingPushName = !isFromMe && pushName ? pushName.trim() : undefined;
 
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { pool_enabled: true },
+    });
+
     const lead = await this.prisma.lead.upsert({
       where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
       create: {
@@ -287,7 +292,7 @@ export class WebhookProcessor extends WorkerHost {
         pipeline_id: ctx.pipeline.id,
         estagio_id: ctx.firstStage.id,
         estagio_entered_at: new Date(),
-        responsavel_id: instance.owner_user_id,
+        responsavel_id: tenant?.pool_enabled ? null : instance.owner_user_id,
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),
         tenant_id: tenantId,

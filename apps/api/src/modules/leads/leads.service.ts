@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import type { Response } from 'express';
 import { toCsv } from '../../common/csv/csv.util';
 import { createHash } from 'node:crypto';
@@ -61,6 +61,16 @@ const createLeadSchema = z.object({
   instancia_whatsapp: z.string(),
   responsavel_id: z.string().uuid().optional(),
 });
+const reassignSchema = z.object({
+  novoResponsavelId: z.string().uuid(),
+});
+
+const roleHierarchy: Record<string, number> = {
+  SUPER_ADMIN: 4,
+  GERENTE: 3,
+  OPERADOR: 2,
+  VISUALIZADOR: 1,
+};
 
 interface LeadFilters {
   pipeline_id?: string;
@@ -223,7 +233,10 @@ export class LeadsService {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
     if (user.role === UserRole.OPERADOR) {
-      where.responsavel_id = user.id;
+      where.OR = [
+        { responsavel_id: user.id },
+        { responsavel_id: null },
+      ];
     }
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
@@ -232,10 +245,17 @@ export class LeadsService {
     if (filters.instancia) where.instancia_whatsapp = filters.instancia;
     if (filters.temperatura) where.temperatura = filters.temperatura;
     if (filters.search) {
-      where.OR = [
+      const searchCondition = [
         { nome: { contains: filters.search, mode: 'insensitive' } },
         { telefone: { contains: filters.search } },
       ];
+      if (where.OR) {
+        // Already has OR (pool visibility) — combine with AND
+        where.AND = [{ OR: where.OR }, { OR: searchCondition }];
+        delete where.OR;
+      } else {
+        where.OR = searchCondition;
+      }
     }
 
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
@@ -358,11 +378,16 @@ export class LeadsService {
       }
     }
 
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
+
     const [lead] = await this.prisma.$transaction([
       this.prisma.lead.create({
         data: {
           ...parsed,
-          responsavel_id: parsed.responsavel_id || user.id,
+          responsavel_id: parsed.responsavel_id || (tenant?.pool_enabled ? null : user.id),
           origem: 'MANUAL',
           tenant_id: user.tenantId,
           position: initialPosition,
@@ -604,17 +629,24 @@ export class LeadsService {
     const { ids, tag } = bulkTagSchema.parse(data);
     const leads = await this.prisma.lead.findMany({
       where: { id: { in: ids }, tenant_id: user.tenantId },
-      select: { id: true, tags: true },
+      select: { id: true, tags: true, responsavel_id: true },
     });
+    const accessible = user.role === UserRole.OPERADOR
+      ? leads.filter((l) => l.responsavel_id === null || l.responsavel_id === user.id)
+      : leads;
+    const skipped = leads.length - accessible.length;
+    if (skipped > 0) {
+      this.logger.debug(`bulkTag: ${skipped} leads skipped (ownership filter) for user ${user.id}`);
+    }
     await this.prisma.$transaction(
-      leads.map((lead) => {
+      accessible.map((lead) => {
         const existing: string[] = Array.isArray(lead.tags) ? (lead.tags as string[]) : [];
         const next = existing.includes(tag) ? existing : [...existing, tag];
         return this.prisma.lead.update({ where: { id: lead.id }, data: { tags: next } });
       }),
     );
     await this.invalidateLeadsCache(user.tenantId);
-    return { updated: leads.length };
+    return { updated: accessible.length, skipped };
   }
 
   async bulkArchive(data: unknown, user: AuthUser) {
@@ -637,12 +669,65 @@ export class LeadsService {
     return { archived: leadsToDelete.length };
   }
 
+  async claim(leadId: string, user: AuthUser) {
+    const result = await this.prisma.lead.updateMany({
+      where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
+      data: { responsavel_id: user.id },
+    });
+    if (result.count === 0) {
+      throw new ConflictException('Lead ja atribuido ou nao encontrado');
+    }
+    await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUpdated(leadId, { responsavel_id: user.id }, user.tenantId);
+    return { id: leadId, responsavel_id: user.id };
+  }
+
+  async reassign(leadId: string, body: unknown, user: AuthUser) {
+    const { novoResponsavelId } = reassignSchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+
+    // Auth: precisa ser o responsável atual OU role >= GERENTE.
+    // Leads do pool (responsavel_id === null) só podem ser pegos via /claim, não /reassign.
+    const isOwner = lead.responsavel_id === user.id;
+    const isManager = (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
+    if (!isOwner && !isManager) {
+      throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem reatribuir');
+    }
+
+    const newUser = await this.prisma.user.findFirst({
+      where: { id: novoResponsavelId, tenant_id: user.tenantId, ativo: true },
+      select: { id: true, role: true },
+    });
+    if (!newUser) {
+      throw new BadRequestException('Usuario destino nao encontrado, inativo ou de outro tenant');
+    }
+    if ((roleHierarchy[newUser.role] ?? 0) < roleHierarchy[UserRole.OPERADOR]) {
+      throw new BadRequestException('Nao e possivel atribuir lead a um VISUALIZADOR');
+    }
+
+    await this.prisma.lead.update({
+      where: { id: leadId },
+      data: { responsavel_id: novoResponsavelId },
+    });
+    await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUpdated(leadId, { responsavel_id: novoResponsavelId }, user.tenantId);
+    return { id: leadId, responsavel_id: novoResponsavelId };
+  }
+
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true },
+      select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Sem acesso a este lead');
+    }
     const rows = await this.prisma.message.findMany({
       where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },
@@ -752,7 +837,7 @@ export class LeadsService {
       valor_estimado: l.valor_estimado,
       pipeline: l.pipeline.nome,
       stage: l.estagio.nome,
-      responsavel: l.responsavel.nome,
+      responsavel: l.responsavel?.nome ?? '',
       tags: Array.isArray(l.tags) ? (l.tags as string[]).join(';') : '',
       created_at: l.created_at,
       ultima_interacao: l.ultima_interacao,

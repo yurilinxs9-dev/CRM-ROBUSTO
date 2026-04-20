@@ -64,6 +64,9 @@ model Tenant {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  prefixo_profissional String?
+  pool_enabled         Boolean  @default(false)
+
   owner           User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users           User[]             @relation("TenantMembers")
   pipelines       Pipeline[]
@@ -92,6 +95,7 @@ model User {
   role       UserRole @default(OPERADOR)
   avatar_url String?
   ativo      Boolean  @default(true)
+  especialidade String?
   tenant_id  String
   tenant     Tenant   @relation("TenantMembers", fields: [tenant_id], references: [id])
   owned_tenants    Tenant[]           @relation("TenantOwner")
@@ -190,8 +194,8 @@ model Lead {
   pipeline            Pipeline        @relation(fields: [pipeline_id], references: [id])
   estagio_id          String
   estagio             Stage           @relation(fields: [estagio_id], references: [id])
-  responsavel_id      String
-  responsavel         User            @relation(fields: [responsavel_id], references: [id])
+  responsavel_id      String?
+  responsavel         User?           @relation(fields: [responsavel_id], references: [id])
   tenant_id           String
   tenant              Tenant          @relation(fields: [tenant_id], references: [id])
   created_at          DateTime        @default(now())

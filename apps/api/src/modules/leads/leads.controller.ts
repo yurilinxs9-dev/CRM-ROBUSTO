@@ -1,6 +1,9 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { LeadsService, type ExportLeadFilters } from './leads.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import type { Response } from 'express';
 
@@ -91,6 +94,20 @@ export class LeadsController {
   @Post('sync-profiles')
   syncAllProfiles(@Req() req: Record<string, unknown>) {
     return this.leadsService.syncAllProfilesForTenant(req.user as AuthUser);
+  }
+
+  @Post(':id/claim')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.OPERADOR)
+  claim(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.leadsService.claim(id, req.user as AuthUser);
+  }
+
+  @Post(':id/reassign')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.OPERADOR)
+  reassign(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.reassign(id, body, req.user as AuthUser);
   }
 
   @Delete(':id')
