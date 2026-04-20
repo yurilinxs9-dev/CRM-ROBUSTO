@@ -147,8 +147,12 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     const agentTs = lead.last_agent_message_at ? new Date(lead.last_agent_message_at).getTime() : null;
     const customerTs = lead.last_customer_message_at ? new Date(lead.last_customer_message_at).getTime() : null;
 
-    // "Nós sem responder": cliente enviou depois de nós (ou nós nunca enviamos e há unread)
-    const clientSentAfterUs = customerTs !== null && (agentTs === null || customerTs > agentTs);
+    // "Nós sem responder": cliente enviou depois de nós.
+    // Quando agentTs é null (lead antigo sem histórico), exige hasUnread para evitar falso positivo
+    // em leads onde enviamos por último mas o campo ainda não foi gravado.
+    const clientSentAfterUs =
+      customerTs !== null &&
+      (agentTs !== null ? customerTs > agentTs : hasUnread);
     const waitingMs = clientSentAfterUs && customerTs ? Date.now() - customerTs : null;
 
     // "Cliente sem retorno": nós enviamos depois do cliente (cliente não respondeu desde então)
@@ -217,10 +221,10 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         {!overdue && responseOverdue && (
           <div
             className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-orange-500 animate-pulse px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`Sem resposta nossa há ${waitingMs ? formatElapsed(waitingMs) : '?'}`}
+            title={`Aguardando nossa resposta há ${waitingMs ? formatElapsed(waitingMs) : '?'}`}
           >
             <Clock className="h-3 w-3 shrink-0" />
-            <span>Ocioso {waitingMs ? formatElapsed(waitingMs) : ''}</span>
+            <span>Aguardando {waitingMs ? formatElapsed(waitingMs) : ''}</span>
           </div>
         )}
 
