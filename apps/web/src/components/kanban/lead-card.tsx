@@ -96,6 +96,14 @@ function durationToMs(duration: number, unit: string): number {
   return duration * 86_400_000; // DAYS
 }
 
+function formatElapsed(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min}min`;
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   lead: Lead;
   isDragging?: boolean;
@@ -130,11 +138,13 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     const hasUnread = lead.mensagens_nao_lidas > 0;
     const dis = daysInStage(lead.estagio_entered_at);
     const overdue = dis !== null && stageMaxDias != null && dis > stageMaxDias;
-    const idleOverdue = (() => {
-      if (!idleAlertConfig?.enabled || !lead.last_customer_message_at) return false;
-      const elapsed = Date.now() - new Date(lead.last_customer_message_at).getTime();
-      return elapsed > durationToMs(idleAlertConfig.duration ?? 2, idleAlertConfig.unit ?? 'HOURS');
-    })();
+    const idleElapsedMs = lead.last_customer_message_at
+      ? Date.now() - new Date(lead.last_customer_message_at).getTime()
+      : null;
+    const idleOverdue =
+      !!idleAlertConfig?.enabled &&
+      idleElapsedMs !== null &&
+      idleElapsedMs > durationToMs(idleAlertConfig.duration ?? 2, idleAlertConfig.unit ?? 'HOURS');
     const pendingTasks = lead.pending_tasks_count ?? 0;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -187,10 +197,11 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         {/* Idle alert badge */}
         {idleOverdue && !overdue && (
           <div
-            className="absolute -top-1.5 -left-1.5 flex h-5 items-center gap-1 rounded-full bg-orange-500 px-1.5 text-[10px] font-semibold text-white shadow ring-2 ring-background"
-            title={`Cliente sem resposta há mais de ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
+            className="absolute -top-2 left-1 flex h-5 items-center gap-1 rounded-full bg-orange-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`Cliente sem resposta há ${idleElapsedMs ? formatElapsed(idleElapsedMs) : '?'} — limite configurado: ${idleAlertConfig?.duration} ${idleAlertConfig?.unit?.toLowerCase()}`}
           >
-            <Clock className="h-3 w-3" />
+            <Clock className="h-3 w-3 shrink-0" />
+            <span>Ocioso {idleElapsedMs ? formatElapsed(idleElapsedMs) : ''}</span>
           </div>
         )}
 
