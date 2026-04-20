@@ -134,7 +134,7 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     }
 
     // 2. Criar tarefa automática
-    if (cfg.createTask?.enabled && cfg.createTask.title) {
+    if (cfg.createTask?.enabled && cfg.createTask.title && lead.responsavel_id) {
       try {
         const offsetMs = durationToMs(cfg.createTask.due_duration ?? 1, cfg.createTask.due_unit ?? 'HOURS');
         const scheduledAt = new Date(Date.now() + offsetMs);
@@ -148,9 +148,7 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
             tenant_id: tenantId,
           },
         });
-        if (task.responsavel_id) {
-          this.gateway.emitTaskCreated(task.responsavel_id, task);
-        }
+        this.gateway.emitTaskCreated(task.responsavel_id, task);
       } catch (err) {
         this.logger.warn(`createTask falhou para lead ${leadId}: ${String(err)}`);
       }
@@ -196,23 +194,24 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     }
 
     if (onEnter.create_task) {
-      try {
-        const scheduledAt = new Date(Date.now() + onEnter.create_task.offset_min * 60_000);
-        const task = await this.prisma.task.create({
-          data: {
-            titulo: onEnter.create_task.titulo,
-            tipo: onEnter.create_task.tipo,
-            scheduled_at: scheduledAt,
-            lead_id: leadId,
-            responsavel_id: onEnter.assign_user?.user_id ?? lead.responsavel_id,
-            tenant_id: tenantId,
-          },
-        });
-        if (task.responsavel_id) {
+      const taskOwner = onEnter.assign_user?.user_id ?? lead.responsavel_id;
+      if (taskOwner) {
+        try {
+          const scheduledAt = new Date(Date.now() + onEnter.create_task.offset_min * 60_000);
+          const task = await this.prisma.task.create({
+            data: {
+              titulo: onEnter.create_task.titulo,
+              tipo: onEnter.create_task.tipo,
+              scheduled_at: scheduledAt,
+              lead_id: leadId,
+              responsavel_id: taskOwner,
+              tenant_id: tenantId,
+            },
+          });
           this.gateway.emitTaskCreated(task.responsavel_id, task);
+        } catch (err) {
+          this.logger.warn(`create_task falhou para lead ${leadId}: ${String(err)}`);
         }
-      } catch (err) {
-        this.logger.warn(`create_task falhou para lead ${leadId}: ${String(err)}`);
       }
     }
 
