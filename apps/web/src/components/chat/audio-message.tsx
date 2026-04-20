@@ -14,7 +14,6 @@ interface AudioMessageProps {
 }
 
 const SPEEDS = [1, 1.5, 2] as const;
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -23,33 +22,41 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-/** Resolve audio source to a blob URL (same-origin, avoids cross-origin decode issues). */
+/** Resolve audio source to a blob URL via backend proxy (most reliable). */
 async function resolveAudioBlob(
   messageId: string,
   src?: string,
 ): Promise<string> {
-  // 1) If src is already a signed URL, fetch it as a blob directly.
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+
+  // 1) Backend proxy first — freshly signs URLs server-side, streams content.
+  try {
+    const proxyUrl = `/api/messages/${messageId}/media`;
+    const proxyRes = await fetch(proxyUrl, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      credentials: 'include',
+    });
+    if (proxyRes.ok) {
+      const blob = await proxyRes.blob();
+      if (blob.size > 0) return URL.createObjectURL(blob);
+    }
+    console.warn(`[AudioMessage] proxy returned ${proxyRes.status}, trying direct`);
+  } catch (e) {
+    console.warn('[AudioMessage] proxy fetch error, trying direct:', e);
+  }
+
+  // 2) Fall back to direct signed URL.
   if (src && /^https?:\/\//i.test(src)) {
     const res = await fetch(src);
     if (res.ok) {
       const blob = await res.blob();
-      return URL.createObjectURL(blob);
+      if (blob.size > 0) return URL.createObjectURL(blob);
     }
-    // Signed URL failed — fall through to proxy.
-    console.warn(`[AudioMessage] direct fetch failed (${res.status}), trying proxy`);
+    throw new Error(`direct fetch failed (${src.slice(0, 60)})`);
   }
 
-  // 2) Fall back to backend proxy.
-  const token =
-    typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-  const proxyUrl = `${API_BASE}/api/messages/${messageId}/media`;
-  const proxyRes = await fetch(proxyUrl, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    credentials: 'include',
-  });
-  if (!proxyRes.ok) throw new Error(`proxy ${proxyRes.status}`);
-  const blob = await proxyRes.blob();
-  return URL.createObjectURL(blob);
+  throw new Error('no source available');
 }
 
 function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPeaks }: AudioMessageProps) {

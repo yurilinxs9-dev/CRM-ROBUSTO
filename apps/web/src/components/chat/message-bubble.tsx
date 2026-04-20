@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/cn';
 import { AudioMessage } from './audio-message';
 import { ImagePreviewDialog } from './image-preview-dialog';
+import { MediaImage } from './media-image';
 import { ReactionsPopover } from './reactions-popover';
 import { VideoBubble } from './video-bubble';
 import {
@@ -27,6 +28,29 @@ import {
 } from './types';
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
+
+/** Fetch media via authenticated proxy and trigger browser download. */
+async function downloadMediaViaProxy(messageId: string, filename: string) {
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const res = await fetch(`/api/messages/${messageId}/media`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(`[Document] download failed for msg=${messageId}:`, err);
+  }
+}
 
 function renderText(text: string) {
   const parts = text.split(URL_REGEX);
@@ -169,39 +193,26 @@ function MessageBubbleComponent({
         )}
 
         {type === 'IMAGE' && message.media_url && (
-          <>
-            <button
-              type="button"
-              onClick={() => setImgOpen(true)}
-              className="block overflow-hidden rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
-              aria-label="Abrir imagem"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={message.media_url}
-                alt={message.media_filename ?? 'Imagem'}
-                width={288}
-                height={288}
-                loading="lazy"
-                decoding="async"
-                className="h-auto max-h-72 w-72 max-w-full object-cover"
-                onError={(e) => {
-                  console.error(`[IMG] failed to load: msg=${message.id} url=${message.media_url?.slice(0, 80)}`);
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
-            </button>
-            <ImagePreviewDialog
-              src={message.media_url}
-              alt={message.media_filename ?? 'Imagem'}
-              open={imgOpen}
-              onOpenChange={setImgOpen}
-            />
-          </>
+          <MediaImage
+            messageId={message.id}
+            signedUrl={message.media_url}
+            alt={message.media_filename ?? 'Imagem'}
+            onOpenPreview={() => setImgOpen(true)}
+          />
+        )}
+        {type === 'IMAGE' && imgOpen && (
+          <ImagePreviewDialog
+            src={message.media_url ?? ''}
+            alt={message.media_filename ?? 'Imagem'}
+            open={imgOpen}
+            onOpenChange={setImgOpen}
+            messageId={message.id}
+          />
         )}
 
         {type === 'VIDEO' && message.media_url && (
           <VideoBubble
+            messageId={message.id}
             src={message.media_url}
             poster={message.media_poster_path}
             thumbnail={message.media_thumbnail_path}
@@ -209,26 +220,24 @@ function MessageBubbleComponent({
         )}
 
         {type === 'DOCUMENT' && message.media_url && (
-          <a
-            href={message.media_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            download={message.media_filename ?? undefined}
+          <button
+            type="button"
+            onClick={() => downloadMediaViaProxy(message.id, message.media_filename ?? 'documento')}
             className="flex min-w-[220px] items-center gap-3 rounded-lg bg-background/40 p-2 transition hover:bg-background/60"
           >
             <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
               <FileText size={20} />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">
+              <p className="truncate text-sm font-medium text-left">
                 {message.media_filename ?? 'Documento'}
               </p>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-left text-[11px] text-muted-foreground">
                 {formatBytes(message.media_size_bytes)}
               </p>
             </div>
             <Download size={16} className="flex-shrink-0 opacity-70" />
-          </a>
+          </button>
         )}
 
         {type === 'STICKER' && message.media_url && (
