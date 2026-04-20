@@ -34,8 +34,8 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
   const [error, setError] = useState(false);
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
 
-  // Use the signed URL directly when available (from getHistory).
-  // Only fall back to the backend proxy when src is not an absolute URL.
+  // Always fetch the audio as a blob so WaveSurfer gets a same-origin blob URL.
+  // Cross-origin URLs can fail silently with AudioContext.decodeAudioData().
   useEffect(() => {
     let disposed = false;
     let createdUrl: string | null = null;
@@ -43,27 +43,43 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
     setReady(false);
     setResolvedSrc(null);
 
-    // If src is already a signed URL, use it directly — no proxy needed.
-    if (src && /^https?:\/\//i.test(src)) {
-      setResolvedSrc(src);
+    if (!src && !messageId) {
+      setError(true);
       return;
     }
 
     (async () => {
       try {
-        const token =
-          typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-        const res = await fetch(`/api/messages/${messageId}/media`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-          credentials: 'include',
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
+        let audioUrl: string;
+
+        if (src && /^https?:\/\//i.test(src)) {
+          // Signed URL — fetch directly as blob (avoids cross-origin decode issues).
+          audioUrl = src;
+        } else {
+          // No direct URL — use backend proxy.
+          const token =
+            typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+          const proxyRes = await fetch(`/api/messages/${messageId}/media`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            credentials: 'include',
+          });
+          if (!proxyRes.ok) throw new Error(`proxy status ${proxyRes.status}`);
+          const blob = await proxyRes.blob();
+          if (disposed) return;
+          createdUrl = URL.createObjectURL(blob);
+          setResolvedSrc(createdUrl);
+          return;
+        }
+
+        const res = await fetch(audioUrl);
+        if (!res.ok) throw new Error(`fetch status ${res.status}`);
         const blob = await res.blob();
         if (disposed) return;
         createdUrl = URL.createObjectURL(blob);
         setResolvedSrc(createdUrl);
       } catch {
         if (disposed) return;
+        // Last resort: pass the raw URL and hope the browser can handle it.
         if (src) {
           setResolvedSrc(src);
         } else {
