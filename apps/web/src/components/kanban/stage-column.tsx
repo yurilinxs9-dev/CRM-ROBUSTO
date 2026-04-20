@@ -46,6 +46,7 @@ export interface Stage {
   auto_action?: unknown;
   sla_config?: any;
   idle_alert_config?: any;
+  response_alert_config?: any;
   on_entry_config?: any;
   cadence_config?: any;
 }
@@ -104,6 +105,7 @@ function SortableLeadImpl({
         lead={lead}
         stageMaxDias={getSlaThresholdDays(stage)}
         idleAlertConfig={stage.idle_alert_config}
+        responseAlertConfig={stage.response_alert_config}
         onOpenChat={onOpenChat}
         onQuickTask={onQuickTask}
         onArchiveLead={onArchiveLead}

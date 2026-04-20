@@ -110,6 +110,7 @@ interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   isDragging?: boolean;
   stageMaxDias?: number | null;
   idleAlertConfig?: { enabled?: boolean; duration?: number; unit?: string } | null;
+  responseAlertConfig?: { enabled?: boolean; duration?: number; unit?: string } | null;
   onOpenChat?: (leadId: string) => void;
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
@@ -125,6 +126,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       isDragging,
       stageMaxDias,
       idleAlertConfig,
+      responseAlertConfig,
       onOpenChat,
       onQuickTask,
       onArchiveLead,
@@ -148,9 +150,15 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       ? Date.now() - new Date(lead.last_customer_message_at).getTime()
       : null;
     const idleOverdue =
+      !hasUnread &&
       !!idleAlertConfig?.enabled &&
       idleElapsedMs !== null &&
       idleElapsedMs > durationToMs(idleAlertConfig.duration ?? 2, idleAlertConfig.unit ?? 'HOURS');
+    const responseOverdue =
+      hasUnread &&
+      !!responseAlertConfig?.enabled &&
+      waitingMs !== null &&
+      waitingMs > durationToMs(responseAlertConfig?.duration ?? 2, responseAlertConfig?.unit ?? 'HOURS');
     const pendingTasks = lead.pending_tasks_count ?? 0;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -214,11 +222,14 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         {/* Unread / aguardando badge */}
         {hasUnread && !overdue && (
           <div
-            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-blue-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            className={cn(
+              'absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background',
+              responseOverdue ? 'bg-red-500 animate-pulse' : 'bg-blue-500',
+            )}
             title={`${lead.mensagens_nao_lidas} mensagem(ns) sem resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
           >
             <MessageCircle className="h-3 w-3 shrink-0" />
-            <span>Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
+            <span>{responseOverdue ? '⚠ ' : ''}Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
           </div>
         )}
 

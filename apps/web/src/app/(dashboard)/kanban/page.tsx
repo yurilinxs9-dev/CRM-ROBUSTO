@@ -886,6 +886,9 @@ export default function KanbanPage() {
         open={!!stageConfigId}
         onOpenChange={(o) => !o && setStageConfigId(null)}
         stage={stageBeingConfigured}
+        allStages={stages
+          .filter((s) => s.id !== stageConfigId)
+          .map((s) => ({ id: s.id, nome: s.nome }))}
         isLoading={updateStageMutation.isPending}
         onSubmit={handleSubmitStageConfig}
       />

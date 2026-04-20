@@ -90,6 +90,7 @@ interface StageConfigDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   stage: StageConfig | null;
+  allStages?: { id: string; nome: string }[];
   isLoading?: boolean;
   onSubmit: (data: any) => void;
 }
@@ -99,6 +100,7 @@ export function StageConfigDialog({
   open,
   onOpenChange,
   stage,
+  allStages = [],
   isLoading,
   onSubmit,
 }: StageConfigDialogProps) {
@@ -118,11 +120,17 @@ export function StageConfigDialog({
   const [slaValue, setSlaValue] = useState('24');
   const [slaUnit, setSlaUnit] = useState('HOURS');
   const [slaAction, setSlaAction] = useState('ALERT');
+  const [slaTargetStageId, setSlaTargetStageId] = useState('');
 
-  // Idle
+  // Idle (cliente sem resposta)
   const [idleEnabled, setIdleEnabled] = useState(false);
   const [idleValue, setIdleValue] = useState('2');
   const [idleUnit, setIdleUnit] = useState('HOURS');
+
+  // Response alert (nós sem responder)
+  const [respEnabled, setRespEnabled] = useState(false);
+  const [respValue, setRespValue] = useState('2');
+  const [respUnit, setRespUnit] = useState('HOURS');
 
   // On Entry
   const [taskOn, setTaskOn] = useState(false);
@@ -156,12 +164,19 @@ export function StageConfigDialog({
     setSlaValue(String(sla?.duration ?? '24'));
     setSlaUnit(sla?.unit ?? 'HOURS');
     setSlaAction(sla?.action ?? 'ALERT');
+    setSlaTargetStageId(sla?.targetStageId ?? '');
 
-    // Idle
+    // Idle (cliente sem resposta)
     const idle = stage.idle_alert_config;
     setIdleEnabled(!!idle?.enabled);
     setIdleValue(String(idle?.duration ?? '2'));
     setIdleUnit(idle?.unit ?? 'HOURS');
+
+    // Response alert (nós sem responder)
+    const resp = (stage as any).response_alert_config;
+    setRespEnabled(!!resp?.enabled);
+    setRespValue(String(resp?.duration ?? '2'));
+    setRespUnit(resp?.unit ?? 'HOURS');
 
     // On Entry
     const entry = stage.on_entry_config;
@@ -211,11 +226,17 @@ export function StageConfigDialog({
         duration: parseInt(slaValue, 10),
         unit: slaUnit,
         action: slaAction,
+        targetStageId: slaAction === 'AUTO_MOVE' ? (slaTargetStageId || null) : null,
       },
       idle_alert_config: {
         enabled: idleEnabled,
         duration: parseInt(idleValue, 10),
         unit: idleUnit,
+      },
+      response_alert_config: {
+        enabled: respEnabled,
+        duration: parseInt(respValue, 10),
+        unit: respUnit,
       },
       on_entry_config: {
         createTask: {
@@ -344,6 +365,25 @@ export function StageConfigDialog({
                 </div>
               )}
 
+              {slaEnabled && slaAction === 'AUTO_MOVE' && (
+                <div className="pl-4 border-l-2 border-primary/20 py-1 space-y-1">
+                  <Label className="text-[10px] uppercase">Mover para a coluna</Label>
+                  <Select value={slaTargetStageId} onValueChange={setSlaTargetStageId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione a etapa destino..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allStages.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {!slaTargetStageId && (
+                    <p className="text-[10px] text-destructive">Selecione uma etapa destino para o Auto-Mover.</p>
+                  )}
+                </div>
+              )}
+
               {/* Idle Alert */}
               <div className="flex items-start justify-between gap-4 pt-4 border-t">
                 <div className="space-y-1">
@@ -362,6 +402,33 @@ export function StageConfigDialog({
                   <div>
                     <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
                     <Select value={idleUnit} onValueChange={setIdleUnit}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {TIME_UNITS.map(u => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
+              {/* Alerta de Resposta — nós sem responder */}
+              <div className="flex items-start justify-between gap-4 pt-4 border-t">
+                <div className="space-y-1">
+                  <Label className="text-sm font-semibold">Alerta de Demora na Resposta</Label>
+                  <p className="text-xs text-muted-foreground">Avisar se nós ficarmos muito tempo sem responder o cliente.</p>
+                </div>
+                <Switch checked={respEnabled} onCheckedChange={setRespEnabled} />
+              </div>
+
+              {respEnabled && (
+                <div className="grid grid-cols-2 gap-3 pl-4 border-l-2 border-red-400/40 py-1">
+                  <div>
+                    <Label className="text-[10px] uppercase mb-1 block">Aguardando há</Label>
+                    <Input type="number" value={respValue} onChange={e => setRespValue(e.target.value)} />
+                  </div>
+                  <div>
+                    <Label className="text-[10px] uppercase mb-1 block">Unidade</Label>
+                    <Select value={respUnit} onValueChange={setRespUnit}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {TIME_UNITS.map(u => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}

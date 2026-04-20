@@ -26,6 +26,7 @@ const createStageSchema = z.object({
   ordem: z.number().int().optional(),
   sla_config: z.any().optional(),
   idle_alert_config: z.any().optional(),
+  response_alert_config: z.any().optional(),
   on_entry_config: z.any().optional(),
   cadence_config: z.any().optional(),
 });
@@ -40,6 +41,7 @@ const updateStageSchema = z.object({
   auto_action: z.unknown().optional(),
   sla_config: z.any().optional(),
   idle_alert_config: z.any().optional(),
+  response_alert_config: z.any().optional(),
   on_entry_config: z.any().optional(),
   cadence_config: z.any().optional(),
 });

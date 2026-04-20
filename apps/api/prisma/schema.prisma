@@ -148,9 +148,10 @@ model Stage {
   
   // Novos campos do Painel Dinâmico
   sla_config        Json?   // { duration, unit, action, targetStageId }
-  idle_alert_config Json?   // { duration, unit }
-  on_entry_config   Json?   // { createTask, sendInitialMessage, assignResponsible }
-  cadence_config    Json?   // Array de degraus de cadência
+  idle_alert_config     Json?   // { enabled, duration, unit } — cliente sem resposta
+  response_alert_config Json?   // { enabled, duration, unit } — nós sem responder o cliente
+  on_entry_config       Json?   // { createTask, sendInitialMessage, assignResponsible }
+  cadence_config        Json?   // Array de degraus de cadência
 
   created_at          DateTime @default(now())
   leads               Lead[]
