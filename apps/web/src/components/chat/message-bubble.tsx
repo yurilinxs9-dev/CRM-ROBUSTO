@@ -239,6 +239,15 @@ function MessageBubbleComponent({
           />
         )}
 
+        {/* Fallback for media messages with no URL (old messages before fix) */}
+        {['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT', 'STICKER'].includes(type) &&
+          !message.media_url && (
+            <div className="flex min-w-[180px] items-center gap-2 text-xs opacity-70">
+              <AlertCircle size={14} />
+              <span>Mídia não disponível</span>
+            </div>
+          )}
+
         {type === 'LOCATION' && (
           <div className="flex min-w-[220px] items-center gap-3 rounded-lg bg-background/40 p-2">
             <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">

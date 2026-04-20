@@ -61,12 +61,20 @@ export class MessagesController {
 
   @Get(':id/media')
   async getMedia(@Param('id') id: string, @Req() req: Record<string, unknown>, @Res() res: Response) {
-    const { stream, contentType, contentLength } =
-      await this.messagesService.streamMedia(id, req.user as AuthUser);
-    res.setHeader('Content-Type', contentType);
-    if (contentLength) res.setHeader('Content-Length', String(contentLength));
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    stream.pipe(res);
+    try {
+      const { stream, contentType, contentLength } =
+        await this.messagesService.streamMedia(id, req.user as AuthUser);
+      res.setHeader('Content-Type', contentType);
+      if (contentLength) res.setHeader('Content-Length', String(contentLength));
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      stream.pipe(res);
+    } catch (err) {
+      const status = (err as Record<string, unknown>)?.status ?? 500;
+      const message = (err as Record<string, unknown>)?.message ?? 'Erro interno';
+      if (!res.headersSent) {
+        res.status(typeof status === 'number' ? status : 500).json({ message });
+      }
+    }
   }
 
   @Get('history/:leadId')

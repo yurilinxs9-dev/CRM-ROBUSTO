@@ -382,8 +382,22 @@ export class MessagesService {
     });
     const hasMore = rows.length > limit;
     const messages = hasMore ? rows.slice(0, limit) : rows;
+
+    // Sign Supabase storage paths so the frontend can load media directly.
+    const signed = await Promise.all(
+      messages.map(async (msg) => {
+        if (!msg.media_url || /^https?:\/\//i.test(msg.media_url)) return msg;
+        try {
+          const signedUrl = await this.media.getSignedUrl(msg.media_url, 60 * 60);
+          return { ...msg, media_url: signedUrl };
+        } catch {
+          return msg;
+        }
+      }),
+    );
+
     return {
-      messages,
+      messages: signed,
       nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
     };
   }
