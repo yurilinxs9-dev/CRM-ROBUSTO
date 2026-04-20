@@ -14,6 +14,11 @@ import {
   extractFromWpp,
   synthesizeMessageId,
 } from './message-extractor';
+import {
+  assertValidMagic,
+  decryptWhatsAppMedia,
+  messageTypeToMediaType,
+} from './media-crypto';
 
 type Obj = Record<string, unknown>;
 
@@ -421,10 +426,37 @@ export class WebhookProcessor extends WorkerHost {
       const mediaUrl = input.extracted.media?.url;
       if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) return;
 
-      const buf = await this.downloadMedia(mediaUrl);
-      if (!buf) return;
+      const rawBuf = await this.downloadMedia(mediaUrl);
+      if (!rawBuf) return;
 
       const mimetype = input.extracted.media?.mimetype ?? 'application/octet-stream';
+      const mediaKey = input.extracted.media?.mediaKey;
+
+      // Decrypt WhatsApp E2E encrypted media if mediaKey is present.
+      let buf: Buffer;
+      if (mediaKey) {
+        try {
+          const cryptoType = messageTypeToMediaType(input.extracted.type);
+          buf = decryptWhatsAppMedia(rawBuf, mediaKey, cryptoType);
+        } catch (err) {
+          this.logger.error(
+            `Decryption failed msg=${input.messageId} waId=${input.whatsappMessageId}: ${String(err)}`,
+          );
+          return;
+        }
+      } else {
+        // No mediaKey — assume already decrypted (e.g. from APIs that handle decryption).
+        buf = rawBuf;
+      }
+
+      // Validate magic bytes — never store corrupted/encrypted data.
+      try {
+        assertValidMagic(buf, mimetype, input.messageId);
+      } catch (err) {
+        this.logger.error(String(err));
+        return;
+      }
+
       const ext = this.extFromMime(mimetype, 'bin');
       const folder = input.extracted.type.toLowerCase();
       const storagePath = `${input.tenantId}/${folder}/${input.whatsappMessageId}.${ext}`;

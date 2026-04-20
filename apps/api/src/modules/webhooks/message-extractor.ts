@@ -12,6 +12,8 @@ export interface ExtractedMessage {
     size_bytes?: number;
     width?: number;
     height?: number;
+    /** Base64-encoded media key for WhatsApp E2E decryption. */
+    mediaKey?: string;
   };
   location?: { latitude?: number; longitude?: number; name?: string };
   contact?: { display_name?: string; vcard?: string };
@@ -56,6 +58,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         size_bytes: asNum(img.fileLength),
         width: asNum(img.width),
         height: asNum(img.height),
+        mediaKey: asStr(img.mediaKey),
       },
     };
   }
@@ -73,6 +76,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         size_bytes: asNum(vid.fileLength),
         width: asNum(vid.width),
         height: asNum(vid.height),
+        mediaKey: asStr(vid.mediaKey),
       },
     };
   }
@@ -88,6 +92,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         mimetype: asStr(aud.mimetype) ?? 'audio/ogg',
         duration_seconds: asNum(aud.seconds),
         size_bytes: asNum(aud.fileLength),
+        mediaKey: asStr(aud.mediaKey),
       },
     };
   }
@@ -104,6 +109,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         mimetype: asStr(inner.mimetype) ?? 'application/octet-stream',
         filename: asStr(inner.fileName) ?? asStr(inner.title),
         size_bytes: asNum(inner.fileLength),
+        mediaKey: asStr(inner.mediaKey),
       },
     };
   }
@@ -118,6 +124,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         url: asStr(sticker.url) ?? asStr(sticker.directPath),
         mimetype: asStr(sticker.mimetype) ?? 'image/webp',
         size_bytes: asNum(sticker.fileLength),
+        mediaKey: asStr(sticker.mediaKey),
       },
     };
   }
@@ -288,6 +295,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
     asNum(message.seconds);
   const width = asNum(contentObj?.width);
   const height = asNum(contentObj?.height);
+  const mediaKey = asStr(contentObj?.mediaKey) ?? asStr(message.mediaKey);
 
   switch (messageType) {
     case 'text':
@@ -307,6 +315,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           mimetype: mimetype ?? 'image/jpeg',
           width,
           height,
+          mediaKey,
         },
       };
     case 'video':
@@ -320,6 +329,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           duration_seconds: duration,
           width,
           height,
+          mediaKey,
         },
       };
     case 'audio':
@@ -332,6 +342,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           url: mediaUrl,
           mimetype: mimetype ?? 'audio/ogg',
           duration_seconds: duration,
+          mediaKey,
         },
       };
     case 'document':
@@ -344,6 +355,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           url: mediaUrl,
           mimetype: mimetype ?? 'application/octet-stream',
           filename,
+          mediaKey,
         },
       };
     case 'sticker':
@@ -351,7 +363,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
       return {
         type: 'STICKER',
         content: null,
-        media: { url: mediaUrl, mimetype: mimetype ?? 'image/webp' },
+        media: { url: mediaUrl, mimetype: mimetype ?? 'image/webp', mediaKey },
       };
     case 'location':
     case 'locationmessage': {
