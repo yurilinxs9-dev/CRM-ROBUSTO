@@ -34,13 +34,20 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
   const [error, setError] = useState(false);
   const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
 
-  // Fetch audio bytes via authenticated backend proxy, then expose as blob URL.
+  // Use the signed URL directly when available (from getHistory).
+  // Only fall back to the backend proxy when src is not an absolute URL.
   useEffect(() => {
     let disposed = false;
     let createdUrl: string | null = null;
     setError(false);
     setReady(false);
     setResolvedSrc(null);
+
+    // If src is already a signed URL, use it directly — no proxy needed.
+    if (src && /^https?:\/\//i.test(src)) {
+      setResolvedSrc(src);
+      return;
+    }
 
     (async () => {
       try {
