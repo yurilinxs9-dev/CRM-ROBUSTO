@@ -97,7 +97,7 @@ export class WebhookProcessor extends WorkerHost {
           await this.handleUazapiConnectionUpdate(job.data);
           break;
         default:
-          this.logger.warn(`Evento nao suportado: ${job.name}`);
+          this.logger.warn(`Evento nao suportado: ${job.name} payload=${JSON.stringify(job.data).slice(0, 2000)}`);
       }
 
       const processingTime = Date.now() - start;
