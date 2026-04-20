@@ -139,16 +139,20 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     ref,
   ) => {
     const hasUnread = lead.mensagens_nao_lidas > 0;
-    // Fallback para created_at quando estagio_entered_at ainda nao foi preenchido (leads antigos)
     const enteredAt = lead.estagio_entered_at ?? lead.created_at;
     const dis = daysInStage(enteredAt);
     const overdue = dis !== null && stageMaxDias != null && dis > stageMaxDias;
-    const waitingMs = hasUnread && lead.last_customer_message_at
-      ? Date.now() - new Date(lead.last_customer_message_at).getTime()
+
+    // Melhor estimativa de quando o cliente enviou a última mensagem. Usa ultima_interacao como fallback
+    // para leads que ainda não têm last_customer_message_at preenchido.
+    const customerTs = lead.last_customer_message_at ?? (hasUnread ? lead.ultima_interacao : null);
+    const waitingMs = hasUnread && customerTs
+      ? Date.now() - new Date(customerTs).getTime()
       : null;
     const idleElapsedMs = lead.last_customer_message_at
       ? Date.now() - new Date(lead.last_customer_message_at).getTime()
       : null;
+
     const idleOverdue =
       !hasUnread &&
       !!idleAlertConfig?.enabled &&
@@ -205,6 +209,17 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           >
             <AlertTriangle className="h-3 w-3" />
             {Math.floor(dis!)}d
+          </div>
+        )}
+
+        {/* Aguardando badge — tem mensagens não lidas mas dentro do prazo (ou sem config de alerta) */}
+        {hasUnread && !overdue && !responseOverdue && (
+          <div
+            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-blue-500 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background"
+            title={`${lead.mensagens_nao_lidas} mensagem(ns) aguardando resposta${waitingMs ? ` há ${formatElapsed(waitingMs)}` : ''}`}
+          >
+            <MessageCircle className="h-3 w-3 shrink-0" />
+            <span>Aguardando{waitingMs ? ` ${formatElapsed(waitingMs)}` : ''}</span>
           </div>
         )}
 
