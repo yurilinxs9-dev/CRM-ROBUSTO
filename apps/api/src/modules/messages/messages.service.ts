@@ -198,7 +198,8 @@ export class MessagesService {
       data: { ultima_interacao: new Date() },
     });
 
-    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
+    // Emit with signed URL so the frontend can render media immediately.
+    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
 
     await this.sendQueue.add('send-audio', {
@@ -215,7 +216,7 @@ export class MessagesService {
       durationSeconds: probedDuration,
     });
 
-    return message;
+    return { ...message, media_url: signedUrl };
   }
 
   async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser) {
@@ -284,7 +285,8 @@ export class MessagesService {
       data: { ultima_interacao: new Date() },
     });
 
-    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
+    // Emit with signed URL so the frontend can render media immediately.
+    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
 
     await this.sendQueue.add('send-media', {
@@ -304,7 +306,7 @@ export class MessagesService {
       filename: file.originalname,
     });
 
-    return message;
+    return { ...message, media_url: signedUrl };
   }
 
   async streamMedia(messageId: string, user: AuthUser): Promise<{

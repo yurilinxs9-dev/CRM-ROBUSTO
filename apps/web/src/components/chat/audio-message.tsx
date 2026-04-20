@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn';
 
 interface AudioMessageProps {
   messageId: string;
-  /** Legacy direct URL — used as fallback if the proxy fetch fails. */
+  /** Signed URL or storage path — component resolves it automatically. */
   src?: string;
   isOutgoing?: boolean;
   /** Pre-computed waveform peaks (0-1 normalized). Skips WaveSurfer decode. */
@@ -14,12 +14,42 @@ interface AudioMessageProps {
 }
 
 const SPEEDS = [1, 1.5, 2] as const;
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Resolve audio source to a blob URL (same-origin, avoids cross-origin decode issues). */
+async function resolveAudioBlob(
+  messageId: string,
+  src?: string,
+): Promise<string> {
+  // 1) If src is already a signed URL, fetch it as a blob directly.
+  if (src && /^https?:\/\//i.test(src)) {
+    const res = await fetch(src);
+    if (res.ok) {
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    }
+    // Signed URL failed — fall through to proxy.
+    console.warn(`[AudioMessage] direct fetch failed (${res.status}), trying proxy`);
+  }
+
+  // 2) Fall back to backend proxy.
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+  const proxyUrl = `${API_BASE}/api/messages/${messageId}/media`;
+  const proxyRes = await fetch(proxyUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    credentials: 'include',
+  });
+  if (!proxyRes.ok) throw new Error(`proxy ${proxyRes.status}`);
+  const blob = await proxyRes.blob();
+  return URL.createObjectURL(blob);
 }
 
 function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPeaks }: AudioMessageProps) {
@@ -32,70 +62,42 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
   const [speedIdx, setSpeedIdx] = useState(0);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
-  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
-  // Always fetch the audio as a blob so WaveSurfer gets a same-origin blob URL.
-  // Cross-origin URLs can fail silently with AudioContext.decodeAudioData().
+  // Resolve audio source to a blob URL.
   useEffect(() => {
     let disposed = false;
-    let createdUrl: string | null = null;
+    let url: string | null = null;
     setError(false);
     setReady(false);
-    setResolvedSrc(null);
+    setBlobUrl(null);
 
     if (!src && !messageId) {
       setError(true);
       return;
     }
 
-    (async () => {
-      try {
-        let audioUrl: string;
-
-        if (src && /^https?:\/\//i.test(src)) {
-          // Signed URL — fetch directly as blob (avoids cross-origin decode issues).
-          audioUrl = src;
-        } else {
-          // No direct URL — use backend proxy.
-          const token =
-            typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-          const proxyRes = await fetch(`/api/messages/${messageId}/media`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            credentials: 'include',
-          });
-          if (!proxyRes.ok) throw new Error(`proxy status ${proxyRes.status}`);
-          const blob = await proxyRes.blob();
-          if (disposed) return;
-          createdUrl = URL.createObjectURL(blob);
-          setResolvedSrc(createdUrl);
-          return;
-        }
-
-        const res = await fetch(audioUrl);
-        if (!res.ok) throw new Error(`fetch status ${res.status}`);
-        const blob = await res.blob();
+    resolveAudioBlob(messageId, src)
+      .then((created) => {
+        if (disposed) { URL.revokeObjectURL(created); return; }
+        url = created;
+        setBlobUrl(created);
+      })
+      .catch((err) => {
         if (disposed) return;
-        createdUrl = URL.createObjectURL(blob);
-        setResolvedSrc(createdUrl);
-      } catch {
-        if (disposed) return;
-        // Last resort: pass the raw URL and hope the browser can handle it.
-        if (src) {
-          setResolvedSrc(src);
-        } else {
-          setError(true);
-        }
-      }
-    })();
+        console.error(`[AudioMessage] resolve failed for msg=${messageId}:`, err);
+        setError(true);
+      });
 
     return () => {
       disposed = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
+      if (url) URL.revokeObjectURL(url);
     };
   }, [messageId, src]);
 
+  // Create WaveSurfer instance from blob URL.
   useEffect(() => {
-    if (!resolvedSrc) return;
+    if (!blobUrl) return;
     let disposed = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let ws: any;
@@ -129,8 +131,11 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
         setPlaying(false);
         setCurrent(0);
       });
-      instance.on('error', () => setError(true));
-      instance.load(resolvedSrc);
+      instance.on('error', (e: unknown) => {
+        console.error(`[AudioMessage] WaveSurfer error for msg=${messageId}:`, e);
+        setError(true);
+      });
+      instance.load(blobUrl);
       ws = instance;
       wsRef.current = instance;
     })();
@@ -141,7 +146,7 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
       wsRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedSrc, isOutgoing, waveformPeaks]);
+  }, [blobUrl, isOutgoing, waveformPeaks]);
 
   const toggle = () => {
     wsRef.current?.playPause();

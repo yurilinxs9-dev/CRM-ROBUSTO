@@ -185,6 +185,10 @@ function MessageBubbleComponent({
                 loading="lazy"
                 decoding="async"
                 className="h-auto max-h-72 w-72 max-w-full object-cover"
+                onError={(e) => {
+                  console.error(`[IMG] failed to load: msg=${message.id} url=${message.media_url?.slice(0, 80)}`);
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
               />
             </button>
             <ImagePreviewDialog
