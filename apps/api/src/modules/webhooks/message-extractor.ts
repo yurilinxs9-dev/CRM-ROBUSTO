@@ -245,36 +245,82 @@ export function extractFromWpp(msg: Obj): ExtractedMessage {
 
 /**
  * Extract from UazAPI message payload.
+ *
+ * UazAPI nests media data inside `message.content` as an object:
+ *   ImageMessage  → content.URL, content.caption, content.width, content.height, content.mimetype
+ *   AudioMessage  → content.URL, content.mimetype, content.seconds, content.waveform
+ *   VideoMessage  → content.URL, content.caption, content.seconds, content.mimetype
+ *   DocumentMessage → content.URL, content.mimetype, content.fileName, content.title
+ *   StickerMessage → content.URL, content.mimetype
+ *   ExtendedTextMessage → content.text
+ *   Conversation  → message.text (flat)
  */
 export function extractFromUazapi(message: Obj): ExtractedMessage {
   const rawType = asStr(message.messageType) ?? asStr(message.type);
-  // UazAPI sometimes sends PascalCase (e.g. "StickerMessage", "ImageMessage").
-  // Normalize to lowercase so the switch matches all variants.
+  // UazAPI sends PascalCase (e.g. "StickerMessage", "ImageMessage").
   const messageType = rawType?.toLowerCase();
+
+  // UazAPI puts media/extended data inside `content` as a nested object.
+  const contentObj = asObj(message.content);
+
+  // Flat fields (text messages, captions on some older payloads)
   const text = asStr(message.text);
   const caption = asStr(message.caption);
-  const mediaUrl = asStr(message.mediaUrl) ?? asStr(message.url);
-  const mimetype = asStr(message.mimeType) ?? asStr(message.mimetype);
-  const filename = asStr(message.fileName);
-  const duration = asNum(message.duration) ?? asNum(message.seconds);
+
+  // Media fields: prefer nested content object, fall back to flat fields.
+  const mediaUrl =
+    asStr(contentObj?.URL) ??
+    asStr(contentObj?.url) ??
+    asStr(message.mediaUrl) ??
+    asStr(message.url);
+  const mimetype =
+    asStr(contentObj?.mimetype) ??
+    asStr(message.mimeType) ??
+    asStr(message.mimetype);
+  const contentCaption = asStr(contentObj?.caption);
+  const filename =
+    asStr(contentObj?.fileName) ??
+    asStr(contentObj?.title) ??
+    asStr(message.fileName);
+  const duration =
+    asNum(contentObj?.seconds) ??
+    asNum(message.duration) ??
+    asNum(message.seconds);
+  const width = asNum(contentObj?.width);
+  const height = asNum(contentObj?.height);
 
   switch (messageType) {
     case 'text':
     case 'conversation':
       return { type: 'TEXT', content: text ?? null };
+    case 'extendedtextmessage': {
+      const extText = asStr(contentObj?.text) ?? text;
+      return { type: 'TEXT', content: extText ?? null };
+    }
     case 'image':
     case 'imagemessage':
       return {
         type: 'IMAGE',
-        content: caption ?? text ?? null,
-        media: { url: mediaUrl, mimetype: mimetype ?? 'image/jpeg' },
+        content: contentCaption ?? caption ?? text ?? null,
+        media: {
+          url: mediaUrl,
+          mimetype: mimetype ?? 'image/jpeg',
+          width,
+          height,
+        },
       };
     case 'video':
     case 'videomessage':
       return {
         type: 'VIDEO',
-        content: caption ?? text ?? null,
-        media: { url: mediaUrl, mimetype: mimetype ?? 'video/mp4', duration_seconds: duration },
+        content: contentCaption ?? caption ?? text ?? null,
+        media: {
+          url: mediaUrl,
+          mimetype: mimetype ?? 'video/mp4',
+          duration_seconds: duration,
+          width,
+          height,
+        },
       };
     case 'audio':
     case 'audiomessage':
@@ -282,13 +328,18 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
       return {
         type: 'AUDIO',
         content: null,
-        media: { url: mediaUrl, mimetype: mimetype ?? 'audio/ogg', duration_seconds: duration },
+        media: {
+          url: mediaUrl,
+          mimetype: mimetype ?? 'audio/ogg',
+          duration_seconds: duration,
+        },
       };
     case 'document':
     case 'documentmessage':
+    case 'documentwithcaptionmessage':
       return {
         type: 'DOCUMENT',
-        content: caption ?? null,
+        content: contentCaption ?? caption ?? null,
         media: {
           url: mediaUrl,
           mimetype: mimetype ?? 'application/octet-stream',
@@ -303,16 +354,16 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
         media: { url: mediaUrl, mimetype: mimetype ?? 'image/webp' },
       };
     case 'location':
-    case 'locationmessage':
+    case 'locationmessage': {
+      const lat = asNum(contentObj?.degreesLatitude) ?? asNum(message.latitude);
+      const lng = asNum(contentObj?.degreesLongitude) ?? asNum(message.longitude);
+      const locName = asStr(contentObj?.name) ?? asStr(message.name);
       return {
         type: 'LOCATION',
-        content: asStr(message.name) ?? null,
-        location: {
-          latitude: asNum(message.latitude),
-          longitude: asNum(message.longitude),
-          name: asStr(message.name),
-        },
+        content: locName ?? null,
+        location: { latitude: lat, longitude: lng, name: locName },
       };
+    }
     case 'contact':
     case 'contactmessage':
       return {
@@ -323,10 +374,12 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           vcard: asStr(message.vcard),
         },
       };
-    default:
-      // Fallback: try text
-      if (text) return { type: 'TEXT', content: text };
+    default: {
+      // ExtendedTextMessage or unknown — try content.text, then flat text
+      const fallbackText = asStr(contentObj?.text) ?? text;
+      if (fallbackText) return { type: 'TEXT', content: fallbackText };
       return { type: 'TEXT', content: rawType ? `[unsupported: ${rawType}]` : null };
+    }
   }
 }
 
