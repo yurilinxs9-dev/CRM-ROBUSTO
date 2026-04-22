@@ -1,6 +1,7 @@
-import { Controller, Post, Body, Get, Req, Res, HttpCode, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Body, Get, Req, Res, HttpCode, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 
@@ -87,6 +88,7 @@ export class AuthController {
   }
 
   @Get('me')
+  @UseGuards(JwtAuthGuard)
   async me(@Req() req: Request & { user: Record<string, unknown> }) {
     const user = req.user as { id?: string; tenantId?: string };
     if (!user?.id || !user?.tenantId) throw new UnauthorizedException();
