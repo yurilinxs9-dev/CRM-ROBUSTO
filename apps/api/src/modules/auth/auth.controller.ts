@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Req, Res, HttpCode } from '@nestjs/common';
+import { Controller, Post, Body, Get, Req, Res, HttpCode, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { Request, Response } from 'express';
@@ -88,6 +88,8 @@ export class AuthController {
 
   @Get('me')
   async me(@Req() req: Request & { user: Record<string, unknown> }) {
-    return req.user;
+    const user = req.user as { id?: string; tenantId?: string };
+    if (!user?.id || !user?.tenantId) throw new UnauthorizedException();
+    return this.authService.getMe(user.id, user.tenantId);
   }
 }

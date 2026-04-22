@@ -10,12 +10,20 @@ interface User {
   avatar_url?: string;
 }
 
+export interface Tenant {
+  id: string;
+  nome: string;
+  pool_enabled: boolean;
+}
+
 interface AuthState {
   user: User | null;
+  tenant: Tenant | null;
   accessToken: string | null;
   isAuthenticated: boolean;
   hydrated: boolean;
   setAuth: (user: User, token: string) => void;
+  setTenant: (tenant: Tenant) => void;
   updateToken: (token: string) => void;
   logout: () => void;
   setHydrated: () => void;
@@ -28,6 +36,7 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       user: null,
+      tenant: null,
       accessToken: null,
       isAuthenticated: false,
       hydrated: false,
@@ -36,13 +45,14 @@ export const useAuthStore = create<AuthState>()(
         localStorage.setItem('accessToken', accessToken);
         set({ user, accessToken, isAuthenticated: true });
       },
+      setTenant: (tenant) => set({ tenant }),
       updateToken: (accessToken) => {
         localStorage.setItem('accessToken', accessToken);
         set({ accessToken });
       },
       logout: () => {
         localStorage.removeItem('accessToken');
-        set({ user: null, accessToken: null, isAuthenticated: false });
+        set({ user: null, tenant: null, accessToken: null, isAuthenticated: false });
       },
       setHydrated: () => set({ hydrated: true }),
     }),
@@ -51,6 +61,7 @@ export const useAuthStore = create<AuthState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         user: state.user,
+        tenant: state.tenant,
         accessToken: state.accessToken,
         isAuthenticated: state.isAuthenticated,
       }),
@@ -60,3 +71,5 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 );
+
+export const useIsPoolEnabled = () => useAuthStore((s) => s.tenant?.pool_enabled ?? false);

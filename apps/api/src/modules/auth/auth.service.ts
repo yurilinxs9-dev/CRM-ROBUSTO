@@ -48,6 +48,21 @@ export class AuthService {
     }
   }
 
+  async getMe(userId: string, tenantId: string) {
+    const [user, tenant] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, nome: true, email: true, role: true, ativo: true, avatar_url: true },
+      }),
+      this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true, nome: true, pool_enabled: true },
+      }),
+    ]);
+    if (!user) throw new UnauthorizedException();
+    return { user, tenant };
+  }
+
   async createUser(data: {
     nome: string;
     email: string;

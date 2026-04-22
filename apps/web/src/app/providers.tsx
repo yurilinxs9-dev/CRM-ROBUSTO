@@ -1,8 +1,25 @@
 'use client';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Toaster } from 'sonner';
+import { useAuthStore } from '@/stores/auth.store';
+import { api } from '@/lib/api';
+
+function AuthBootstrap() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const tenant = useAuthStore((s) => s.tenant);
+  const setTenant = useAuthStore((s) => s.setTenant);
+
+  useEffect(() => {
+    if (!isAuthenticated || tenant !== null) return;
+    api.get<{ user: unknown; tenant: { id: string; nome: string; pool_enabled: boolean } }>('/api/auth/me')
+      .then((res) => setTenant(res.data.tenant))
+      .catch(() => { /* token expirado ou rede — não-crítico */ });
+  }, [isAuthenticated, tenant, setTenant]);
+
+  return null;
+}
 
 export default function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -25,6 +42,7 @@ export default function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <AuthBootstrap />
       {children}
       <Toaster
         position="bottom-right"

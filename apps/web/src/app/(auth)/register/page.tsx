@@ -26,6 +26,7 @@ export default function RegisterPage() {
   const nomeRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setTenant = useAuthStore((s) => s.setTenant);
 
   useEffect(() => {
     nomeRef.current?.focus();
@@ -55,6 +56,12 @@ export default function RegisterPage() {
         },
         data.accessToken,
       );
+      try {
+        const me = await api.get<{ user: Record<string, unknown>; tenant: { id: string; nome: string; pool_enabled: boolean } }>('/api/auth/me', {
+          headers: { Authorization: `Bearer ${data.accessToken}` },
+        });
+        setTenant(me.data.tenant);
+      } catch { /* não-crítico */ }
       router.push('/instances');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;

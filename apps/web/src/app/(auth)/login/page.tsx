@@ -32,6 +32,7 @@ export default function LoginPage() {
   const emailRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setTenant = useAuthStore((s) => s.setTenant);
 
   useEffect(() => {
     emailRef.current?.focus();
@@ -60,6 +61,12 @@ export default function LoginPage() {
         },
         token,
       );
+      try {
+        const me = await api.get<{ user: Record<string, unknown>; tenant: { id: string; nome: string; pool_enabled: boolean } }>('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setTenant(me.data.tenant);
+      } catch { /* não-crítico — pool_enabled fica false por default */ }
       router.push('/dashboard');
     } catch {
       setError('Email ou senha inválidos');
