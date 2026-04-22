@@ -28,7 +28,8 @@ import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPoolEnabled } from '@/stores/auth.store';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -92,6 +93,11 @@ export default function KanbanPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const isPoolEnabled = useIsPoolEnabled();
+  const [activeTab, setActiveTab] = useState<'escritorio' | 'meus'>(() => {
+    try { return (localStorage.getItem('kanban-tab') as 'escritorio' | 'meus') ?? 'meus'; }
+    catch { return 'meus'; }
+  });
 
   const [activePipelineId, setActivePipelineId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -228,6 +234,21 @@ export default function KanbanPage() {
       return true;
     });
   }, [leads, searchTerm, tempFilter, responsavelFilter]);
+
+  const meuCount = useMemo(
+    () => filteredLeads.filter((l) => l.responsavel?.id === currentUserId).length,
+    [filteredLeads, currentUserId],
+  );
+  const escritorioCount = useMemo(
+    () => filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId).length,
+    [filteredLeads, currentUserId],
+  );
+
+  const tabFilteredLeads = useMemo(() => {
+    if (!isPoolEnabled) return filteredLeads;
+    if (activeTab === 'meus') return filteredLeads.filter((l) => l.responsavel?.id === currentUserId);
+    return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId);
+  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId]);
 
   const responsaveis = useMemo(() => {
     const map = new Map<string, string>();
@@ -585,7 +606,7 @@ export default function KanbanPage() {
   const leadsByStage = useMemo(() => {
     const map: Record<string, Lead[]> = {};
     for (const stage of orderedStages) map[stage.id] = [];
-    for (const lead of filteredLeads) {
+    for (const lead of tabFilteredLeads) {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
     }
     for (const stageId of Object.keys(map)) {
@@ -595,7 +616,7 @@ export default function KanbanPage() {
       );
     }
     return map;
-  }, [filteredLeads, orderedStages]);
+  }, [tabFilteredLeads, orderedStages]);
 
   const openNewLead = (stageId: string | null) => {
     setDefaultStageId(stageId);
@@ -781,6 +802,29 @@ export default function KanbanPage() {
           Exportar CSV
         </Button>
       </div>
+
+      {/* Pool tabs */}
+      {isPoolEnabled && (
+        <div className="px-4 pt-2 border-b">
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => {
+              const tab = v as 'escritorio' | 'meus';
+              setActiveTab(tab);
+              try { localStorage.setItem('kanban-tab', tab); } catch { /* noop */ }
+            }}
+          >
+            <TabsList>
+              <TabsTrigger value="escritorio">
+                📂 Escritório ({escritorioCount})
+              </TabsTrigger>
+              <TabsTrigger value="meus">
+                👤 Meus Leads ({meuCount})
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+      )}
 
       {/* Board */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden">
