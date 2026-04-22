@@ -99,9 +99,29 @@ export class MessagesService {
     return { lead, token, instanceName: instance.nome };
   }
 
+  private async buildOutboundPrefix(tenantId: string, userId: string, userName: string): Promise<string> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { pool_enabled: true },
+    });
+    if (!tenant?.pool_enabled) return '';
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { titulo: true, especialidade: true },
+    });
+    const titulo = u?.titulo ?? null;
+    const especialidade = u?.especialidade ?? null;
+    const namePart = titulo ? `${titulo} ${userName}` : userName;
+    const label = especialidade ? `${namePart} — ${especialidade}` : namePart;
+    return `*${label}*\n\n`;
+  }
+
   async sendText(data: unknown, user: AuthUser) {
     const { lead_id, content } = sendTextSchema.parse(data);
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+
+    const prefix = await this.buildOutboundPrefix(user.tenantId, user.id, user.nome);
+    const outboundContent = prefix ? prefix + content : content;
 
     const localId = uuid();
 
@@ -113,7 +133,7 @@ export class MessagesService {
         whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: 'TEXT',
-        content,
+        content: outboundContent,
         status: 'PENDING',
         sent_by_user_id: user.id,
         tenant_id: user.tenantId,
@@ -137,7 +157,7 @@ export class MessagesService {
       telefone: lead.telefone,
       uazBaseUrl: this.baseUrl,
       uazToken: token,
-      content,
+      content: outboundContent,
     });
 
     return message;
@@ -262,6 +282,9 @@ export class MessagesService {
     const msgType = kindToMessageType(processed.kind);
     const uazMediaType: 'image' | 'video' | 'audio' | 'document' = processed.kind === 'document' ? 'document' : processed.kind;
 
+    const prefix = caption ? await this.buildOutboundPrefix(user.tenantId, user.id, user.nome) : '';
+    const outboundCaption = prefix && caption ? prefix + caption : (caption ?? undefined);
+
     const message = await this.prisma.message.create({
       data: {
         lead_id,
@@ -269,7 +292,7 @@ export class MessagesService {
         whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: msgType,
-        content: caption ?? null,
+        content: outboundCaption ?? null,
         media_url: storagePath,
         media_mimetype: processed.mimetype,
         media_size_bytes: processed.size_bytes,
@@ -306,7 +329,7 @@ export class MessagesService {
       signedUrl,
       mimetype: processed.mimetype,
       mediaType: uazMediaType,
-      caption,
+      caption: outboundCaption,
       filename: file.originalname,
     });
 

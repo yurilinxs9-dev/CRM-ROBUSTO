@@ -96,6 +96,7 @@ model User {
   avatar_url String?
   ativo      Boolean  @default(true)
   especialidade String?
+  titulo     String?
   tenant_id  String
   tenant     Tenant   @relation("TenantMembers", fields: [tenant_id], references: [id])
   owned_tenants    Tenant[]           @relation("TenantOwner")
