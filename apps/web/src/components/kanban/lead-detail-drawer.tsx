@@ -405,16 +405,36 @@ export function LeadDetailDrawer({
                 </p>
                 {isPoolEnabled ? (
                   !lead?.responsavel ? (
-                    <Button
-                      className="w-full"
-                      disabled={claimMutation.isPending}
-                      onClick={() => claimMutation.mutate()}
-                    >
-                      {claimMutation.isPending
-                        ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                        : <span className="mr-1">✋</span>}
-                      {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
-                    </Button>
+                    <div className="space-y-2">
+                      <Button
+                        className="w-full"
+                        disabled={claimMutation.isPending}
+                        onClick={() => claimMutation.mutate()}
+                      >
+                        {claimMutation.isPending
+                          ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          : <span className="mr-1">✋</span>}
+                        {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
+                      </Button>
+                      {(currentUser?.role === 'GERENTE' || currentUser?.role === 'SUPER_ADMIN') && (
+                        <div className="space-y-1.5">
+                          <Label>Atribuir para</Label>
+                          <Select
+                            disabled={reassignMutation.isPending}
+                            onValueChange={(v) => reassignMutation.mutate(v)}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecionar operador..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {users.map((u) => (
+                                <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     (() => {
                       const canReassign =
