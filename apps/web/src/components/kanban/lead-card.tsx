@@ -309,6 +309,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           <button
             type="button"
             disabled={isClaiming}
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={async (e) => {
               stop(e);
               setIsClaiming(true);
