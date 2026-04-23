@@ -32,6 +32,11 @@ const createMemberSchema = z.object({
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
 });
 
+const linkMemberSchema = z.object({
+  email: z.string().email(),
+  role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
+});
+
 const updateMemberSchema = z.object({
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']).optional(),
   titulo: z.string().max(50).nullable().optional(),
@@ -66,6 +71,13 @@ export class UsersController {
   createMember(@Req() req: Record<string, unknown>, @Body() body: unknown) {
     const dto = createMemberSchema.parse(body);
     return this.usersService.createTeamMember(req.user as AuthUser, dto);
+  }
+
+  @Post('team/link')
+  @Roles(UserRole.GERENTE)
+  linkMember(@Req() req: Record<string, unknown>, @Body() body: unknown) {
+    const dto = linkMemberSchema.parse(body);
+    return this.usersService.linkTeamMember(req.user as AuthUser, dto);
   }
 
   @Patch('team/:id')

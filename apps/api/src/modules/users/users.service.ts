@@ -56,6 +56,25 @@ export class UsersService {
     return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: TEAM_SELECT });
   }
 
+  async linkTeamMember(caller: AuthUser, dto: { email: string; role: string }) {
+    if (dto.role === UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Não é possível vincular como SUPER_ADMIN');
+    }
+    const target = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (!target) throw new NotFoundException('Usuário não encontrado');
+    if (target.role === UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Não é possível vincular SUPER_ADMIN');
+    }
+    if (target.tenant_id === caller.tenantId) {
+      throw new ConflictException('Usuário já faz parte da equipe');
+    }
+    return this.prisma.user.update({
+      where: { id: target.id },
+      data: { tenant_id: caller.tenantId, role: dto.role as UserRole },
+      select: TEAM_SELECT,
+    });
+  }
+
   async updateTeamMember(
     caller: AuthUser,
     targetId: string,

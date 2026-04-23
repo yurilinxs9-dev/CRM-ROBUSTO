@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Shield, UserCheck, UserX } from 'lucide-react';
+import { Plus, Shield, UserCheck, UserX, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -54,13 +54,18 @@ function getInitials(name: string) {
   return name.split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 }
 
+type AddMode = 'create' | 'link';
+
 export function TeamTab() {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<AddMode>('create');
   const [newNome, setNewNome] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newSenha, setNewSenha] = useState('');
   const [newRole, setNewRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
+  const [linkEmail, setLinkEmail] = useState('');
+  const [linkRole, setLinkRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
 
   const { data: members = [], isLoading } = useQuery<TeamMember[]>({
     queryKey: ['team'],
@@ -83,6 +88,22 @@ export function TeamTab() {
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
       toast.error(msg ?? 'Erro ao adicionar membro.');
+    },
+  });
+
+  const linkMutation = useMutation({
+    mutationFn: async () => {
+      await api.post('/api/users/team/link', { email: linkEmail, role: linkRole });
+    },
+    onSuccess: () => {
+      toast.success('Usuário vinculado!');
+      queryClient.invalidateQueries({ queryKey: ['team'] });
+      setAddOpen(false);
+      setLinkEmail(''); setLinkRole('OPERADOR');
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg ?? 'Erro ao vincular usuário.');
     },
   });
 
@@ -185,46 +206,103 @@ export function TeamTab() {
       )}
 
       {/* Add member dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      <Dialog open={addOpen} onOpenChange={(open) => {
+        setAddOpen(open);
+        if (!open) { setAddMode('create'); setLinkEmail(''); setLinkRole('OPERADOR'); }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Adicionar Membro</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="space-y-1.5">
-              <Label>Nome</Label>
-              <Input value={newNome} onChange={(e) => setNewNome(e.target.value)} placeholder="Nome completo" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Email</Label>
-              <Input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="email@empresa.com" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Senha</Label>
-              <Input type="password" value={newSenha} onChange={(e) => setNewSenha(e.target.value)} placeholder="mínimo 8 caracteres" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Função</Label>
-              <Select value={newRole} onValueChange={(v) => setNewRole(v as typeof newRole)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="OPERADOR">Operador</SelectItem>
-                  <SelectItem value="GERENTE">Gerente</SelectItem>
-                  <SelectItem value="VISUALIZADOR">Visualizador</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+
+          {/* Mode tabs */}
+          <div className="flex gap-1 rounded-lg bg-muted p-1">
+            <button
+              type="button"
+              onClick={() => setAddMode('create')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${addMode === 'create' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Criar novo
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddMode('link')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${addMode === 'link' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <Link2 className="h-3.5 w-3.5" />
+              Vincular existente
+            </button>
           </div>
+
+          {addMode === 'create' ? (
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <Label>Nome</Label>
+                <Input value={newNome} onChange={(e) => setNewNome(e.target.value)} placeholder="Nome completo" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="email@empresa.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Senha</Label>
+                <Input type="password" value={newSenha} onChange={(e) => setNewSenha(e.target.value)} placeholder="mínimo 8 caracteres" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Função</Label>
+                <Select value={newRole} onValueChange={(v) => setNewRole(v as typeof newRole)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="OPERADOR">Operador</SelectItem>
+                    <SelectItem value="GERENTE">Gerente</SelectItem>
+                    <SelectItem value="VISUALIZADOR">Visualizador</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 py-2">
+              <p className="text-xs text-muted-foreground">Busca um usuário já cadastrado na plataforma pelo email e adiciona à sua equipe.</p>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input type="email" value={linkEmail} onChange={(e) => setLinkEmail(e.target.value)} placeholder="email@empresa.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Função</Label>
+                <Select value={linkRole} onValueChange={(v) => setLinkRole(v as typeof linkRole)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="OPERADOR">Operador</SelectItem>
+                    <SelectItem value="GERENTE">Gerente</SelectItem>
+                    <SelectItem value="VISUALIZADOR">Visualizador</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancelar</Button>
-            <Button
-              onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8}
-            >
-              {createMutation.isPending ? 'Adicionando...' : 'Adicionar'}
-            </Button>
+            {addMode === 'create' ? (
+              <Button
+                onClick={() => createMutation.mutate()}
+                disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8}
+              >
+                {createMutation.isPending ? 'Adicionando...' : 'Adicionar'}
+              </Button>
+            ) : (
+              <Button
+                onClick={() => linkMutation.mutate()}
+                disabled={linkMutation.isPending || !linkEmail.trim()}
+              >
+                {linkMutation.isPending ? 'Vinculando...' : 'Vincular'}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
