@@ -23,6 +23,7 @@ import { MediaModule } from './modules/media/media.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AutomationModule } from './modules/automation/automation.module';
+import { TenantsModule } from './modules/tenants/tenants.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -96,6 +97,7 @@ import { CacheModule } from './common/cache/cache.module';
     AnalyticsModule,
     AdminModule,
     AutomationModule,
+    TenantsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },
