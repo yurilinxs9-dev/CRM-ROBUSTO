@@ -161,6 +161,9 @@ export default function LoginPage() {
               <Button type="submit" className="w-full" disabled={isPending}>
                 {isPending ? 'Entrando...' : 'Entrar'}
               </Button>
+              <p className="text-center text-xs text-muted-foreground">
+                Faz parte de um escritório? Peça ao administrador para criar seu acesso.
+              </p>
             </form>
           </CardContent>
           <CardFooter className="justify-center">

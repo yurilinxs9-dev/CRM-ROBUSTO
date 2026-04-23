@@ -81,7 +81,7 @@ export default function RegisterPage() {
           </div>
           <CardTitle className="text-2xl">Criar conta</CardTitle>
           <CardDescription>
-            Cada conta ganha seu próprio workspace, instância WhatsApp e funil isolado.
+            Crie sua conta e seu escritório. Para entrar em um escritório existente, peça ao administrador para adicionar você.
           </CardDescription>
         </CardHeader>
         <CardContent>
