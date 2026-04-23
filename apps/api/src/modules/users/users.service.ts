@@ -3,7 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 
 const TEAM_SELECT = {
