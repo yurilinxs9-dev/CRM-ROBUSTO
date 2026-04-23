@@ -25,6 +25,7 @@ interface AuthState {
   setAuth: (user: User, token: string) => void;
   setTenant: (tenant: Tenant) => void;
   updateToken: (token: string) => void;
+  updateUser: (partial: Partial<User>) => void;
   logout: () => void;
   setHydrated: () => void;
 }
@@ -46,6 +47,9 @@ export const useAuthStore = create<AuthState>()(
         set({ user, accessToken, isAuthenticated: true });
       },
       setTenant: (tenant) => set({ tenant }),
+      updateUser: (partial) => set((state) => ({
+        user: state.user ? { ...state.user, ...partial } : null,
+      })),
       updateToken: (accessToken) => {
         localStorage.setItem('accessToken', accessToken);
         set({ accessToken });
