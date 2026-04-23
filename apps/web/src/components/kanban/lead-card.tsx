@@ -1,9 +1,9 @@
 'use client';
 
-import { forwardRef, memo, type HTMLAttributes, type MouseEvent } from 'react';
+import { forwardRef, memo, useState, type HTMLAttributes, type MouseEvent } from 'react';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { MessageCircle, CheckSquare, Archive, AlertTriangle, Clock } from 'lucide-react';
+import { MessageCircle, CheckSquare, Archive, AlertTriangle, Clock, Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -115,6 +115,8 @@ interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   onOpenChat?: (leadId: string) => void;
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
+  onClaimLead?: (leadId: string) => Promise<void>;
+  isPoolEnabled?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   showCheckbox?: boolean;
@@ -131,6 +133,8 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       onOpenChat,
       onQuickTask,
       onArchiveLead,
+      onClaimLead,
+      isPoolEnabled,
       selected,
       onToggleSelect,
       showCheckbox,
@@ -139,6 +143,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     },
     ref,
   ) => {
+    const [isClaiming, setIsClaiming] = useState(false);
     const hasUnread = lead.mensagens_nao_lidas > 0;
     const enteredAt = lead.estagio_entered_at ?? lead.created_at;
     const dis = daysInStage(enteredAt);
@@ -298,6 +303,37 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           <span className="font-medium text-emerald-500">{formatBRL(lead.valor_estimado)}</span>
           <span className="text-muted-foreground">{timeAgo(lead.ultima_interacao)}</span>
         </div>
+
+        {/* Pool: claim button or owner indicator */}
+        {isPoolEnabled && !lead.responsavel && onClaimLead && (
+          <button
+            type="button"
+            disabled={isClaiming}
+            onClick={async (e) => {
+              stop(e);
+              setIsClaiming(true);
+              try { await onClaimLead(lead.id); } catch { /* handled in mutation */ }
+              finally { setIsClaiming(false); }
+            }}
+            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+          >
+            {isClaiming ? <Loader2 className="h-3 w-3 animate-spin" /> : '✋'}
+            {isClaiming ? 'Assumindo...' : 'Assumir Lead'}
+          </button>
+        )}
+
+        {isPoolEnabled && lead.responsavel && (
+          <div className="mt-2 flex items-center gap-1.5">
+            <Avatar className="h-4 w-4 shrink-0">
+              <AvatarFallback className="text-[8px]">
+                {getInitials(lead.responsavel.nome)}
+              </AvatarFallback>
+            </Avatar>
+            <span className="text-[10px] text-muted-foreground truncate">
+              {lead.responsavel.nome.split(' ')[0]}
+            </span>
+          </div>
+        )}
 
         {/* Hover action buttons */}
         {(onOpenChat || onQuickTask || onArchiveLead) && (

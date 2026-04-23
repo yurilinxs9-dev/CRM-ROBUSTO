@@ -69,6 +69,8 @@ function SortableLeadImpl({
   onOpenChat,
   onQuickTask,
   onArchiveLead,
+  onClaimLead,
+  isPoolEnabled,
   selected,
   onToggleSelect,
   showCheckbox,
@@ -80,6 +82,8 @@ function SortableLeadImpl({
   onQuickTask?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
   onOpenDetail?: (leadId: string) => void;
+  onClaimLead?: (leadId: string) => Promise<void>;
+  isPoolEnabled?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   showCheckbox?: boolean;
@@ -109,6 +113,8 @@ function SortableLeadImpl({
         onOpenChat={onOpenChat}
         onQuickTask={onQuickTask}
         onArchiveLead={onArchiveLead}
+        onClaimLead={onClaimLead}
+        isPoolEnabled={isPoolEnabled}
         selected={selected}
         onToggleSelect={onToggleSelect}
         showCheckbox={showCheckbox}
@@ -135,6 +141,8 @@ interface StageColumnProps {
   onQuickTaskLead?: (leadId: string) => void;
   onArchiveLead?: (leadId: string) => void;
   onOpenDetail?: (leadId: string) => void;
+  onClaimLead?: (leadId: string) => Promise<void>;
+  isPoolEnabled?: boolean;
   selectedLeadIds?: Set<string>;
   onToggleSelect?: (leadId: string) => void;
   onSelectAllInStage?: (stageId: string) => void;
@@ -156,6 +164,8 @@ function StageColumnImpl({
   onQuickTaskLead,
   onArchiveLead,
   onOpenDetail,
+  onClaimLead,
+  isPoolEnabled,
   selectedLeadIds,
   onToggleSelect,
   onSelectAllInStage,
@@ -355,6 +365,8 @@ function StageColumnImpl({
                 onQuickTask={onQuickTaskLead}
                 onArchiveLead={onArchiveLead}
                 onOpenDetail={onOpenDetail}
+                onClaimLead={onClaimLead}
+                isPoolEnabled={isPoolEnabled}
                 selected={selectedLeadIds?.has(lead.id)}
                 onToggleSelect={onToggleSelect}
                 showCheckbox={bulkActive}

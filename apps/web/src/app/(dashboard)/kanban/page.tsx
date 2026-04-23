@@ -618,6 +618,25 @@ export default function KanbanPage() {
     return map;
   }, [tabFilteredLeads, orderedStages]);
 
+  const claimLeadMutation = useMutation({
+    mutationFn: async (leadId: string) => {
+      await api.post(`/api/leads/${leadId}/claim`);
+    },
+    onSuccess: () => {
+      toast.success('Lead assumido!');
+      queryClient.invalidateQueries({ queryKey: leadsQueryKey });
+    },
+    onError: (err: unknown) => {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 409) toast.error('Lead já foi assumido por outro colega');
+      else toast.error('Erro ao assumir lead. Tente novamente.');
+    },
+  });
+
+  const handleClaimLead = async (leadId: string) => {
+    await claimLeadMutation.mutateAsync(leadId);
+  };
+
   const openNewLead = (stageId: string | null) => {
     setDefaultStageId(stageId);
     setDialogOpen(true);
@@ -870,6 +889,8 @@ export default function KanbanPage() {
                     onQuickTaskLead={(leadId) => setQuickTaskLeadId(leadId)}
                     onArchiveLead={(leadId) => setArchiveLeadId(leadId)}
                     onOpenDetail={(leadId) => setDetailLeadId(leadId)}
+                    onClaimLead={handleClaimLead}
+                    isPoolEnabled={isPoolEnabled}
                     selectedLeadIds={selectedLeadIds}
                     onToggleSelect={toggleLead}
                     onSelectAllInStage={selectAllInStage}
