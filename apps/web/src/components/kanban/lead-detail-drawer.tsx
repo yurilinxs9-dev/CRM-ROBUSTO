@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity } from 'lucide-react';
+import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
@@ -27,6 +27,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { api } from '@/lib/api';
+import { useAuthStore, useIsPoolEnabled } from '@/stores/auth.store';
 import { TEMP_LABELS, formatPhone, type Temperatura } from './lead-card';
 import { ActivityTimeline } from './activity-timeline';
 
@@ -127,6 +128,8 @@ export function LeadDetailDrawer({
   onArchive,
 }: LeadDetailDrawerProps) {
   const queryClient = useQueryClient();
+  const currentUser = useAuthStore((s) => s.user);
+  const isPoolEnabled = useIsPoolEnabled();
 
   // ---- Remote data ----
   const { data: lead, isLoading: leadLoading } = useQuery<LeadDetail>({
@@ -179,6 +182,33 @@ export function LeadDetailDrawer({
 
   // Mark dirty on any change
   const mark = () => setDirty(true);
+
+  // ---- Pool mutations ----
+  const claimMutation = useMutation({
+    mutationFn: async () => { await api.post(`/api/leads/${leadId}/claim`); },
+    onSuccess: () => {
+      toast.success('Lead assumido!');
+      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+    },
+    onError: (err: unknown) => {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 409) toast.error('Lead já foi assumido por outro colega');
+      else toast.error('Erro ao assumir lead. Tente novamente.');
+    },
+  });
+
+  const reassignMutation = useMutation({
+    mutationFn: async (novoResponsavelId: string) => {
+      await api.post(`/api/leads/${leadId}/reassign`, { novoResponsavelId });
+    },
+    onSuccess: () => {
+      toast.success('Lead transferido.');
+      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+    },
+    onError: () => toast.error('Erro ao transferir lead.'),
+  });
 
   // ---- Save mutation ----
   const saveMutation = useMutation({
@@ -373,24 +403,78 @@ export function LeadDetailDrawer({
                   <User className="h-3.5 w-3.5" />
                   Atribuicao
                 </p>
-                <div className="space-y-1.5">
-                  <Label>Responsavel</Label>
-                  <Select
-                    value={responsavelId}
-                    onValueChange={(v) => { setResponsavelId(v); mark(); }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecionar responsavel" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {users.map((u) => (
-                        <SelectItem key={u.id} value={u.id}>
-                          {u.nome}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                {isPoolEnabled ? (
+                  !lead?.responsavel ? (
+                    <Button
+                      className="w-full"
+                      disabled={claimMutation.isPending}
+                      onClick={() => claimMutation.mutate()}
+                    >
+                      {claimMutation.isPending
+                        ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        : <span className="mr-1">✋</span>}
+                      {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
+                    </Button>
+                  ) : (
+                    (() => {
+                      const canReassign =
+                        currentUser?.id === lead.responsavel.id ||
+                        currentUser?.role === 'GERENTE' ||
+                        currentUser?.role === 'SUPER_ADMIN';
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Avatar className="h-5 w-5">
+                              <AvatarFallback className="text-[9px]">
+                                {getInitials(lead.responsavel.nome)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="text-sm">{lead.responsavel.nome}</span>
+                          </div>
+                          {canReassign && (
+                            <div className="space-y-1.5">
+                              <Label>Transferir para</Label>
+                              <Select
+                                disabled={reassignMutation.isPending}
+                                onValueChange={(v) => reassignMutation.mutate(v)}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Selecionar operador..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {users
+                                    .filter((u) => u.id !== lead.responsavel!.id)
+                                    .map((u) => (
+                                      <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()
+                  )
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label>Responsavel</Label>
+                    <Select
+                      value={responsavelId}
+                      onValueChange={(v) => { setResponsavelId(v); mark(); }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecionar responsavel" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {users.map((u) => (
+                          <SelectItem key={u.id} value={u.id}>
+                            {u.nome}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <div className="space-y-1.5">
                   <Label htmlFor="drawer-tags">
                     <Tag className="inline h-3 w-3 mr-1" />

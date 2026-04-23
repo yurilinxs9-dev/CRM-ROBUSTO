@@ -304,38 +304,17 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           <span className="text-muted-foreground">{timeAgo(lead.ultima_interacao)}</span>
         </div>
 
-        {/* Pool: owner indicator or claim badge */}
-        {isPoolEnabled && (
+        {/* Pool: owner indicator */}
+        {isPoolEnabled && lead.responsavel && (
           <div className="mt-2 flex items-center gap-1.5">
-            {lead.responsavel ? (
-              <>
-                <Avatar className="h-4 w-4 shrink-0">
-                  <AvatarFallback className="text-[8px]">
-                    {getInitials(lead.responsavel.nome)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="text-[10px] text-muted-foreground truncate">
-                  {lead.responsavel.nome.split(' ')[0]}
-                </span>
-              </>
-            ) : onClaimLead && (
-              <button
-                type="button"
-                disabled={isClaiming}
-                onPointerDown={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={async (e) => {
-                  stop(e);
-                  setIsClaiming(true);
-                  try { await onClaimLead(lead.id); } catch { /* handled in mutation */ }
-                  finally { setIsClaiming(false); }
-                }}
-                className="flex items-center gap-1 text-[10px] font-medium text-primary hover:underline disabled:opacity-60"
-              >
-                {isClaiming ? <Loader2 className="h-3 w-3 animate-spin" /> : '✋'}
-                {isClaiming ? 'Assumindo...' : 'Assumir'}
-              </button>
-            )}
+            <Avatar className="h-4 w-4 shrink-0">
+              <AvatarFallback className="text-[8px]">
+                {getInitials(lead.responsavel.nome)}
+              </AvatarFallback>
+            </Avatar>
+            <span className="text-[10px] text-muted-foreground truncate">
+              {lead.responsavel.nome.split(' ')[0]}
+            </span>
           </div>
         )}
 
