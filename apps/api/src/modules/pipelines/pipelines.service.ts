@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
@@ -61,6 +61,8 @@ const deleteWithMoveSchema = z.object({
 
 @Injectable()
 export class PipelinesService {
+  private readonly logger = new Logger(PipelinesService.name);
+
   constructor(
     private prisma: PrismaService,
     private cache: RedisCacheService,
@@ -445,6 +447,8 @@ export class PipelinesService {
 
     const systemUser = { ...user, id: 'SYSTEM' } as AuthUser;
 
+    this.logger.log(`fireCadenceStep: disparando ${batch.length}/${all.length} leads (step ${stepIndex}, delay ${delayMin}-${delayMax}s)`);
+
     // Background loop — não bloqueia HTTP. Erros logados, próximos leads continuam.
     void (async () => {
       for (let i = 0; i < batch.length; i++) {
@@ -455,14 +459,16 @@ export class PipelinesService {
             where: { id: lead.id },
             data: { cadence_step_index: stepIndex + 1, proximo_followup: null },
           });
-        } catch {
-          // continua
+          this.logger.debug(`fireCadenceStep: enviado para lead ${lead.id} (${i + 1}/${batch.length})`);
+        } catch (err) {
+          this.logger.error(`fireCadenceStep: erro no lead ${lead.id}: ${String(err)}`);
         }
         if (i < batch.length - 1 && delayMax > 0) {
           const waitMs = (delayMin + Math.random() * (delayMax - delayMin)) * 1000;
           await new Promise((r) => setTimeout(r, waitMs));
         }
       }
+      this.logger.log(`fireCadenceStep: concluído ${batch.length} leads`);
     })();
 
     return { scheduled: batch.length, totalEligible: all.length };
