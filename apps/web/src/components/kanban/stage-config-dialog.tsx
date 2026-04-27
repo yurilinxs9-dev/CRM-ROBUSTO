@@ -295,7 +295,47 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
   );
 }
 
-// --- Build Trigger: Banco de dados sincronizado na VPS ---
+// Section hoisted fora do StageConfigDialog — definir dentro causava perda de foco
+// nos inputs (componente nova a cada render → React desmonta subárvore).
+function Section({
+  id,
+  title,
+  icon: Icon,
+  children,
+  openSection,
+  setOpenSection,
+}: {
+  id: string;
+  title: string;
+  icon: any;
+  children: React.ReactNode;
+  openSection: string | null;
+  setOpenSection: (v: string | null) => void;
+}) {
+  const isOpen = openSection === id;
+  return (
+    <div className="border rounded-lg overflow-hidden mb-3">
+      <button
+        type="button"
+        onClick={() => setOpenSection(isOpen ? null : id)}
+        className={cn(
+          'w-full flex items-center justify-between px-4 py-3 text-left transition-colors',
+          isOpen ? 'bg-muted/50' : 'hover:bg-muted/30',
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <div className={cn('p-1.5 rounded-md', isOpen ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground')}>
+            <Icon size={16} />
+          </div>
+          <span className="font-medium text-sm">{title}</span>
+        </div>
+        {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+      {isOpen && <div className="p-4 bg-background space-y-4 border-t">{children}</div>}
+    </div>
+  );
+}
+
 export function StageConfigDialog({
   open,
   onOpenChange,
@@ -462,30 +502,6 @@ export function StageConfigDialog({
     onSubmit(data);
   };
 
-  const Section = ({ id, title, icon: Icon, children }: { id: string, title: string, icon: any, children: React.ReactNode }) => {
-    const isOpen = openSection === id;
-    return (
-      <div className="border rounded-lg overflow-hidden mb-3">
-        <button
-          type="button"
-          onClick={() => setOpenSection(isOpen ? null : id)}
-          className={cn(
-            "w-full flex items-center justify-between px-4 py-3 text-left transition-colors",
-            isOpen ? "bg-muted/50" : "hover:bg-muted/30"
-          )}
-        >
-          <div className="flex items-center gap-3">
-            <div className={cn("p-1.5 rounded-md", isOpen ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
-              <Icon size={16} />
-            </div>
-            <span className="font-medium text-sm">{title}</span>
-          </div>
-          {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-        </button>
-        {isOpen && <div className="p-4 bg-background space-y-4 border-t">{children}</div>}
-      </div>
-    );
-  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -526,7 +542,7 @@ export function StageConfigDialog({
           </div>
 
           {/* Seção 1: SLA e Ociosidade */}
-          <Section id="sla" title="SLA e Alertas" icon={Clock}>
+          <Section id="sla" title="SLA e Alertas" icon={Clock} openSection={openSection} setOpenSection={setOpenSection}>
             <div className="space-y-6">
               {/* SLA */}
               <div className="flex items-start justify-between gap-4">
@@ -641,7 +657,7 @@ export function StageConfigDialog({
           </Section>
 
           {/* Seção 2: Ações Automáticas */}
-          <Section id="entry" title="Ações ao Entrar na Etapa" icon={Zap}>
+          <Section id="entry" title="Ações ao Entrar na Etapa" icon={Zap} openSection={openSection} setOpenSection={setOpenSection}>
             <div className="space-y-6">
               {/* Criar Tarefa */}
               <div className="space-y-4">
@@ -701,7 +717,7 @@ export function StageConfigDialog({
           </Section>
 
           {/* Seção 3: Régua de Cadência */}
-          <Section id="cadence" title="Régua de Cadência e Follow-up" icon={Repeat}>
+          <Section id="cadence" title="Régua de Cadência e Follow-up" icon={Repeat} openSection={openSection} setOpenSection={setOpenSection}>
             <div className="space-y-4">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-xs text-muted-foreground italic">Crie uma escada de avisos temporizados para o vendedor ou bot.</p>
