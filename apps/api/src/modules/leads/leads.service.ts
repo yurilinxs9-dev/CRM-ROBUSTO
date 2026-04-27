@@ -547,6 +547,8 @@ export class LeadsService {
       ? `Movido de "${oldStage.nome}" para "${newStage.nome}"`
       : 'Movido para novo estagio';
 
+    const isSystem = user.id === 'SYSTEM';
+    const activityUserId = isSystem ? null : user.id;
     const [updatedLead] = await this.prisma.$transaction([
       this.prisma.lead.update({
         where: { id },
@@ -555,9 +557,9 @@ export class LeadsService {
       this.prisma.leadActivity.create({
         data: {
           lead_id: id,
-          user_id: user.id,
+          user_id: activityUserId,
           tipo: 'stage_change',
-          descricao,
+          descricao: isSystem ? `[Automação SLA] ${descricao}` : descricao,
           dados_antes: { estagio_id: lead.estagio_id },
           dados_depois: { estagio_id },
           tenant_id: user.tenantId,
