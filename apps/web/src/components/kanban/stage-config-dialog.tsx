@@ -97,7 +97,7 @@ interface StageConfigDialogProps {
 }
 
 function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; stepIndex: number; template: string }) {
-  const [sendState, setSendState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [sendState, setSendState] = useState<'idle' | 'loading' | 'sending' | 'done' | 'error'>('idle');
   const [result, setResult] = useState<{ scheduled: number; totalEligible: number } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [eligible, setEligible] = useState<number | null>(null);
@@ -105,6 +105,7 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
   const [batchSize, setBatchSize] = useState<number>(30);
   const [delayMin, setDelayMin] = useState<number>(15);
   const [delayMax, setDelayMax] = useState<number>(45);
+  const [remaining, setRemaining] = useState<number | null>(null);
 
   const loadCount = useCallback(async () => {
     setLoadingCount(true);
@@ -124,6 +125,29 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
     setConfirming(true);
   }, [loadCount]);
 
+  // Polling: enquanto status === 'sending', re-consulta count para mostrar progresso
+  useEffect(() => {
+    if (sendState !== 'sending' || !result) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await api.get(`/api/stages/${stageId}/cadence-eligible?stepIndex=${stepIndex}`);
+        if (cancelled) return;
+        const left = res.data.count;
+        setRemaining(left);
+        const sent = result.scheduled - Math.min(left, result.scheduled);
+        if (sent >= result.scheduled || left <= 0) {
+          setSendState('done');
+        }
+      } catch {
+        // mantém polling
+      }
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [sendState, result, stageId, stepIndex]);
+
   const fire = useCallback(async () => {
     setConfirming(false);
     setSendState('loading');
@@ -135,17 +159,48 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
         delayMaxSec: delayMax,
       });
       setResult(res.data);
-      setSendState('done');
+      setRemaining(res.data.scheduled);
+      setSendState(res.data.scheduled > 0 ? 'sending' : 'done');
     } catch {
       setSendState('error');
     }
   }, [stageId, stepIndex, batchSize, delayMin, delayMax]);
 
+  if (sendState === 'sending' && result) {
+    const sent = Math.max(0, result.scheduled - (remaining ?? result.scheduled));
+    const pct = Math.round((sent / Math.max(1, result.scheduled)) * 100);
+    return (
+      <div className="mt-2 mb-3 space-y-1.5">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-blue-600 dark:text-blue-400 font-medium">
+            Enviando {sent}/{result.scheduled}
+          </span>
+          <span className="text-muted-foreground tabular-nums">{pct}%</span>
+        </div>
+        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+          <div
+            className="h-full bg-blue-500 transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (sendState === 'done' && result) {
     return (
-      <p className="mt-2 mb-3 text-[11px] text-green-600 dark:text-green-400 font-medium">
-        ✓ Agendado envio para {result.scheduled} de {result.totalEligible} leads (envio em background)
-      </p>
+      <div className="mt-2 mb-3 flex items-center justify-between gap-2">
+        <p className="text-[11px] text-green-600 dark:text-green-400 font-medium">
+          ✓ {result.scheduled} mensagens enviadas
+        </p>
+        <button
+          type="button"
+          onClick={() => { setSendState('idle'); setResult(null); setRemaining(null); }}
+          className="text-[10px] text-muted-foreground hover:text-foreground underline"
+        >
+          Disparar novamente
+        </button>
+      </div>
     );
   }
 
