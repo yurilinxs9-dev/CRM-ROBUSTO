@@ -216,17 +216,21 @@ export default function ChatDetailPage() {
         if (!old) return old;
         return {
           ...old,
-          pages: old.pages.map((p) => ({
-            ...p,
-            // 1. Remove any socket-inserted copy of serverMsg.id (race where
-            //    message:new arrived before onSuccess and content-match failed).
-            // 2. Replace the temp bubble with the authoritative server message.
-            messages: p.messages
-              .filter((m) => m.id !== serverMsg.id)
-              .map((m) =>
-                m.id === tempId ? { ...serverMsg, status: serverMsg.status ?? 'SENT' } : m,
-              ),
-          })),
+          pages: old.pages.map((p) => {
+            // Only remove a socket-inserted copy of serverMsg.id when the temp
+            // bubble is still in cache. If Fix B already replaced the temp via
+            // the socket handler, tempExists=false and the cache is correct —
+            // filtering here would delete the only copy of the message.
+            const tempExists = p.messages.some((m) => m.id === tempId);
+            return {
+              ...p,
+              messages: p.messages
+                .filter((m) => tempExists ? m.id !== serverMsg.id : true)
+                .map((m) =>
+                  m.id === tempId ? { ...serverMsg, status: serverMsg.status ?? 'SENT' } : m,
+                ),
+            };
+          }),
         };
       });
     },
