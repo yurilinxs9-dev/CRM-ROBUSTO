@@ -120,6 +120,7 @@ export class PipelinesController {
   }
 
   @Post('stages/:id/fire-cadence-step')
+  @Roles(UserRole.GERENTE)
   fireCadenceStep(
     @Param('id') id: string,
     @Body() body: { stepIndex: number; batchSize?: number; delayMinSec?: number; delayMaxSec?: number },

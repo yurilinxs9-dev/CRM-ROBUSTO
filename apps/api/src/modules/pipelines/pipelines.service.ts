@@ -445,16 +445,14 @@ export class PipelinesService {
     const delayMin = Math.max(0, opts.delayMinSec ?? 0);
     const delayMax = Math.max(delayMin, opts.delayMaxSec ?? 0);
 
-    const systemUser = { ...user, id: 'SYSTEM' } as AuthUser;
-
-    this.logger.log(`fireCadenceStep: disparando ${batch.length}/${all.length} leads (step ${stepIndex}, delay ${delayMin}-${delayMax}s)`);
+    this.logger.log(`fireCadenceStep: disparando ${batch.length}/${all.length} leads (step ${stepIndex}, delay ${delayMin}-${delayMax}s, user ${user.id})`);
 
     // Background loop — não bloqueia HTTP. Erros logados, próximos leads continuam.
     void (async () => {
       for (let i = 0; i < batch.length; i++) {
         const lead = batch[i];
         try {
-          await this.messages.sendText({ lead_id: lead.id, content: step.template }, systemUser);
+          await this.messages.sendText({ lead_id: lead.id, content: step.template }, user);
           await this.prisma.lead.update({
             where: { id: lead.id },
             data: { cadence_step_index: stepIndex + 1, proximo_followup: null },
