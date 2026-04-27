@@ -27,6 +27,8 @@ export interface Lead {
   estagio_entered_at?: string | null;
   last_customer_message_at?: string | null;
   last_agent_message_at?: string | null;
+  proximo_followup?: string | null;
+  cadence_step_index?: number | null;
   created_at?: string | null;
   pending_tasks_count?: number;
   position?: number | null;
@@ -39,11 +41,12 @@ export const TEMP_LABELS: Record<Temperatura, string> = {
   MUITO_QUENTE: 'Fogo',
 };
 
-const TEMP_BADGE: Record<Temperatura, string> = {
+const TEMP_BADGE: Record<string, string> = {
   FRIO: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
   MORNO: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   QUENTE: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
   MUITO_QUENTE: 'bg-red-500/15 text-red-400 border-red-500/30',
+  _DEFAULT: 'bg-muted/40 text-muted-foreground border-muted-foreground/20',
 };
 
 export function formatBRL(value?: string | null): string {
@@ -74,10 +77,11 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
-function timeAgo(date?: string | null): string {
-  if (!date) return '';
+function timeAgo(date?: string | null, fallback?: string | null): string {
+  const d = date ?? fallback;
+  if (!d) return '';
   try {
-    return `há ${formatDistanceToNowStrict(new Date(date), { locale: ptBR })}`;
+    return `há ${formatDistanceToNowStrict(new Date(d), { locale: ptBR })}`;
   } catch {
     return '';
   }
@@ -173,6 +177,9 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       !!idleAlertConfig?.enabled &&
       idleElapsedMs !== null &&
       idleElapsedMs > durationToMs(idleAlertConfig?.duration ?? 2, idleAlertConfig?.unit ?? 'HOURS');
+    const followupDue =
+      !!lead.proximo_followup && new Date(lead.proximo_followup).getTime() <= Date.now();
+
     const pendingTasks = lead.pending_tasks_count ?? 0;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -244,6 +251,17 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
+        {/* Follow-up badge — passo manual de cadência aguardando envio */}
+        {!overdue && followupDue && (
+          <div
+            className="absolute -top-2 right-1 flex h-5 items-center gap-1 rounded-full bg-green-600 px-2 text-[10px] font-semibold text-white shadow ring-2 ring-background animate-pulse"
+            title={`Follow-up de cadência pendente (passo ${(lead.cadence_step_index ?? 0) + 1})`}
+          >
+            <MessageCircle className="h-3 w-3 shrink-0" />
+            <span>Follow-up</span>
+          </div>
+        )}
+
         {/* Aguardando badge — cliente enviou depois de nós, dentro do prazo */}
         {!overdue && !responseOverdue && clientSentAfterUs && hasUnread && (
           <div
@@ -265,13 +283,10 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">{lead.nome}</p>
             <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
-              <MessageCircle className="h-3 w-3 text-emerald-500" />
+              <MessageCircle className="h-3 w-3 text-emerald-500 shrink-0" />
               {formatPhone(lead.telefone)}
             </p>
           </div>
-          <Badge variant="outline" className={cn('text-[10px]', TEMP_BADGE[lead.temperatura])}>
-            {TEMP_LABELS[lead.temperatura]}
-          </Badge>
         </div>
 
         {lead.ultima_mensagem_preview && (
@@ -299,9 +314,14 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-medium text-emerald-500">{formatBRL(lead.valor_estimado)}</span>
-          <span className="text-muted-foreground">{timeAgo(lead.ultima_interacao)}</span>
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
+            {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
+          </Badge>
+          <div className="flex items-center gap-2 min-w-0">
+            {lead.valor_estimado && <span className="font-medium text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>}
+            <span className="text-muted-foreground shrink-0">{timeAgo(lead.ultima_interacao, lead.created_at)}</span>
+          </div>
         </div>
 
         {/* Pool: owner indicator */}

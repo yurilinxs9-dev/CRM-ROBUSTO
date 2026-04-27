@@ -846,9 +846,9 @@ export default function KanbanPage() {
       )}
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
         {isLoading ? (
-          <div className="flex gap-4 p-4 h-full">
+          <div className="flex gap-4 h-full">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="w-80 flex flex-col gap-2">
                 <Skeleton className="h-10 w-full" />
@@ -870,7 +870,7 @@ export default function KanbanPage() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext items={stageSortableIds} strategy={horizontalListSortingStrategy}>
-              <div className="flex gap-4 p-4 h-full min-w-max">
+              <div className="flex gap-4 h-full min-w-full pb-4">
                 {orderedStages.map((stage, idx) => (
                   <StageColumn
                     key={stage.id}

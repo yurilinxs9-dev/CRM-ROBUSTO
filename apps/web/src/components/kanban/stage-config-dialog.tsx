@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
@@ -94,6 +94,100 @@ interface StageConfigDialogProps {
   allStages?: { id: string; nome: string }[];
   isLoading?: boolean;
   onSubmit: (data: any) => void;
+}
+
+function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; stepIndex: number; template: string }) {
+  const [sendState, setSendState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [result, setResult] = useState<{ sent: number; total: number } | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [eligible, setEligible] = useState<number | null>(null);
+  const [loadingCount, setLoadingCount] = useState(false);
+
+  const loadCount = useCallback(async () => {
+    setLoadingCount(true);
+    try {
+      const res = await api.get(`/api/stages/${stageId}/cadence-eligible?stepIndex=${stepIndex}`);
+      setEligible(res.data.count);
+    } catch {
+      setEligible(null);
+    } finally {
+      setLoadingCount(false);
+    }
+  }, [stageId, stepIndex]);
+
+  const openConfirm = useCallback(async () => {
+    await loadCount();
+    setConfirming(true);
+  }, [loadCount]);
+
+  const fire = useCallback(async () => {
+    setConfirming(false);
+    setSendState('loading');
+    try {
+      const res = await api.post(`/api/stages/${stageId}/fire-cadence-step`, { stepIndex });
+      setResult(res.data);
+      setSendState('done');
+    } catch {
+      setSendState('error');
+    }
+  }, [stageId, stepIndex]);
+
+  if (sendState === 'done' && result) {
+    return (
+      <p className="mt-2 mb-3 text-[11px] text-green-600 dark:text-green-400 font-medium">
+        ✓ Enviado para {result.sent}/{result.total} leads
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <div className="mt-2 mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={openConfirm}
+          disabled={sendState === 'loading'}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-50"
+        >
+          <MessageSquare size={12} />
+          {sendState === 'loading' ? 'Enviando...' : sendState === 'error' ? 'Erro — tentar de novo' : 'Enviar mensagem'}
+        </button>
+      </div>
+
+      {confirming && (
+        <div className="mb-3 p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-3">
+          <div className="space-y-1">
+            <p className="text-[11px] font-semibold text-foreground">Confirmar disparo</p>
+            {loadingCount ? (
+              <p className="text-[11px] text-muted-foreground">Verificando leads elegíveis...</p>
+            ) : eligible !== null ? (
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-bold text-foreground">{eligible}</span> lead{eligible !== 1 ? 's' : ''} elegível{eligible !== 1 ? 'is' : ''} para este passo.
+              </p>
+            ) : null}
+            <p className="text-[10px] text-muted-foreground italic line-clamp-2">"{template}"</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={fire}
+              disabled={eligible === 0}
+              className="px-3 py-1 rounded text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+            >
+              {eligible === 0 ? 'Nenhum lead elegível' : 'Confirmar envio'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="px-3 py-1 rounded text-[11px] font-medium border border-border hover:bg-muted transition-colors"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 // --- Build Trigger: Banco de dados sincronizado na VPS ---
@@ -552,12 +646,16 @@ export function StageConfigDialog({
                         </Select>
                       </div>
 
-                      <Textarea 
-                        placeholder="Template da mensagem..." 
+                      <Textarea
+                        placeholder="Template da mensagem..."
                         value={step.template}
                         onChange={e => updateStep(step.id, { template: e.target.value })}
-                        className="text-xs min-h-[60px] mb-3 bg-background"
+                        className="text-xs min-h-[60px] bg-background"
                       />
+
+                      {step.mode === 'MANUAL' && step.template && stage?.id && (
+                        <FireCadenceButton stageId={stage.id} stepIndex={index} template={step.template} />
+                      )}
 
                       {step.mode === 'AUTO' && (
                         <div className="flex items-center gap-2 p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">

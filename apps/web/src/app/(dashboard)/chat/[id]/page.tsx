@@ -78,6 +78,9 @@ export default function ChatDetailPage() {
   const [droppedImage, setDroppedImage] = useState<File | null>(null);
   const [droppedPreview, setDroppedPreview] = useState<string | null>(null);
   const [droppedCaption, setDroppedCaption] = useState('');
+  // Cadence follow-up suggestion state
+  const [followupDismissed, setFollowupDismissed] = useState(false);
+  const [followupComposerText, setFollowupComposerText] = useState<string | null>(null);
 
   // --- Queries ---
   const { data: currentLead } = useQuery<ChatLead>({
@@ -812,10 +815,53 @@ export default function ChatDetailPage() {
         />
       </div>
 
+      {/* Cadence follow-up banner */}
+      {(() => {
+        const followupPending =
+          !!currentLead?.proximo_followup &&
+          new Date(currentLead.proximo_followup).getTime() <= Date.now();
+        const steps = currentLead?.estagio?.cadence_config?.steps ?? [];
+        const stepIdx = currentLead?.cadence_step_index ?? 0;
+        const pendingTemplate = followupPending ? (steps[stepIdx]?.template ?? null) : null;
+        if (!followupPending || followupDismissed) return null;
+        return (
+          <div className="mx-3 mb-1 flex items-start gap-2 rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-sm text-green-400">
+            <MessageCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-xs mb-0.5">Follow-up de cadência pendente</p>
+              {pendingTemplate && (
+                <p className="text-xs text-muted-foreground line-clamp-2">{pendingTemplate}</p>
+              )}
+            </div>
+            {pendingTemplate && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFollowupComposerText(pendingTemplate);
+                  setFollowupDismissed(true);
+                }}
+                className="shrink-0 rounded bg-green-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-green-700"
+              >
+                Usar
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setFollowupDismissed(true)}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              title="Dispensar"
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })()}
+
       <ChatComposer
         disabled={!currentLead}
         sending={sending}
         conversationKey={leadId}
+        initialText={followupComposerText}
         replyTarget={replyTarget}
         onCancelReply={() => setReplyTarget(null)}
         onSendText={handleSendText}

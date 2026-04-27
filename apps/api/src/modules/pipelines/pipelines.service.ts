@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, NotFoundException, ConflictException }
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { MessagesService } from '../messages/messages.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
@@ -63,6 +64,7 @@ export class PipelinesService {
   constructor(
     private prisma: PrismaService,
     private cache: RedisCacheService,
+    private messages: MessagesService,
   ) {}
 
   private async invalidateLeadsCache(tenantId: string): Promise<void> {
@@ -354,5 +356,83 @@ export class PipelinesService {
       ),
     );
     return { success: true };
+  }
+
+  async cadenceEligibleCount(stageId: string, stepIndex: number, user: AuthUser) {
+    const stage = await this.prisma.stage.findFirst({
+      where: { id: stageId, tenant_id: user.tenantId },
+    });
+    if (!stage) throw new NotFoundException('Etapa não encontrada');
+
+    const config = stage.cadence_config as any;
+    const steps: any[] = config?.steps ?? [];
+    const step = steps[stepIndex];
+    if (!step) return { count: 0 };
+
+    const now = new Date();
+    const thresholdMs =
+      step.unit === 'MINUTES' ? step.duration * 60_000 :
+      step.unit === 'HOURS'   ? step.duration * 3_600_000 :
+      /* DAYS */                step.duration * 86_400_000;
+    const cutoff = new Date(now.getTime() - thresholdMs);
+
+    const count = await this.prisma.lead.count({
+      where: {
+        estagio_id: stageId,
+        tenant_id: user.tenantId,
+        cadence_step_index: stepIndex,
+        estagio_entered_at: { lte: cutoff },
+      },
+    });
+
+    return { count };
+  }
+
+  async fireCadenceStep(stageId: string, stepIndex: number, user: AuthUser) {
+    const stage = await this.prisma.stage.findFirst({
+      where: { id: stageId, tenant_id: user.tenantId },
+    });
+    if (!stage) throw new NotFoundException('Etapa não encontrada');
+
+    const config = stage.cadence_config as any;
+    const steps: any[] = config?.steps ?? [];
+    const step = steps[stepIndex];
+    if (!step) throw new BadRequestException('Passo de cadência não existe');
+    if (!step.template) throw new BadRequestException('Passo sem mensagem definida');
+
+    // Calcula quando o lead precisa estar na etapa para ser elegível
+    const now = new Date();
+    const thresholdMs =
+      step.unit === 'MINUTES' ? step.duration * 60_000 :
+      step.unit === 'HOURS'   ? step.duration * 3_600_000 :
+      /* DAYS */                step.duration * 86_400_000;
+    const cutoff = new Date(now.getTime() - thresholdMs);
+
+    const leads = await this.prisma.lead.findMany({
+      where: {
+        estagio_id: stageId,
+        tenant_id: user.tenantId,
+        cadence_step_index: stepIndex,               // só leads neste passo
+        estagio_entered_at: { lte: cutoff },         // na etapa há tempo suficiente
+      },
+      select: { id: true },
+    });
+
+    const systemUser = { ...user, id: 'SYSTEM' } as AuthUser;
+    let sent = 0;
+    for (const lead of leads) {
+      try {
+        await this.messages.sendText({ lead_id: lead.id, content: step.template }, systemUser);
+        await this.prisma.lead.update({
+          where: { id: lead.id },
+          data: { cadence_step_index: stepIndex + 1, proximo_followup: null },
+        });
+        sent++;
+      } catch {
+        // continua pros outros leads mesmo se um falhar
+      }
+    }
+
+    return { sent, total: leads.length };
   }
 }

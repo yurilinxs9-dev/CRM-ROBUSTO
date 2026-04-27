@@ -103,7 +103,7 @@ function SortableLeadImpl({
       {...attributes}
       {...listeners}
       onClick={onClick}
-      className={isDragging ? 'opacity-30' : ''}
+      className={cn('w-full flex-shrink-0', isDragging ? 'opacity-30' : '')}
     >
       <LeadCard
         lead={lead}
@@ -218,13 +218,13 @@ function StageColumnImpl({
     <div
       ref={setSortableRef}
       style={sortableStyle}
-      className="flex-shrink-0 w-80 flex flex-col h-full bg-muted/30 rounded-lg border overflow-hidden"
+      className="flex-shrink-0 w-80 flex flex-col h-full bg-muted/30 rounded-lg border"
     >
       {/* Top accent border using stage color */}
-      <div className="h-1 w-full" style={{ backgroundColor: stage.cor }} aria-hidden />
+      <div className="h-1 w-full rounded-t-lg" style={{ backgroundColor: stage.cor }} aria-hidden />
 
       {/* Header */}
-      <div className="sticky top-0 z-10 px-3 py-2.5 border-b bg-muted/50 backdrop-blur">
+      <div className="sticky top-0 z-10 px-3 py-2.5 border-b bg-muted/50 backdrop-blur rounded-t-lg">
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -346,7 +346,7 @@ function StageColumnImpl({
       </div>
 
       {/* Body */}
-      <ScrollArea className="flex-1">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden kanban-scroll" style={{ scrollbarGutter: 'stable' }}>
         <div
           ref={setDropRef}
           className={cn(
@@ -381,7 +381,7 @@ function StageColumnImpl({
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Footer */}
       <button

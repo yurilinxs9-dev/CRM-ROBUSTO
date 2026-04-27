@@ -54,6 +54,8 @@ interface ChatComposerProps {
   sending?: boolean;
   /** Resets state (focus, text) when this key changes — e.g. conversation id. */
   conversationKey?: string;
+  /** Pre-fill text (e.g. cadence template). Applied once when set. */
+  initialText?: string | null;
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
   onSendText: (content: string, isInternalNote: boolean) => void;
@@ -71,6 +73,7 @@ export function ChatComposer({
   disabled,
   sending,
   conversationKey,
+  initialText,
   replyTarget,
   onCancelReply,
   onSendText,
@@ -79,6 +82,7 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const [text, setText] = useState('');
   const [isNote, setIsNote] = useState(false);
+
   const [emojiOpen, setEmojiOpen] = useState(false);
 
   // Image caption preview dialog state.
@@ -87,6 +91,14 @@ export function ChatComposer({
   const [pendingCaption, setPendingCaption] = useState('');
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Apply initialText once when it changes (cadence template suggestion)
+  useEffect(() => {
+    if (initialText) {
+      setText(initialText);
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    }
+  }, [initialText]);
 
   // Auto-focus when switching conversation.
   useEffect(() => {

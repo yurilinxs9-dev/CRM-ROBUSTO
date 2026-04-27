@@ -107,11 +107,19 @@ export class AutomationService {
             content: nextStep.template,
           }, { tenantId: lead.tenant_id, id: 'SYSTEM', role: 'OPERADOR' } as any);
         } else {
-          // Se for MANUAL, apenas logamos ou poderíamos emitir um alerta
-          this.logger.debug(`Cadência MANUAL: Lead ${lead.id} atingiu tempo do passo ${currentStepIndex + 1}`);
+          // MANUAL: gravar proximo_followup para exibir badge no card
+          // Não avança cadence_step_index — aguarda o agente enviar a mensagem
+          this.logger.debug(`Cadência MANUAL: Lead ${lead.id} aguardando ação humana no passo ${currentStepIndex + 1}`);
+          if (!lead.proximo_followup) {
+            await this.prisma.lead.update({
+              where: { id: lead.id },
+              data: { proximo_followup: scheduledTime },
+            });
+          }
+          continue;
         }
 
-        // Incrementa o index para o próximo passo
+        // AUTO: avança o index automaticamente
         await this.prisma.lead.update({
           where: { id: lead.id },
           data: { cadence_step_index: currentStepIndex + 1 }

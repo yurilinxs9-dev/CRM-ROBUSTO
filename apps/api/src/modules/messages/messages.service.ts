@@ -140,10 +140,16 @@ export class MessagesService {
       },
     });
 
-    await this.prisma.lead.update({
-      where: { id: lead_id },
-      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
-    });
+    // Avançar cadência manual se houver follow-up pendente
+    const cadenceUpdate: Record<string, unknown> = {
+      ultima_interacao: new Date(),
+      last_agent_message_at: new Date(),
+    };
+    if (lead.proximo_followup !== null) {
+      cadenceUpdate.proximo_followup = null;
+      cadenceUpdate.cadence_step_index = lead.cadence_step_index + 1;
+    }
+    await this.prisma.lead.update({ where: { id: lead_id }, data: cadenceUpdate });
 
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);

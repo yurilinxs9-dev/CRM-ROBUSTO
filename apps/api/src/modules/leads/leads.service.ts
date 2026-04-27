@@ -279,6 +279,8 @@ export class LeadsService {
         estagio_entered_at: true,
         last_customer_message_at: true,
         last_agent_message_at: true,
+        proximo_followup: true,
+        cadence_step_index: true,
         created_at: true,
         pipeline_id: true,
         tags: true,

@@ -29,6 +29,17 @@ export interface ChatLead {
   responsavel?: { id: string; nome: string } | null;
   created_at?: string;
   updated_at?: string;
+  proximo_followup?: string | null;
+  cadence_step_index?: number | null;
+  estagio?: {
+    id: string;
+    nome: string;
+    cor?: string;
+    cadence_config?: {
+      enabled?: boolean;
+      steps?: Array<{ mode: string; template?: string; duration?: number; unit?: string }>;
+    } | null;
+  } | null;
 }
 
 export interface ChatMessage {
