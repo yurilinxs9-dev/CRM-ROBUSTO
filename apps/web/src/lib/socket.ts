@@ -1,6 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 
 let socket: Socket | null = null;
+const joinedLeads = new Set<string>();
 
 export function getSocket(): Socket {
   if (!socket) {
@@ -15,6 +16,11 @@ export function getSocket(): Socket {
       autoConnect: false,
       reconnectionDelay: 500,
       reconnectionDelayMax: 3000,
+    });
+    // Re-join all active lead rooms on every reconnect so message:new keeps
+    // arriving after token refresh (reconnectSocket) or network blip.
+    socket.on('connect', () => {
+      joinedLeads.forEach((id) => socket!.emit('join:lead', id));
     });
   }
   return socket;
@@ -47,22 +53,19 @@ export function disconnectSocket(): void {
   if (socket) {
     socket.disconnect();
     socket = null;
+    joinedLeads.clear();
   }
 }
 
 export function joinLead(leadId: string): void {
+  joinedLeads.add(leadId);
   const s = getSocket();
-  const emitJoin = () => s.emit('join:lead', leadId);
-  if (s.connected) {
-    emitJoin();
-  } else {
-    s.once('connect', emitJoin);
-  }
+  if (s.connected) s.emit('join:lead', leadId);
+  // If not connected, the 'connect' listener in getSocket() handles the emit.
 }
 
 export function leaveLead(leadId: string): void {
+  joinedLeads.delete(leadId);
   const s = getSocket();
-  if (s.connected) {
-    s.emit('leave:lead', leadId);
-  }
+  if (s.connected) s.emit('leave:lead', leadId);
 }

@@ -215,9 +215,14 @@ export default function ChatDetailPage() {
           ...old,
           pages: old.pages.map((p) => ({
             ...p,
-            messages: p.messages.map((m) =>
-              m.id === tempId ? { ...serverMsg, status: serverMsg.status ?? 'SENT' } : m,
-            ),
+            // 1. Remove any socket-inserted copy of serverMsg.id (race where
+            //    message:new arrived before onSuccess and content-match failed).
+            // 2. Replace the temp bubble with the authoritative server message.
+            messages: p.messages
+              .filter((m) => m.id !== serverMsg.id)
+              .map((m) =>
+                m.id === tempId ? { ...serverMsg, status: serverMsg.status ?? 'SENT' } : m,
+              ),
           })),
         };
       });
@@ -388,7 +393,14 @@ export default function ChatDetailPage() {
                 typeof m.id === 'string' &&
                 m.id.startsWith('temp-') &&
                 (m.direction === 'OUTGOING' || m.direction === 'OUTBOUND') &&
-                (m.content ?? '') === (data.content ?? '') &&
+                (() => {
+                  const raw = m.content ?? '';
+                  const srv = data.content ?? '';
+                  // Pool mode prepends "*AgentName*\n\n" server-side; strip it
+                  // before comparing so the temp bubble is replaced correctly.
+                  const stripped = srv.replace(/^\*[^*\n]+\*\n\n/, '');
+                  return raw === srv || raw === stripped;
+                })() &&
                 m.type === data.type
               ) {
                 replaced = true;
