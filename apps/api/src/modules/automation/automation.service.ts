@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { LeadsService } from '../leads/leads.service';
 import { MessagesService } from '../messages/messages.service';
+import type { AuthUser } from '../../common/types/auth-user';
 
 @Injectable()
 export class AutomationService {
@@ -53,7 +54,14 @@ export class AutomationService {
       for (const lead of leadsToMove) {
         if (config.targetStageId) {
           this.logger.log(`SLA Estourado: Movendo lead ${lead.id} para etapa ${config.targetStageId}`);
-          await this.leads.updateStage(lead.id, config.targetStageId, { id: 'SYSTEM' } as any);
+          // updateStage parses `data` via Zod expecting { estagio_id, position? }
+          // and uses user.tenantId in the WHERE clause — both were broken when
+          // a bare stageId string and a stub user without tenantId were passed.
+          await this.leads.updateStage(
+            lead.id,
+            { estagio_id: config.targetStageId },
+            { id: 'SYSTEM', tenantId: lead.tenant_id, role: 'SUPER_ADMIN' } as AuthUser,
+          );
         }
       }
     }
