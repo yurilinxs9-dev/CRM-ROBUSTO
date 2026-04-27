@@ -67,18 +67,35 @@ export class AutomationService {
     }
   }
 
+  // Throttle AUTO: máx leads disparados por tick (1min) — evita rajada se muitos hit threshold juntos.
+  private readonly AUTO_MAX_PER_TICK = 5;
+  private readonly tenantSystemUserCache = new Map<string, AuthUser>();
+
+  private async getTenantSystemUser(tenantId: string): Promise<AuthUser | null> {
+    const cached = this.tenantSystemUserCache.get(tenantId);
+    if (cached) return cached;
+    const u = await this.prisma.user.findFirst({
+      where: { tenant_id: tenantId, ativo: true, role: { in: ['SUPER_ADMIN', 'GERENTE'] } },
+      orderBy: { created_at: 'asc' },
+    });
+    if (!u) return null;
+    const auth = { id: u.id, tenantId: u.tenant_id, role: u.role, nome: u.nome } as AuthUser;
+    this.tenantSystemUserCache.set(tenantId, auth);
+    return auth;
+  }
+
   private async processCadences() {
-    // Leads em etapas com cadência habilitada
     const leadsWithActiveCadence = await this.prisma.lead.findMany({
       where: {
         estagio: {
           cadence_config: { path: ['enabled'], equals: true }
         }
       },
-      include: {
-        estagio: true
-      }
+      include: { estagio: true },
+      orderBy: { estagio_entered_at: 'asc' }, // FIFO
     });
+
+    let autoFired = 0;
 
     for (const lead of leadsWithActiveCadence) {
       const config = lead.estagio.cadence_config as any;
@@ -89,31 +106,39 @@ export class AutomationService {
 
       const nextStep = steps[currentStepIndex];
       const now = new Date();
-      
-      // Data de referência: quando entrou na etapa
       const referenceDate = lead.estagio_entered_at || lead.created_at;
       const scheduledTime = this.getScheduledDate(referenceDate, nextStep.duration, nextStep.unit);
 
       if (now >= scheduledTime) {
-        // Se for AUTO, verifica a trava de segurança
         if (nextStep.mode === 'AUTO') {
+          if (autoFired >= this.AUTO_MAX_PER_TICK) {
+            this.logger.debug(`Cadência AUTO: limite ${this.AUTO_MAX_PER_TICK}/tick atingido, restantes adiados para próximo ciclo`);
+            break;
+          }
+
           const lock = nextStep.safety_lock;
           if (lock?.enabled && lead.last_customer_message_at) {
             const lastMsgThreshold = this.getThresholdDate(now, lock.duration, lock.unit);
-            
-            // Se o cliente mandou mensagem recentemente (depois do threshold), aborta este passo por segurança
             if (lead.last_customer_message_at > lastMsgThreshold) {
               this.logger.debug(`Trava de Segurança: Abortando cadência para lead ${lead.id} (atividade recente)`);
               continue;
             }
           }
 
-          // Disparar mensagem automática
-          this.logger.log(`Cadência AUTO: Disparando mensagem para lead ${lead.id} (Passo ${currentStepIndex + 1})`);
-          await this.messages.sendText({
-            lead_id: lead.id,
-            content: nextStep.template,
-          }, { tenantId: lead.tenant_id, id: 'SYSTEM', role: 'OPERADOR' } as any);
+          const sysUser = await this.getTenantSystemUser(lead.tenant_id);
+          if (!sysUser) {
+            this.logger.warn(`Cadência AUTO: nenhum admin/gerente ativo no tenant ${lead.tenant_id}, pulando lead ${lead.id}`);
+            continue;
+          }
+
+          this.logger.log(`Cadência AUTO: Disparando lead ${lead.id} (Passo ${currentStepIndex + 1})`);
+          try {
+            await this.messages.sendText({ lead_id: lead.id, content: nextStep.template }, sysUser);
+            autoFired++;
+          } catch (err) {
+            this.logger.error(`Cadência AUTO: erro lead ${lead.id}: ${String(err)}`);
+            continue;
+          }
         } else {
           // MANUAL: gravar proximo_followup para exibir badge no card
           // Não avança cadence_step_index — aguarda o agente enviar a mensagem

@@ -218,76 +218,79 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
         </button>
       </div>
 
-      {confirming && (
-        <div className="mb-3 p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-3">
-          <div className="space-y-1">
-            <p className="text-[11px] font-semibold text-foreground">Configurar disparo</p>
-            {loadingCount ? (
-              <p className="text-[11px] text-muted-foreground">Verificando leads elegíveis...</p>
-            ) : eligible !== null ? (
-              <p className="text-[11px] text-muted-foreground">
-                <span className="font-bold text-foreground">{eligible}</span> lead{eligible !== 1 ? 's' : ''} elegível{eligible !== 1 ? 'is' : ''} (Trava Anti-Robô já aplicada).
-              </p>
-            ) : null}
-            <p className="text-[10px] text-muted-foreground italic line-clamp-2">"{template}"</p>
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="text-sm">Configurar disparo</DialogTitle>
+            <DialogDescription className="text-xs">
+              {loadingCount ? (
+                'Verificando leads elegíveis...'
+              ) : eligible !== null ? (
+                <><span className="font-bold text-foreground">{eligible}</span> lead{eligible !== 1 ? 's' : ''} elegível{eligible !== 1 ? 'is' : ''} (Trava Anti-Robô já aplicada).</>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <p className="text-[11px] text-muted-foreground italic line-clamp-3 p-2 rounded bg-muted/40">"{template}"</p>
+
+            <div className="grid grid-cols-3 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted-foreground">Qtd. envio</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={eligible ?? undefined}
+                  value={batchSize}
+                  onChange={(e) => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 0))}
+                  className="h-8 text-xs"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted-foreground">Delay min (s)</span>
+                <Input
+                  type="number"
+                  min={0}
+                  value={delayMin}
+                  onChange={(e) => setDelayMin(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  className="h-8 text-xs"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-medium text-muted-foreground">Delay max (s)</span>
+                <Input
+                  type="number"
+                  min={0}
+                  value={delayMax}
+                  onChange={(e) => setDelayMax(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  className="h-8 text-xs"
+                />
+              </label>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Tempo estimado: ~{Math.round((batchSize * (delayMin + delayMax)) / 2 / 60)} min
+            </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-medium text-muted-foreground">Qtd. envio</span>
-              <Input
-                type="number"
-                min={1}
-                max={eligible ?? undefined}
-                value={batchSize}
-                onChange={(e) => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 0))}
-                className="h-7 text-xs"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-medium text-muted-foreground">Delay min (s)</span>
-              <Input
-                type="number"
-                min={0}
-                value={delayMin}
-                onChange={(e) => setDelayMin(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="h-7 text-xs"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-medium text-muted-foreground">Delay max (s)</span>
-              <Input
-                type="number"
-                min={0}
-                value={delayMax}
-                onChange={(e) => setDelayMax(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="h-7 text-xs"
-              />
-            </label>
-          </div>
-          <p className="text-[10px] text-muted-foreground">
-            Tempo estimado: ~{Math.round((batchSize * (delayMin + delayMax)) / 2 / 60)} min
-          </p>
-
-          <div className="flex gap-2">
+          <DialogFooter className="gap-2 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="px-3 py-1.5 rounded text-xs font-medium border border-border hover:bg-muted transition-colors"
+            >
+              Cancelar
+            </button>
             <button
               type="button"
               onClick={fire}
               disabled={eligible === 0 || batchSize < 1 || delayMax < delayMin}
-              className="px-3 py-1 rounded text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+              className="px-3 py-1.5 rounded text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
             >
               {eligible === 0 ? 'Nenhum lead elegível' : `Disparar ${batchSize}`}
             </button>
-            <button
-              type="button"
-              onClick={() => setConfirming(false)}
-              className="px-3 py-1 rounded text-[11px] font-medium border border-border hover:bg-muted transition-colors"
-            >
-              Cancelar
-            </button>
-          </div>
-        </div>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
