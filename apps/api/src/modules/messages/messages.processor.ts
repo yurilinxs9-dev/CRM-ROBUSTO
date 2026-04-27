@@ -41,6 +41,10 @@ export class MessagesSendProcessor extends WorkerHost {
 
   private async handleText(job: Job<SendTextJobData>): Promise<void> {
     const d = job.data;
+    if (await this.alreadySent(d.messageId)) {
+      this.logger.warn(`[handleText] skipping retry — message ${d.messageId} already delivered`);
+      return;
+    }
     const res = await firstValueFrom(this.http.post<Record<string, unknown>>(
       `${d.uazBaseUrl}/send/text`,
       { number: d.telefone, text: d.content },
@@ -57,6 +61,10 @@ export class MessagesSendProcessor extends WorkerHost {
 
   private async handleAudio(job: Job<SendAudioJobData>): Promise<void> {
     const d = job.data;
+    if (await this.alreadySent(d.messageId)) {
+      this.logger.warn(`[handleAudio] skipping retry — message ${d.messageId} already delivered`);
+      return;
+    }
     // Re-sign URL in case the queue delay outran the signature TTL.
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
     const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'ptt';
@@ -98,6 +106,10 @@ export class MessagesSendProcessor extends WorkerHost {
 
   private async handleMedia(job: Job<SendMediaJobData>): Promise<void> {
     const d = job.data;
+    if (await this.alreadySent(d.messageId)) {
+      this.logger.warn(`[handleMedia] skipping retry — message ${d.messageId} already delivered`);
+      return;
+    }
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
     const body: Record<string, unknown> = { number: d.telefone, type: d.mediaType, file: freshUrl };
     if (d.caption)  body['text'] = d.caption;    // UazAPI uses 'text' for caption
@@ -127,6 +139,21 @@ export class MessagesSendProcessor extends WorkerHost {
       // M4: invalidate list/history caches so UI reflects FAILED badge immediately.
       await this.invalidateCache(job.data.leadId, job.data.tenantId);
     }
+  }
+
+  /**
+   * Idempotency guard: prevents BullMQ retries from re-sending a message that
+   * already reached WhatsApp. The DB update step can fail with P2002 (unique
+   * violation on whatsapp_message_id) when the echo webhook upserts a new row
+   * before the processor commits — without this guard each retry hits UazAPI
+   * again and the customer receives duplicate messages.
+   */
+  private async alreadySent(messageId: string): Promise<boolean> {
+    const existing = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: { whatsapp_message_id: true, status: true },
+    });
+    return Boolean(existing?.whatsapp_message_id) || existing?.status === 'SENT';
   }
 
   private extractWhatsappMessageId(data: unknown): string | null {

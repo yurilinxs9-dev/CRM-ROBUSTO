@@ -14,7 +14,10 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
     BullModule.registerQueue({
       name: MESSAGES_SEND_QUEUE,
       defaultJobOptions: {
-        attempts: 5,
+        // attempts=2: send is non-idempotent on UazAPI side, so retries can
+        // duplicate messages on the customer's WhatsApp. The processor has an
+        // alreadySent() guard, but capping retries narrows the blast radius.
+        attempts: 2,
         backoff: { type: 'exponential', delay: 10_000 },
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
