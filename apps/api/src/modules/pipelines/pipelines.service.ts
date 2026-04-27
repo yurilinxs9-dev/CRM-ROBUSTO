@@ -388,7 +388,12 @@ export class PipelinesService {
     return { count };
   }
 
-  async fireCadenceStep(stageId: string, stepIndex: number, user: AuthUser) {
+  async fireCadenceStep(
+    stageId: string,
+    stepIndex: number,
+    user: AuthUser,
+    opts: { batchSize?: number; delayMinSec?: number; delayMaxSec?: number } = {},
+  ) {
     const stage = await this.prisma.stage.findFirst({
       where: { id: stageId, tenant_id: user.tenantId },
     });
@@ -400,7 +405,6 @@ export class PipelinesService {
     if (!step) throw new BadRequestException('Passo de cadência não existe');
     if (!step.template) throw new BadRequestException('Passo sem mensagem definida');
 
-    // Calcula quando o lead precisa estar na etapa para ser elegível
     const now = new Date();
     const thresholdMs =
       step.unit === 'MINUTES' ? step.duration * 60_000 :
@@ -408,31 +412,59 @@ export class PipelinesService {
       /* DAYS */                step.duration * 86_400_000;
     const cutoff = new Date(now.getTime() - thresholdMs);
 
-    const leads = await this.prisma.lead.findMany({
-      where: {
-        estagio_id: stageId,
-        tenant_id: user.tenantId,
-        cadence_step_index: stepIndex,               // só leads neste passo
-        estagio_entered_at: { lte: cutoff },         // na etapa há tempo suficiente
-      },
-      select: { id: true },
-    });
+    const where: any = {
+      estagio_id: stageId,
+      tenant_id: user.tenantId,
+      cadence_step_index: stepIndex,
+      estagio_entered_at: { lte: cutoff },
+    };
 
-    const systemUser = { ...user, id: 'SYSTEM' } as AuthUser;
-    let sent = 0;
-    for (const lead of leads) {
-      try {
-        await this.messages.sendText({ lead_id: lead.id, content: step.template }, systemUser);
-        await this.prisma.lead.update({
-          where: { id: lead.id },
-          data: { cadence_step_index: stepIndex + 1, proximo_followup: null },
-        });
-        sent++;
-      } catch {
-        // continua pros outros leads mesmo se um falhar
-      }
+    // Trava Anti-Robô (manual): só dispara se cliente está sem responder há X tempo
+    const lock = step.safety_lock;
+    if (lock?.enabled) {
+      const lockMs =
+        lock.unit === 'MINUTES' ? lock.duration * 60_000 :
+        lock.unit === 'HOURS'   ? lock.duration * 3_600_000 :
+        /* DAYS */                lock.duration * 86_400_000;
+      const lockCutoff = new Date(now.getTime() - lockMs);
+      where.OR = [
+        { last_customer_message_at: null },
+        { last_customer_message_at: { lte: lockCutoff } },
+      ];
     }
 
-    return { sent, total: leads.length };
+    const all = await this.prisma.lead.findMany({
+      where,
+      select: { id: true },
+      orderBy: { estagio_entered_at: 'asc' },
+    });
+
+    const batch = opts.batchSize && opts.batchSize > 0 ? all.slice(0, opts.batchSize) : all;
+    const delayMin = Math.max(0, opts.delayMinSec ?? 0);
+    const delayMax = Math.max(delayMin, opts.delayMaxSec ?? 0);
+
+    const systemUser = { ...user, id: 'SYSTEM' } as AuthUser;
+
+    // Background loop — não bloqueia HTTP. Erros logados, próximos leads continuam.
+    void (async () => {
+      for (let i = 0; i < batch.length; i++) {
+        const lead = batch[i];
+        try {
+          await this.messages.sendText({ lead_id: lead.id, content: step.template }, systemUser);
+          await this.prisma.lead.update({
+            where: { id: lead.id },
+            data: { cadence_step_index: stepIndex + 1, proximo_followup: null },
+          });
+        } catch {
+          // continua
+        }
+        if (i < batch.length - 1 && delayMax > 0) {
+          const waitMs = (delayMin + Math.random() * (delayMax - delayMin)) * 1000;
+          await new Promise((r) => setTimeout(r, waitMs));
+        }
+      }
+    })();
+
+    return { scheduled: batch.length, totalEligible: all.length };
   }
 }

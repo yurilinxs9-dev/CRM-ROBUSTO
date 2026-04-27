@@ -98,16 +98,20 @@ interface StageConfigDialogProps {
 
 function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; stepIndex: number; template: string }) {
   const [sendState, setSendState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [result, setResult] = useState<{ sent: number; total: number } | null>(null);
+  const [result, setResult] = useState<{ scheduled: number; totalEligible: number } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [eligible, setEligible] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+  const [batchSize, setBatchSize] = useState<number>(30);
+  const [delayMin, setDelayMin] = useState<number>(15);
+  const [delayMax, setDelayMax] = useState<number>(45);
 
   const loadCount = useCallback(async () => {
     setLoadingCount(true);
     try {
       const res = await api.get(`/api/stages/${stageId}/cadence-eligible?stepIndex=${stepIndex}`);
       setEligible(res.data.count);
+      setBatchSize((prev) => Math.min(prev, res.data.count || prev));
     } catch {
       setEligible(null);
     } finally {
@@ -124,18 +128,23 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
     setConfirming(false);
     setSendState('loading');
     try {
-      const res = await api.post(`/api/stages/${stageId}/fire-cadence-step`, { stepIndex });
+      const res = await api.post(`/api/stages/${stageId}/fire-cadence-step`, {
+        stepIndex,
+        batchSize,
+        delayMinSec: delayMin,
+        delayMaxSec: delayMax,
+      });
       setResult(res.data);
       setSendState('done');
     } catch {
       setSendState('error');
     }
-  }, [stageId, stepIndex]);
+  }, [stageId, stepIndex, batchSize, delayMin, delayMax]);
 
   if (sendState === 'done' && result) {
     return (
       <p className="mt-2 mb-3 text-[11px] text-green-600 dark:text-green-400 font-medium">
-        ✓ Enviado para {result.sent}/{result.total} leads
+        ✓ Agendado envio para {result.scheduled} de {result.totalEligible} leads (envio em background)
       </p>
     );
   }
@@ -150,31 +159,69 @@ function FireCadenceButton({ stageId, stepIndex, template }: { stageId: string; 
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-50"
         >
           <MessageSquare size={12} />
-          {sendState === 'loading' ? 'Enviando...' : sendState === 'error' ? 'Erro — tentar de novo' : 'Enviar mensagem'}
+          {sendState === 'loading' ? 'Agendando...' : sendState === 'error' ? 'Erro — tentar de novo' : 'Enviar mensagem'}
         </button>
       </div>
 
       {confirming && (
         <div className="mb-3 p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-3">
           <div className="space-y-1">
-            <p className="text-[11px] font-semibold text-foreground">Confirmar disparo</p>
+            <p className="text-[11px] font-semibold text-foreground">Configurar disparo</p>
             {loadingCount ? (
               <p className="text-[11px] text-muted-foreground">Verificando leads elegíveis...</p>
             ) : eligible !== null ? (
               <p className="text-[11px] text-muted-foreground">
-                <span className="font-bold text-foreground">{eligible}</span> lead{eligible !== 1 ? 's' : ''} elegível{eligible !== 1 ? 'is' : ''} para este passo.
+                <span className="font-bold text-foreground">{eligible}</span> lead{eligible !== 1 ? 's' : ''} elegível{eligible !== 1 ? 'is' : ''} (Trava Anti-Robô já aplicada).
               </p>
             ) : null}
             <p className="text-[10px] text-muted-foreground italic line-clamp-2">"{template}"</p>
           </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium text-muted-foreground">Qtd. envio</span>
+              <Input
+                type="number"
+                min={1}
+                max={eligible ?? undefined}
+                value={batchSize}
+                onChange={(e) => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 0))}
+                className="h-7 text-xs"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium text-muted-foreground">Delay min (s)</span>
+              <Input
+                type="number"
+                min={0}
+                value={delayMin}
+                onChange={(e) => setDelayMin(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="h-7 text-xs"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium text-muted-foreground">Delay max (s)</span>
+              <Input
+                type="number"
+                min={0}
+                value={delayMax}
+                onChange={(e) => setDelayMax(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="h-7 text-xs"
+              />
+            </label>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Tempo estimado: ~{Math.round((batchSize * (delayMin + delayMax)) / 2 / 60)} min
+          </p>
+
           <div className="flex gap-2">
             <button
               type="button"
               onClick={fire}
-              disabled={eligible === 0}
+              disabled={eligible === 0 || batchSize < 1 || delayMax < delayMin}
               className="px-3 py-1 rounded text-[11px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
             >
-              {eligible === 0 ? 'Nenhum lead elegível' : 'Confirmar envio'}
+              {eligible === 0 ? 'Nenhum lead elegível' : `Disparar ${batchSize}`}
             </button>
             <button
               type="button"
@@ -653,17 +700,54 @@ export function StageConfigDialog({
                         className="text-xs min-h-[60px] bg-background"
                       />
 
+                      <div className="mt-3 p-2 rounded bg-amber-500/10 border border-amber-500/20 space-y-2">
+                        <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                          <AlertTriangle size={14} />
+                          <span className="text-[10px] font-bold uppercase tracking-wider">Trava Anti-Robô</span>
+                          <Switch
+                            checked={!!step.safety_lock?.enabled}
+                            onCheckedChange={(v) =>
+                              updateStep(step.id, {
+                                safety_lock: { ...(step.safety_lock ?? { duration: 10, unit: 'MINUTES' }), enabled: v },
+                              })
+                            }
+                          />
+                        </div>
+                        {step.safety_lock?.enabled && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <Input
+                              type="number"
+                              min={1}
+                              value={step.safety_lock?.duration ?? 10}
+                              onChange={(e) =>
+                                updateStep(step.id, {
+                                  safety_lock: { ...(step.safety_lock ?? { enabled: true, unit: 'MINUTES' }), duration: parseInt(e.target.value, 10) || 1 },
+                                })
+                              }
+                              className="h-7 text-xs"
+                            />
+                            <Select
+                              value={step.safety_lock?.unit ?? 'MINUTES'}
+                              onValueChange={(v: any) =>
+                                updateStep(step.id, {
+                                  safety_lock: { ...(step.safety_lock ?? { enabled: true, duration: 10 }), unit: v },
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {TIME_UNITS.map((u) => <SelectItem key={u.value} value={u.value}>{u.label}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-muted-foreground leading-tight">
+                          Só dispara se o cliente estiver sem responder há mais de {step.safety_lock?.duration ?? 10} {TIME_UNITS.find(u => u.value === (step.safety_lock?.unit ?? 'MINUTES'))?.label.toLowerCase()}.
+                        </p>
+                      </div>
+
                       {step.mode === 'MANUAL' && step.template && stage?.id && (
                         <FireCadenceButton stageId={stage.id} stepIndex={index} template={step.template} />
-                      )}
-
-                      {step.mode === 'AUTO' && (
-                        <div className="flex items-center gap-2 p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
-                          <AlertTriangle size={14} />
-                          <div className="flex-1 text-[10px] leading-tight">
-                            <strong>Trava Anti-Robô:</strong> Só dispara se o cliente estiver sem responder há mais de 10 min.
-                          </div>
-                        </div>
                       )}
                     </div>
                   ))}

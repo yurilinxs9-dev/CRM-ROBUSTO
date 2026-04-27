@@ -120,7 +120,15 @@ export class PipelinesController {
   }
 
   @Post('stages/:id/fire-cadence-step')
-  fireCadenceStep(@Param('id') id: string, @Body() body: { stepIndex: number }, @Req() req: Record<string, unknown>) {
-    return this.pipelinesService.fireCadenceStep(id, body.stepIndex, req.user as AuthUser);
+  fireCadenceStep(
+    @Param('id') id: string,
+    @Body() body: { stepIndex: number; batchSize?: number; delayMinSec?: number; delayMaxSec?: number },
+    @Req() req: Record<string, unknown>,
+  ) {
+    return this.pipelinesService.fireCadenceStep(id, body.stepIndex, req.user as AuthUser, {
+      batchSize: body.batchSize,
+      delayMinSec: body.delayMinSec,
+      delayMaxSec: body.delayMaxSec,
+    });
   }
 }
