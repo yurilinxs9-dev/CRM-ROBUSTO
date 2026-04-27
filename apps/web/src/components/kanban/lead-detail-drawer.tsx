@@ -148,7 +148,10 @@ export function LeadDetailDrawer({
       return res.data as TenantUser[];
     },
     enabled: open,
-    staleTime: 60_000,
+    // Always refetch on mount so a member added in TeamTab shows up immediately
+    // when the drawer is reopened, instead of being stuck behind a stale cache.
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // ---- Form state ----

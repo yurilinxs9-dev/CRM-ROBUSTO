@@ -82,6 +82,7 @@ export function TeamTab() {
     onSuccess: () => {
       toast.success('Membro adicionado!');
       queryClient.invalidateQueries({ queryKey: ['team'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
       setNewNome(''); setNewEmail(''); setNewSenha(''); setNewRole('OPERADOR');
     },
@@ -98,6 +99,7 @@ export function TeamTab() {
     onSuccess: () => {
       toast.success('Usuário vinculado!');
       queryClient.invalidateQueries({ queryKey: ['team'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
       setLinkEmail(''); setLinkRole('OPERADOR');
     },
@@ -114,6 +116,7 @@ export function TeamTab() {
     onSuccess: () => {
       toast.success('Membro atualizado!');
       queryClient.invalidateQueries({ queryKey: ['team'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: () => toast.error('Erro ao atualizar membro.'),
   });
