@@ -6,10 +6,8 @@ const joinedLeads = new Set<string>();
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(process.env.NEXT_PUBLIC_WS_URL || 'http://187.127.11.117:3001', {
-      // Forca websocket puro: sem isso o cliente tenta long-polling primeiro,
-      // o que adiciona ~1-2s de handshake e aumenta a carga no backend.
-      transports: ['websocket'],
-      upgrade: false,
+      // Allow polling fallback for proxies/networks that block raw WS.
+      transports: ['websocket', 'polling'],
       auth: {
         token: typeof window !== 'undefined' ? localStorage.getItem('accessToken') : '',
       },

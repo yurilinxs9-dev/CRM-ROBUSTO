@@ -17,7 +17,7 @@ const wsOrigins = rawFrontendUrl
 
 @WebSocketGateway({
   cors: { origin: wsOrigins, credentials: true },
-  transports: ['websocket'],
+  transports: ['websocket', 'polling'],
   pingInterval: 20000,
   pingTimeout: 25000,
 })

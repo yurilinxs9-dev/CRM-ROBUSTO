@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { defaultCache } from '@serwist/next/worker';
-import { Serwist } from 'serwist';
+import { NetworkOnly, Serwist } from 'serwist';
 
 declare const self: ServiceWorkerGlobalScope & {
   __SW_MANIFEST: (string | { url: string; revision: string | null })[];
@@ -11,7 +11,19 @@ const serwist = new Serwist({
   skipWaiting: true,
   clientsClaim: true,
   navigationPreload: true,
-  runtimeCaching: defaultCache,
+  runtimeCaching: [
+    {
+      matcher: ({ url }) => url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/'),
+      handler: new NetworkOnly(),
+      method: 'GET',
+    },
+    {
+      matcher: ({ url }) => url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/'),
+      handler: new NetworkOnly(),
+      method: 'POST',
+    },
+    ...defaultCache,
+  ],
 });
 
 serwist.addEventListeners();
