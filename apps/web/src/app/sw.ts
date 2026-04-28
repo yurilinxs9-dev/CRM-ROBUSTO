@@ -6,6 +6,10 @@ declare const self: ServiceWorkerGlobalScope & {
   __SW_MANIFEST: (string | { url: string; revision: string | null })[];
 };
 
+// Bump on any SW behavior change to force install/activate on every client.
+// Old caches are nuked in `activate` so users never get stuck on stale assets.
+const SW_VERSION = 'v3-2026-04-28';
+
 // Hard-bypass the service worker for realtime + API traffic. Registered
 // before serwist so its respondWith wins and serwist never sees the
 // request — this is the only reliable way to prevent the SW from buffering
@@ -15,6 +19,20 @@ self.addEventListener('fetch', (event: FetchEvent) => {
   if (url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/api/')) {
     event.respondWith(fetch(event.request));
   }
+});
+
+// On every activate, drop every existing cache. Combined with skipWaiting +
+// clientsClaim this guarantees a PWA session picks up the latest bundle as
+// soon as a new SW ships, so users don't see "some features not loading"
+// because of stale precache hits. Serwist will refill its own precache on
+// the next request (small one-time hit, then back to instant).
+self.addEventListener('activate', (event: ExtendableEvent) => {
+  event.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(names.map((n) => caches.delete(n)));
+    })(),
+  );
 });
 
 const serwist = new Serwist({
