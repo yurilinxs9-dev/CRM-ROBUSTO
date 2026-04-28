@@ -69,26 +69,30 @@ export class MessagesSendProcessor extends WorkerHost {
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
     const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'ptt';
     const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'auto') as string;
-    const payload = (fileRef: string): Record<string, unknown> => pttField === 'audio+ptt'
-      ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
-      : { number: d.telefone, type: 'ptt', ptt: true, file: fileRef };
+    const opusMime = 'audio/ogg; codecs=opus';
+    const payload = (fileRef: string, withMime: boolean): Record<string, unknown> => {
+      const base = pttField === 'audio+ptt'
+        ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
+        : { number: d.telefone, type: 'ptt', ptt: true, file: fileRef };
+      return withMime ? { ...base, mimetype: opusMime } : base;
+    };
 
-    const postPayload = async (ref: string) => firstValueFrom(this.http.post<Record<string, unknown>>(
-      `${d.uazBaseUrl}/send/media`, payload(ref), { headers: { token: d.uazToken } },
+    const postPayload = async (ref: string, withMime: boolean) => firstValueFrom(this.http.post<Record<string, unknown>>(
+      `${d.uazBaseUrl}/send/media`, payload(ref, withMime), { headers: { token: d.uazToken } },
     ));
 
     let res: Awaited<ReturnType<typeof postPayload>>;
     if (strategy === 'base64') {
       const buf = await this.fetchAsBase64(freshUrl);
-      res = await postPayload(`data:audio/ogg;base64,${buf}`);
+      res = await postPayload(`data:audio/ogg;base64,${buf}`, true);
     } else {
       try {
-        res = await postPayload(freshUrl);
+        res = await postPayload(freshUrl, false);
       } catch (err) {
         if (strategy === 'auto') {
           this.logger.warn(`[handleAudio] URL strategy failed, retrying with base64`);
           const buf = await this.fetchAsBase64(freshUrl);
-          res = await postPayload(`data:audio/ogg;base64,${buf}`);
+          res = await postPayload(`data:audio/ogg;base64,${buf}`, true);
         } else {
           throw err;
         }
