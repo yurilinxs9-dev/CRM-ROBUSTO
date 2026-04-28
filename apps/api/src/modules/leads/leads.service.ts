@@ -804,11 +804,14 @@ export class LeadsService {
     if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
       throw new ForbiddenException('Sem acesso a este lead');
     }
+    const isManager = user.role !== UserRole.OPERADOR;
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }],
+        ...(isManager
+          ? {}
+          : { OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }] }),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
