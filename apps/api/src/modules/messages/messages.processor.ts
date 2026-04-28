@@ -71,7 +71,7 @@ export class MessagesSendProcessor extends WorkerHost {
     const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'auto') as string;
     const payload = (fileRef: string): Record<string, unknown> => pttField === 'audio+ptt'
       ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
-      : { number: d.telefone, type: 'ptt', file: fileRef };
+      : { number: d.telefone, type: 'ptt', ptt: true, file: fileRef };
 
     const postPayload = async (ref: string) => firstValueFrom(this.http.post<Record<string, unknown>>(
       `${d.uazBaseUrl}/send/media`, payload(ref), { headers: { token: d.uazToken } },

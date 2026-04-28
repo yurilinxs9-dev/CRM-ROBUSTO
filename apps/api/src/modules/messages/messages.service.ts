@@ -202,7 +202,7 @@ export class MessagesService {
     const probedDuration = await this.audio.probeDurationSeconds(opusBuffer, 'audio/ogg');
 
     const filename = `audio/${lead_id}/${uuid()}.ogg`;
-    await this.media.upload(filename, opusBuffer, 'audio/ogg');
+    await this.media.upload(filename, opusBuffer, 'audio/ogg; codecs=opus');
     const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
 
     const message = await this.prisma.message.create({
@@ -214,7 +214,7 @@ export class MessagesService {
         type: MessageType.AUDIO,
         content: null,
         media_url: filename,
-        media_mimetype: 'audio/ogg',
+        media_mimetype: 'audio/ogg; codecs=opus',
         media_size_bytes: opusBuffer.length,
         media_duration_seconds: probedDuration,
         status: 'PENDING',
