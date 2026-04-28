@@ -247,15 +247,18 @@ export class LeadsService {
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    // Privacidade total por instância: TODOS os roles (incluindo SUPER_ADMIN)
-    // só veem leads onde são responsáveis OU que estão na sua própria
-    // instância WhatsApp. Cross-instance fica invisível.
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessOR: Record<string, unknown>[] = [{ responsavel_id: user.id }];
-    if (ownedInstances.length) {
-      accessOR.push({ instancia_whatsapp: { in: ownedInstances } });
+    // OPERADOR só vê leads onde é responsável atual ou cuja instância é dele
+    // (privacidade por instância). GERENTE/SUPER_ADMIN ainda enxerga toda a
+    // pipeline pra poder atribuir/reatribuir — privacidade entra só no momento
+    // de abrir o chat (msgs e envio são filtrados por instância pra todos).
+    if (user.role === UserRole.OPERADOR) {
+      const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
+      const accessOR: Record<string, unknown>[] = [{ responsavel_id: user.id }];
+      if (ownedInstances.length) {
+        accessOR.push({ instancia_whatsapp: { in: ownedInstances } });
+      }
+      where.OR = accessOR;
     }
-    where.OR = accessOR;
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
@@ -363,11 +366,11 @@ export class LeadsService {
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      throw new ForbiddenException();
+    if (user.role === UserRole.OPERADOR) {
+      const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) throw new ForbiddenException();
     }
     return lead;
   }
@@ -861,11 +864,11 @@ export class LeadsService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      return [];
+    if (user.role === UserRole.OPERADOR) {
+      const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) return [];
     }
     return this.prisma.leadActivity.findMany({
       where: { lead_id: leadId, tenant_id: user.tenantId },
