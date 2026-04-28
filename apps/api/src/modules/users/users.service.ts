@@ -105,6 +105,19 @@ export class UsersService {
     });
   }
 
+  async changePassword(user: AuthUser, dto: { currentPassword: string; newPassword: string }) {
+    const row = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { senha_hash: true },
+    });
+    if (!row) throw new BadRequestException('Usuário não encontrado');
+    const ok = await bcrypt.compare(dto.currentPassword, row.senha_hash);
+    if (!ok) throw new BadRequestException('Senha atual incorreta');
+    const senha_hash = await bcrypt.hash(dto.newPassword, 12);
+    await this.prisma.user.update({ where: { id: user.id }, data: { senha_hash } });
+    return { ok: true };
+  }
+
   async updateProfile(user: AuthUser, dto: { nome?: string; titulo?: string | null; especialidade?: string | null }) {
     const data: Record<string, unknown> = {};
     if (dto.nome !== undefined) data.nome = dto.nome;

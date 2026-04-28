@@ -25,6 +25,11 @@ const updateProfileSchema = z.object({
   especialidade: z.string().max(100).nullable().optional(),
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(6).max(100),
+  newPassword: z.string().min(8).max(100),
+});
+
 const createMemberSchema = z.object({
   nome: z.string().min(2).max(100),
   email: z.string().email(),
@@ -95,6 +100,12 @@ export class UsersController {
   updateProfile(@Req() req: Record<string, unknown>, @Body() body: unknown) {
     const dto = updateProfileSchema.parse(body);
     return this.usersService.updateProfile(req.user as AuthUser, dto);
+  }
+
+  @Patch('me/password')
+  changePassword(@Req() req: Record<string, unknown>, @Body() body: unknown) {
+    const dto = changePasswordSchema.parse(body);
+    return this.usersService.changePassword(req.user as AuthUser, dto);
   }
 
   @Post('me/avatar')
