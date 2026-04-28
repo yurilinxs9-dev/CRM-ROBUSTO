@@ -86,22 +86,32 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+
+    // Privacidade por instância: só envia quem é responsável OU dono da
+    // instância onde o lead está. Bloqueia SUPER_ADMIN/GERENTE de mandar
+    // pelo número de outro user.
+    const ownedFromLead = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId, owner_user_id: user.id },
+    });
+    if (lead.responsavel_id !== user.id && !ownedFromLead) {
       throw new ForbiddenException(
-        lead.responsavel_id === null
-          ? 'Lead disponivel no escritorio — assuma para responder'
-          : 'Sem acesso a este lead',
+        'Sem permissão para enviar — instância pertence a outro usuário',
       );
     }
-    let instance = await this.prisma.whatsappInstance.findFirst({
-      where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
-    });
-    const isLive = instance && (instance.status === 'open' || instance.status === 'connected' || instance.status === 'connecting');
-    if (!isLive) {
+
+    // Pega instância: prefere a do lead (se for do user); senão fallback pra
+    // qualquer outra instância OWNED PELO user que esteja ativa. Nunca usa
+    // instância de outro user.
+    const liveStatuses = ['open', 'connected', 'connecting'];
+    let instance = ownedFromLead && liveStatuses.includes(ownedFromLead.status)
+      ? ownedFromLead
+      : null;
+    if (!instance) {
       const fallback = await this.prisma.whatsappInstance.findFirst({
         where: {
           tenant_id: user.tenantId,
-          status: { in: ['open', 'connected', 'connecting'] },
+          owner_user_id: user.id,
+          status: { in: liveStatuses },
         },
         orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
       });
@@ -115,7 +125,7 @@ export class MessagesService {
         }
       }
     }
-    if (!instance) throw new NotFoundException('Nenhuma instancia WhatsApp ativa para este tenant');
+    if (!instance) throw new NotFoundException('Conecte sua instância WhatsApp antes de enviar');
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
@@ -203,7 +213,7 @@ export class MessagesService {
     const { lead_id, content } = internalNoteSchema.parse(data);
     const lead = await this.prisma.lead.findFirst({
       where: { id: lead_id, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
@@ -446,18 +456,25 @@ export class MessagesService {
   async getHistory(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const isManager = user.role !== UserRole.OPERADOR;
-    if (!isManager && lead.responsavel_id !== user.id) {
-      // OPERADOR sem claim — esconde histórico (mesma regra de leads.getMessages).
+    const ownedInstances = (await this.prisma.whatsappInstance.findMany({
+      where: { owner_user_id: user.id, tenant_id: user.tenantId },
+      select: { nome: true },
+    })).map((r) => r.nome);
+    const accessible = lead.responsavel_id === user.id ||
+      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+    if (!accessible) {
       return { messages: [], nextCursor: undefined };
     }
-    // Quem tem acesso ao lead vê o histórico INTEIRO. Sem filtro de
-    // visible_to_user_id pra reassign entregar conversa completa.
+    // Privacidade por instância: só msgs cuja instance_name é uma das do user.
     const rows = await this.prisma.message.findMany({
-      where: { lead_id: leadId, tenant_id: user.tenantId },
+      where: {
+        lead_id: leadId,
+        tenant_id: user.tenantId,
+        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+      },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
