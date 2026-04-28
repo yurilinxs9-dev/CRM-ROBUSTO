@@ -1,5 +1,15 @@
 version: '3.8'
 services:
+  crm-redis:
+    image: redis:7-alpine
+    container_name: crm-redis
+    restart: unless-stopped
+    command: >
+      redis-server --maxclients 1000 --appendonly yes --appendfsync everysec --save "3600 1 300 100 60 10000" --bind 0.0.0.0 --protected-mode no
+    volumes:
+      - crm-redis-data:/data
+    networks: [crm-network]
+
   crm-backend:
     build:
       context: ./apps/api
@@ -12,6 +22,7 @@ services:
       - PORT=3001
       - DATABASE_URL=${DATABASE_URL}
       - DIRECT_URL=${DIRECT_URL}
+      - REDIS_URL=${REDIS_URL}
       - UPSTASH_REDIS_TLS_URL=${UPSTASH_REDIS_TLS_URL}
       - UAZAPI_BASE_URL=${UAZAPI_BASE_URL}
       - UAZAPI_ADMIN_TOKEN=${UAZAPI_ADMIN_TOKEN}
@@ -38,6 +49,7 @@ services:
       - SENTRY_RELEASE=${SENTRY_RELEASE:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
       - SENTRY_PROFILES_SAMPLE_RATE=${SENTRY_PROFILES_SAMPLE_RATE:-0.0}
+    depends_on: [crm-redis]
     networks: [crm-network]
     deploy:
       resources:
@@ -64,6 +76,7 @@ services:
 
 volumes:
   uptime_data:
+  crm-redis-data:
 
 networks:
   crm-network:
