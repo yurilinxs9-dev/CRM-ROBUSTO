@@ -87,51 +87,31 @@ export class MessagesService {
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
-    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+    // Privacidade por instância pra TODOS (incluindo SUPER_ADMIN). Só envia
+    // quem é responsável OU dono da instância onde o lead está. Fallback usa
+    // SOMENTE instâncias do próprio user — nunca o número de outro membro.
     const liveStatuses = ['open', 'connected', 'connecting'];
-
-    // SUPER_ADMIN: bypass total — usa a instância do lead direto, sem
-    // restrição de owner. Se a do lead estiver caída, fallback pra QUALQUER
-    // ativa do tenant.
-    let instance = await this.prisma.whatsappInstance.findFirst({
+    const instanceOfLead = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
-
-    if (!isSuperAdmin) {
-      // OPERADOR/GERENTE: privacidade por instância. Só envia quem é
-      // responsável OU dono da instância onde o lead está.
-      const ownedFromLead = instance && instance.owner_user_id === user.id ? instance : null;
-      if (lead.responsavel_id !== user.id && !ownedFromLead) {
-        throw new ForbiddenException(
-          'Sem permissão para enviar — instância pertence a outro usuário',
-        );
-      }
-      instance = ownedFromLead && liveStatuses.includes(ownedFromLead.status)
-        ? ownedFromLead
-        : null;
-      if (!instance) {
-        const fallback = await this.prisma.whatsappInstance.findFirst({
-          where: {
-            tenant_id: user.tenantId,
-            owner_user_id: user.id,
-            status: { in: liveStatuses },
-          },
-          orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
-        });
-        if (fallback) {
-          instance = fallback;
-          if (lead.instancia_whatsapp !== fallback.nome) {
-            await this.prisma.lead
-              .update({ where: { id: lead.id }, data: { instancia_whatsapp: fallback.nome } })
-              .catch(() => undefined);
-            lead.instancia_whatsapp = fallback.nome;
-          }
-        }
-      }
-    } else if (!instance || !liveStatuses.includes(instance.status)) {
-      // SUPER_ADMIN com instância do lead caída — usa qualquer ativa do tenant.
+    const ownedFromLead = instanceOfLead && instanceOfLead.owner_user_id === user.id
+      ? instanceOfLead
+      : null;
+    if (lead.responsavel_id !== user.id && !ownedFromLead) {
+      throw new ForbiddenException(
+        'Sem permissão para enviar — instância pertence a outro usuário',
+      );
+    }
+    let instance = ownedFromLead && liveStatuses.includes(ownedFromLead.status)
+      ? ownedFromLead
+      : null;
+    if (!instance) {
       const fallback = await this.prisma.whatsappInstance.findFirst({
-        where: { tenant_id: user.tenantId, status: { in: liveStatuses } },
+        where: {
+          tenant_id: user.tenantId,
+          owner_user_id: user.id,
+          status: { in: liveStatuses },
+        },
         orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
       });
       if (fallback) {
@@ -144,7 +124,7 @@ export class MessagesService {
         }
       }
     }
-    if (!instance) throw new NotFoundException('Nenhuma instância WhatsApp ativa');
+    if (!instance) throw new NotFoundException('Conecte sua instância WhatsApp antes de enviar');
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
@@ -478,27 +458,20 @@ export class MessagesService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
-    const ownedInstances = isSuperAdmin
-      ? []
-      : (await this.prisma.whatsappInstance.findMany({
-          where: { owner_user_id: user.id, tenant_id: user.tenantId },
-          select: { nome: true },
-        })).map((r) => r.nome);
-    if (!isSuperAdmin) {
-      const accessible = lead.responsavel_id === user.id ||
-        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-      if (!accessible) {
-        return { messages: [], nextCursor: undefined };
-      }
+    const ownedInstances = (await this.prisma.whatsappInstance.findMany({
+      where: { owner_user_id: user.id, tenant_id: user.tenantId },
+      select: { nome: true },
+    })).map((r) => r.nome);
+    const accessible = lead.responsavel_id === user.id ||
+      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+    if (!accessible) {
+      return { messages: [], nextCursor: undefined };
     }
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(isSuperAdmin || !ownedInstances.length
-          ? {}
-          : { instance_name: { in: ownedInstances } }),
+        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
