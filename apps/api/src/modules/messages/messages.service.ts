@@ -87,44 +87,23 @@ export class MessagesService {
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
-    // Privacidade por instância pra TODOS (incluindo SUPER_ADMIN). Só envia
-    // quem é responsável OU dono da instância onde o lead está. Fallback usa
-    // SOMENTE instâncias do próprio user — nunca o número de outro membro.
+    // Privacidade ESTRITA por instância: só envia se a instância exata onde o
+    // lead está pertence a esse user. Sem fallback pra outras instâncias —
+    // user sem instância não consegue mandar nada, mesmo sendo responsável
+    // pelo lead. Quem precisar atender precisa criar a própria instância.
     const liveStatuses = ['open', 'connected', 'connecting'];
     const instanceOfLead = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
-    const ownedFromLead = instanceOfLead && instanceOfLead.owner_user_id === user.id
-      ? instanceOfLead
-      : null;
-    if (lead.responsavel_id !== user.id && !ownedFromLead) {
+    if (!instanceOfLead || instanceOfLead.owner_user_id !== user.id) {
       throw new ForbiddenException(
-        'Sem permissão para enviar — instância pertence a outro usuário',
+        'Sem permissão para enviar — instância pertence a outro usuário ou você ainda não conectou a sua',
       );
     }
-    let instance = ownedFromLead && liveStatuses.includes(ownedFromLead.status)
-      ? ownedFromLead
-      : null;
-    if (!instance) {
-      const fallback = await this.prisma.whatsappInstance.findFirst({
-        where: {
-          tenant_id: user.tenantId,
-          owner_user_id: user.id,
-          status: { in: liveStatuses },
-        },
-        orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
-      });
-      if (fallback) {
-        instance = fallback;
-        if (lead.instancia_whatsapp !== fallback.nome) {
-          await this.prisma.lead
-            .update({ where: { id: lead.id }, data: { instancia_whatsapp: fallback.nome } })
-            .catch(() => undefined);
-          lead.instancia_whatsapp = fallback.nome;
-        }
-      }
+    if (!liveStatuses.includes(instanceOfLead.status)) {
+      throw new NotFoundException('Sua instância WhatsApp não está conectada');
     }
-    if (!instance) throw new NotFoundException('Conecte sua instância WhatsApp antes de enviar');
+    const instance = instanceOfLead;
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
