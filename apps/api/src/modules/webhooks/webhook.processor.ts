@@ -304,12 +304,13 @@ export class WebhookProcessor extends WorkerHost {
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
-        // Lead "se move" pra instância onde a msg acabou de chegar — assim
-        // o dono do número recebedor tem acesso mesmo se o lead já existia
-        // em outra instância antes (reassign anterior, primeiro contato em
-        // outro número, etc). Quem era responsável continua sendo, mas o
-        // chat passa a aparecer também pra quem dono da nova instância.
+        // Lead segue o número que recebeu a msg — instância vira a recebedora
+        // E responsável vira o dono da instância (ou null se pool_enabled).
+        // Privacidade por instância exige isso: cada user só vê leads onde
+        // é responsável, então pra ele "ver" a msg que chegou no número
+        // dele, ele precisa virar o responsável atual.
         instancia_whatsapp: instance.nome,
+        responsavel_id: tenant?.pool_enabled ? null : instance.owner_user_id,
       },
     });
 

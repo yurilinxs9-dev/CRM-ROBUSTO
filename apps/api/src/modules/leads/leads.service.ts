@@ -248,18 +248,13 @@ export class LeadsService {
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    // Privacy por instância pra:
-    // - OPERADOR sempre (não vê pipeline alheio)
-    // - QUALQUER role quando scope='chat' (lista de conversas é privada;
-    //   admin precisa ter acesso ao Kanban mas não à caixa de chat alheia)
+    // Privacy estrita: OPERADOR (sempre) e qualquer role no scope='chat'
+    // veem APENAS leads onde são o responsável atual. Sem OR por instância
+    // — operador não enxerga lead alheio só porque a msg passou pelo número
+    // dele, evita leak pelo Kanban.
     const isChatScope = filters.scope === 'chat';
     if (user.role === UserRole.OPERADOR || isChatScope) {
-      const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-      const accessOR: Record<string, unknown>[] = [{ responsavel_id: user.id }];
-      if (ownedInstances.length) {
-        accessOR.push({ instancia_whatsapp: { in: ownedInstances } });
-      }
-      where.OR = accessOR;
+      where.responsavel_id = user.id;
     }
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
