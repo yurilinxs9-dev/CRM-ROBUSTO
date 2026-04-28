@@ -388,6 +388,7 @@ export class WebhookProcessor extends WorkerHost {
         media_size_bytes: extracted.media?.size_bytes,
         status: isFromMe ? 'SENT' : 'DELIVERED',
         metadata,
+        visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: tenantId,
       },
       update: {},

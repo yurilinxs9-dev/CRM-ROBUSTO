@@ -155,6 +155,7 @@ export class MessagesService {
         content: outboundContent,
         status: 'PENDING',
         sent_by_user_id: user.id,
+        visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: user.tenantId,
       },
     });
@@ -192,7 +193,7 @@ export class MessagesService {
     const { lead_id, content } = internalNoteSchema.parse(data);
     const lead = await this.prisma.lead.findFirst({
       where: { id: lead_id, tenant_id: user.tenantId },
-      select: { id: true },
+      select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     return this.prisma.message.create({
@@ -206,6 +207,7 @@ export class MessagesService {
         status: 'READ',
         is_internal_note: true,
         sent_by_user_id: user.id,
+        visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: user.tenantId,
       },
     });
@@ -238,6 +240,7 @@ export class MessagesService {
         media_duration_seconds: probedDuration,
         status: 'PENDING',
         sent_by_user_id: user.id,
+        visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: user.tenantId,
       },
     });
@@ -328,6 +331,7 @@ export class MessagesService {
         media_poster_path: posterPath ?? null,
         status: 'PENDING',
         sent_by_user_id: user.id,
+        visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: user.tenantId,
       },
     });

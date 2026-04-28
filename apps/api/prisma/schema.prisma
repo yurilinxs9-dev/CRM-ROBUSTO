@@ -104,13 +104,14 @@ model User {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  leads          Lead[]
-  sent_messages  Message[]      @relation("SentBy")
-  activities     LeadActivity[]
-  quick_replies  QuickReply[]
-  notifications  Notification[]
-  user_instances UserInstance[]
-  tasks          Task[]
+  leads             Lead[]
+  sent_messages     Message[]      @relation("SentBy")
+  visible_messages  Message[]      @relation("VisibleTo")
+  activities        LeadActivity[]
+  quick_replies     QuickReply[]
+  notifications     Notification[]
+  user_instances    UserInstance[]
+  tasks             Task[]
 
   @@index([email])
   @@index([tenant_id])
@@ -241,6 +242,8 @@ model Message {
   is_internal_note       Boolean          @default(false)
   sent_by_user_id        String?
   sent_by                User?            @relation("SentBy", fields: [sent_by_user_id], references: [id])
+  visible_to_user_id     String?
+  visible_to             User?            @relation("VisibleTo", fields: [visible_to_user_id], references: [id])
   quoted_message_id      String?
   quoted_message         Message?         @relation("QuotedMessage", fields: [quoted_message_id], references: [id])
   replies                Message[]        @relation("QuotedMessage")
@@ -253,6 +256,7 @@ model Message {
   @@index([instance_name, created_at])
   @@index([status, created_at])
   @@index([tenant_id])
+  @@index([visible_to_user_id])
 }
 
 model LeadActivity {

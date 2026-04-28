@@ -724,6 +724,41 @@ export class LeadsService {
     return { id: leadId, responsavel_id: novoResponsavelId };
   }
 
+  async returnToPool(leadId: string, user: AuthUser) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (lead.responsavel_id === null) {
+      return { id: leadId, responsavel_id: null };
+    }
+    const isOwner = lead.responsavel_id === user.id;
+    const isManager = (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
+    if (!isOwner && !isManager) {
+      throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem devolver ao escritorio');
+    }
+
+    await this.prisma.lead.update({
+      where: { id: leadId },
+      data: { responsavel_id: null },
+    });
+    await this.prisma.leadActivity.create({
+      data: {
+        lead_id: leadId,
+        user_id: user.id,
+        tipo: 'RETURNED_TO_POOL',
+        descricao: `Lead devolvido ao escritorio por ${user.nome}`,
+        dados_antes: { responsavel_id: lead.responsavel_id },
+        dados_depois: { responsavel_id: null },
+        tenant_id: user.tenantId,
+      },
+    });
+    await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUpdated(leadId, { responsavel_id: null }, user.tenantId);
+    return { id: leadId, responsavel_id: null };
+  }
+
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
@@ -734,7 +769,11 @@ export class LeadsService {
       throw new ForbiddenException('Sem acesso a este lead');
     }
     const rows = await this.prisma.message.findMany({
-      where: { lead_id: leadId, tenant_id: user.tenantId },
+      where: {
+        lead_id: leadId,
+        tenant_id: user.tenantId,
+        OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }],
+      },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

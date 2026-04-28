@@ -117,6 +117,12 @@ export class LeadsController {
     return this.leadsService.reassign(id, body, req.user as AuthUser);
   }
 
+  @Post(':id/return-to-pool')
+  @Roles(UserRole.OPERADOR)
+  returnToPool(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.leadsService.returnToPool(id, req.user as AuthUser);
+  }
+
   @Delete(':id')
   @Roles(UserRole.OPERADOR)
   remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {

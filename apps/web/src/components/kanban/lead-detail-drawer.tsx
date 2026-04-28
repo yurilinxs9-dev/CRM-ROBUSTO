@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2 } from 'lucide-react';
+import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
@@ -211,6 +211,17 @@ export function LeadDetailDrawer({
       void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
     },
     onError: () => toast.error('Erro ao transferir lead.'),
+  });
+
+  const returnToPoolMutation = useMutation({
+    mutationFn: async () => { await api.post(`/api/leads/${leadId}/return-to-pool`); },
+    onSuccess: () => {
+      toast.success('Lead devolvido ao escritorio.');
+      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
+    },
+    onError: () => toast.error('Erro ao devolver lead.'),
   });
 
   // ---- Save mutation ----
@@ -473,6 +484,19 @@ export function LeadDetailDrawer({
                                 </SelectContent>
                               </Select>
                             </div>
+                          )}
+                          {canReassign && (
+                            <Button
+                              variant="outline"
+                              className="w-full"
+                              disabled={returnToPoolMutation.isPending}
+                              onClick={() => returnToPoolMutation.mutate()}
+                            >
+                              {returnToPoolMutation.isPending
+                                ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                : <Undo2 className="h-4 w-4 mr-2" />}
+                              {returnToPoolMutation.isPending ? 'Devolvendo...' : 'Devolver ao Escritorio'}
+                            </Button>
                           )}
                         </div>
                       );
