@@ -11,7 +11,7 @@ import { MediaModule } from '../media/media.module';
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        const url = config.get<string>('UPSTASH_REDIS_TLS_URL') ?? '';
+        const url = config.get<string>('REDIS_URL') ?? config.get<string>('UPSTASH_REDIS_TLS_URL') ?? '';
         return {
         connection: {
           url,
