@@ -437,20 +437,27 @@ export class MessagesService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const ownedInstances = (await this.prisma.whatsappInstance.findMany({
-      where: { owner_user_id: user.id, tenant_id: user.tenantId },
-      select: { nome: true },
-    })).map((r) => r.nome);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      return { messages: [], nextCursor: undefined };
+    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+    const ownedInstances = isSuperAdmin
+      ? []
+      : (await this.prisma.whatsappInstance.findMany({
+          where: { owner_user_id: user.id, tenant_id: user.tenantId },
+          select: { nome: true },
+        })).map((r) => r.nome);
+    if (!isSuperAdmin) {
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        return { messages: [], nextCursor: undefined };
+      }
     }
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...(isSuperAdmin || !ownedInstances.length
+          ? {}
+          : { instance_name: { in: ownedInstances } }),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,

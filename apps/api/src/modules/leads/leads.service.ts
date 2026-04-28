@@ -823,19 +823,27 @@ export class LeadsService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    // Privacidade por instância pra TODOS (incluindo SUPER_ADMIN). Conversa
-    // de cada um é privada da própria instância.
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      return { messages: [], nextCursor: undefined };
+    // SUPER_ADMIN: leitura total do tenant. Pode "supervisionar" qualquer
+    // conversa, independente de quem dono da instância. Privacidade por
+    // instância continua valendo só pra OPERADOR e GERENTE.
+    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+    const ownedInstances = isSuperAdmin
+      ? []
+      : await this.getOwnedInstanceNames(user.id, user.tenantId);
+    if (!isSuperAdmin) {
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        return { messages: [], nextCursor: undefined };
+      }
     }
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...(isSuperAdmin || !ownedInstances.length
+          ? {}
+          : { instance_name: { in: ownedInstances } }),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
