@@ -9,6 +9,7 @@ import type { AuthUser } from '../../common/types/auth-user';
 
 const updateSettingsSchema = z.object({
   pool_enabled: z.boolean().optional(),
+  prefix_enabled: z.boolean().optional(),
 });
 
 @Controller('tenants')

@@ -6,13 +6,14 @@ import type { AuthUser } from '../../common/types/auth-user';
 export class TenantsService {
   constructor(private prisma: PrismaService) {}
 
-  updateSettings(caller: AuthUser, dto: { pool_enabled?: boolean }) {
+  updateSettings(caller: AuthUser, dto: { pool_enabled?: boolean; prefix_enabled?: boolean }) {
     const data: Record<string, unknown> = {};
     if (dto.pool_enabled !== undefined) data.pool_enabled = dto.pool_enabled;
+    if (dto.prefix_enabled !== undefined) data.prefix_enabled = dto.prefix_enabled;
     return this.prisma.tenant.update({
       where: { id: caller.tenantId },
       data,
-      select: { id: true, nome: true, pool_enabled: true },
+      select: { id: true, nome: true, pool_enabled: true, prefix_enabled: true },
     });
   }
 }

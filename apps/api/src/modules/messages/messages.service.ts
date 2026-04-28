@@ -146,9 +146,10 @@ export class MessagesService {
     if (!hasResponsavel) return '';
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
-      select: { pool_enabled: true },
+      select: { pool_enabled: true, prefix_enabled: true },
     });
     if (!tenant?.pool_enabled) return '';
+    if (tenant.prefix_enabled === false) return '';
     const u = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { titulo: true, especialidade: true },

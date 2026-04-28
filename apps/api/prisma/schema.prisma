@@ -66,6 +66,7 @@ model Tenant {
 
   prefixo_profissional      String?
   pool_enabled              Boolean  @default(false)
+  prefix_enabled            Boolean  @default(true)
   notification_lead_minutes Int      @default(15)
 
   owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
