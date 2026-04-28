@@ -2,13 +2,14 @@ import { api } from './api';
 
 const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? '';
 
-function urlBase64ToUint8Array(base64: string): Uint8Array {
+function urlBase64ToArrayBuffer(base64: string): ArrayBuffer {
   const padding = '='.repeat((4 - (base64.length % 4)) % 4);
   const safe = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
   const raw = window.atob(safe);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
+  const buf = new ArrayBuffer(raw.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+  return buf;
 }
 
 export function pushSupported(): boolean {
@@ -27,7 +28,7 @@ export async function ensurePushSubscription(): Promise<PushSubscription | null>
   if (!sub) {
     sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC),
+      applicationServerKey: urlBase64ToArrayBuffer(VAPID_PUBLIC),
     });
   }
   const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
