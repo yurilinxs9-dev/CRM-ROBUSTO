@@ -8,7 +8,15 @@ import { z } from 'zod';
 const loginSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(6),
+  remember: z.boolean().optional().default(false),
 });
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+function refreshCookieMaxAge(remember: boolean) {
+  return remember ? ONE_YEAR_MS : SEVEN_DAYS_MS;
+}
 
 const registerSchema = z.object({
   nome: z.string().min(2).max(100),
@@ -25,14 +33,14 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   async login(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
-    const { email, senha } = loginSchema.parse(body);
-    const { accessToken, refreshToken } = await this.authService.login(email, senha);
+    const { email, senha, remember } = loginSchema.parse(body);
+    const { accessToken, refreshToken } = await this.authService.login(email, senha, remember);
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });
 
@@ -45,17 +53,22 @@ export class AuthController {
   async register(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
     const data = registerSchema.parse(body);
     const user = await this.authService.createUser(data);
-    const { accessToken, refreshToken } = await this.authService.generateTokens({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      tenant_id: user.tenant_id,
-    });
+    // Novo cadastro vira sessão "lembrar de mim" — usuário acabou de criar a conta,
+    // não faz sentido deslogar em 7 dias.
+    const { accessToken, refreshToken, remember } = await this.authService.generateTokens(
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        tenant_id: user.tenant_id,
+      },
+      true,
+    );
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });
     return { accessToken, user };
@@ -67,13 +80,13 @@ export class AuthController {
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = req.cookies?.refresh_token;
     if (!token) throw new Error('No refresh token');
-    const { accessToken, refreshToken } = await this.authService.refreshToken(token);
+    const { accessToken, refreshToken, remember } = await this.authService.refreshToken(token);
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });
 

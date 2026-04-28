@@ -86,8 +86,12 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Sem acesso a este lead');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException(
+        lead.responsavel_id === null
+          ? 'Lead disponivel no escritorio — assuma para responder'
+          : 'Sem acesso a este lead',
+      );
     }
     let instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
@@ -202,6 +206,13 @@ export class MessagesService {
       select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException(
+        lead.responsavel_id === null
+          ? 'Lead disponivel no escritorio — assuma para responder'
+          : 'Sem acesso a este lead',
+      );
+    }
     return this.prisma.message.create({
       data: {
         lead_id,
@@ -438,11 +449,19 @@ export class MessagesService {
       select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Sem acesso a este lead');
+    const isManager = user.role !== UserRole.OPERADOR;
+    if (!isManager && lead.responsavel_id !== user.id) {
+      // OPERADOR sem claim — esconde histórico (mesma regra de leads.getMessages).
+      return { messages: [], nextCursor: undefined };
     }
     const rows = await this.prisma.message.findMany({
-      where: { lead_id: leadId, tenant_id: user.tenantId },
+      where: {
+        lead_id: leadId,
+        tenant_id: user.tenantId,
+        ...(isManager
+          ? {}
+          : { OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }] }),
+      },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

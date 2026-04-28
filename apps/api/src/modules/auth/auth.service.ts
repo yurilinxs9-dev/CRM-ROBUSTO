@@ -13,26 +13,38 @@ export class AuthService {
     private config: ConfigService,
   ) {}
 
-  async login(email: string, senha: string) {
+  async login(email: string, senha: string, remember = false) {
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || !user.ativo) throw new UnauthorizedException('Credenciais invalidas');
 
     const valid = await bcrypt.compare(senha, user.senha_hash);
     if (!valid) throw new UnauthorizedException('Credenciais invalidas');
 
-    return this.generateTokens(user);
+    return this.generateTokens(user, remember);
   }
 
-  async generateTokens(user: { id: string; email: string; role: string; tenant_id: string }) {
-    const payload = { sub: user.id, email: user.email, role: user.role, tenantId: user.tenant_id };
+  async generateTokens(
+    user: { id: string; email: string; role: string; tenant_id: string },
+    remember = false,
+  ) {
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      tenantId: user.tenant_id,
+      remember,
+    };
 
     const accessToken = this.jwtService.sign(payload);
+    const refreshExpiry = remember
+      ? this.config.get('JWT_REFRESH_EXPIRY_REMEMBER', '365d')
+      : this.config.get('JWT_REFRESH_EXPIRY', '7d');
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.config.get('JWT_REFRESH_SECRET'),
-      expiresIn: this.config.get('JWT_REFRESH_EXPIRY', '7d'),
+      expiresIn: refreshExpiry,
     });
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, remember };
   }
 
   async refreshToken(token: string) {
@@ -42,7 +54,7 @@ export class AuthService {
       });
       const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
       if (!user || !user.ativo) throw new UnauthorizedException();
-      return this.generateTokens(user);
+      return this.generateTokens(user, payload.remember === true);
     } catch {
       throw new UnauthorizedException('Refresh token invalido');
     }

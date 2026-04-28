@@ -801,10 +801,13 @@ export class LeadsService {
       select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Sem acesso a este lead');
-    }
     const isManager = user.role !== UserRole.OPERADOR;
+    if (!isManager && lead.responsavel_id !== user.id) {
+      // OPERADOR só vê histórico após assumir o lead. Lead em pool ou de outro
+      // operador retorna lista vazia (lead aparece na aba Escritório, mas as
+      // mensagens ficam ocultas até claim).
+      return { messages: [], nextCursor: undefined };
+    }
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
@@ -837,8 +840,8 @@ export class LeadsService {
       select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException();
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
+      return [];
     }
     return this.prisma.leadActivity.findMany({
       where: { lead_id: leadId, tenant_id: user.tenantId },

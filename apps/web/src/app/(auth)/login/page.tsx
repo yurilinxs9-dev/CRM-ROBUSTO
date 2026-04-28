@@ -13,6 +13,7 @@ import {
   CardTitle,
   Input,
   Label,
+  Switch,
 } from '@/components/ui';
 import { useAuthStore } from '@/stores/auth.store';
 import { api } from '@/lib/api';
@@ -27,6 +28,7 @@ const FEATURES = [
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
+  const [remember, setRemember] = useState(true);
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState('');
   const emailRef = useRef<HTMLInputElement>(null);
@@ -43,7 +45,11 @@ export default function LoginPage() {
     setIsPending(true);
     setError('');
     try {
-      const { data } = await api.post<{ accessToken: string }>('/api/auth/login', { email, senha });
+      const { data } = await api.post<{ accessToken: string }>('/api/auth/login', {
+        email,
+        senha,
+        remember,
+      });
       const token = data.accessToken;
       const payloadB64 = token.split('.')[1] ?? '';
       const payloadJson =
@@ -147,6 +153,22 @@ export default function LoginPage() {
                   aria-invalid={error ? true : undefined}
                   disabled={isPending}
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <Label
+                  htmlFor="remember"
+                  className="flex items-center gap-2 text-sm font-normal text-muted-foreground cursor-pointer select-none"
+                >
+                  <Switch
+                    id="remember"
+                    checked={remember}
+                    onCheckedChange={setRemember}
+                    disabled={isPending}
+                    aria-label="Manter conectado"
+                  />
+                  Manter conectado neste dispositivo
+                </Label>
               </div>
 
               {error && (

@@ -18,6 +18,7 @@ import { MessageCircle, Send, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
+import { useAuthStore } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -81,6 +82,8 @@ export default function ChatDetailPage() {
   // Cadence follow-up suggestion state
   const [followupDismissed, setFollowupDismissed] = useState(false);
   const [followupComposerText, setFollowupComposerText] = useState<string | null>(null);
+
+  const currentUser = useAuthStore((s) => s.user);
 
   // --- Queries ---
   const { data: currentLead } = useQuery<ChatLead>({
@@ -347,6 +350,20 @@ export default function ChatDetailPage() {
         );
       });
     },
+  });
+
+  const claimMutation = useMutation({
+    mutationFn: async () => {
+      await api.post(`/api/leads/${leadId}/claim`);
+    },
+    onSuccess: () => {
+      toast.success('Lead assumido');
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+    },
+    onError: () => toast.error('Erro ao assumir lead'),
   });
 
   const deleteLeadMutation = useMutation({
@@ -861,17 +878,42 @@ export default function ChatDetailPage() {
         );
       })()}
 
-      <ChatComposer
-        disabled={!currentLead}
-        sending={sending}
-        conversationKey={leadId}
-        initialText={followupComposerText}
-        replyTarget={replyTarget}
-        onCancelReply={() => setReplyTarget(null)}
-        onSendText={handleSendText}
-        onSendAudio={handleSendAudio}
-        onSendMedia={handleSendMedia}
-      />
+      {(() => {
+        const isOperator = currentUser?.role === 'OPERADOR';
+        const isPoolLead = !currentLead?.responsavel;
+        const blocked = isOperator && isPoolLead;
+        if (blocked) {
+          return (
+            <div className="border-t border-border bg-background p-4">
+              <div className="mx-auto flex max-w-md flex-col items-center gap-3 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Lead disponivel no escritorio. Assuma para ver o historico e responder.
+                </p>
+                <Button
+                  size="sm"
+                  disabled={claimMutation.isPending}
+                  onClick={() => claimMutation.mutate()}
+                >
+                  {claimMutation.isPending ? 'Assumindo...' : 'Assumir lead'}
+                </Button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <ChatComposer
+            disabled={!currentLead}
+            sending={sending}
+            conversationKey={leadId}
+            initialText={followupComposerText}
+            replyTarget={replyTarget}
+            onCancelReply={() => setReplyTarget(null)}
+            onSendText={handleSendText}
+            onSendAudio={handleSendAudio}
+            onSendMedia={handleSendMedia}
+          />
+        );
+      })()}
 
       <LeadDetailsSheet
         lead={currentLead ?? null}
