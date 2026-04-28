@@ -86,8 +86,8 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Sem acesso a este lead');
+    if (lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Apenas o responsavel pode responder este lead');
     }
     let instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },

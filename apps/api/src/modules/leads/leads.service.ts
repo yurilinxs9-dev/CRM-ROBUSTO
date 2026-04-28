@@ -791,8 +791,8 @@ export class LeadsService {
       select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Sem acesso a este lead');
+    if (lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Apenas o responsavel pode visualizar as mensagens deste lead');
     }
     const rows = await this.prisma.message.findMany({
       where: {
