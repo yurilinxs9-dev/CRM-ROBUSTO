@@ -304,6 +304,12 @@ export class WebhookProcessor extends WorkerHost {
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
+        // Lead "se move" pra instância onde a msg acabou de chegar — assim
+        // o dono do número recebedor tem acesso mesmo se o lead já existia
+        // em outra instância antes (reassign anterior, primeiro contato em
+        // outro número, etc). Quem era responsável continua sendo, mas o
+        // chat passa a aparecer também pra quem dono da nova instância.
+        instancia_whatsapp: instance.nome,
       },
     });
 
