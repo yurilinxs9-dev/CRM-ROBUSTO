@@ -86,8 +86,8 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    if (lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Apenas o responsavel pode responder este lead');
+    if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Sem acesso a este lead');
     }
     let instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
@@ -161,7 +161,7 @@ export class MessagesService {
         content: outboundContent,
         status: 'PENDING',
         sent_by_user_id: user.id,
-        visible_to_user_id: lead.responsavel_id ?? null,
+        visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
     });
@@ -213,7 +213,7 @@ export class MessagesService {
         status: 'READ',
         is_internal_note: true,
         sent_by_user_id: user.id,
-        visible_to_user_id: lead.responsavel_id ?? null,
+        visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
     });
@@ -246,7 +246,7 @@ export class MessagesService {
         media_duration_seconds: probedDuration,
         status: 'PENDING',
         sent_by_user_id: user.id,
-        visible_to_user_id: lead.responsavel_id ?? null,
+        visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
     });
@@ -337,7 +337,7 @@ export class MessagesService {
         media_poster_path: posterPath ?? null,
         status: 'PENDING',
         sent_by_user_id: user.id,
-        visible_to_user_id: lead.responsavel_id ?? null,
+        visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
     });
