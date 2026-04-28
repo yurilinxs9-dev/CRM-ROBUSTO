@@ -7,6 +7,7 @@ import { Sidebar } from '@/components/layout/sidebar';
 import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TaskNotifications } from '@/components/layout/task-notifications';
+import { NotificationPrompt } from '@/components/notification-prompt';
 import { connectSocket, disconnectSocket, reconnectSocket } from '@/lib/socket';
 import { api } from '@/lib/api';
 
@@ -134,6 +135,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <TooltipProvider delayDuration={200}>
       <TaskNotifications />
+      <NotificationPrompt />
       <div className="flex h-screen overflow-hidden bg-background text-foreground">
         <div className="hidden md:block">
           <Sidebar />

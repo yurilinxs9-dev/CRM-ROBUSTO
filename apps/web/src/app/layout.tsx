@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { GeistSans } from 'geist/font/sans';
 import { GeistMono } from 'geist/font/mono';
 import './globals.css';
@@ -6,8 +6,25 @@ import Providers from './providers';
 import { cn } from '@/lib/cn';
 
 export const metadata: Metadata = {
-  title: 'CRM WhatsApp',
+  title: 'CRM Yurilins',
   description: 'CRM com funil Kanban e WhatsApp integrado',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'CRM',
+  },
+  icons: {
+    icon: '/icons/icon-192.svg',
+    apple: '/icons/icon-192.svg',
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#10b981',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

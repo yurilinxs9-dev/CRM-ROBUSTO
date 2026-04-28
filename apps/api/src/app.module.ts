@@ -24,6 +24,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AutomationModule } from './modules/automation/automation.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
+import { PushModule } from './modules/push/push.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -98,6 +99,7 @@ import { CacheModule } from './common/cache/cache.module';
     AdminModule,
     AutomationModule,
     TenantsModule,
+    PushModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },

@@ -5,6 +5,7 @@ import { WebhooksController } from './webhooks.controller';
 import { WebhookProcessor } from './webhook.processor';
 import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
+import { PushModule } from '../push/push.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { MediaModule } from '../media/media.module';
     BullModule.registerQueue({ name: 'webhooks' }),
     LeadsModule,
     MediaModule,
+    PushModule,
   ],
   controllers: [WebhooksController],
   providers: [WebhookProcessor],

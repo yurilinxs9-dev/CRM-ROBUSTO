@@ -7,6 +7,7 @@ import { LeadsService } from '../leads/leads.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
 import { MediaPipelineService } from '../media/media-pipeline.service';
+import { PushService } from '../push/push.service';
 import {
   type ExtractedMessage,
   extractFromEvolution,
@@ -48,6 +49,7 @@ export class WebhookProcessor extends WorkerHost {
     private gateway: CrmGateway,
     private mediaService: MediaService,
     private mediaPipeline: MediaPipelineService,
+    private push: PushService,
   ) {
     super();
   }
@@ -398,6 +400,17 @@ export class WebhookProcessor extends WorkerHost {
     // (skeleton/loading) until the `message:media-ready` event arrives.
     this.gateway.emitNewMessage(lead.id, message, tenantId);
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
+
+    if (!isFromMe && lead.responsavel_id) {
+      const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;
+      void this.push.sendToUsers([lead.responsavel_id], {
+        title: lead.nome,
+        body: preview,
+        url: `/leads/${lead.id}`,
+        tag: `msg-${lead.id}`,
+        data: { leadId: lead.id, type: 'message' },
+      });
+    }
 
     // Background: download from Evolution, upload to Supabase, sign,
     // patch DB, and emit a media-ready event so the client renders the audio.

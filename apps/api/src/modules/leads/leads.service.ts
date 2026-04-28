@@ -13,6 +13,7 @@ import {
 import { InstancesService } from '../instances/instances.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
+import { PushService } from '../push/push.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -102,6 +103,7 @@ export class LeadsService {
     private cache: RedisCacheService,
     private gateway: CrmGateway,
     private media: MediaService,
+    private push: PushService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
@@ -734,12 +736,13 @@ export class LeadsService {
     }
 
     const ownedInstance = await this.findOwnedInstance(novoResponsavelId, user.tenantId);
-    await this.prisma.lead.update({
+    const updated = await this.prisma.lead.update({
       where: { id: leadId },
       data: {
         responsavel_id: novoResponsavelId,
         ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
       },
+      select: { id: true, nome: true },
     });
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
@@ -747,6 +750,13 @@ export class LeadsService {
       { responsavel_id: novoResponsavelId, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
       user.tenantId,
     );
+    void this.push.sendToUsers([novoResponsavelId], {
+      title: 'Novo lead atribuido',
+      body: `${updated.nome} foi transferido para voce`,
+      url: `/leads/${leadId}`,
+      tag: `reassign-${leadId}`,
+      data: { leadId, type: 'reassign' },
+    });
     return { id: leadId, responsavel_id: novoResponsavelId, instancia_whatsapp: ownedInstance?.nome };
   }
 

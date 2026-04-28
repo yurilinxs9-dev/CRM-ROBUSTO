@@ -1,5 +1,14 @@
 /** @type {import('next').NextConfig} */
+const withSerwistInit = require('@serwist/next').default;
 const VPS_URL = process.env.VPS_URL || 'https://reduces-foot-alto-verbal.trycloudflare.com';
+
+const withSerwist = withSerwistInit({
+  swSrc: 'src/app/sw.ts',
+  swDest: 'public/sw.js',
+  cacheOnNavigation: true,
+  reloadOnOnline: true,
+  disable: process.env.NODE_ENV === 'development',
+});
 
 const nextConfig = {
   reactStrictMode: true,
@@ -31,4 +40,4 @@ const nextConfig = {
     ];
   },
 };
-module.exports = nextConfig;
+module.exports = withSerwist(nextConfig);

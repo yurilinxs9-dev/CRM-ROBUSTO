@@ -64,25 +64,27 @@ model Tenant {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  prefixo_profissional String?
-  pool_enabled         Boolean  @default(false)
+  prefixo_profissional      String?
+  pool_enabled              Boolean  @default(false)
+  notification_lead_minutes Int      @default(15)
 
-  owner           User               @relation("TenantOwner", fields: [owner_id], references: [id])
-  users           User[]             @relation("TenantMembers")
-  pipelines       Pipeline[]
-  stages          Stage[]
-  leads           Lead[]
-  messages        Message[]
-  lead_activities LeadActivity[]
-  instances       WhatsappInstance[]
-  user_instances  UserInstance[]
-  instance_logs   InstanceLog[]
-  tags            Tag[]
-  lead_tags       LeadTag[]
-  quick_replies   QuickReply[]
-  notifications   Notification[]
-  tasks           Task[]
-  webhook_logs    WebhookLog[]
+  owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
+  users               User[]             @relation("TenantMembers")
+  pipelines           Pipeline[]
+  stages              Stage[]
+  leads               Lead[]
+  messages            Message[]
+  lead_activities     LeadActivity[]
+  instances           WhatsappInstance[]
+  user_instances      UserInstance[]
+  instance_logs       InstanceLog[]
+  tags                Tag[]
+  lead_tags           LeadTag[]
+  quick_replies       QuickReply[]
+  notifications       Notification[]
+  tasks               Task[]
+  webhook_logs        WebhookLog[]
+  push_subscriptions  PushSubscription[]
 
   @@index([owner_id])
 }
@@ -104,14 +106,15 @@ model User {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  leads             Lead[]
-  sent_messages     Message[]      @relation("SentBy")
-  visible_messages  Message[]      @relation("VisibleTo")
-  activities        LeadActivity[]
-  quick_replies     QuickReply[]
-  notifications     Notification[]
-  user_instances    UserInstance[]
-  tasks             Task[]
+  leads               Lead[]
+  sent_messages       Message[]          @relation("SentBy")
+  visible_messages    Message[]          @relation("VisibleTo")
+  activities          LeadActivity[]
+  quick_replies       QuickReply[]
+  notifications       Notification[]
+  user_instances      UserInstance[]
+  tasks               Task[]
+  push_subscriptions  PushSubscription[]
 
   @@index([email])
   @@index([tenant_id])
@@ -445,5 +448,22 @@ model Task {
   @@index([scheduled_at])
   @@index([responsavel_id, status])
   @@index([lead_id])
+  @@index([tenant_id])
+}
+
+model PushSubscription {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  user_agent String?
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id])
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_id])
   @@index([tenant_id])
 }

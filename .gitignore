@@ -33,6 +33,12 @@ build/
 .turbo/
 out/
 
+# ---- PWA (serwist generates these) ----
+apps/web/public/sw.js
+apps/web/public/sw.js.map
+apps/web/public/swe-worker-*.js
+apps/web/public/workbox-*.js
+
 # ---- Prisma generated (rebuilt on deploy) ----
 apps/api/src/generated/
 
