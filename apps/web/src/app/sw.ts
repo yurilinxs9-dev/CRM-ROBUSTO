@@ -1,29 +1,28 @@
 /// <reference lib="webworker" />
 import { defaultCache } from '@serwist/next/worker';
-import { NetworkOnly, Serwist } from 'serwist';
+import { Serwist } from 'serwist';
 
 declare const self: ServiceWorkerGlobalScope & {
   __SW_MANIFEST: (string | { url: string; revision: string | null })[];
 };
+
+// Hard-bypass the service worker for realtime + API traffic. Registered
+// before serwist so its respondWith wins and serwist never sees the
+// request — this is the only reliable way to prevent the SW from buffering
+// long-poll xhr or interfering with WS upgrades on flaky networks.
+self.addEventListener('fetch', (event: FetchEvent) => {
+  const url = new URL(event.request.url);
+  if (url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/api/')) {
+    event.respondWith(fetch(event.request));
+  }
+});
 
 const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
   skipWaiting: true,
   clientsClaim: true,
   navigationPreload: true,
-  runtimeCaching: [
-    {
-      matcher: ({ url }) => url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/'),
-      handler: new NetworkOnly(),
-      method: 'GET',
-    },
-    {
-      matcher: ({ url }) => url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/'),
-      handler: new NetworkOnly(),
-      method: 'POST',
-    },
-    ...defaultCache,
-  ],
+  runtimeCaching: defaultCache,
 });
 
 serwist.addEventListeners();
