@@ -418,15 +418,29 @@ export class WebhookProcessor extends WorkerHost {
     this.gateway.emitNewMessage(lead.id, message, tenantId);
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
 
-    if (!isFromMe && lead.responsavel_id) {
+    if (!isFromMe) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;
-      void this.push.sendToUsers([lead.responsavel_id], {
-        title: lead.nome,
-        body: preview,
-        url: `/leads/${lead.id}`,
-        tag: `msg-${lead.id}`,
-        data: { leadId: lead.id, type: 'message' },
-      });
+      let targetUserIds: string[];
+      if (lead.responsavel_id) {
+        targetUserIds = [lead.responsavel_id];
+      } else if (tenantId) {
+        const poolUsers = await this.prisma.user.findMany({
+          where: { tenant_id: tenantId, ativo: true, role: { not: 'VISUALIZADOR' } },
+          select: { id: true },
+        });
+        targetUserIds = poolUsers.map((u) => u.id);
+      } else {
+        targetUserIds = [];
+      }
+      if (targetUserIds.length > 0) {
+        void this.push.sendToUsers(targetUserIds, {
+          title: lead.nome,
+          body: preview,
+          url: `/leads/${lead.id}`,
+          tag: `msg-${lead.id}`,
+          data: { leadId: lead.id, type: 'message' },
+        });
+      }
     }
 
     // Background: download from Evolution, upload to Supabase, sign,
