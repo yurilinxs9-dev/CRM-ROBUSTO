@@ -454,14 +454,10 @@ export class MessagesService {
       // OPERADOR sem claim — esconde histórico (mesma regra de leads.getMessages).
       return { messages: [], nextCursor: undefined };
     }
+    // Quem tem acesso ao lead vê o histórico INTEIRO. Sem filtro de
+    // visible_to_user_id pra reassign entregar conversa completa.
     const rows = await this.prisma.message.findMany({
-      where: {
-        lead_id: leadId,
-        tenant_id: user.tenantId,
-        ...(isManager
-          ? {}
-          : { OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }] }),
-      },
+      where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

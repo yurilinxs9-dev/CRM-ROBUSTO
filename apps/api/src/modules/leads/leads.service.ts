@@ -803,18 +803,14 @@ export class LeadsService {
     const isManager = user.role !== UserRole.OPERADOR;
     if (!isManager && lead.responsavel_id !== user.id) {
       // OPERADOR só vê histórico após assumir o lead. Lead em pool ou de outro
-      // operador retorna lista vazia (lead aparece na aba Escritório, mas as
-      // mensagens ficam ocultas até claim).
+      // operador retorna lista vazia.
       return { messages: [], nextCursor: undefined };
     }
+    // Quem tem acesso ao lead (manager ou responsável atual) vê o histórico
+    // INTEIRO — incluindo msgs marcadas como privadas de operadores anteriores.
+    // Reassign deve entregar a conversa completa pra quem assumir.
     const rows = await this.prisma.message.findMany({
-      where: {
-        lead_id: leadId,
-        tenant_id: user.tenantId,
-        ...(isManager
-          ? {}
-          : { OR: [{ visible_to_user_id: null }, { visible_to_user_id: user.id }] }),
-      },
+      where: { lead_id: leadId, tenant_id: user.tenantId },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
