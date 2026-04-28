@@ -24,6 +24,7 @@ import { NewInstanceDialog } from '@/components/instances/new-instance-dialog';
 interface QrResponse {
   qrcode?: { base64?: string };
   base64?: string;
+  alreadyConnected?: boolean;
 }
 
 export default function InstancesPage() {
@@ -86,6 +87,13 @@ export default function InstancesPage() {
     try {
       const { data } = await api.get(`/api/instances/${nome}/qr`);
       const d = data as QrResponse;
+      if (d?.alreadyConnected) {
+        toast.success(`${nome} já está conectado`);
+        setQrBase64(null);
+        setQrTarget(null);
+        queryClient.invalidateQueries({ queryKey: ['instances'] });
+        return;
+      }
       const base64 = d?.qrcode?.base64 ?? d?.base64 ?? '';
       setQrBase64(base64 || null);
       if (!base64) toast.error('QR Code não disponível');
@@ -93,7 +101,7 @@ export default function InstancesPage() {
       toast.error('Erro ao buscar QR Code');
       setQrBase64(null);
     }
-  }, []);
+  }, [queryClient]);
 
   const handleConnect = useCallback(
     (nome: string) => {

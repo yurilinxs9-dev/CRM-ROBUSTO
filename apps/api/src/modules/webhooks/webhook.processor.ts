@@ -684,16 +684,25 @@ export class WebhookProcessor extends WorkerHost {
   private async handleConnectionUpdate(data: Obj) {
     const instanceName = data?.instance as string | undefined;
     const connectionData = data?.data as Obj | undefined;
-    const state = connectionData?.state as string | undefined;
+    const rawState = (connectionData?.state as string | undefined) ?? 'disconnected';
     if (!instanceName) return;
+
+    const stateMap: Record<string, string> = {
+      connected: 'open',
+      open: 'open',
+      connecting: 'connecting',
+      disconnected: 'close',
+      close: 'close',
+    };
+    const status = stateMap[rawState] ?? rawState;
 
     const instance = await this.findInstanceByName(instanceName);
     if (!instance) return;
     await this.prisma.whatsappInstance.update({
       where: { nome: instanceName },
-      data: { status: state || 'disconnected', ultimo_check: new Date() },
+      data: { status, ultimo_check: new Date() },
     });
-    this.gateway.emitInstanceStatusChanged(instanceName, state || 'disconnected', instance.tenant_id);
+    this.gateway.emitInstanceStatusChanged(instanceName, status, instance.tenant_id);
   }
 
   // ── UazAPI handlers ─────────────────────────────────────────────────────────

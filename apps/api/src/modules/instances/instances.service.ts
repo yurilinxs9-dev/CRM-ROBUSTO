@@ -142,13 +142,32 @@ export class InstancesService {
   async getQrCode(nome: string, user: AuthUser) {
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
-      this.http.post<UazApiConnectResponse>(
+      this.http.post<UazApiConnectResponse & { connected?: boolean }>(
         `${this.baseUrl}/instance/connect`,
         {},
         { headers: this.headers(token) },
       ),
     );
-    return { base64: data.instance?.qrcode ?? null };
+    const qrcode = data.instance?.qrcode ?? null;
+    const isConnected =
+      data.status?.connected === true ||
+      data.status?.loggedIn === true ||
+      (data as { connected?: boolean }).connected === true ||
+      data.instance?.status === 'connected';
+    if (isConnected || !qrcode) {
+      const jid = data.status?.jid ?? null;
+      const telefone = jid ? jid.split('@')[0].split(':')[0] : undefined;
+      await this.prisma.whatsappInstance.update({
+        where: { nome },
+        data: {
+          status: 'open',
+          ultimo_check: new Date(),
+          ...(telefone ? { telefone } : {}),
+        },
+      });
+      return { base64: null, alreadyConnected: true };
+    }
+    return { base64: qrcode, alreadyConnected: false };
   }
 
   async reconnect(nome: string, user: AuthUser) {
