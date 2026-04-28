@@ -85,8 +85,20 @@ export class InstancesService {
   }
 
   async findAll(user: AuthUser) {
+    // Esconde instâncias que esse usuário marcou como deletadas pra ele
+    // (sem afetar a visão dos outros membros do tenant).
+    const hiddenIds = (
+      await this.prisma.instanceHidden.findMany({
+        where: { user_id: user.id, tenant_id: user.tenantId },
+        select: { instance_id: true },
+      })
+    ).map((h) => h.instance_id);
+
     return this.prisma.whatsappInstance.findMany({
-      where: { tenant_id: user.tenantId },
+      where: {
+        tenant_id: user.tenantId,
+        ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
+      },
       orderBy: { created_at: 'asc' },
     });
   }
@@ -250,6 +262,23 @@ export class InstancesService {
       where: { nome, tenant_id: user.tenantId },
     });
     if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+
+    // Não-owner: só esconde da própria visão. Não toca UazAPI nem deleta DB
+    // — número permanece conectado e visível pros outros membros do tenant.
+    // Owner (criou a instância): apaga de verdade — UazAPI + DB — pra todos.
+    if (instance.owner_user_id !== user.id) {
+      await this.prisma.instanceHidden.upsert({
+        where: { user_id_instance_id: { user_id: user.id, instance_id: instance.id } },
+        create: {
+          user_id: user.id,
+          instance_id: instance.id,
+          tenant_id: user.tenantId,
+        },
+        update: {},
+      });
+      return { hidden: true };
+    }
+
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
 
@@ -268,5 +297,6 @@ export class InstancesService {
       this.logger.warn(`Falha ao deletar instancia DB ${nome}: ${String(err)}`);
       return null;
     });
+    return { hidden: false };
   }
 }

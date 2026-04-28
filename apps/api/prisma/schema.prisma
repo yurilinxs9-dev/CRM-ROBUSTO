@@ -85,6 +85,7 @@ model Tenant {
   tasks               Task[]
   webhook_logs        WebhookLog[]
   push_subscriptions  PushSubscription[]
+  instances_hidden    InstanceHidden[]
 
   @@index([owner_id])
 }
@@ -115,6 +116,7 @@ model User {
   user_instances      UserInstance[]
   tasks               Task[]
   push_subscriptions  PushSubscription[]
+  instances_hidden    InstanceHidden[]
 
   @@index([email])
   @@index([tenant_id])
@@ -295,8 +297,23 @@ model WhatsappInstance {
   updated_at     DateTime  @updatedAt
   user_instances UserInstance[]
   instance_logs  InstanceLog[]
+  hidden_by      InstanceHidden[]
 
   @@unique([tenant_id, nome])
+  @@index([tenant_id])
+}
+
+model InstanceHidden {
+  id          String           @id @default(uuid())
+  user_id     String
+  user        User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  instance_id String
+  instance    WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  tenant_id   String
+  tenant      Tenant           @relation(fields: [tenant_id], references: [id])
+  created_at  DateTime         @default(now())
+
+  @@unique([user_id, instance_id])
   @@index([tenant_id])
 }
 

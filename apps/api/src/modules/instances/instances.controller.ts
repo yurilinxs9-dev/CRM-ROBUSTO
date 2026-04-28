@@ -40,7 +40,7 @@ export class InstancesController {
   }
 
   @Delete(':nome')
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   delete(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.delete(nome, req.user as AuthUser);
   }
