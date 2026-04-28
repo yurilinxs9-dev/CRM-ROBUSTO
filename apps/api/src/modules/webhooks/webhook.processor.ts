@@ -374,7 +374,12 @@ export class WebhookProcessor extends WorkerHost {
     }
 
     // Persist the message WITHOUT media first — keeps the realtime emit fast.
-    const message = await this.prisma.message.upsert({
+    // Race-safe: BullMQ may dispatch the same payload to two workers; the
+    // upsert can lose the create→create race (P2002) before Prisma sees the
+    // existing row. Catch and treat as "already saved by sibling worker".
+    let message;
+    try {
+      message = await this.prisma.message.upsert({
       where: { whatsapp_message_id: messageId },
       create: {
         lead_id: lead.id,
@@ -395,6 +400,18 @@ export class WebhookProcessor extends WorkerHost {
       },
       update: {},
     });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'P2002') {
+        const existing = await this.prisma.message.findUnique({
+          where: { whatsapp_message_id: messageId },
+        });
+        if (!existing) throw err;
+        message = existing;
+      } else {
+        throw err;
+      }
+    }
 
     // Emit immediately. For media messages the client renders a placeholder
     // (skeleton/loading) until the `message:media-ready` event arrives.
