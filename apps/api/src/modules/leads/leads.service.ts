@@ -823,22 +823,25 @@ export class LeadsService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      // User não é dono da instância nem responsável — sem histórico.
-      return { messages: [], nextCursor: undefined };
+    // SUPER_ADMIN: bypass total — vê histórico completo sem filtro.
+    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+    const ownedInstances = isSuperAdmin
+      ? []
+      : await this.getOwnedInstanceNames(user.id, user.tenantId);
+    if (!isSuperAdmin) {
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        return { messages: [], nextCursor: undefined };
+      }
     }
-    // Mostra apenas msgs cuja instance_name pertence ao user atual. Após
-    // reassign, lead.instancia_whatsapp troca pra do novo responsável e msgs
-    // antigas (com instance_name da instância antiga) somem do chat dele —
-    // entregando uma conversa "fresh" pro novo dono.
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...(isSuperAdmin || !ownedInstances.length
+          ? {}
+          : { instance_name: { in: ownedInstances } }),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,

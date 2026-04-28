@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
 import type { AuthUser } from '../../common/types/auth-user';
+import { UserRole } from '../../common/types/roles';
 
 interface UazApiCreateResponse {
   instance: {
@@ -263,10 +264,12 @@ export class InstancesService {
     });
     if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
 
-    // Não-owner: só esconde da própria visão. Não toca UazAPI nem deleta DB
-    // — número permanece conectado e visível pros outros membros do tenant.
+    // SUPER_ADMIN sempre faz hard delete (autoridade total no tenant).
+    // Não-owner não-admin: só esconde da própria visão. Não toca UazAPI nem
+    // deleta DB — número permanece conectado e visível pros outros membros.
     // Owner (criou a instância): apaga de verdade — UazAPI + DB — pra todos.
-    if (instance.owner_user_id !== user.id) {
+    const isSuperAdmin = user.role === UserRole.SUPER_ADMIN;
+    if (instance.owner_user_id !== user.id && !isSuperAdmin) {
       await this.prisma.instanceHidden.upsert({
         where: { user_id_instance_id: { user_id: user.id, instance_id: instance.id } },
         create: {
