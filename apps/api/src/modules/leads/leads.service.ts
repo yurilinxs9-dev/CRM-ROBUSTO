@@ -82,6 +82,7 @@ interface LeadFilters {
   search?: string;
   limit?: string;
   offset?: string;
+  scope?: string;
 }
 
 export interface ExportLeadFilters {
@@ -247,11 +248,12 @@ export class LeadsService {
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    // OPERADOR só vê leads onde é responsável atual ou cuja instância é dele
-    // (privacidade por instância). GERENTE/SUPER_ADMIN ainda enxerga toda a
-    // pipeline pra poder atribuir/reatribuir — privacidade entra só no momento
-    // de abrir o chat (msgs e envio são filtrados por instância pra todos).
-    if (user.role === UserRole.OPERADOR) {
+    // Privacy por instância pra:
+    // - OPERADOR sempre (não vê pipeline alheio)
+    // - QUALQUER role quando scope='chat' (lista de conversas é privada;
+    //   admin precisa ter acesso ao Kanban mas não à caixa de chat alheia)
+    const isChatScope = filters.scope === 'chat';
+    if (user.role === UserRole.OPERADOR || isChatScope) {
       const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       const accessOR: Record<string, unknown>[] = [{ responsavel_id: user.id }];
       if (ownedInstances.length) {

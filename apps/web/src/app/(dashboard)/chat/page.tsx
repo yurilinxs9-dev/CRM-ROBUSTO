@@ -57,7 +57,7 @@ export default function ChatPage() {
   const { data: leads = [], isLoading } = useQuery<ChatLead[]>({
     queryKey: LEADS_QUERY_KEY,
     queryFn: async () => {
-      const res = await api.get('/api/leads', { params: { limit: '10000' } });
+      const res = await api.get('/api/leads', { params: { limit: '10000', scope: 'chat' } });
       return res.data;
     },
     staleTime: LEADS_STALE,
