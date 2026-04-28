@@ -246,9 +246,13 @@ export default function KanbanPage() {
 
   const tabFilteredLeads = useMemo(() => {
     if (!isPoolEnabled) return filteredLeads;
+    // Filtro de responsável no dropdown sobrepõe as abas — admin/manager
+    // selecionando um operador específico vê os leads dele inteiros, sem
+    // restrição de "meus" / "escritório".
+    if (responsavelFilter !== 'ALL') return filteredLeads;
     if (activeTab === 'meus') return filteredLeads.filter((l) => l.responsavel?.id === currentUserId);
     return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId);
-  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId]);
+  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId, responsavelFilter]);
 
   const responsaveis = useMemo(() => {
     const map = new Map<string, string>();
