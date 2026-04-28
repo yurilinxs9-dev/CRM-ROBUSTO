@@ -118,7 +118,13 @@ export class MessagesService {
     return { lead, token, instanceName: instance.nome };
   }
 
-  private async buildOutboundPrefix(tenantId: string, userId: string, userName: string): Promise<string> {
+  private async buildOutboundPrefix(
+    tenantId: string,
+    userId: string,
+    userName: string,
+    hasResponsavel: boolean,
+  ): Promise<string> {
+    if (!hasResponsavel) return '';
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { pool_enabled: true },
@@ -139,7 +145,7 @@ export class MessagesService {
     const { lead_id, content } = sendTextSchema.parse(data);
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
-    const prefix = await this.buildOutboundPrefix(user.tenantId, user.id, user.nome);
+    const prefix = await this.buildOutboundPrefix(user.tenantId, user.id, user.nome, lead.responsavel_id !== null);
     const outboundContent = prefix ? prefix + content : content;
 
     const localId = uuid();
@@ -310,7 +316,7 @@ export class MessagesService {
     const msgType = kindToMessageType(processed.kind);
     const uazMediaType: 'image' | 'video' | 'audio' | 'document' = processed.kind === 'document' ? 'document' : processed.kind;
 
-    const prefix = caption ? await this.buildOutboundPrefix(user.tenantId, user.id, user.nome) : '';
+    const prefix = caption ? await this.buildOutboundPrefix(user.tenantId, user.id, user.nome, lead.responsavel_id !== null) : '';
     const outboundCaption = prefix && caption ? prefix + caption : (caption ?? undefined);
 
     const message = await this.prisma.message.create({

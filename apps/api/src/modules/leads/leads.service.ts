@@ -674,6 +674,13 @@ export class LeadsService {
     return { archived: leadsToDelete.length };
   }
 
+  private async findOwnedInstance(userId: string, tenantId: string) {
+    return this.prisma.whatsappInstance.findFirst({
+      where: { owner_user_id: userId, tenant_id: tenantId },
+      orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+    });
+  }
+
   async claim(leadId: string, user: AuthUser) {
     const result = await this.prisma.lead.updateMany({
       where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
@@ -682,9 +689,20 @@ export class LeadsService {
     if (result.count === 0) {
       throw new ConflictException('Lead ja atribuido ou nao encontrado');
     }
+    const ownedInstance = await this.findOwnedInstance(user.id, user.tenantId);
+    if (ownedInstance) {
+      await this.prisma.lead.update({
+        where: { id: leadId },
+        data: { instancia_whatsapp: ownedInstance.nome },
+      });
+    }
     await this.invalidateLeadsCache(user.tenantId);
-    this.gateway.emitLeadUpdated(leadId, { responsavel_id: user.id }, user.tenantId);
-    return { id: leadId, responsavel_id: user.id };
+    this.gateway.emitLeadUpdated(
+      leadId,
+      { responsavel_id: user.id, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
+      user.tenantId,
+    );
+    return { id: leadId, responsavel_id: user.id, instancia_whatsapp: ownedInstance?.nome };
   }
 
   async reassign(leadId: string, body: unknown, user: AuthUser) {
@@ -715,13 +733,21 @@ export class LeadsService {
       throw new BadRequestException('Nao e possivel atribuir lead a um VISUALIZADOR');
     }
 
+    const ownedInstance = await this.findOwnedInstance(novoResponsavelId, user.tenantId);
     await this.prisma.lead.update({
       where: { id: leadId },
-      data: { responsavel_id: novoResponsavelId },
+      data: {
+        responsavel_id: novoResponsavelId,
+        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+      },
     });
     await this.invalidateLeadsCache(user.tenantId);
-    this.gateway.emitLeadUpdated(leadId, { responsavel_id: novoResponsavelId }, user.tenantId);
-    return { id: leadId, responsavel_id: novoResponsavelId };
+    this.gateway.emitLeadUpdated(
+      leadId,
+      { responsavel_id: novoResponsavelId, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
+      user.tenantId,
+    );
+    return { id: leadId, responsavel_id: novoResponsavelId, instancia_whatsapp: ownedInstance?.nome };
   }
 
   async returnToPool(leadId: string, user: AuthUser) {
