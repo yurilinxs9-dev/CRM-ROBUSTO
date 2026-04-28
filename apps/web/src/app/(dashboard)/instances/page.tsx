@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, MessageCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import axios from 'axios';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
@@ -97,7 +98,14 @@ export default function InstancesPage() {
       const base64 = d?.qrcode?.base64 ?? d?.base64 ?? '';
       setQrBase64(base64 || null);
       if (!base64) toast.error('QR Code não disponível');
-    } catch {
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        toast.error('Instância não encontrada');
+        setQrBase64(null);
+        setQrTarget(null);
+        queryClient.invalidateQueries({ queryKey: ['instances'] });
+        return;
+      }
       toast.error('Erro ao buscar QR Code');
       setQrBase64(null);
     }
@@ -125,8 +133,15 @@ export default function InstancesPage() {
       try {
         await api.get(`/api/instances/${qrTarget}/status`);
         if (!cancelled) queryClient.invalidateQueries({ queryKey: ['instances'] });
-      } catch {
-        // ignore transient errors
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.response?.status === 404) {
+          if (cancelled) return;
+          toast.error('Instância não encontrada');
+          cancelled = true;
+          setQrTarget(null);
+          setQrBase64(null);
+          queryClient.invalidateQueries({ queryKey: ['instances'] });
+        }
       }
     };
     const id = setInterval(tick, 3_000);

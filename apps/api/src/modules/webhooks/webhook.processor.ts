@@ -594,7 +594,7 @@ export class WebhookProcessor extends WorkerHost {
     const instance = await this.findInstanceByName(instanceName);
     if (!instance) return;
     await this.prisma.whatsappInstance.update({
-      where: { nome: instanceName },
+      where: { id: instance.id },
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instanceName, status, instance.tenant_id);
@@ -699,7 +699,7 @@ export class WebhookProcessor extends WorkerHost {
     const instance = await this.findInstanceByName(instanceName);
     if (!instance) return;
     await this.prisma.whatsappInstance.update({
-      where: { nome: instanceName },
+      where: { id: instance.id },
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instanceName, status, instance.tenant_id);
@@ -805,7 +805,7 @@ export class WebhookProcessor extends WorkerHost {
     if (!instance) return;
 
     await this.prisma.whatsappInstance.update({
-      where: { nome: instance.nome },
+      where: { id: instance.id },
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instance.nome, status, instance.tenant_id);

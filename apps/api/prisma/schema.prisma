@@ -275,7 +275,7 @@ model LeadActivity {
 
 model WhatsappInstance {
   id             String    @id @default(uuid())
-  nome           String    @unique
+  nome           String
   telefone       String?
   status         String    @default("disconnected")
   ultimo_check   DateTime?
@@ -289,6 +289,7 @@ model WhatsappInstance {
   user_instances UserInstance[]
   instance_logs  InstanceLog[]
 
+  @@unique([tenant_id, nome])
   @@index([tenant_id])
 }
 

@@ -121,20 +121,25 @@ export class InstancesService {
       return null;
     });
 
-    await this.prisma.whatsappInstance.upsert({
-      where: { nome },
-      create: {
-        nome,
-        status: 'connecting',
-        config: { uazapi_token, uazapi_id },
-        owner_user_id: user.id,
-        tenant_id: user.tenantId,
-      },
-      update: {
-        status: 'connecting',
-        config: { uazapi_token, uazapi_id },
-      },
+    const existing = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
     });
+    if (existing) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: existing.id },
+        data: { status: 'connecting', config: { uazapi_token, uazapi_id } },
+      });
+    } else {
+      await this.prisma.whatsappInstance.create({
+        data: {
+          nome,
+          status: 'connecting',
+          config: { uazapi_token, uazapi_id },
+          owner_user_id: user.id,
+          tenant_id: user.tenantId,
+        },
+      });
+    }
 
     return { instanceName: nome, status: 'connecting' };
   }
@@ -158,7 +163,7 @@ export class InstancesService {
       const jid = data.status?.jid ?? null;
       const telefone = jid ? jid.split('@')[0].split(':')[0] : undefined;
       await this.prisma.whatsappInstance.update({
-        where: { nome },
+        where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
         data: {
           status: 'open',
           ultimo_check: new Date(),
@@ -194,7 +199,7 @@ export class InstancesService {
     const telefone = jid ? jid.split('@')[0].split(':')[0] : undefined;
 
     await this.prisma.whatsappInstance.update({
-      where: { nome },
+      where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
       data: {
         status,
         ultimo_check: new Date(),
@@ -259,7 +264,7 @@ export class InstancesService {
       });
     }
 
-    await this.prisma.whatsappInstance.delete({ where: { nome } }).catch((err: unknown) => {
+    await this.prisma.whatsappInstance.delete({ where: { id: instance.id } }).catch((err: unknown) => {
       this.logger.warn(`Falha ao deletar instancia DB ${nome}: ${String(err)}`);
       return null;
     });
