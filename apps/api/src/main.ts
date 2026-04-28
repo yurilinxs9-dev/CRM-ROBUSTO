@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './common/socket/redis-io.adapter';
 import { json, raw, urlencoded } from 'express';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { initSentry } from './common/sentry';
@@ -28,6 +29,10 @@ async function bootstrap() {
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
   app.use(raw({ limit: '50mb', type: 'application/octet-stream' }));
+
+  // Parse Cookie header so AuthController.refresh can read req.cookies.refresh_token.
+  // Without this every /api/auth/refresh would 500 even with a valid cookie present.
+  app.use(cookieParser());
 
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));

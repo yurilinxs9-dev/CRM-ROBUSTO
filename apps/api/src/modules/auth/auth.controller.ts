@@ -79,7 +79,7 @@ export class AuthController {
   @HttpCode(200)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = req.cookies?.refresh_token;
-    if (!token) throw new Error('No refresh token');
+    if (!token) throw new UnauthorizedException('No refresh token');
     const { accessToken, refreshToken, remember } = await this.authService.refreshToken(token);
 
     res.cookie('refresh_token', refreshToken, {
