@@ -235,10 +235,9 @@ export class LeadsService {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
     if (user.role === UserRole.OPERADOR) {
-      where.OR = [
-        { responsavel_id: user.id },
-        { responsavel_id: null },
-      ];
+      // OPERADOR vê apenas seus próprios leads. Pool/escritório fica visível
+      // só pra GERENTE/SUPER_ADMIN, que decide quem assume.
+      where.responsavel_id = user.id;
     }
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;

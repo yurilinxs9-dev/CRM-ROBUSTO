@@ -17,13 +17,13 @@ export class InstancesController {
   }
 
   @Post()
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   create(@Body('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.create(nome, req.user as AuthUser);
   }
 
   @Get(':nome/qr')
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   getQrCode(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.getQrCode(nome, req.user as AuthUser);
   }
@@ -34,7 +34,7 @@ export class InstancesController {
   }
 
   @Post(':nome/reconnect')
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   reconnect(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.reconnect(nome, req.user as AuthUser);
   }
