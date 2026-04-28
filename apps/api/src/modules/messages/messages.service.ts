@@ -89,10 +89,29 @@ export class MessagesService {
     if (user.role === UserRole.OPERADOR && lead.responsavel_id !== null && lead.responsavel_id !== user.id) {
       throw new ForbiddenException('Sem acesso a este lead');
     }
-    const instance = await this.prisma.whatsappInstance.findFirst({
+    let instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
-    if (!instance) throw new NotFoundException('Instancia WhatsApp nao encontrada');
+    const isLive = instance && (instance.status === 'open' || instance.status === 'connected' || instance.status === 'connecting');
+    if (!isLive) {
+      const fallback = await this.prisma.whatsappInstance.findFirst({
+        where: {
+          tenant_id: user.tenantId,
+          status: { in: ['open', 'connected', 'connecting'] },
+        },
+        orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+      });
+      if (fallback) {
+        instance = fallback;
+        if (lead.instancia_whatsapp !== fallback.nome) {
+          await this.prisma.lead
+            .update({ where: { id: lead.id }, data: { instancia_whatsapp: fallback.nome } })
+            .catch(() => undefined);
+          lead.instancia_whatsapp = fallback.nome;
+        }
+      }
+    }
+    if (!instance) throw new NotFoundException('Nenhuma instancia WhatsApp ativa para este tenant');
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
     if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
