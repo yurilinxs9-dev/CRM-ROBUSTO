@@ -86,8 +86,9 @@ export class InstancesService {
   }
 
   async findAll(user: AuthUser) {
-    // Esconde instâncias que esse usuário marcou como deletadas pra ele
-    // (sem afetar a visão dos outros membros do tenant).
+    // Privacidade por instância: cada user só enxerga as suas próprias
+    // instâncias. Admin não vê instância de operador, operador não vê
+    // instância de admin — número WhatsApp é pessoal.
     const hiddenIds = (
       await this.prisma.instanceHidden.findMany({
         where: { user_id: user.id, tenant_id: user.tenantId },
@@ -98,6 +99,7 @@ export class InstancesService {
     return this.prisma.whatsappInstance.findMany({
       where: {
         tenant_id: user.tenantId,
+        owner_user_id: user.id,
         ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
       },
       orderBy: { created_at: 'asc' },
