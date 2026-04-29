@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -49,7 +49,7 @@ interface InstanceConfig {
 }
 
 @Injectable()
-export class InstancesService {
+export class InstancesService implements OnModuleInit {
   private readonly logger = new Logger(InstancesService.name);
   private readonly baseUrl: string;
   private readonly adminToken: string;
@@ -64,6 +64,95 @@ export class InstancesService {
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
     const publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
     this.webhookUrl = `${publicUrl}/api/webhook/uazapi`;
+  }
+
+  /**
+   * Auto-heal de webhook URLs no startup.
+   *
+   * Sempre que o backend sobe, varre instâncias com token UazAPI, lê o
+   * webhook configurado lá fora e re-aponta pra `WEBHOOK_PUBLIC_URL` atual
+   * caso esteja diferente. Garante que se a URL pública mudar (migração de
+   * VPS, troca de tunnel, rotação DuckDNS), nenhuma instância fica órfã
+   * postando webhook pra um endpoint morto — bug que custou várias horas
+   * de debug quando a sessão trycloudflare expirou.
+   *
+   * Roda em paralelo (limit 5) e ignora instâncias com token revogado
+   * (401 = legítimo, não tenta arrumar).
+   */
+  async onModuleInit(): Promise<void> {
+    // Defer pra não bloquear bootstrap. 5s é suficiente pra Nest terminar de
+    // mapear todas rotas + abrir HTTP listener.
+    setTimeout(() => {
+      this.syncAllWebhookUrls().catch((err: unknown) =>
+        this.logger.warn(`syncAllWebhookUrls falhou: ${String(err)}`),
+      );
+    }, 5000);
+  }
+
+  async syncAllWebhookUrls(): Promise<{ checked: number; updated: number; skipped: number }> {
+    const instances = await this.prisma.whatsappInstance.findMany({
+      select: { nome: true, config: true },
+    });
+    const targets = instances
+      .map((i) => {
+        const cfg = (i.config ?? {}) as InstanceConfig;
+        return cfg.uazapi_token ? { nome: i.nome, token: cfg.uazapi_token } : null;
+      })
+      .filter((x): x is { nome: string; token: string } => !!x);
+
+    let checked = 0;
+    let updated = 0;
+    let skipped = 0;
+    const events = ['messages', 'messages_update', 'connection', 'presence', 'contacts', 'chats'];
+
+    // Limita 5 chamadas concorrentes pra não martelar UazAPI.
+    const queue = [...targets];
+    const worker = async (): Promise<void> => {
+      while (queue.length) {
+        const t = queue.shift();
+        if (!t) break;
+        checked++;
+        try {
+          const { data } = await firstValueFrom(
+            this.http.get<Array<{ url?: string }>>(`${this.baseUrl}/webhook`, {
+              headers: this.headers(t.token),
+              timeout: 8000,
+            }),
+          );
+          const currentUrl = Array.isArray(data) && data[0]?.url ? data[0].url : '';
+          if (currentUrl === this.webhookUrl) continue;
+          await firstValueFrom(
+            this.http.post(
+              `${this.baseUrl}/webhook`,
+              {
+                url: this.webhookUrl,
+                enabled: true,
+                events,
+                addUrlEvents: false,
+                addUrlTypesMessages: false,
+                excludeMessages: [],
+              },
+              { headers: this.headers(t.token), timeout: 8000 },
+            ),
+          );
+          updated++;
+          this.logger.log(`webhook re-sync ${t.nome}: ${currentUrl || '<vazio>'} → ${this.webhookUrl}`);
+        } catch (err: unknown) {
+          // 401 = token stale (instância revogada/desconectada). Skip.
+          skipped++;
+          const msg = (err as { response?: { status?: number } })?.response?.status === 401
+            ? '401 token revogado'
+            : String((err as Error)?.message ?? err);
+          this.logger.debug(`webhook re-sync ${t.nome} skip: ${msg}`);
+        }
+      }
+    };
+
+    await Promise.all([worker(), worker(), worker(), worker(), worker()]);
+    this.logger.log(
+      `Webhook sync completo: checked=${checked} updated=${updated} skipped=${skipped}`,
+    );
+    return { checked, updated, skipped };
   }
 
   private headers(instanceToken: string): Record<string, string> {
