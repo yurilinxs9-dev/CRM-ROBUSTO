@@ -869,27 +869,37 @@ export class LeadsService {
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    // Lead privado: só o responsável atual lê msgs. Mesmo bypass de manager
-    // não vale aqui — privacidade total após "Assumir".
+    const isManager =
+      (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
+
+    // Lead privado: só o responsável atual lê msgs. Privacidade total após
+    // claim de manager — nem outros managers veem.
     if (lead.is_private && lead.responsavel_id !== user.id) {
       return { messages: [], nextCursor: undefined };
     }
-    const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
-      return { messages: [], nextCursor: undefined };
+    // Manager (GERENTE/SUPER_ADMIN) vê msgs de qualquer lead não-privado
+    // sem filtro por instância nem por assumed_at — supervisão completa.
+    // Operador segue restrito a leads onde é responsável OU da própria
+    // instância (Individual).
+    let ownedInstances: string[] = [];
+    if (!isManager) {
+      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
+      const accessible = lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        return { messages: [], nextCursor: undefined };
+      }
     }
-    // Quando o lead foi assumido (claim/reassign), o novo responsável só
-    // enxerga msgs a partir do momento que assumiu. Histórico anterior
-    // continua no banco com visible_to_user_id do dono anterior — só ele
-    // (e managers) veem. Garante privacidade entre operadores.
-    const hideHistory = !!lead.assumed_at;
+    // Histórico antes do claim só é escondido pra OPERADOR; manager sempre
+    // tem visão completa.
+    const hideHistory = !isManager && !!lead.assumed_at;
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...(!isManager && ownedInstances.length
+          ? { instance_name: { in: ownedInstances } }
+          : {}),
         ...(hideHistory
           ? {
               OR: [
