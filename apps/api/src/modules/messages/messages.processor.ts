@@ -163,10 +163,17 @@ export class MessagesSendProcessor extends WorkerHost {
   private extractWhatsappMessageId(data: unknown): string | null {
     if (!data || typeof data !== 'object') return null;
     const d = data as Record<string, unknown>;
-    return (d['id'] as string | undefined)
+    const raw = (d['id'] as string | undefined)
       ?? (d['messageId'] as string | undefined)
       ?? ((d['key'] as Record<string, unknown> | undefined)?.['id'] as string | undefined)
       ?? null;
+    if (!raw) return null;
+    // UazAPI ora retorna `<numero>:<id>` (resposta do /send), ora só `<id>`
+    // (no webhook). Normaliza removendo o prefixo pra que o dedup do webhook
+    // echo encontre a row criada pelo CRM-send. Sem isso, cada send virava
+    // 2 linhas: 1 do CRM com id `5537...:3EB...` e 1 do webhook com `3EB...`.
+    const colonIdx = raw.indexOf(':');
+    return colonIdx > 0 ? raw.slice(colonIdx + 1) : raw;
   }
 
   private async fetchAsBase64(url: string): Promise<string> {
