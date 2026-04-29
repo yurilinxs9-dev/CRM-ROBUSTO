@@ -352,19 +352,29 @@ export class WebhookProcessor extends WorkerHost {
       ...(extracted.contact ? { contact: extracted.contact } : {}),
     };
 
-    // Echo dedup: when isFromMe=true, this webhook is the UazAPI echo of a
-    // message we just sent from the CRM. The send-* endpoints already created
-    // the row and emitted message:new — but UazAPI sometimes returns no id in
-    // the send response, so the locally-created row has a uuid as
-    // whatsapp_message_id while the webhook brings the REAL wa id, causing a
-    // duplicate row + duplicate bubble in the UI. Detect the recent local row
-    // by content+lead+direction within 2 minutes and link it to the real id.
+    // Echo dedup: when isFromMe=true, this webhook PODE ser o eco de uma
+    // mensagem enviada pelo CRM (em que já criamos a linha + emitimos
+    // message:new) — ou pode ser uma msg enviada DO CELULAR nativo, que é
+    // first sight pra gente. A diferença está no whatsapp_message_id:
+    //   - CRM-send → wa_id NULL ou UUID placeholder (esperando o eco
+    //     trazer o id real do WhatsApp).
+    //   - msg do celular → não há linha local, sempre cai no upsert+emit.
+    //
+    // Bug anterior: matchávamos por content+lead+direction nos últimos 2min.
+    // Isso fazia msgs do celular com conteúdo idêntico a um CRM-send
+    // recente serem "absorvidas" no eco — o webhook era ignorado, msg do
+    // celular nunca aparecia em tempo real. Fix: janela curta (30s) +
+    // confirmar que o wa_id local é placeholder antes de re-vincular.
+    const isPlaceholderWaId = (id: string | null): boolean => {
+      if (!id) return true;
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    };
     if (isFromMe) {
       const existingByWaId = await this.prisma.message.findUnique({
         where: { whatsapp_message_id: messageId },
       });
       if (existingByWaId) {
-        // Already linked — webhook arrived twice, nothing to do.
+        // Já linkado — webhook chegou duas vezes, nada a fazer.
         return;
       }
       const recentLocal = await this.prisma.message.findFirst({
@@ -373,17 +383,21 @@ export class WebhookProcessor extends WorkerHost {
           direction: 'OUTGOING',
           type: extracted.type as MessageType,
           content: extracted.content,
-          created_at: { gte: new Date(Date.now() - 2 * 60 * 1000) },
+          created_at: { gte: new Date(Date.now() - 30 * 1000) },
         },
         orderBy: { created_at: 'desc' },
       });
-      if (recentLocal && recentLocal.whatsapp_message_id !== messageId) {
+      if (
+        recentLocal &&
+        recentLocal.whatsapp_message_id !== messageId &&
+        isPlaceholderWaId(recentLocal.whatsapp_message_id)
+      ) {
         await this.prisma.message.update({
           where: { id: recentLocal.id },
           data: { whatsapp_message_id: messageId },
         });
-        // Frontend already rendered this message via the send mutation +
-        // socket emit from messages.service. Skip re-emit to avoid duplicates.
+        // Frontend já renderizou via send mutation + emit do messages.service.
+        // Skip re-emit pra não duplicar bolha.
         return;
       }
     }
