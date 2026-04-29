@@ -254,13 +254,15 @@ export default function KanbanPage() {
     return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId);
   }, [filteredLeads, isPoolEnabled, activeTab, currentUserId, responsavelFilter]);
 
+  // Lista pra filtro "ver kanban de cada responsável". Vem de tenantUsers
+  // (não dos leads) pra incluir operadores mesmo que ainda não tenham lead
+  // — manager precisa poder olhar o kanban de qualquer um da equipe.
   const responsaveis = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const l of leads) {
-      if (l.responsavel) map.set(l.responsavel.id, l.responsavel.nome);
-    }
-    return Array.from(map.entries());
-  }, [leads]);
+    return tenantUsers
+      .filter((u) => u.role !== 'VISUALIZADOR')
+      .map((u) => [u.id, u.nome] as [string, string])
+      .sort((a, b) => a[1].localeCompare(b[1]));
+  }, [tenantUsers]);
 
   // --- Metrics ---
   const metrics = useMemo(() => {

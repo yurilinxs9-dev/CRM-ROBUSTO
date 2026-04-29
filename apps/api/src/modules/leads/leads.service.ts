@@ -729,11 +729,20 @@ export class LeadsService {
     // assumed_at marca o momento da posse — getMessages usa pra esconder
     // o histórico anterior. Sem isso, o novo responsável veria msgs que
     // não eram pra ele.
+    // Privacidade no claim depende do papel:
+    //  - GERENTE/SUPER_ADMIN: privatiza (outros managers param de ver — regra
+    //    "se o gerente/super-admin assumir, ninguém pode ter acesso").
+    //  - OPERADOR: NÃO privatiza, pra que managers continuem supervisionando
+    //    o trabalho da equipe pelo Kanban.
+    const isManagerClaim =
+      (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
     const result = await this.prisma.lead.updateMany({
       where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
-      // Assumir = privado. Após o claim, só o responsável vê o lead;
-      // managers e super-admins de outras instâncias deixam de enxergar.
-      data: { responsavel_id: user.id, assumed_at: new Date(), is_private: true },
+      data: {
+        responsavel_id: user.id,
+        assumed_at: new Date(),
+        is_private: isManagerClaim,
+      },
     });
     if (result.count === 0) {
       throw new ConflictException('Lead ja atribuido ou nao encontrado');
