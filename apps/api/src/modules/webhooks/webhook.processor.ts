@@ -284,6 +284,19 @@ export class WebhookProcessor extends WorkerHost {
       select: { pool_enabled: true },
     });
 
+    // Instância dona de SUPER_ADMIN/GERENTE auto-atribui sempre ao dono,
+    // mesmo com pool_enabled=true. Só OPERADOR cai no pool quando ativo.
+    const ownerUser = instance.owner_user_id
+      ? await this.prisma.user.findUnique({
+          where: { id: instance.owner_user_id },
+          select: { role: true },
+        })
+      : null;
+    const ownerIsManager =
+      ownerUser?.role === 'SUPER_ADMIN' || ownerUser?.role === 'GERENTE';
+    const responsavelId =
+      tenant?.pool_enabled && !ownerIsManager ? null : instance.owner_user_id;
+
     const lead = await this.prisma.lead.upsert({
       where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
       create: {
@@ -294,7 +307,7 @@ export class WebhookProcessor extends WorkerHost {
         pipeline_id: ctx.pipeline.id,
         estagio_id: ctx.firstStage.id,
         estagio_entered_at: new Date(),
-        responsavel_id: tenant?.pool_enabled ? null : instance.owner_user_id,
+        responsavel_id: responsavelId,
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),
         tenant_id: tenantId,
@@ -304,13 +317,8 @@ export class WebhookProcessor extends WorkerHost {
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
-        // Lead segue o número que recebeu a msg — instância vira a recebedora
-        // E responsável vira o dono da instância (ou null se pool_enabled).
-        // Privacidade por instância exige isso: cada user só vê leads onde
-        // é responsável, então pra ele "ver" a msg que chegou no número
-        // dele, ele precisa virar o responsável atual.
         instancia_whatsapp: instance.nome,
-        responsavel_id: tenant?.pool_enabled ? null : instance.owner_user_id,
+        responsavel_id: responsavelId,
       },
     });
 
