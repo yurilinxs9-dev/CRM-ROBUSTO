@@ -104,10 +104,26 @@ export class MessagesService {
 
     let instance: typeof instanceOfLead = null;
     if (tenant?.pool_enabled) {
-      // Modo Compartilhado: usa a instância do lead se existe (todos no
-      // tenant podem usar). Sem fallback de auto-swap aqui porque o número
-      // é único pra equipe.
-      instance = instanceOfLead;
+      // Modo Compartilhado: prefere a instância do lead, mas se ela não
+      // existe (lead criado manualmente sem instance ou instance removida),
+      // cai pra qualquer instância ativa do tenant — o número é único da
+      // equipe, qualquer um serve.
+      instance = instanceOfLead ?? null;
+      if (!instance || !liveStatuses.includes(instance.status)) {
+        const fallback = await this.prisma.whatsappInstance.findFirst({
+          where: { tenant_id: user.tenantId, status: { in: liveStatuses } },
+          orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+        });
+        if (fallback) {
+          instance = fallback;
+          if (lead.instancia_whatsapp !== fallback.nome) {
+            await this.prisma.lead
+              .update({ where: { id: lead.id }, data: { instancia_whatsapp: fallback.nome } })
+              .catch(() => undefined);
+            lead.instancia_whatsapp = fallback.nome;
+          }
+        }
+      }
     } else {
       // Modo Individual: prefere instância do lead se for do user.
       instance = instanceOfLead && instanceOfLead.owner_user_id === user.id
