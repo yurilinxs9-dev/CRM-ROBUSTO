@@ -374,7 +374,9 @@ export class WebhookProcessor extends WorkerHost {
         where: { whatsapp_message_id: messageId },
       });
       if (existingByWaId) {
-        // Já linkado — webhook chegou duas vezes, nada a fazer.
+        this.logger.log(
+          `dedup HIT existingByWaId msgId=${messageId} lead=${lead.id} — skip emit`,
+        );
         return;
       }
       const recentLocal = await this.prisma.message.findFirst({
@@ -392,13 +394,22 @@ export class WebhookProcessor extends WorkerHost {
         recentLocal.whatsapp_message_id !== messageId &&
         isPlaceholderWaId(recentLocal.whatsapp_message_id)
       ) {
+        this.logger.log(
+          `dedup HIT recentLocal lead=${lead.id} localId=${recentLocal.id} ` +
+          `localWaId=${recentLocal.whatsapp_message_id ?? 'null'} → ${messageId} — skip emit`,
+        );
         await this.prisma.message.update({
           where: { id: recentLocal.id },
           data: { whatsapp_message_id: messageId },
         });
-        // Frontend já renderizou via send mutation + emit do messages.service.
-        // Skip re-emit pra não duplicar bolha.
         return;
+      }
+      if (recentLocal) {
+        this.logger.log(
+          `dedup MISS lead=${lead.id} reason=${
+            recentLocal.whatsapp_message_id === messageId ? 'same-id' : 'real-wa-id'
+          } localWaId=${recentLocal.whatsapp_message_id ?? 'null'} — proceed upsert+emit`,
+        );
       }
     }
 
