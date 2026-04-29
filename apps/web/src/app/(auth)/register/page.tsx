@@ -16,11 +16,14 @@ import {
 import { useAuthStore } from '@/stores/auth.store';
 import { api } from '@/lib/api';
 
+type AccountModel = 'shared' | 'individual';
+
 export default function RegisterPage() {
   const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
+  const [accountModel, setAccountModel] = useState<AccountModel>('shared');
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState('');
   const nomeRef = useRef<HTMLInputElement>(null);
@@ -45,6 +48,7 @@ export default function RegisterPage() {
         email,
         senha,
         workspace_name: workspaceName || undefined,
+        account_model: accountModel,
       });
       setAuth(
         {
@@ -134,6 +138,45 @@ export default function RegisterPage() {
                 placeholder="Empresa Acme"
                 disabled={isPending}
               />
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <Label>Modelo de atendimento</Label>
+              <p className="text-xs text-muted-foreground">
+                Define como os leads chegam pra equipe. Pode trocar depois em Configurações.
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAccountModel('shared')}
+                  disabled={isPending}
+                  className={`text-left rounded-lg border px-3 py-3 transition ${
+                    accountModel === 'shared'
+                      ? 'border-primary bg-primary/10'
+                      : 'hover:border-muted-foreground/40'
+                  }`}
+                >
+                  <div className="text-sm font-medium">Compartilhado (1 número, vários operadores)</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Equipe atende leads de um único WhatsApp. Operadores assumem leads do pool.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountModel('individual')}
+                  disabled={isPending}
+                  className={`text-left rounded-lg border px-3 py-3 transition ${
+                    accountModel === 'individual'
+                      ? 'border-primary bg-primary/10'
+                      : 'hover:border-muted-foreground/40'
+                  }`}
+                >
+                  <div className="text-sm font-medium">Individual (1 número por operador)</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Cada operador conecta seu próprio WhatsApp. Super-admin delega leads via Kanban.
+                  </div>
+                </button>
+              </div>
             </div>
 
             {error && (

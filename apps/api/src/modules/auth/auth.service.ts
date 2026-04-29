@@ -81,6 +81,7 @@ export class AuthService {
     senha: string;
     role?: string;
     workspace_name?: string;
+    account_model?: 'shared' | 'individual';
   }) {
     const exists = await this.prisma.user.findUnique({ where: { email: data.email } });
     if (exists) throw new ConflictException('Email ja cadastrado');
@@ -100,7 +101,16 @@ export class AuthService {
         VALUES (${userId}, ${data.nome}, ${data.email}, ${senha_hash}, ${role}::"UserRole", true, ${tenantId}, NOW(), NOW())
       `;
       await tx.tenant.create({
-        data: { id: tenantId, nome: workspaceName, owner_id: userId },
+        data: {
+          id: tenantId,
+          nome: workspaceName,
+          owner_id: userId,
+          // Modelo de atendimento escolhido no register: 'shared' liga o pool
+          // (1 número, vários operadores); 'individual' deixa cada operador
+          // com sua própria instância. Default fica 'shared' pra preservar
+          // comportamento histórico se o frontend não enviar o campo.
+          pool_enabled: data.account_model === 'individual' ? false : true,
+        },
       });
 
       // Default Pipeline + Stages for the new tenant

@@ -31,6 +31,7 @@ const registerSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(8).max(100),
   workspace_name: z.string().min(1).max(100).optional(),
+  account_model: z.enum(['shared', 'individual']).optional(),
 });
 
 @Controller('auth')
