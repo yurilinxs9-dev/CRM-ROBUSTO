@@ -233,13 +233,22 @@ export class LeadsService {
   }
 
   /**
-   * Nomes das instâncias WhatsApp pertencentes a esse user no tenant.
-   * Usado pra impor privacidade por instância em listagens, gates de acesso
-   * e filtros de mensagens — quem não é dono da instância não vê a conversa.
+   * Nomes das instâncias WhatsApp acessíveis a esse user no tenant.
+   * - Modo Individual (pool_enabled=false): só as próprias.
+   * - Modo Compartilhado (pool_enabled=true): todas do tenant — número é
+   *   da equipe, não pessoal.
+   * Privacidade por lead nesse modo é regida por is_private/responsavel_id.
    */
   private async getOwnedInstanceNames(userId: string, tenantId: string): Promise<string[]> {
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { pool_enabled: true },
+    });
+    const where = tenant?.pool_enabled
+      ? { tenant_id: tenantId }
+      : { owner_user_id: userId, tenant_id: tenantId };
     const rows = await this.prisma.whatsappInstance.findMany({
-      where: { owner_user_id: userId, tenant_id: tenantId },
+      where,
       select: { nome: true },
     });
     return rows.map((r) => r.nome);

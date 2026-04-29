@@ -175,9 +175,10 @@ export class InstancesService implements OnModuleInit {
   }
 
   async findAll(user: AuthUser) {
-    // Privacidade por instância: cada user só enxerga as suas próprias
-    // instâncias. Admin não vê instância de operador, operador não vê
-    // instância de admin — número WhatsApp é pessoal.
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
     const hiddenIds = (
       await this.prisma.instanceHidden.findMany({
         where: { user_id: user.id, tenant_id: user.tenantId },
@@ -185,10 +186,14 @@ export class InstancesService implements OnModuleInit {
       })
     ).map((h) => h.instance_id);
 
+    // Modo Compartilhado: todos veem o mesmo número (a instância é da equipe,
+    // não pessoal). Modo Individual: cada user vê apenas as próprias.
+    const ownerFilter = tenant?.pool_enabled ? {} : { owner_user_id: user.id };
+
     return this.prisma.whatsappInstance.findMany({
       where: {
         tenant_id: user.tenantId,
-        owner_user_id: user.id,
+        ...ownerFilter,
         ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
       },
       orderBy: { created_at: 'asc' },
