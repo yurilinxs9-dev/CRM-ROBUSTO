@@ -34,7 +34,11 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const token = client.handshake.auth?.token ||
                     client.handshake.headers.authorization?.split(' ')[1];
-      if (!token) { client.disconnect(); return; }
+      if (!token) {
+        this.logger.warn(`Socket ${client.id} rejeitado — sem token no handshake`);
+        client.disconnect();
+        return;
+      }
       const payload = this.jwtService.verify(token, {
         secret: this.config.get('JWT_SECRET'),
       });
@@ -44,7 +48,13 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.join(`user:${payload.sub}`);
       if (tenantId) client.join(`tenant:${tenantId}`);
       this.logger.log(`Client connected: ${client.id} (user: ${payload.sub} tenant: ${tenantId})`);
-    } catch {
+    } catch (err) {
+      // Surface handshake errors — sem isso falhas como JWT expirado, secret
+      // diferente ou payload mal-formado ficam invisíveis e o cliente parece
+      // "conectado" no nível de protocolo mas nunca recebe nada.
+      this.logger.warn(
+        `Socket ${client.id} rejeitado: ${(err as Error)?.message ?? err}`,
+      );
       client.disconnect();
     }
   }
