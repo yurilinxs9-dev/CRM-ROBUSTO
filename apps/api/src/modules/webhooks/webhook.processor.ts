@@ -312,15 +312,30 @@ export class WebhookProcessor extends WorkerHost {
         last_customer_message_at: isFromMe ? undefined : new Date(),
         tenant_id: tenantId,
       },
+      // Em update NÃO mexe em responsavel_id nem instancia_whatsapp:
+      // se um operador já assumiu o lead (claim/reassign), as msgs novas
+      // do cliente não podem reverter a posse pra o dono da instância.
+      // O re-assign automático só acontece se o lead ainda está no pool
+      // (responsavel_id IS NULL), tratado abaixo.
       update: {
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
-        instancia_whatsapp: instance.nome,
-        responsavel_id: responsavelId,
       },
     });
+
+    // Auto-assign só na situação clássica: lead em pool e dono da instância
+    // é admin/gerente (modo Compartilhado) ou modo Individual. Nunca sobrepõe
+    // claim humana.
+    if (lead.responsavel_id === null && responsavelId !== null) {
+      const fixed = await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: { responsavel_id: responsavelId, instancia_whatsapp: instance.nome },
+      });
+      lead.responsavel_id = fixed.responsavel_id;
+      lead.instancia_whatsapp = fixed.instancia_whatsapp;
+    }
 
     // Heal lead names that were corrupted before the fix above shipped.
     // If the stored name is the bare phone OR matches the owner's pushName
