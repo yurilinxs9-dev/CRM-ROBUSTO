@@ -703,9 +703,12 @@ export class LeadsService {
   }
 
   async claim(leadId: string, user: AuthUser) {
+    // assumed_at marca o momento da posse — getMessages usa pra esconder
+    // o histórico anterior. Sem isso, o novo responsável veria msgs que
+    // não eram pra ele.
     const result = await this.prisma.lead.updateMany({
       where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
-      data: { responsavel_id: user.id },
+      data: { responsavel_id: user.id, assumed_at: new Date() },
     });
     if (result.count === 0) {
       throw new ConflictException('Lead ja atribuido ou nao encontrado');
@@ -759,6 +762,10 @@ export class LeadsService {
       where: { id: leadId },
       data: {
         responsavel_id: novoResponsavelId,
+        // Reseta assumed_at — novo responsável começa do zero, sem histórico
+        // do anterior. Msgs antigas continuam no DB com visible_to_user_id
+        // do dono anterior, então só ele ainda enxerga (privacidade).
+        assumed_at: new Date(),
         ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
       },
       select: { id: true, nome: true },
@@ -796,7 +803,7 @@ export class LeadsService {
 
     await this.prisma.lead.update({
       where: { id: leadId },
-      data: { responsavel_id: null },
+      data: { responsavel_id: null, assumed_at: null },
     });
     await this.prisma.leadActivity.create({
       data: {
@@ -817,23 +824,38 @@ export class LeadsService {
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
+      select: {
+        id: true,
+        responsavel_id: true,
+        instancia_whatsapp: true,
+        assumed_at: true,
+      },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    // Privacy ESTRITA por instância pra TODOS (SUPER_ADMIN incluso). Admin
-    // pode supervisionar pelo Kanban (lista visível) mas NÃO lê conversa
-    // alheia — cada instância é privada do dono.
     const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
     const accessible = lead.responsavel_id === user.id ||
       (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
     if (!accessible) {
       return { messages: [], nextCursor: undefined };
     }
+    // Quando o lead foi assumido (claim/reassign), o novo responsável só
+    // enxerga msgs a partir do momento que assumiu. Histórico anterior
+    // continua no banco com visible_to_user_id do dono anterior — só ele
+    // (e managers) veem. Garante privacidade entre operadores.
+    const hideHistory = !!lead.assumed_at;
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
         ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...(hideHistory
+          ? {
+              OR: [
+                { created_at: { gte: lead.assumed_at as Date } },
+                { visible_to_user_id: user.id },
+              ],
+            }
+          : {}),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,

@@ -215,6 +215,8 @@ model Lead {
   lead_tags  LeadTag[]
   tasks      Task[]
 
+  assumed_at             DateTime?
+
   @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
   @@index([responsavel_id, estagio_id])
   @@index([instancia_whatsapp])
