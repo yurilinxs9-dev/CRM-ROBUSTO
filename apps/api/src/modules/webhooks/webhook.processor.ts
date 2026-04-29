@@ -371,7 +371,12 @@ export class WebhookProcessor extends WorkerHost {
     };
     if (isFromMe) {
       const existingByWaId = await this.prisma.message.findUnique({
-        where: { whatsapp_message_id: messageId },
+        where: {
+          tenant_id_whatsapp_message_id: {
+            tenant_id: tenantId,
+            whatsapp_message_id: messageId,
+          },
+        },
       });
       if (existingByWaId) {
         this.logger.log(
@@ -420,7 +425,12 @@ export class WebhookProcessor extends WorkerHost {
     let message;
     try {
       message = await this.prisma.message.upsert({
-      where: { whatsapp_message_id: messageId },
+      where: {
+        tenant_id_whatsapp_message_id: {
+          tenant_id: tenantId,
+          whatsapp_message_id: messageId,
+        },
+      },
       create: {
         lead_id: lead.id,
         instance_name: instance.nome,
@@ -444,7 +454,12 @@ export class WebhookProcessor extends WorkerHost {
       const code = (err as { code?: string }).code;
       if (code === 'P2002') {
         const existing = await this.prisma.message.findUnique({
-          where: { whatsapp_message_id: messageId },
+          where: {
+            tenant_id_whatsapp_message_id: {
+              tenant_id: tenantId,
+              whatsapp_message_id: messageId,
+            },
+          },
         });
         if (!existing) throw err;
         message = existing;
@@ -748,21 +763,22 @@ export class WebhookProcessor extends WorkerHost {
       const mappedStatus = statusMap[status];
       if (!mappedStatus) continue;
 
-      const existing = await this.prisma.message.findUnique({
+      // wa_id deixou de ser único globalmente (composto com tenant_id), então
+      // a mesma id pode aparecer em múltiplas perspectivas. updateMany cobre
+      // todas; emitMessageStatusUpdate dispara por linha encontrada.
+      const matches = await this.prisma.message.findMany({
         where: { whatsapp_message_id: messageId },
-        select: { id: true, lead_id: true },
+        select: { id: true, lead_id: true, tenant_id: true },
       });
-      if (!existing) continue;
+      if (matches.length === 0) continue;
 
-      await this.prisma.message.update({
-        where: { id: existing.id },
+      await this.prisma.message.updateMany({
+        where: { whatsapp_message_id: messageId },
         data: { status: mappedStatus as 'DELIVERED' | 'READ' | 'FAILED' },
       });
-      this.gateway.emitMessageStatusUpdate(
-        existing.lead_id,
-        existing.id,
-        mappedStatus,
-      );
+      for (const m of matches) {
+        this.gateway.emitMessageStatusUpdate(m.lead_id, m.id, mappedStatus);
+      }
     }
   }
 
@@ -855,17 +871,19 @@ export class WebhookProcessor extends WorkerHost {
     const mapped = rawStatus !== undefined ? statusMap[String(rawStatus)] : undefined;
     if (!mapped) return;
 
-    const existing = await this.prisma.message.findUnique({
+    const matches = await this.prisma.message.findMany({
       where: { whatsapp_message_id: messageId },
       select: { id: true, lead_id: true },
     });
-    if (!existing) return;
+    if (matches.length === 0) return;
 
-    await this.prisma.message.update({
-      where: { id: existing.id },
+    await this.prisma.message.updateMany({
+      where: { whatsapp_message_id: messageId },
       data: { status: mapped },
     });
-    this.gateway.emitMessageStatusUpdate(existing.lead_id, existing.id, mapped);
+    for (const m of matches) {
+      this.gateway.emitMessageStatusUpdate(m.lead_id, m.id, mapped);
+    }
   }
 
   private async handleUazapiConnectionUpdate(payload: Obj) {

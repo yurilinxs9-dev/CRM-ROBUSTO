@@ -230,7 +230,7 @@ model Message {
   lead_id                String
   lead                   Lead             @relation(fields: [lead_id], references: [id], onDelete: Cascade)
   instance_name          String
-  whatsapp_message_id    String?          @unique
+  whatsapp_message_id    String?
   direction              MessageDirection
   type                   MessageType      @default(TEXT)
   content                String?
@@ -258,6 +258,7 @@ model Message {
   tenant                 Tenant           @relation(fields: [tenant_id], references: [id])
   created_at             DateTime         @default(now())
 
+  @@unique([tenant_id, whatsapp_message_id], name: "tenant_id_whatsapp_message_id")
   @@index([lead_id, created_at])
   @@index([instance_name, created_at])
   @@index([status, created_at])
