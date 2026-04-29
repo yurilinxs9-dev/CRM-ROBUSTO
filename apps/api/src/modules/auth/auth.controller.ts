@@ -18,6 +18,14 @@ function refreshCookieMaxAge(remember: boolean) {
   return remember ? ONE_YEAR_MS : SEVEN_DAYS_MS;
 }
 
+// Frontend (Vercel) e backend (DuckDNS) ficam em origens diferentes — refresh
+// é XHR cross-site, então o cookie precisa de SameSite=None+Secure pra ser
+// enviado. SameSite=Lax bloqueava o cookie em refresh, derrubando a sessão
+// toda vez que o access token expirava.
+const refreshCookieSameSite =
+  process.env.NODE_ENV === 'production' ? ('none' as const) : ('lax' as const);
+const refreshCookieSecure = process.env.NODE_ENV === 'production';
+
 const registerSchema = z.object({
   nome: z.string().min(2).max(100),
   email: z.string().email(),
@@ -38,8 +46,8 @@ export class AuthController {
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: refreshCookieSecure,
+      sameSite: refreshCookieSameSite,
       maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });
@@ -66,8 +74,8 @@ export class AuthController {
     );
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: refreshCookieSecure,
+      sameSite: refreshCookieSameSite,
       maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });
@@ -84,8 +92,8 @@ export class AuthController {
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: refreshCookieSecure,
+      sameSite: refreshCookieSameSite,
       maxAge: refreshCookieMaxAge(remember),
       path: '/api/auth/refresh',
     });

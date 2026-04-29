@@ -1,5 +1,6 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/stores/auth.store';
+import { reconnectSocket } from '@/lib/socket';
 
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || '',
@@ -92,6 +93,9 @@ api.interceptors.response.use(
       const { data } = await api.post<{ accessToken: string }>('/api/auth/refresh');
       const newToken = data.accessToken;
       useAuthStore.getState().updateToken(newToken);
+      // Sem isso o socket fica preso ao token expirado e o gateway derruba
+      // a conexão silenciosamente, matando o realtime até a próxima navegação.
+      reconnectSocket(newToken);
       isRefreshing = false;
       flushRefreshSubscribers(newToken);
       if (originalRequest.headers) {
