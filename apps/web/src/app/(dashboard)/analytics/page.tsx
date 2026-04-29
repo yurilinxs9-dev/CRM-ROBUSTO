@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useCallback, Suspense } from 'react';
+import { useMemo, useCallback, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getSocket } from '@/lib/socket';
 import type { LucideIcon } from 'lucide-react';
 import {
   Users,
@@ -496,6 +497,33 @@ export default function AnalyticsPage() {
 function AnalyticsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
+
+  // Eventos podem chegar em rajada — debounce evita 5 refetches por mensagem.
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const socket = getSocket();
+    const scheduleInvalidate = () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+      refetchTimer.current = setTimeout(() => {
+        queryClient.invalidateQueries({
+          predicate: (q) => {
+            const k = q.queryKey?.[0];
+            return typeof k === 'string' && k.startsWith('analytics-');
+          },
+        });
+      }, 2000);
+    };
+    socket.on('lead:new-message', scheduleInvalidate);
+    socket.on('lead:stage-changed', scheduleInvalidate);
+    socket.on('lead:updated', scheduleInvalidate);
+    return () => {
+      socket.off('lead:new-message', scheduleInvalidate);
+      socket.off('lead:stage-changed', scheduleInvalidate);
+      socket.off('lead:updated', scheduleInvalidate);
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    };
+  }, [queryClient]);
 
   const from = searchParams.get('from') ?? defaultFrom();
   const to = searchParams.get('to') ?? defaultTo();

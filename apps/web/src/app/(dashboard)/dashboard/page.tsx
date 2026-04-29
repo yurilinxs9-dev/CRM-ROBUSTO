@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getSocket } from '@/lib/socket';
 import type { LucideIcon } from 'lucide-react';
 import {
   Users,
@@ -102,6 +104,8 @@ function DashboardHeader() {
 }
 
 export default function DashboardPage() {
+  const queryClient = useQueryClient();
+
   const { data: stats, isLoading, isError } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: async () => {
@@ -110,6 +114,28 @@ export default function DashboardPage() {
     },
     refetchInterval: 30_000,
   });
+
+  // Eventos podem chegar em rajada (msgs em massa, drag-drop kanban). Debounce
+  // evita refetch por evento e mantém o dashboard responsivo sem floodar a API.
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const socket = getSocket();
+    const scheduleInvalidate = () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+      refetchTimer.current = setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      }, 1500);
+    };
+    socket.on('lead:new-message', scheduleInvalidate);
+    socket.on('lead:stage-changed', scheduleInvalidate);
+    socket.on('lead:updated', scheduleInvalidate);
+    return () => {
+      socket.off('lead:new-message', scheduleInvalidate);
+      socket.off('lead:stage-changed', scheduleInvalidate);
+      socket.off('lead:updated', scheduleInvalidate);
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    };
+  }, [queryClient]);
 
   const trend = stats ? weeklyTrend(stats.leadsThisWeek, stats.leadsLastWeek) : null;
 
