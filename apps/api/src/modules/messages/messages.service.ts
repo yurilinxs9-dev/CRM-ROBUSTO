@@ -87,45 +87,59 @@ export class MessagesService {
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
-    // Privacidade por instância: só envia se a instância onde o lead está
-    // pertence ao user. Mas se o user é o RESPONSÁVEL atual e a instância
-    // do lead é de outro (caso clássico: admin recebeu o lead, atribuiu
-    // pra operador, mas o swap não rolou), faz auto-swap pra instância
-    // própria do user — assim ele consegue responder.
+    // Privacidade por instância MUDA conforme o modo:
+    //  - Compartilhado (pool_enabled=true): instância é da equipe; qualquer
+    //    user com acesso ao lead pode enviar pela instância dele.
+    //  - Individual (pool_enabled=false): só envia pela própria instância;
+    //    se o lead aponta pra instância de outro user, faz auto-swap pra
+    //    a instância own ativa.
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
     const liveStatuses = ['open', 'connected', 'connecting'];
     const instanceOfLead = await this.prisma.whatsappInstance.findFirst({
       where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
     });
 
-    let instance = instanceOfLead && instanceOfLead.owner_user_id === user.id
-      ? instanceOfLead
-      : null;
-
-    // Auto-swap: user é responsável mas instância do lead não é dele.
-    // Procura instância own ATIVA e troca o lead pra ela.
-    if (!instance && lead.responsavel_id === user.id) {
-      const own = await this.prisma.whatsappInstance.findFirst({
-        where: {
-          tenant_id: user.tenantId,
-          owner_user_id: user.id,
-          status: { in: liveStatuses },
-        },
-        orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
-      });
-      if (own) {
-        instance = own;
-        if (lead.instancia_whatsapp !== own.nome) {
-          await this.prisma.lead
-            .update({ where: { id: lead.id }, data: { instancia_whatsapp: own.nome } })
-            .catch(() => undefined);
-          lead.instancia_whatsapp = own.nome;
+    let instance: typeof instanceOfLead = null;
+    if (tenant?.pool_enabled) {
+      // Modo Compartilhado: usa a instância do lead se existe (todos no
+      // tenant podem usar). Sem fallback de auto-swap aqui porque o número
+      // é único pra equipe.
+      instance = instanceOfLead;
+    } else {
+      // Modo Individual: prefere instância do lead se for do user.
+      instance = instanceOfLead && instanceOfLead.owner_user_id === user.id
+        ? instanceOfLead
+        : null;
+      // Auto-swap: user é responsável mas instância do lead não é dele.
+      if (!instance && lead.responsavel_id === user.id) {
+        const own = await this.prisma.whatsappInstance.findFirst({
+          where: {
+            tenant_id: user.tenantId,
+            owner_user_id: user.id,
+            status: { in: liveStatuses },
+          },
+          orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+        });
+        if (own) {
+          instance = own;
+          if (lead.instancia_whatsapp !== own.nome) {
+            await this.prisma.lead
+              .update({ where: { id: lead.id }, data: { instancia_whatsapp: own.nome } })
+              .catch(() => undefined);
+            lead.instancia_whatsapp = own.nome;
+          }
         }
       }
     }
 
     if (!instance) {
       throw new ForbiddenException(
-        'Sem permissão para enviar — instância pertence a outro usuário ou você ainda não conectou a sua',
+        tenant?.pool_enabled
+          ? 'Lead não tem instância vinculada — peça pro super-admin conectar o número compartilhado.'
+          : 'Sem permissão para enviar — instância pertence a outro usuário ou você ainda não conectou a sua',
       );
     }
     if (!liveStatuses.includes(instance.status)) {
