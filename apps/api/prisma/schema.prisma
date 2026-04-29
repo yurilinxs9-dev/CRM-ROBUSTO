@@ -216,6 +216,7 @@ model Lead {
   tasks      Task[]
 
   assumed_at             DateTime?
+  is_private             Boolean          @default(false)
 
   @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
   @@index([responsavel_id, estagio_id])

@@ -257,6 +257,14 @@ export class LeadsService {
       where.responsavel_id = user.id;
     }
 
+    // Privacidade ao "Assumir": após claim, lead vira is_private=true e só
+    // o responsável enxerga — independente de role. Bloqueia outros gerentes
+    // ou super-admins de bisbilhotar conversas que outro gestor já assumiu.
+    where.OR = [
+      { is_private: false },
+      { responsavel_id: user.id },
+    ];
+
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
     if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
@@ -363,6 +371,12 @@ export class LeadsService {
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    // Lead privado só é acessível pelo responsável atual — vale pra todos
+    // os papéis. Bloqueia gerente/super-admin de abrir conversa que outro
+    // gestor já assumiu.
+    if (lead.is_private && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Lead privado');
+    }
     if (user.role === UserRole.OPERADOR) {
       const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       const accessible = lead.responsavel_id === user.id ||
@@ -708,7 +722,9 @@ export class LeadsService {
     // não eram pra ele.
     const result = await this.prisma.lead.updateMany({
       where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
-      data: { responsavel_id: user.id, assumed_at: new Date() },
+      // Assumir = privado. Após o claim, só o responsável vê o lead;
+      // managers e super-admins de outras instâncias deixam de enxergar.
+      data: { responsavel_id: user.id, assumed_at: new Date(), is_private: true },
     });
     if (result.count === 0) {
       throw new ConflictException('Lead ja atribuido ou nao encontrado');
@@ -803,7 +819,9 @@ export class LeadsService {
 
     await this.prisma.lead.update({
       where: { id: leadId },
-      data: { responsavel_id: null, assumed_at: null },
+      // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
+      // continuam protegidas pelo visible_to_user_id do dono anterior.
+      data: { responsavel_id: null, assumed_at: null, is_private: false },
     });
     await this.prisma.leadActivity.create({
       data: {
@@ -829,9 +847,15 @@ export class LeadsService {
         responsavel_id: true,
         instancia_whatsapp: true,
         assumed_at: true,
+        is_private: true,
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    // Lead privado: só o responsável atual lê msgs. Mesmo bypass de manager
+    // não vale aqui — privacidade total após "Assumir".
+    if (lead.is_private && lead.responsavel_id !== user.id) {
+      return { messages: [], nextCursor: undefined };
+    }
     const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
     const accessible = lead.responsavel_id === user.id ||
       (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
