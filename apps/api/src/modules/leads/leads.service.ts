@@ -962,9 +962,30 @@ export class LeadsService {
   async markAsRead(leadId: string, user: AuthUser) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true },
+      select: {
+        id: true,
+        telefone: true,
+        instancia_whatsapp: true,
+      },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+
+    // IDs das msgs ainda não-lidas — precisamos antes do update pra mandar
+    // ack pro WhatsApp. Sem isso, o check azul não aparece no celular nativo
+    // do remetente (WhatsApp Web infere via presence; mobile não).
+    const unreadIncoming = await this.prisma.message.findMany({
+      where: {
+        lead_id: leadId,
+        direction: 'INCOMING',
+        status: { not: 'READ' },
+        whatsapp_message_id: { not: null },
+      },
+      select: { whatsapp_message_id: true },
+    });
+    const messageIds = unreadIncoming
+      .map((m) => m.whatsapp_message_id)
+      .filter((id): id is string => !!id);
+
     await this.prisma.lead.update({
       where: { id: leadId },
       data: { mensagens_nao_lidas: 0 },
@@ -974,5 +995,26 @@ export class LeadsService {
       data: { status: 'READ' },
     });
     await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUnreadReset(leadId, user.tenantId);
+
+    // Dispara ack pro WhatsApp em background — não bloqueia a resposta HTTP.
+    // Se a instância não tem token (offline ou removida), ignora silenciosamente.
+    if (lead.instancia_whatsapp) {
+      const instance = await this.prisma.whatsappInstance.findFirst({
+        where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
+        select: { config: true },
+      });
+      const cfg = (instance?.config ?? {}) as InstanceConfig;
+      const token = cfg.uazapi_token;
+      if (token) {
+        this.instances
+          .markChatRead(token, lead.telefone, messageIds)
+          .catch((err: unknown) =>
+            this.logger.warn(
+              `markChatRead UazAPI falhou lead=${leadId}: ${String(err)}`,
+            ),
+          );
+      }
+    }
   }
 }

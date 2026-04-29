@@ -260,6 +260,55 @@ export class InstancesService {
     }
   }
 
+  /**
+   * Marca msgs como lidas no WhatsApp do remetente (check azul no celular
+   * nativo) + reseta contador de não lidas no UazAPI. Best-effort: erros
+   * só logam, não derrubam o fluxo de leitura local.
+   */
+  async markChatRead(
+    token: string,
+    number: string,
+    messageIds: string[],
+  ): Promise<void> {
+    if (!token || !number) return;
+
+    if (messageIds.length > 0) {
+      // UazAPI aceita até ~100 ids por chamada. Lotes maiores são raros.
+      const batches: string[][] = [];
+      for (let i = 0; i < messageIds.length; i += 100) {
+        batches.push(messageIds.slice(i, i + 100));
+      }
+      for (const batch of batches) {
+        await firstValueFrom(
+          this.http.post(
+            `${this.baseUrl}/message/markread`,
+            { number, id: batch },
+            { headers: this.headers(token), timeout: 10000 },
+          ),
+        ).catch((err: unknown) => {
+          this.logger.warn(
+            `markread falhou number=${number} batch=${batch.length}: ${String(err)}`,
+          );
+          return null;
+        });
+      }
+    }
+
+    // Sincroniza contador de não-lidas no app oficial (sem isso, o badge
+    // do WhatsApp Business no celular continua marcando "X não lidas"
+    // mesmo após o operador abrir o chat no CRM).
+    await firstValueFrom(
+      this.http.post(
+        `${this.baseUrl}/chat/read`,
+        { number, read: true },
+        { headers: this.headers(token), timeout: 10000 },
+      ),
+    ).catch((err: unknown) => {
+      this.logger.warn(`chat/read falhou number=${number}: ${String(err)}`);
+      return null;
+    });
+  }
+
   async delete(nome: string, user: AuthUser) {
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome, tenant_id: user.tenantId },
