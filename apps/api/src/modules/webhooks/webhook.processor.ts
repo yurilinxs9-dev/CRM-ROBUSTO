@@ -526,7 +526,11 @@ export class WebhookProcessor extends WorkerHost {
     }
 
     // Sync profile (name + photo) in background — never blocks realtime.
-    if (lead.nome === lead.telefone || !lead.foto_url) {
+    // Trigger when name is placeholder, photo is missing, OR stored URL is a
+    // raw WhatsApp CDN link (`pps.whatsapp.net`) which expires within hours
+    // and starts returning 403 once the `oe=` timestamp passes.
+    const fotoStale = lead.foto_url?.includes('pps.whatsapp.net') ?? false;
+    if (lead.nome === lead.telefone || !lead.foto_url || fotoStale) {
       void this.leadsService.syncProfileSafe(lead.id);
     }
   }
@@ -989,36 +993,23 @@ export class WebhookProcessor extends WorkerHost {
       const nome = (contact?.pushName || contact?.name || undefined) as
         | string
         | undefined;
-      const foto_url = (contact?.profilePictureUrl || undefined) as
-        | string
-        | undefined;
-
-      const updateData: { nome?: string; foto_url?: string } = {};
-      // Only overwrite `nome` when the existing name is the bare phone digits
-      // (i.e. placeholder). Never clobber a real human name already set.
-      if (foto_url) updateData.foto_url = foto_url;
-      if (Object.keys(updateData).length === 0 && !nome) continue;
+      // NOTE: deliberately NOT persisting `contact.profilePictureUrl` here.
+      // Evolution forwards the raw `pps.whatsapp.net` signed URL, which expires
+      // within hours and then returns 403. The avatar is mirrored to Supabase
+      // Storage by `LeadsService.syncProfile()` (triggered on next inbound
+      // message and by the daily cron), so we just skip the photo at this
+      // bulk-upsert stage.
+      if (!nome) continue;
 
       await this.prisma.lead.updateMany({
         where: {
           telefone: phone,
           tenant_id: instance.tenant_id,
           instancia_whatsapp: instance.nome,
+          nome: phone, // only when still the placeholder
         },
-        data: updateData,
+        data: { nome },
       });
-
-      if (nome) {
-        await this.prisma.lead.updateMany({
-          where: {
-            telefone: phone,
-            tenant_id: instance.tenant_id,
-            instancia_whatsapp: instance.nome,
-            nome: phone, // only when still the placeholder
-          },
-          data: { nome },
-        });
-      }
     }
   }
 }

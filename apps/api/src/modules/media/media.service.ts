@@ -37,4 +37,43 @@ export class MediaService {
   async delete(path: string): Promise<void> {
     await this.supabase.storage.from(this.bucket).remove([path]);
   }
+
+  /**
+   * Download remote image → upload to Storage → return signed URL.
+   * Used to mirror short-lived signed URLs (e.g. pps.whatsapp.net avatar URLs
+   * with embedded `oh=`/`oe=` params) into our own bucket so the frontend
+   * never depends on third-party expiry windows.
+   */
+  async mirrorFromUrl(
+    path: string,
+    srcUrl: string,
+    opts: { maxBytes?: number; expiresIn?: number; timeoutMs?: number } = {},
+  ): Promise<string> {
+    const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
+    const expiresIn = opts.expiresIn ?? 60 * 60 * 24 * 365;
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(srcUrl, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${srcUrl}`);
+
+    const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
+    if (!contentType.startsWith('image/')) {
+      throw new Error(`Unexpected content-type: ${contentType}`);
+    }
+
+    const ab = await res.arrayBuffer();
+    if (ab.byteLength > maxBytes) {
+      throw new Error(`Image too large: ${ab.byteLength} > ${maxBytes}`);
+    }
+
+    await this.upload(path, Buffer.from(ab), contentType);
+    return this.getSignedUrl(path, expiresIn);
+  }
 }

@@ -159,7 +159,16 @@ export class LeadsService {
     if (profile.name && (opts?.force || lead.nome === lead.telefone)) {
       data.nome = profile.name;
     }
-    if (profile.imageUrl) data.foto_url = profile.imageUrl;
+    if (profile.imageUrl) {
+      try {
+        data.foto_url = await this.media.mirrorFromUrl(
+          `avatars/${leadId}`,
+          profile.imageUrl,
+        );
+      } catch (err) {
+        this.logger.warn(`Falha ao espelhar avatar do lead ${leadId}: ${String(err)}`);
+      }
+    }
     if (Object.keys(data).length === 0) return lead;
     return this.prisma.lead.update({ where: { id: leadId }, data });
   }
