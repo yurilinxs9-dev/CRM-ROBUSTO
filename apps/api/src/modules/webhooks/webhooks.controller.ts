@@ -1,9 +1,25 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Logger,
+  Param,
+  Post,
+  Req,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { Request } from 'express';
+import * as crypto from 'node:crypto';
+import { z } from 'zod';
 import { Public } from '../../common/decorators/public.decorator';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { z } from 'zod';
+import { hashTruncated } from '../../common/utils/hash-truncated';
+import {
+  WebhookContext,
+  WebhookSecretGuard,
+} from './guards/webhook-secret.guard';
 
 const webhookSchema = z.object({
   event: z.string(),
@@ -14,6 +30,8 @@ const webhookSchema = z.object({
 
 @Controller('webhook')
 export class WebhooksController {
+  private readonly logger = new Logger(WebhooksController.name);
+
   constructor(
     @InjectQueue('webhooks') private webhookQueue: Queue,
     private prisma: PrismaService,
@@ -70,12 +88,6 @@ export class WebhooksController {
   @Post('uazapi')
   async handleUazapi(@Body() body: unknown) {
     const payload = (body ?? {}) as Record<string, unknown>;
-    const rawEvent =
-      (payload.EventType as string | undefined) ??
-      (payload.event as string | undefined) ??
-      'unknown';
-    const normalizedEvent = `uazapi.${rawEvent}`;
-
     const instanceField = payload.instance as Record<string, unknown> | undefined;
     const instanceName =
       (payload.instanceName as string | undefined) ??
@@ -83,14 +95,81 @@ export class WebhooksController {
       (instanceField?.name as string | undefined) ??
       null;
 
-    const normalized: Record<string, unknown> = {
-      ...payload,
-      event: normalizedEvent,
-    };
-
     const tenantId =
       (await this.resolveTenantByUazapiToken(payload.token as string | undefined)) ??
       (await this.resolveTenantByInstanceName(instanceName));
+
+    this.logger.warn({
+      event: 'webhook.uazapi.legacy_endpoint_used',
+      migration_eligible: tenantId !== null,
+      instance_hint: instanceName ? hashTruncated(instanceName) : null,
+    });
+
+    return this.enqueueUazapi(payload, tenantId, instanceName);
+  }
+
+  @Public()
+  @UseGuards(WebhookSecretGuard)
+  @Post('uazapi/:instanceId/:webhookSecret')
+  async handleUazapiAuthenticated(
+    @Param('instanceId') _instanceId: string,
+    @Body() body: Record<string, unknown>,
+    @Req() req: Request,
+  ) {
+    const ctx = (req as Request & { webhookContext?: WebhookContext })
+      .webhookContext;
+    if (!ctx) {
+      throw new UnauthorizedException();
+    }
+
+    const payloadToken = body?.token;
+    if (typeof payloadToken !== 'string') {
+      this.logger.warn({
+        event: 'webhook.uazapi.payload_token_mismatch',
+        reason: 'not_string',
+        instance_id_hash: hashTruncated(ctx.instanceId),
+      });
+      throw new UnauthorizedException();
+    }
+    const providedToken = Buffer.from(payloadToken, 'utf8');
+    const expectedToken = Buffer.from(ctx.uazapiToken, 'utf8');
+    if (
+      providedToken.length !== expectedToken.length ||
+      !crypto.timingSafeEqual(providedToken, expectedToken)
+    ) {
+      this.logger.warn({
+        event: 'webhook.uazapi.payload_token_mismatch',
+        reason: 'mismatch',
+        instance_id_hash: hashTruncated(ctx.instanceId),
+      });
+      throw new UnauthorizedException();
+    }
+
+    const instanceField = body.instance as Record<string, unknown> | undefined;
+    const instanceName =
+      (body.instanceName as string | undefined) ??
+      (body.instanceId as string | undefined) ??
+      (instanceField?.name as string | undefined) ??
+      null;
+
+    return this.enqueueUazapi(body, ctx.tenantId, instanceName);
+  }
+
+  private async enqueueUazapi(
+    body: Record<string, unknown>,
+    tenantId: string | null,
+    instanceName: string | null,
+  ): Promise<{ received: true }> {
+    const rawEvent =
+      (body.EventType as string | undefined) ??
+      (body.event as string | undefined) ??
+      'unknown';
+    const normalizedEvent = `uazapi.${rawEvent}`;
+
+    const normalized: Record<string, unknown> = {
+      ...body,
+      event: normalizedEvent,
+    };
 
     await this.prisma.webhookLog.create({
       data: {

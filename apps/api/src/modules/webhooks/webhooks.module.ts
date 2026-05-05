@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from './webhooks.controller';
 import { WebhookProcessor } from './webhook.processor';
+import { WebhookSecretGuard } from './guards/webhook-secret.guard';
 import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
@@ -33,6 +34,6 @@ import { PushModule } from '../push/push.module';
     PushModule,
   ],
   controllers: [WebhooksController],
-  providers: [WebhookProcessor],
+  providers: [WebhookProcessor, WebhookSecretGuard],
 })
 export class WebhooksModule {}
