@@ -20,6 +20,7 @@ import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 const sendTextSchema = z.object({
   lead_id: z.string().uuid(),
   content: z.string().min(1),
+  respond_as_owner: z.boolean().optional().default(false),
 });
 
 const internalNoteSchema = z.object({
@@ -86,6 +87,36 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+
+    // Visualizador: nunca envia mensagens.
+    if (user.role === UserRole.VISUALIZADOR) {
+      throw new ForbiddenException('Visualizador nao pode enviar mensagens');
+    }
+    // is_private: somente o responsável pode enviar (gerente/super-admin
+    // tambem nao bisbilhotam lead privado de outro gestor).
+    if (lead.is_private && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Lead privado');
+    }
+    // Operador: precisa ser responsavel OU dono da instancia do lead.
+    if (user.role === UserRole.OPERADOR) {
+      const ownedInstances = (
+        await this.prisma.whatsappInstance.findMany({
+          where: { owner_user_id: user.id, tenant_id: user.tenantId },
+          select: { nome: true },
+        })
+      ).map((r) => r.nome);
+      const accessible =
+        lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        throw new ForbiddenException(
+          lead.responsavel_id === null
+            ? 'Lead disponivel no escritorio — assuma para responder'
+            : 'Sem acesso a este lead',
+        );
+      }
+    }
+    // Gerente, SuperAdmin: passam direto.
 
     // Privacidade por instância MUDA conforme o modo:
     //  - Compartilhado (pool_enabled=true): instância é da equipe; qualquer
@@ -170,7 +201,6 @@ export class MessagesService {
   private async buildOutboundPrefix(
     tenantId: string,
     userId: string,
-    userName: string,
     hasResponsavel: boolean,
   ): Promise<string> {
     if (!hasResponsavel) return '';
@@ -182,20 +212,53 @@ export class MessagesService {
     if (tenant.prefix_enabled === false) return '';
     const u = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { titulo: true, especialidade: true },
+      select: { nome: true, titulo: true, especialidade: true },
     });
-    const titulo = u?.titulo ?? null;
-    const especialidade = u?.especialidade ?? null;
-    const namePart = titulo ? `${titulo} ${userName}` : userName;
+    if (!u) return '';
+    const titulo = u.titulo ?? null;
+    const especialidade = u.especialidade ?? null;
+    const namePart = titulo ? `${titulo} ${u.nome}` : u.nome;
     const label = especialidade ? `${namePart} — ${especialidade}` : namePart;
     return `*${label}*\n\n`;
   }
 
+  /**
+   * Decide qual user_id alimenta o prefixo da mensagem.
+   *
+   * Default: user logado.
+   * Override: se gerente+ ativou respond_as_owner em lead com responsavel
+   * diferente dele, usa o responsavel — mensagem aparece como se fosse
+   * do dono do lead (super admin tipicamente). sent_by_user_id continua
+   * sendo o user logado real (audit trail).
+   */
+  private resolvePrefixIdentity(
+    user: AuthUser,
+    lead: { responsavel_id: string | null },
+    respondAsOwner: boolean,
+  ): string {
+    const isManagerOrAbove =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.GERENTE;
+    if (
+      respondAsOwner &&
+      isManagerOrAbove &&
+      lead.responsavel_id !== null &&
+      lead.responsavel_id !== user.id
+    ) {
+      return lead.responsavel_id;
+    }
+    return user.id;
+  }
+
   async sendText(data: unknown, user: AuthUser) {
-    const { lead_id, content } = sendTextSchema.parse(data);
+    const { lead_id, content, respond_as_owner } = sendTextSchema.parse(data);
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
-    const prefix = await this.buildOutboundPrefix(user.tenantId, user.id, user.nome, lead.responsavel_id !== null);
+    const prefixUserId = this.resolvePrefixIdentity(user, lead, respond_as_owner);
+    const prefix = await this.buildOutboundPrefix(
+      user.tenantId,
+      prefixUserId,
+      lead.responsavel_id !== null,
+    );
     const outboundContent = prefix ? prefix + content : content;
 
     const localId = uuid();
@@ -247,6 +310,9 @@ export class MessagesService {
 
   async createInternalNote(data: unknown, user: AuthUser) {
     const { lead_id, content } = internalNoteSchema.parse(data);
+    if (user.role === UserRole.VISUALIZADOR) {
+      throw new ForbiddenException('Visualizador nao pode criar notas');
+    }
     const lead = await this.prisma.lead.findFirst({
       where: { id: lead_id, tenant_id: user.tenantId },
       select: { id: true, responsavel_id: true, instancia_whatsapp: true },
@@ -335,8 +401,12 @@ export class MessagesService {
   }
 
   async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser) {
-    const { lead_id, caption } = z
-      .object({ lead_id: z.string().uuid(), caption: z.string().optional() })
+    const { lead_id, caption, respond_as_owner } = z
+      .object({
+        lead_id: z.string().uuid(),
+        caption: z.string().optional(),
+        respond_as_owner: z.coerce.boolean().optional().default(false),
+      })
       .parse(body);
     if (!file) throw new NotFoundException('Arquivo ausente');
 
@@ -373,7 +443,13 @@ export class MessagesService {
     const msgType = kindToMessageType(processed.kind);
     const uazMediaType: 'image' | 'video' | 'audio' | 'document' = processed.kind === 'document' ? 'document' : processed.kind;
 
-    const prefix = caption ? await this.buildOutboundPrefix(user.tenantId, user.id, user.nome, lead.responsavel_id !== null) : '';
+    const prefix = caption
+      ? await this.buildOutboundPrefix(
+          user.tenantId,
+          this.resolvePrefixIdentity(user, lead, respond_as_owner),
+          lead.responsavel_id !== null,
+        )
+      : '';
     const outboundCaption = prefix && caption ? prefix + caption : (caption ?? undefined);
 
     const message = await this.prisma.message.create({
@@ -492,23 +568,46 @@ export class MessagesService {
   async getHistory(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true, is_private: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const ownedInstances = (await this.prisma.whatsappInstance.findMany({
-      where: { owner_user_id: user.id, tenant_id: user.tenantId },
-      select: { nome: true },
-    })).map((r) => r.nome);
-    const accessible = lead.responsavel_id === user.id ||
-      (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-    if (!accessible) {
+
+    // Visualizador: nao acessa historico.
+    if (user.role === UserRole.VISUALIZADOR) {
       return { messages: [], nextCursor: undefined };
     }
+    // is_private blinda contra todos exceto responsavel.
+    if (lead.is_private && lead.responsavel_id !== user.id) {
+      return { messages: [], nextCursor: undefined };
+    }
+
+    let ownedInstances: string[] = [];
+    if (user.role === UserRole.OPERADOR) {
+      ownedInstances = (
+        await this.prisma.whatsappInstance.findMany({
+          where: { owner_user_id: user.id, tenant_id: user.tenantId },
+          select: { nome: true },
+        })
+      ).map((r) => r.nome);
+      const accessible =
+        lead.responsavel_id === user.id ||
+        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      if (!accessible) {
+        return { messages: [], nextCursor: undefined };
+      }
+    }
+    // Gerente, SuperAdmin: passam direto, veem todas as mensagens do lead.
+
+    const messagesFilter =
+      user.role === UserRole.OPERADOR && ownedInstances.length
+        ? { instance_name: { in: ownedInstances } }
+        : {};
+
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(ownedInstances.length ? { instance_name: { in: ownedInstances } } : {}),
+        ...messagesFilter,
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,

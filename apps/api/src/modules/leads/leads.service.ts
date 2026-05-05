@@ -270,8 +270,12 @@ export class LeadsService {
     // veem APENAS leads onde são o responsável atual. Sem OR por instância
     // — operador não enxerga lead alheio só porque a msg passou pelo número
     // dele, evita leak pelo Kanban.
-    const isChatScope = filters.scope === 'chat';
-    if (user.role === UserRole.OPERADOR || isChatScope) {
+    // Operador e Visualizador sao restritos ao escopo proprio em qualquer view.
+    // Gerente e SuperAdmin veem tudo do tenant (filtro de is_private aplicado abaixo).
+    if (
+      user.role === UserRole.OPERADOR ||
+      user.role === UserRole.VISUALIZADOR
+    ) {
       where.responsavel_id = user.id;
     }
 
@@ -395,7 +399,10 @@ export class LeadsService {
     if (lead.is_private && lead.responsavel_id !== user.id) {
       throw new ForbiddenException('Lead privado');
     }
-    if (user.role === UserRole.OPERADOR) {
+    if (
+      user.role === UserRole.OPERADOR ||
+      user.role === UserRole.VISUALIZADOR
+    ) {
       const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       const accessible = lead.responsavel_id === user.id ||
         (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
