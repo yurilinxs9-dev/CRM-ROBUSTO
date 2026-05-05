@@ -25,17 +25,26 @@ async function bootstrap() {
     crossOriginResourcePolicy: false,
   }));
 
-  // Increase body size limits to support base64-encoded audio uploads (~40MB binary → ~53MB base64).
-  app.use(json({ limit: '50mb' }));
-  app.use(urlencoded({ extended: true, limit: '50mb' }));
-  app.use(raw({ limit: '50mb', type: 'application/octet-stream' }));
+  // Body limits: tight default to limit DoS surface; the upload-heavy paths
+  // (media uploads, base64 audio in chat, raw octet-stream binaries) keep the
+  // larger 60mb ceiling for ~40MB binaries that balloon to ~53MB once base64-encoded.
+  const LARGE_BODY_PATHS = ['/api/media', '/api/messages'];
+  for (const path of LARGE_BODY_PATHS) {
+    app.use(path, json({ limit: '60mb' }));
+    app.use(path, urlencoded({ extended: true, limit: '60mb' }));
+  }
+  app.use(json({ limit: '1mb' }));
+  app.use(urlencoded({ extended: true, limit: '1mb' }));
+  app.use(raw({ limit: '60mb', type: 'application/octet-stream' }));
 
   // Parse Cookie header so AuthController.refresh can read req.cookies.refresh_token.
   // Without this every /api/auth/refresh would 500 even with a valid cookie present.
   app.use(cookieParser());
 
   app.setGlobalPrefix('api');
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+  );
 
   const redisIoAdapter = new RedisIoAdapter(app);
   await redisIoAdapter.connectToRedis();

@@ -27,13 +27,15 @@ const refreshCookieSameSite =
   process.env.NODE_ENV === 'production' ? ('none' as const) : ('lax' as const);
 const refreshCookieSecure = process.env.NODE_ENV === 'production';
 
-const registerSchema = z.object({
-  nome: z.string().min(2).max(100),
-  email: z.string().email(),
-  senha: z.string().min(8).max(100),
-  workspace_name: z.string().min(1).max(100).optional(),
-  account_model: z.enum(['shared', 'individual']).optional(),
-});
+const registerSchema = z
+  .object({
+    nome: z.string().min(2).max(100),
+    email: z.string().email(),
+    senha: z.string().min(8).max(100),
+    workspace_name: z.string().min(1).max(100).optional(),
+    account_model: z.enum(['shared', 'individual']).optional(),
+  })
+  .strict();
 
 @Controller('auth')
 export class AuthController {
