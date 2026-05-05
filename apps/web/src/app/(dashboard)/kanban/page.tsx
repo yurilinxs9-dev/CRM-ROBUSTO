@@ -93,6 +93,8 @@ export default function KanbanPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const userRole = useAuthStore((s) => s.user?.role);
+  const isOperador = userRole === 'OPERADOR';
   const isPoolEnabled = useIsPoolEnabled();
   const [activeTab, setActiveTab] = useState<'escritorio' | 'meus'>(() => {
     try { return (localStorage.getItem('kanban-tab') as 'escritorio' | 'meus') ?? 'meus'; }
@@ -240,7 +242,7 @@ export default function KanbanPage() {
     [filteredLeads, currentUserId],
   );
   const escritorioCount = useMemo(
-    () => filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId).length,
+    () => filteredLeads.filter((l) => !l.responsavel || l.responsavel.id !== currentUserId).length,
     [filteredLeads, currentUserId],
   );
 
@@ -250,9 +252,12 @@ export default function KanbanPage() {
     // selecionando um operador específico vê os leads dele inteiros, sem
     // restrição de "meus" / "escritório".
     if (responsavelFilter !== 'ALL') return filteredLeads;
-    if (activeTab === 'meus') return filteredLeads.filter((l) => l.responsavel?.id === currentUserId);
-    return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id === currentUserId);
-  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId, responsavelFilter]);
+    // Operador nao tem aba "Escritório" — sempre vê só os próprios.
+    const effectiveTab = isOperador ? 'meus' : activeTab;
+    if (effectiveTab === 'meus') return filteredLeads.filter((l) => l.responsavel?.id === currentUserId);
+    // Escritório: leads sem dono OU de outros usuarios (NÃO os meus).
+    return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id !== currentUserId);
+  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId, responsavelFilter, isOperador]);
 
   // Lista pra filtro "ver kanban de cada responsável". Vem de tenantUsers
   // (não dos leads) pra incluir operadores mesmo que ainda não tenham lead
@@ -832,7 +837,7 @@ export default function KanbanPage() {
       {isPoolEnabled && (
         <div className="px-4 pt-2 border-b">
           <Tabs
-            value={activeTab}
+            value={isOperador ? 'meus' : activeTab}
             onValueChange={(v) => {
               const tab = v as 'escritorio' | 'meus';
               setActiveTab(tab);
@@ -840,9 +845,11 @@ export default function KanbanPage() {
             }}
           >
             <TabsList>
-              <TabsTrigger value="escritorio">
-                📂 Escritório ({escritorioCount})
-              </TabsTrigger>
+              {!isOperador && (
+                <TabsTrigger value="escritorio">
+                  📂 Escritório ({escritorioCount})
+                </TabsTrigger>
+              )}
               <TabsTrigger value="meus">
                 👤 Meus Leads ({meuCount})
               </TabsTrigger>
