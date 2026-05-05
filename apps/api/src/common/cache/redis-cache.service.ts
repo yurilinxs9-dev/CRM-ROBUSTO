@@ -13,10 +13,7 @@ export class RedisCacheService implements OnModuleDestroy {
   private readonly client: Redis | null;
 
   constructor(config: ConfigService) {
-    const url =
-      config.get<string>('REDIS_URL') ??
-      config.get<string>('UPSTASH_REDIS_TLS_URL') ??
-      config.get<string>('UPSTASH_REDIS_URL');
+    const url = config.get<string>('REDIS_URL');
 
     if (!url) {
       this.logger.warn('REDIS_URL not set — RedisCacheService disabled');
