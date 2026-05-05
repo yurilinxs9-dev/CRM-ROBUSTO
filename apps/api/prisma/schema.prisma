@@ -294,6 +294,7 @@ model WhatsappInstance {
   status         String    @default("disconnected")
   ultimo_check   DateTime?
   config         Json?
+  webhook_secret String?   @unique @db.VarChar(64)
   owner_user_id  String
   owner          User      @relation("OwnedInstances", fields: [owner_user_id], references: [id])
   tenant_id      String
