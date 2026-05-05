@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 
 @Injectable()
 export class MediaService {
@@ -12,6 +13,11 @@ export class MediaService {
     this.supabase = createClient(
       config.get('SUPABASE_URL')!,
       config.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      {
+        realtime: {
+          transport: WebSocket as unknown as typeof globalThis.WebSocket,
+        },
+      },
     );
     this.bucket = config.get('SUPABASE_STORAGE_BUCKET', 'crm-media') || 'crm-media';
   }
