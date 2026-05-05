@@ -16,7 +16,7 @@ foto, vídeo, documentos).
 - **Backend:** NestJS + Socket.IO → VPS Docker (187.127.11.117)
 - **DB:** Supabase PostgreSQL + Supabase Storage
 - **ORM:** Prisma (SEMPRE usar directUrl para migrations)
-- **Filas:** BullMQ + Upstash Redis TLS
+- **Filas:** BullMQ + Redis (container `crm-redis` em docker-compose)
 - **WhatsApp:** UazAPI (webhooks + REST)
 - **Observabilidade:** Pino logs + Sentry (DSN-gated)
 - **Logs/headers:** Helmet + Pino com redaction
@@ -123,13 +123,13 @@ foto, vídeo, documentos).
 
 ### docker-compose.yml (na raiz do repo)
 - `crm-backend` (NestJS), `nginx` (alpine), `uptime-kuma`
-- Passa envs: DATABASE_URL, DIRECT_URL, UPSTASH_REDIS_TLS_URL, UAZAPI_*, SUPABASE_*, JWT_*, WEBHOOK_SECRET, FRONTEND_URL, FFMPEG_PATH, FFPROBE_PATH, TMP_VIDEO_DIR, LOG_LEVEL, UAZAPI_PTT_FIELD, AUDIO_SEND_STRATEGY, SENTRY_*
+- Passa envs: DATABASE_URL, DIRECT_URL, REDIS_URL, UAZAPI_*, SUPABASE_*, JWT_*, WEBHOOK_SECRET, FRONTEND_URL, FFMPEG_PATH, FFPROBE_PATH, TMP_VIDEO_DIR, LOG_LEVEL, UAZAPI_PTT_FIELD, AUDIO_SEND_STRATEGY, SENTRY_*
 - Resource limits: 2G mem, 0.8 CPU
 
 ### Gotchas conhecidos
 - **Dockerfile usa npm**, repo usa pnpm. `package-lock.json` desatualizado no VPS precisou ser removido para `npm install` funcionar com package.json novo
 - **`file-type@22` é ESM-only** — tsc com `moduleResolution:node` legacy não lê `exports` field. Fix: shim em `apps/api/src/types/file-type.d.ts`. Alternativa seria migrar tsconfig para `moduleResolution:node16` mas quebraria outros imports CJS
-- **Upstash Redis com `volatile-lru`** — BullMQ recomenda `noeviction`. Ajustar no console Upstash
+- **Redis container** já usa `maxmemory-policy noeviction` (correto para BullMQ). Caso troque por managed Redis no futuro, conferir esta config — `volatile-lru` pode descartar jobs in-flight
 - `.env` do repo raiz é compartilhado pelos dois apps; ConfigModule em `apps/api` lê `['.env','../../.env']`
 
 ---
@@ -183,7 +183,7 @@ foto, vídeo, documentos).
 
 ```bash
 # Core
-DATABASE_URL, DIRECT_URL, UPSTASH_REDIS_TLS_URL, JWT_SECRET,
+DATABASE_URL, DIRECT_URL, REDIS_URL, JWT_SECRET,
 JWT_REFRESH_SECRET, WEBHOOK_SECRET, FRONTEND_URL
 
 # UazAPI

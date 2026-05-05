@@ -5,8 +5,8 @@
 - Backend: NestJS + Socket.IO → VPS Docker (187.127.11.117)
 - DB: Supabase PostgreSQL + Storage
 - ORM: Prisma (SEMPRE usar directUrl para migrations)
-- Filas: BullMQ + Upstash Redis TLS
-- WhatsApp: Evolution API v2
+- Filas: BullMQ + Redis (container crm-redis)
+- WhatsApp: UazAPI (Baileys-compatible payloads)
 
 ## Regras CRITICAS
 1. NUNCA processar webhooks sincronamente — SEMPRE BullMQ

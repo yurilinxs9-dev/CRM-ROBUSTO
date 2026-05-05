@@ -1,6 +1,6 @@
 -- ============================================================
 -- CRM WhatsApp — Supabase Setup
--- Executar em: https://hrebavqmbvsuhwbryvwg.supabase.co
+-- Executar em: https://dzjjpuwqhphgcevjvvbh.supabase.co (sa-east-1)
 -- SQL Editor → New Query → Cole tudo e execute
 -- ============================================================
 

@@ -32,7 +32,6 @@ log "Configurando firewall..."
 ufw allow ssh
 ufw allow 80/tcp
 ufw allow 3001/tcp
-ufw allow 8080/tcp
 ufw allow 3002/tcp
 ufw --force enable
 ufw status
@@ -52,15 +51,8 @@ SUPABASE_SERVICE_ROLE_KEY=CHANGE_ME
 DATABASE_URL=CHANGE_ME
 DIRECT_URL=CHANGE_ME
 
-# Upstash Redis (TLS)
-UPSTASH_REDIS_TLS_URL=CHANGE_ME
-
-# Evolution API
-EVOLUTION_API_KEY=CHANGE_ME
-EVOLUTION_API_URL_INTERNAL=http://evolution-api:8080
-
-# Postgres dedicado da Evolution API
-POSTGRES_EVOLUTION_PASSWORD=CHANGE_ME
+# Redis (in-cluster container `crm-redis` from docker-compose.yml)
+REDIS_URL=redis://crm-redis:6379
 
 # JWT
 JWT_SECRET=CHANGE_ME
@@ -81,22 +73,31 @@ ENVEOF
 chmod 600 /opt/crm-whatsapp/.env
 warn ".env criado — edite /opt/crm-whatsapp/.env com suas credenciais reais antes de subir os containers!"
 
-# 6. Backup automático
-log "Configurando backup automático..."
-cat > /opt/crm-whatsapp/scripts/backup.sh << 'BACKUPEOF'
-#!/bin/bash
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR=/opt/crm-whatsapp/backups
-mkdir -p $BACKUP_DIR
-docker run --rm \
-  -v crm-whatsapp_evolution_instances:/data \
-  -v $BACKUP_DIR:/backup \
-  alpine tar czf /backup/evolution_$DATE.tar.gz -C /data . 2>/dev/null || true
-find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
-echo "[$(date)] Backup: $DATE"
-BACKUPEOF
-chmod +x /opt/crm-whatsapp/scripts/backup.sh
-(crontab -l 2>/dev/null; echo "0 3 * * * /opt/crm-whatsapp/scripts/backup.sh >> /opt/crm-whatsapp/logs/backup.log 2>&1") | crontab -
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │ Backup automation disabled                                          │
+# │ Old target volume `crm-whatsapp_evolution_instances` no longer      │
+# │ exists. Re-enable after deciding new strategy:                      │
+# │   - Redis dump: docker exec crm-redis redis-cli SAVE + cp dump.rdb  │
+# │   - Supabase: managed PITR (paid tier)                              │
+# │   - VPS-level: Hostinger snapshot API                               │
+# │ Until then, this VPS has NO automated backup.                       │
+# └─────────────────────────────────────────────────────────────────────┘
+# # 6. Backup automático
+# log "Configurando backup automático..."
+# cat > /opt/crm-whatsapp/scripts/backup.sh << 'BACKUPEOF'
+# #!/bin/bash
+# DATE=$(date +%Y%m%d_%H%M%S)
+# BACKUP_DIR=/opt/crm-whatsapp/backups
+# mkdir -p $BACKUP_DIR
+# docker run --rm \
+#   -v crm-whatsapp_evolution_instances:/data \
+#   -v $BACKUP_DIR:/backup \
+#   alpine tar czf /backup/evolution_$DATE.tar.gz -C /data . 2>/dev/null || true
+# find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
+# echo "[$(date)] Backup: $DATE"
+# BACKUPEOF
+# chmod +x /opt/crm-whatsapp/scripts/backup.sh
+# (crontab -l 2>/dev/null; echo "0 3 * * * /opt/crm-whatsapp/scripts/backup.sh >> /opt/crm-whatsapp/logs/backup.log 2>&1") | crontab -
 
 # 7. fail2ban
 log "Configurando fail2ban..."
