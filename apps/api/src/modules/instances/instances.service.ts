@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
 import type { AuthUser } from '../../common/types/auth-user';
 import { UserRole } from '../../common/types/roles';
+import { hashTruncated } from '../../common/utils/hash-truncated';
 
 interface UazApiCreateResponse {
   instance: {
@@ -54,6 +55,7 @@ export class InstancesService implements OnModuleInit {
   private readonly baseUrl: string;
   private readonly adminToken: string;
   private readonly webhookUrl: string;
+  private readonly publicUrl: string;
 
   constructor(
     private http: HttpService,
@@ -62,8 +64,8 @@ export class InstancesService implements OnModuleInit {
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
-    const publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
-    this.webhookUrl = `${publicUrl}/api/webhook/uazapi`;
+    this.publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
+    this.webhookUrl = `${this.publicUrl}/api/webhook/uazapi`;
   }
 
   /**
@@ -91,14 +93,34 @@ export class InstancesService implements OnModuleInit {
 
   async syncAllWebhookUrls(): Promise<{ checked: number; updated: number; skipped: number }> {
     const instances = await this.prisma.whatsappInstance.findMany({
-      select: { nome: true, config: true },
+      select: { id: true, nome: true, config: true, webhook_secret: true },
     });
     const targets = instances
       .map((i) => {
         const cfg = (i.config ?? {}) as InstanceConfig;
-        return cfg.uazapi_token ? { nome: i.nome, token: cfg.uazapi_token } : null;
+        if (!cfg.uazapi_token) return null;
+        if (!i.webhook_secret) {
+          this.logger.warn({
+            event: 'instances.healWebhooks.skip_no_secret',
+            instance_name_hash: hashTruncated(i.nome),
+          });
+          return null;
+        }
+        return {
+          id: i.id,
+          nome: i.nome,
+          token: cfg.uazapi_token,
+          webhookSecret: i.webhook_secret,
+        };
       })
-      .filter((x): x is { nome: string; token: string } => !!x);
+      .filter(
+        (x): x is {
+          id: string;
+          nome: string;
+          token: string;
+          webhookSecret: string;
+        } => !!x,
+      );
 
     let checked = 0;
     let updated = 0;
@@ -120,12 +142,19 @@ export class InstancesService implements OnModuleInit {
             }),
           );
           const currentUrl = Array.isArray(data) && data[0]?.url ? data[0].url : '';
-          if (currentUrl === this.webhookUrl) continue;
+          const expectedUrl = this.buildAuthenticatedWebhookUrl(
+            t.id,
+            t.webhookSecret,
+          );
+          if (currentUrl === expectedUrl) {
+            skipped++;
+            continue;
+          }
           await firstValueFrom(
             this.http.post(
               `${this.baseUrl}/webhook`,
               {
-                url: this.webhookUrl,
+                url: expectedUrl,
                 enabled: true,
                 events,
                 addUrlEvents: false,
@@ -136,7 +165,10 @@ export class InstancesService implements OnModuleInit {
             ),
           );
           updated++;
-          this.logger.log(`webhook re-sync ${t.nome}: ${currentUrl || '<vazio>'} → ${this.webhookUrl}`);
+          this.logger.log({
+            event: 'instances.healWebhooks.url_updated',
+            instance_name_hash: hashTruncated(t.nome),
+          });
         } catch (err: unknown) {
           // 401 = token stale (instância revogada/desconectada). Skip.
           skipped++;
@@ -161,6 +193,13 @@ export class InstancesService implements OnModuleInit {
 
   private adminHeaders(): Record<string, string> {
     return { admintoken: this.adminToken };
+  }
+
+  private buildAuthenticatedWebhookUrl(
+    instanceId: string,
+    webhookSecret: string,
+  ): string {
+    return `${this.publicUrl}/api/webhook/uazapi/${instanceId}/${webhookSecret}`;
   }
 
   private async loadInstanceTokenScoped(nome: string, tenantId: string): Promise<string> {
