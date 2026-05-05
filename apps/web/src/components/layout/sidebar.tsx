@@ -3,6 +3,7 @@
 import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
+import { useAuthStore } from '@/stores/auth.store';
 import { NavItem } from './nav-item';
 import { UserMenu } from './user-menu';
 
@@ -32,6 +33,12 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed = false, onNavigate, className }: SidebarProps) {
+  const role = useAuthStore((s) => s.user?.role);
+  // VISUALIZADOR nao tem acesso a Conversas — escondemos do menu.
+  const visibleNav = NAV_ITEMS.filter(
+    (item) => !(item.href === '/chat' && role === 'VISUALIZADOR'),
+  );
+
   return (
     <aside
       aria-label="Navegação principal"
@@ -56,7 +63,7 @@ export function Sidebar({ collapsed = false, onNavigate, className }: SidebarPro
 
       {/* Nav */}
       <nav className={cn('flex-1 space-y-1 overflow-y-auto p-3', collapsed && 'p-2')}>
-        {NAV_ITEMS.map((item) => (
+        {visibleNav.map((item) => (
           <NavItem
             key={item.href}
             href={item.href}
