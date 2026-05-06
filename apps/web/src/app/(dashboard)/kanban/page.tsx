@@ -200,6 +200,7 @@ export default function KanbanPage() {
     },
     enabled: !!activePipelineId,
     placeholderData: keepPreviousData,
+    refetchInterval: 3000,
   });
 
   const selectAllInStage = useCallback(
@@ -621,10 +622,11 @@ export default function KanbanPage() {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
     }
     for (const stageId of Object.keys(map)) {
-      map[stageId].sort(
-        (a, b) =>
-          (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER),
-      );
+      map[stageId].sort((a, b) => {
+        const dateA = a.ultima_interacao ? new Date(a.ultima_interacao).getTime() : 0;
+        const dateB = b.ultima_interacao ? new Date(b.ultima_interacao).getTime() : 0;
+        return dateB - dateA;
+      });
     }
     return map;
   }, [tabFilteredLeads, orderedStages]);
