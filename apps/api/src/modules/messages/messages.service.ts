@@ -20,7 +20,6 @@ import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 const sendTextSchema = z.object({
   lead_id: z.string().uuid(),
   content: z.string().min(1),
-  respond_as_owner: z.boolean().optional().default(false),
 });
 
 const internalNoteSchema = z.object({
@@ -222,41 +221,13 @@ export class MessagesService {
     return `*${label}*\n\n`;
   }
 
-  /**
-   * Decide qual user_id alimenta o prefixo da mensagem.
-   *
-   * Default: user logado.
-   * Override: se gerente+ ativou respond_as_owner em lead com responsavel
-   * diferente dele, usa o responsavel — mensagem aparece como se fosse
-   * do dono do lead (super admin tipicamente). sent_by_user_id continua
-   * sendo o user logado real (audit trail).
-   */
-  private resolvePrefixIdentity(
-    user: AuthUser,
-    lead: { responsavel_id: string | null },
-    respondAsOwner: boolean,
-  ): string {
-    const isManagerOrAbove =
-      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.GERENTE;
-    if (
-      respondAsOwner &&
-      isManagerOrAbove &&
-      lead.responsavel_id !== null &&
-      lead.responsavel_id !== user.id
-    ) {
-      return lead.responsavel_id;
-    }
-    return user.id;
-  }
-
   async sendText(data: unknown, user: AuthUser) {
-    const { lead_id, content, respond_as_owner } = sendTextSchema.parse(data);
+    const { lead_id, content } = sendTextSchema.parse(data);
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
-    const prefixUserId = this.resolvePrefixIdentity(user, lead, respond_as_owner);
     const prefix = await this.buildOutboundPrefix(
       user.tenantId,
-      prefixUserId,
+      user.id,
       lead.responsavel_id !== null,
     );
     const outboundContent = prefix ? prefix + content : content;
@@ -401,11 +372,10 @@ export class MessagesService {
   }
 
   async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser) {
-    const { lead_id, caption, respond_as_owner } = z
+    const { lead_id, caption } = z
       .object({
         lead_id: z.string().uuid(),
         caption: z.string().optional(),
-        respond_as_owner: z.coerce.boolean().optional().default(false),
       })
       .parse(body);
     if (!file) throw new NotFoundException('Arquivo ausente');
@@ -446,7 +416,7 @@ export class MessagesService {
     const prefix = caption
       ? await this.buildOutboundPrefix(
           user.tenantId,
-          this.resolvePrefixIdentity(user, lead, respond_as_owner),
+          user.id,
           lead.responsavel_id !== null,
         )
       : '';

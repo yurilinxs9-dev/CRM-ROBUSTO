@@ -58,13 +58,9 @@ interface ChatComposerProps {
   initialText?: string | null;
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
-  onSendText: (content: string, isInternalNote: boolean, respondAsOwner: boolean) => void;
+  onSendText: (content: string, isInternalNote: boolean) => void;
   onSendAudio: (blob: Blob, durationSec: number, waveformPeaks?: number[]) => void;
-  onSendMedia: (file: File, caption: string | undefined, respondAsOwner: boolean) => void;
-  /** When true, render the "Responder como X" toggle (manager+ viewing other user's lead). */
-  canRespondAsOwner?: boolean;
-  /** Display name of the lead's responsavel for the toggle label. */
-  ownerName?: string;
+  onSendMedia: (file: File, caption: string | undefined) => void;
 }
 
 function formatTimer(seconds: number): string {
@@ -83,12 +79,9 @@ export function ChatComposer({
   onSendText,
   onSendAudio,
   onSendMedia,
-  canRespondAsOwner = false,
-  ownerName,
 }: ChatComposerProps) {
   const [text, setText] = useState('');
   const [isNote, setIsNote] = useState(false);
-  const [respondAsOwner, setRespondAsOwner] = useState(false);
 
   const [emojiOpen, setEmojiOpen] = useState(false);
 
@@ -157,14 +150,13 @@ export function ChatComposer({
     const finalContent = replyTarget
       ? `> ${replyTarget.author}: ${replyTarget.preview}\n\n${content}`
       : content;
-    onSendText(finalContent, isNote, respondAsOwner);
+    onSendText(finalContent, isNote);
     setText('');
-    setRespondAsOwner(false);
     onCancelReply?.();
     setTimeout(() => {
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }, 0);
-  }, [text, isNote, respondAsOwner, onSendText, replyTarget, onCancelReply]);
+  }, [text, isNote, onSendText, replyTarget, onCancelReply]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -375,8 +367,7 @@ export function ChatComposer({
       return;
     }
     const caption = text.trim() || undefined;
-    onSendMedia(file, caption, respondAsOwner);
-    setRespondAsOwner(false);
+    onSendMedia(file, caption);
     if (caption) setText('');
   };
 
@@ -390,8 +381,7 @@ export function ChatComposer({
   const confirmPendingImage = () => {
     if (!pendingImage) return;
     const caption = pendingCaption.trim() || undefined;
-    onSendMedia(pendingImage, caption, respondAsOwner);
-    setRespondAsOwner(false);
+    onSendMedia(pendingImage, caption);
     if (text.trim() === pendingCaption.trim()) setText('');
     clearPendingImage();
   };
@@ -417,20 +407,6 @@ export function ChatComposer({
             — não será enviada ao cliente
           </span>
         </div>
-      )}
-
-      {canRespondAsOwner && ownerName && !recording && (
-        <label className="flex cursor-pointer items-center gap-2 border-b border-border/40 px-4 py-1.5 text-[12px] text-muted-foreground hover:bg-muted/30">
-          <input
-            type="checkbox"
-            checked={respondAsOwner}
-            onChange={(e) => setRespondAsOwner(e.target.checked)}
-            className="h-4 w-4 cursor-pointer"
-          />
-          <span>
-            Responder como <span className="font-medium text-foreground">{ownerName}</span>
-          </span>
-        </label>
       )}
 
       {recording ? (

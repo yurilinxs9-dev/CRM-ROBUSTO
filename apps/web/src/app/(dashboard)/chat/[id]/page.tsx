@@ -168,12 +168,10 @@ export default function ChatDetailPage() {
       content,
       isNote,
       tempId: _tempId,
-      respondAsOwner,
     }: {
       content: string;
       isNote: boolean;
       tempId: string;
-      respondAsOwner: boolean;
     }) => {
       if (isNote) {
         const res = await api.post('/api/messages/internal-note', {
@@ -185,7 +183,6 @@ export default function ChatDetailPage() {
       const res = await api.post('/api/messages/send-text', {
         lead_id: leadId,
         content,
-        respond_as_owner: respondAsOwner,
       });
       return res.data as ChatMessage;
     },
@@ -298,17 +295,14 @@ export default function ChatDetailPage() {
     mutationFn: async ({
       file,
       caption,
-      respondAsOwner,
     }: {
       file: File;
       caption?: string;
-      respondAsOwner: boolean;
     }) => {
       const fd = new FormData();
       fd.append('file', file, file.name);
       fd.append('lead_id', leadId);
       if (caption) fd.append('caption', caption);
-      fd.append('respond_as_owner', String(respondAsOwner));
       const res = await api.post('/api/messages/send-media', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -567,9 +561,9 @@ export default function ChatDetailPage() {
 
   // --- Composer handlers ---
   const handleSendText = useCallback(
-    (content: string, isNote: boolean, respondAsOwner: boolean) => {
+    (content: string, isNote: boolean) => {
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      sendTextMutation.mutate({ content, isNote, tempId, respondAsOwner });
+      sendTextMutation.mutate({ content, isNote, tempId });
     },
     [sendTextMutation],
   );
@@ -586,10 +580,10 @@ export default function ChatDetailPage() {
   );
 
   const handleSendMedia = useCallback(
-    (file: File, caption: string | undefined, respondAsOwner: boolean) => {
+    (file: File, caption: string | undefined) => {
       toast.loading('Enviando mídia…', { id: 'media-upload' });
       sendMediaMutation.mutate(
-        { file, caption, respondAsOwner },
+        { file, caption },
         { onSettled: () => toast.dismiss('media-upload') },
       );
     },
@@ -695,7 +689,7 @@ export default function ChatDetailPage() {
         file.type.startsWith('application/') ||
         file.type.startsWith('text/')
       ) {
-        handleSendMedia(file, undefined, false);
+        handleSendMedia(file, undefined);
       }
     },
     [handleSendMedia],
@@ -710,7 +704,7 @@ export default function ChatDetailPage() {
 
   const confirmDroppedImage = useCallback(() => {
     if (!droppedImage) return;
-    handleSendMedia(droppedImage, droppedCaption.trim() || undefined, false);
+    handleSendMedia(droppedImage, droppedCaption.trim() || undefined);
     clearDroppedImage();
   }, [droppedImage, droppedCaption, handleSendMedia, clearDroppedImage]);
 
@@ -917,12 +911,6 @@ export default function ChatDetailPage() {
             onSendText={handleSendText}
             onSendAudio={handleSendAudio}
             onSendMedia={handleSendMedia}
-            canRespondAsOwner={
-              (currentUser?.role === 'SUPER_ADMIN' || currentUser?.role === 'GERENTE') &&
-              !!currentLead?.responsavel &&
-              currentLead.responsavel.id !== currentUser.id
-            }
-            ownerName={currentLead?.responsavel?.nome}
           />
         );
       })()}
