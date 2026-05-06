@@ -236,6 +236,8 @@ export default function ChatDetailPage() {
           }),
         };
       });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
     },
     onError: (err: unknown, _vars, ctx) => {
       const tempId = ctx?.tempId;
@@ -282,6 +284,8 @@ export default function ChatDetailPage() {
     onSuccess: () => {
       toast.success('Áudio enviado');
       queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
     },
     onError: (err: unknown) => {
       const msg =
@@ -311,6 +315,8 @@ export default function ChatDetailPage() {
     onSuccess: () => {
       toast.success('Mídia enviada');
       queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
     },
     onError: (err: unknown) => {
       const msg =
