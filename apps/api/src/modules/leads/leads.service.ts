@@ -18,7 +18,7 @@ import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
-const LEADS_LIST_TTL_SECONDS = 15;
+const LEADS_LIST_TTL_SECONDS = 2;
 const leadsListPattern = (tenantId: string) => `leads:list:${tenantId}:*`;
 
 interface InstanceConfig {
