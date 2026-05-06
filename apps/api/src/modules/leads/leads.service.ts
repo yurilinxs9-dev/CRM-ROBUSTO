@@ -345,7 +345,11 @@ export class LeadsService {
           select: { tasks: { where: { status: 'PENDENTE' } } },
         },
       },
-      orderBy: [{ estagio_id: 'asc' }, { position: 'asc' }, { created_at: 'desc' }],
+      orderBy: [
+        { estagio_id: 'asc' },
+        { ultima_interacao: { sort: 'desc', nulls: 'last' } },
+        { created_at: 'desc' },
+      ],
       take: filters.limit ? parseInt(filters.limit) : 10000,
       skip: filters.offset ? parseInt(filters.offset) : 0,
     });

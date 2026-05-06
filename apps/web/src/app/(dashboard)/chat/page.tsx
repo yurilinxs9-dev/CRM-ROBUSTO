@@ -8,7 +8,6 @@ import { MessageSquareOff, Plus, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { getSocket } from '@/lib/socket';
 import { useAuthStore } from '@/stores/auth.store';
 
 import { Button } from '@/components/ui/button';
@@ -112,25 +111,7 @@ export default function ChatPage() {
     },
   });
 
-  // --- Socket realtime ---
-  useEffect(() => {
-    const socket = getSocket();
-
-    const handleNewMessage = () => {
-      queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
-    };
-
-    const handleUnreadReset = () => {
-      queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
-    };
-
-    socket.on('lead:new-message', handleNewMessage);
-    socket.on('lead:unread-reset', handleUnreadReset);
-    return () => {
-      socket.off('lead:new-message', handleNewMessage);
-      socket.off('lead:unread-reset', handleUnreadReset);
-    };
-  }, [queryClient]);
+  // WS handlers movidos pro SocketEventsProvider global em (dashboard)/layout.tsx
 
   // --- Filtering + sorting ---
   const filteredLeads = useMemo(() => {

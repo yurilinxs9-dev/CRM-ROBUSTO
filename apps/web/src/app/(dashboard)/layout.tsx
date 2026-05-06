@@ -10,6 +10,7 @@ import { TaskNotifications } from '@/components/layout/task-notifications';
 import { NotificationPrompt } from '@/components/notification-prompt';
 import { connectSocket, disconnectSocket, reconnectSocket } from '@/lib/socket';
 import { api } from '@/lib/api';
+import { SocketEventsProvider } from '@/providers/socket-events-provider';
 
 /**
  * Decode a JWT payload and return the `exp` timestamp (seconds).
@@ -134,17 +135,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <TooltipProvider delayDuration={200}>
-      <TaskNotifications />
-      <NotificationPrompt />
-      <div className="flex h-screen overflow-hidden bg-background text-foreground">
-        <div className="hidden md:block">
-          <Sidebar />
+      <SocketEventsProvider>
+        <TaskNotifications />
+        <NotificationPrompt />
+        <div className="flex h-screen overflow-hidden bg-background text-foreground">
+          <div className="hidden md:block">
+            <Sidebar />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <Header />
+            <main className="flex-1 overflow-auto bg-background">{children}</main>
+          </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Header />
-          <main className="flex-1 overflow-auto bg-background">{children}</main>
-        </div>
-      </div>
+      </SocketEventsProvider>
     </TooltipProvider>
   );
 }
