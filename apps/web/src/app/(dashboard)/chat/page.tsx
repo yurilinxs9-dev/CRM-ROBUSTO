@@ -60,6 +60,7 @@ export default function ChatPage() {
       return res.data;
     },
     staleTime: LEADS_STALE,
+    refetchInterval: 3000,
   });
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
