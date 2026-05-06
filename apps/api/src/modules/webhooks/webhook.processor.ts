@@ -483,10 +483,11 @@ export class WebhookProcessor extends WorkerHost {
       }
     }
 
-    // Emit immediately. For media messages the client renders a placeholder
-    // (skeleton/loading) until the `message:media-ready` event arrives.
-    this.gateway.emitNewMessage(lead.id, message, tenantId);
+    // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
+    // For media messages the client renders a placeholder (skeleton/loading)
+    // until the `message:media-ready` event arrives.
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
+    this.gateway.emitNewMessage(lead.id, message, tenantId);
 
     if (!isFromMe) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;

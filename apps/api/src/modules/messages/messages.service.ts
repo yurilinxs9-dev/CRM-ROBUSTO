@@ -261,8 +261,8 @@ export class MessagesService {
     }
     await this.prisma.lead.update({ where: { id: lead_id }, data: cadenceUpdate });
 
-    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    this.gateway.emitNewMessage(lead_id, message, user.tenantId);
 
     await this.sendQueue.add('send-text', {
       kind: 'text',
@@ -350,9 +350,10 @@ export class MessagesService {
       data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
     });
 
+    // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // Emit with signed URL so the frontend can render media immediately.
-    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
 
     await this.sendQueue.add('send-audio', {
       kind: 'audio',
@@ -450,9 +451,10 @@ export class MessagesService {
       data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
     });
 
+    // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // Emit with signed URL so the frontend can render media immediately.
-    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
 
     await this.sendQueue.add('send-media', {
       kind: 'media',
