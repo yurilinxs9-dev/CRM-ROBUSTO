@@ -25,7 +25,7 @@ import {
 type FilterTab = 'all' | 'unread' | 'mine';
 
 const LEADS_QUERY_KEY = ['chat', 'leads'] as const;
-const LEADS_STALE = 30_000;
+const LEADS_STALE = 0;
 const ROW_HEIGHT = 76;
 const SEARCH_DEBOUNCE_MS = 200;
 
