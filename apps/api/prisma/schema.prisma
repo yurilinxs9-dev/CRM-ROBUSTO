@@ -65,59 +65,59 @@ model Tenant {
   updated_at DateTime @updatedAt
 
   prefixo_profissional      String?
-  pool_enabled              Boolean  @default(false)
-  prefix_enabled            Boolean  @default(true)
-  notification_lead_minutes Int      @default(15)
+  pool_enabled              Boolean @default(false)
+  prefix_enabled            Boolean @default(true)
+  notification_lead_minutes Int     @default(15)
 
-  owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
-  users               User[]             @relation("TenantMembers")
-  pipelines           Pipeline[]
-  stages              Stage[]
-  leads               Lead[]
-  messages            Message[]
-  lead_activities     LeadActivity[]
-  instances           WhatsappInstance[]
-  user_instances      UserInstance[]
-  instance_logs       InstanceLog[]
-  tags                Tag[]
-  lead_tags           LeadTag[]
-  quick_replies       QuickReply[]
-  notifications       Notification[]
-  tasks               Task[]
-  webhook_logs        WebhookLog[]
-  push_subscriptions  PushSubscription[]
-  instances_hidden    InstanceHidden[]
+  owner              User               @relation("TenantOwner", fields: [owner_id], references: [id])
+  users              User[]             @relation("TenantMembers")
+  pipelines          Pipeline[]
+  stages             Stage[]
+  leads              Lead[]
+  messages           Message[]
+  lead_activities    LeadActivity[]
+  instances          WhatsappInstance[]
+  user_instances     UserInstance[]
+  instance_logs      InstanceLog[]
+  tags               Tag[]
+  lead_tags          LeadTag[]
+  quick_replies      QuickReply[]
+  notifications      Notification[]
+  tasks              Task[]
+  webhook_logs       WebhookLog[]
+  push_subscriptions PushSubscription[]
+  instances_hidden   InstanceHidden[]
 
   @@index([owner_id])
 }
 
 model User {
-  id         String   @id @default(uuid())
-  nome       String
-  email      String   @unique
-  senha_hash String
-  role       UserRole @default(OPERADOR)
-  avatar_url String?
-  ativo      Boolean  @default(true)
-  especialidade String?
-  titulo     String?
-  tenant_id  String
-  tenant     Tenant   @relation("TenantMembers", fields: [tenant_id], references: [id])
-  owned_tenants    Tenant[]           @relation("TenantOwner")
-  owned_instances  WhatsappInstance[] @relation("OwnedInstances")
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  id              String             @id @default(uuid())
+  nome            String
+  email           String             @unique
+  senha_hash      String
+  role            UserRole           @default(OPERADOR)
+  avatar_url      String?
+  ativo           Boolean            @default(true)
+  especialidade   String?
+  titulo          String?
+  tenant_id       String
+  tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
+  owned_tenants   Tenant[]           @relation("TenantOwner")
+  owned_instances WhatsappInstance[] @relation("OwnedInstances")
+  created_at      DateTime           @default(now())
+  updated_at      DateTime           @updatedAt
 
-  leads               Lead[]
-  sent_messages       Message[]          @relation("SentBy")
-  visible_messages    Message[]          @relation("VisibleTo")
-  activities          LeadActivity[]
-  quick_replies       QuickReply[]
-  notifications       Notification[]
-  user_instances      UserInstance[]
-  tasks               Task[]
-  push_subscriptions  PushSubscription[]
-  instances_hidden    InstanceHidden[]
+  leads              Lead[]
+  sent_messages      Message[]          @relation("SentBy")
+  visible_messages   Message[]          @relation("VisibleTo")
+  activities         LeadActivity[]
+  quick_replies      QuickReply[]
+  notifications      Notification[]
+  user_instances     UserInstance[]
+  tasks              Task[]
+  push_subscriptions PushSubscription[]
+  instances_hidden   InstanceHidden[]
 
   @@index([email])
   @@index([tenant_id])
@@ -157,37 +157,37 @@ model Stage {
   auto_action         Json?
   campos_obrigatorios Json?
   max_dias            Int?
-  
-  // Novos campos do Painel Dinâmico
-  sla_config        Json?   // { duration, unit, action, targetStageId }
-  idle_alert_config     Json?   // { enabled, duration, unit } — cliente sem resposta
-  response_alert_config Json?   // { enabled, duration, unit } — nós sem responder o cliente
-  on_entry_config       Json?   // { createTask, sendInitialMessage, assignResponsible }
-  cadence_config        Json?   // Array de degraus de cadência
 
-  created_at          DateTime @default(now())
-  leads               Lead[]
+  // Novos campos do Painel Dinâmico
+  sla_config            Json? // { duration, unit, action, targetStageId }
+  idle_alert_config     Json? // { enabled, duration, unit } — cliente sem resposta
+  response_alert_config Json? // { enabled, duration, unit } — nós sem responder o cliente
+  on_entry_config       Json? // { createTask, sendInitialMessage, assignResponsible }
+  cadence_config        Json? // Array de degraus de cadência
+
+  created_at DateTime @default(now())
+  leads      Lead[]
 
   @@index([pipeline_id, ordem])
   @@index([tenant_id])
 }
 
 model Lead {
-  id                  String          @id @default(uuid())
-  nome                String
-  telefone            String
-  email               String?
-  empresa             String?
-  cargo               String?
-  origem              LeadOrigem      @default(WHATSAPP_INCOMING)
-  temperatura         LeadTemperatura @default(FRIO)
-  valor_estimado      Decimal?        @db.Decimal(12, 2)
-  score               Int             @default(0)
-  tags                Json?           @default("[]")
-  dados_custom        Json?           @default("{}")
-  ultima_interacao    DateTime?
-  estagio_entered_at  DateTime?
-  
+  id                 String          @id @default(uuid())
+  nome               String
+  telefone           String
+  email              String?
+  empresa            String?
+  cargo              String?
+  origem             LeadOrigem      @default(WHATSAPP_INCOMING)
+  temperatura        LeadTemperatura @default(FRIO)
+  valor_estimado     Decimal?        @db.Decimal(12, 2)
+  score              Int             @default(0)
+  tags               Json?           @default("[]")
+  dados_custom       Json?           @default("{}")
+  ultima_interacao   DateTime?
+  estagio_entered_at DateTime?
+
   // Novos rastreadores para o Painel Dinâmico
   last_customer_message_at DateTime?
   last_agent_message_at    DateTime?
@@ -195,28 +195,28 @@ model Lead {
 
   proximo_followup    DateTime?
   motivo_perda        String?
-  position            Float           @default(0)
+  position            Float     @default(0)
   instancia_whatsapp  String
   foto_url            String?
-  mensagens_nao_lidas Int             @default(0)
+  mensagens_nao_lidas Int       @default(0)
   pipeline_id         String
-  pipeline            Pipeline        @relation(fields: [pipeline_id], references: [id])
+  pipeline            Pipeline  @relation(fields: [pipeline_id], references: [id])
   estagio_id          String
-  estagio             Stage           @relation(fields: [estagio_id], references: [id])
+  estagio             Stage     @relation(fields: [estagio_id], references: [id])
   responsavel_id      String?
-  responsavel         User?           @relation(fields: [responsavel_id], references: [id])
+  responsavel         User?     @relation(fields: [responsavel_id], references: [id])
   tenant_id           String
-  tenant              Tenant          @relation(fields: [tenant_id], references: [id])
-  created_at          DateTime        @default(now())
-  updated_at          DateTime        @updatedAt
+  tenant              Tenant    @relation(fields: [tenant_id], references: [id])
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
 
   messages   Message[]
   activities LeadActivity[]
   lead_tags  LeadTag[]
   tasks      Task[]
 
-  assumed_at             DateTime?
-  is_private             Boolean          @default(false)
+  assumed_at DateTime?
+  is_private Boolean   @default(false)
 
   @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
   @@index([responsavel_id, estagio_id])
@@ -247,6 +247,7 @@ model Message {
   media_thumbnail_path   String?
   media_poster_path      String?
   media_waveform_peaks   Json?
+  media_archived         Boolean          @default(false)
   status                 MessageStatus    @default(PENDING)
   is_internal_note       Boolean          @default(false)
   sent_by_user_id        String?
@@ -267,6 +268,7 @@ model Message {
   @@index([status, created_at])
   @@index([tenant_id])
   @@index([visible_to_user_id])
+  @@index([media_archived, created_at])
 }
 
 model LeadActivity {
@@ -288,19 +290,19 @@ model LeadActivity {
 }
 
 model WhatsappInstance {
-  id             String    @id @default(uuid())
+  id             String           @id @default(uuid())
   nome           String
   telefone       String?
-  status         String    @default("disconnected")
+  status         String           @default("disconnected")
   ultimo_check   DateTime?
   config         Json?
-  webhook_secret String?   @unique @db.VarChar(64)
+  webhook_secret String?          @unique @db.VarChar(64)
   owner_user_id  String
-  owner          User      @relation("OwnedInstances", fields: [owner_user_id], references: [id])
+  owner          User             @relation("OwnedInstances", fields: [owner_user_id], references: [id])
   tenant_id      String
-  tenant         Tenant    @relation(fields: [tenant_id], references: [id])
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
+  tenant         Tenant           @relation(fields: [tenant_id], references: [id])
+  created_at     DateTime         @default(now())
+  updated_at     DateTime         @updatedAt
   user_instances UserInstance[]
   instance_logs  InstanceLog[]
   hidden_by      InstanceHidden[]

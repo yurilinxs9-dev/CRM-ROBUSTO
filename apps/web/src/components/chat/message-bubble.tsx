@@ -3,6 +3,7 @@
 import { memo, useState } from 'react';
 import {
   AlertCircle,
+  Archive,
   Check,
   CheckCheck,
   Clock,
@@ -252,9 +253,31 @@ function MessageBubbleComponent({
           />
         )}
 
+        {/* Archived media (>30d, cleaned by cron). Thumbnail preserved when available. */}
+        {['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT', 'STICKER'].includes(type) &&
+          !message.media_url &&
+          message.media_archived && (
+            <div className="flex min-w-[200px] flex-col gap-1">
+              {message.media_thumbnail_url && (type === 'IMAGE' || type === 'VIDEO') && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={message.media_thumbnail_url}
+                  alt={message.media_filename ?? 'Mídia arquivada'}
+                  className="max-h-48 max-w-full rounded-lg object-contain opacity-70"
+                  loading="lazy"
+                />
+              )}
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Archive size={12} />
+                <span>Mídia removida (mais de 30 dias)</span>
+              </div>
+            </div>
+          )}
+
         {/* Fallback for media messages with no URL (old messages before fix) */}
         {['AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT', 'STICKER'].includes(type) &&
-          !message.media_url && (
+          !message.media_url &&
+          !message.media_archived && (
             <div className="flex min-w-[180px] items-center gap-2 text-xs opacity-70">
               <AlertCircle size={14} />
               <span>Mídia não disponível</span>

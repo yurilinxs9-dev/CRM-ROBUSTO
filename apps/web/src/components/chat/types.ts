@@ -58,6 +58,8 @@ export interface ChatMessage {
   media_waveform_peaks?: number[] | null;
   media_poster_path?: string | null;
   media_thumbnail_path?: string | null;
+  media_thumbnail_url?: string | null;
+  media_archived?: boolean;
   created_at: string;
 }
 

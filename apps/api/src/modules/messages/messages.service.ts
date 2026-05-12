@@ -589,14 +589,27 @@ export class MessagesService {
     const messages = hasMore ? rows.slice(0, limit) : rows;
 
     // Sign Supabase storage paths so the frontend can load media directly.
+    // For archived messages (media_url cleared by cleanup cron), sign the
+    // surviving thumbnail/poster so the chat still renders a visual placeholder.
     const signed = await Promise.all(
       messages.map(async (msg) => {
-        if (!msg.media_url || /^https?:\/\//i.test(msg.media_url)) return msg;
+        let result = msg as typeof msg & { media_thumbnail_url?: string | null };
+
+        if (msg.media_archived && msg.media_thumbnail_path) {
+          try {
+            const thumbUrl = await this.media.getSignedUrl(msg.media_thumbnail_path, 60 * 60);
+            result = { ...result, media_thumbnail_url: thumbUrl };
+          } catch {
+            // ignore — frontend falls back to "Mídia removida" placeholder.
+          }
+        }
+
+        if (!msg.media_url || /^https?:\/\//i.test(msg.media_url)) return result;
         try {
           const signedUrl = await this.media.getSignedUrl(msg.media_url, 60 * 60);
-          return { ...msg, media_url: signedUrl };
+          return { ...result, media_url: signedUrl };
         } catch {
-          return msg;
+          return result;
         }
       }),
     );
