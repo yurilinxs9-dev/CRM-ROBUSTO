@@ -59,6 +59,10 @@ const deleteWithMoveSchema = z.object({
   targetPipelineId: z.string().uuid(),
 });
 
+const deleteStageWithMoveSchema = z.object({
+  targetStageId: z.string().uuid(),
+});
+
 @Injectable()
 export class PipelinesService {
   private readonly logger = new Logger(PipelinesService.name);
@@ -340,6 +344,40 @@ export class PipelinesService {
     }
     await this.prisma.stage.delete({ where: { id } });
     return { success: true };
+  }
+
+  async removeStageWithMove(id: string, body: unknown, user: AuthUser) {
+    const { targetStageId } = deleteStageWithMoveSchema.parse(body);
+    if (targetStageId === id) {
+      throw new BadRequestException('Etapa de destino deve ser diferente da etapa a excluir');
+    }
+    const stage = await this.prisma.stage.findFirst({
+      where: { id, tenant_id: user.tenantId },
+    });
+    if (!stage) throw new NotFoundException('Stage nao encontrada');
+    if (stage.is_won || stage.is_lost) {
+      throw new ConflictException(
+        'Nao e possivel excluir etapas marcadas como ganho ou perda',
+      );
+    }
+    const target = await this.prisma.stage.findFirst({
+      where: { id: targetStageId, tenant_id: user.tenantId, pipeline_id: stage.pipeline_id },
+      select: { id: true },
+    });
+    if (!target) {
+      throw new NotFoundException('Etapa de destino nao encontrada no mesmo pipeline');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lead.updateMany({
+        where: { estagio_id: id, tenant_id: user.tenantId },
+        data: { estagio_id: targetStageId, estagio_entered_at: new Date() },
+      });
+      await tx.stage.delete({ where: { id } });
+    });
+
+    await this.invalidateLeadsCache(user.tenantId);
+    return { success: true, movedTo: targetStageId };
   }
 
   async reorderStages(pipelineId: string, body: unknown, user: AuthUser) {

@@ -490,19 +490,9 @@ export class MessagesService {
     }
 
     let upstreamUrl: string | null = null;
-    // Out-going messages: `media_filename` holds the storage path (set by sendAudio/sendMedia).
-    if (message.media_filename && !/^https?:\/\//i.test(message.media_filename)) {
-      try {
-        upstreamUrl = await this.media.getSignedUrl(message.media_filename, 60 * 60);
-      } catch (err) {
-        this.logger.warn(
-          `Re-sign failed for ${message.media_filename}: ${(err as Error).message}`,
-        );
-      }
-    }
-    // Incoming messages from webhook.processor store the storage path in `media_url`.
-    // Re-sign it as a Supabase path; only fall back to the raw value if it's already an http(s) URL.
-    if (!upstreamUrl && message.media_url) {
+    // Both sendAudio/sendMedia (outgoing) and webhook.processor (incoming) store the
+    // storage path in `media_url`. Try it first.
+    if (message.media_url) {
       if (/^https?:\/\//i.test(message.media_url)) {
         upstreamUrl = message.media_url;
       } else {
@@ -511,6 +501,21 @@ export class MessagesService {
         } catch (err) {
           this.logger.warn(
             `Re-sign failed for ${message.media_url}: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+    // Last-resort fallback: `media_filename` may hold a storage path on legacy rows.
+    // Skip plain filenames (no slash) — those are original upload names, not paths.
+    if (!upstreamUrl && message.media_filename && message.media_filename.includes('/')) {
+      if (/^https?:\/\//i.test(message.media_filename)) {
+        upstreamUrl = message.media_filename;
+      } else {
+        try {
+          upstreamUrl = await this.media.getSignedUrl(message.media_filename, 60 * 60);
+        } catch (err) {
+          this.logger.warn(
+            `Re-sign failed for ${message.media_filename}: ${(err as Error).message}`,
           );
         }
       }

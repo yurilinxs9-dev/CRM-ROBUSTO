@@ -114,6 +114,16 @@ export class PipelinesController {
     return this.pipelinesService.removeStage(id, req.user as AuthUser);
   }
 
+  @Post('stages/:id/delete-with-move')
+  @Roles(UserRole.GERENTE)
+  removeStageWithMove(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() req: Record<string, unknown>,
+  ) {
+    return this.pipelinesService.removeStageWithMove(id, body, req.user as AuthUser);
+  }
+
   @Get('stages/:id/cadence-eligible')
   cadenceEligibleCount(@Param('id') id: string, @Query('stepIndex') stepIndex: string, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.cadenceEligibleCount(id, parseInt(stepIndex, 10), req.user as AuthUser);

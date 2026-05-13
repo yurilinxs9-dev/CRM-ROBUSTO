@@ -91,6 +91,10 @@ export default function PipelineEditorPage() {
   const [confirmDelete, setConfirmDelete] = useState<
     { type: 'pipeline' | 'stage'; id: string; nome: string } | null
   >(null);
+  const [moveStageDialog, setMoveStageDialog] = useState<
+    { id: string; nome: string; leadsCount: number } | null
+  >(null);
+  const [moveTargetStageId, setMoveTargetStageId] = useState<string>('');
 
   const { data: pipelines = [], isLoading } = useQuery<Pipeline[]>({
     queryKey: ['pipelines'],
@@ -222,10 +226,43 @@ export default function PipelineEditorPage() {
       setConfirmDelete(null);
       invalidate();
     },
+    onError: (err: unknown, id) => {
+      const response = (err as { response?: { data?: { message?: string }; status?: number } })
+        ?.response;
+      const msg = response?.data?.message ?? 'Erro ao remover stage';
+      // 409 with leads → open move dialog instead of plain toast.
+      if (response?.status === 409 && /leads nesta stage/i.test(msg) && activePipeline) {
+        const stage = activePipeline.stages.find((s) => s.id === id);
+        if (stage) {
+          setConfirmDelete(null);
+          setMoveStageDialog({
+            id,
+            nome: stage.nome,
+            leadsCount: stage._count?.leads ?? 0,
+          });
+          const firstOther = activePipeline.stages.find((s) => s.id !== id);
+          setMoveTargetStageId(firstOther?.id ?? '');
+          return;
+        }
+      }
+      toast.error(msg);
+    },
+  });
+
+  const deleteStageWithMove = useMutation({
+    mutationFn: async ({ id, targetStageId }: { id: string; targetStageId: string }) => {
+      await api.post(`/api/stages/${id}/delete-with-move`, { targetStageId });
+    },
+    onSuccess: () => {
+      toast.success('Stage removida (leads movidos)');
+      setMoveStageDialog(null);
+      setMoveTargetStageId('');
+      invalidate();
+    },
     onError: (err: unknown) => {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        'Erro ao remover stage';
+        'Erro ao mover leads e remover stage';
       toast.error(msg);
     },
   });
@@ -481,6 +518,71 @@ export default function PipelineEditorPage() {
                 }
               >
                 Criar
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Move leads + delete stage */}
+        <Dialog
+          open={!!moveStageDialog}
+          onOpenChange={(o) => {
+            if (!o) {
+              setMoveStageDialog(null);
+              setMoveTargetStageId('');
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Etapa contem leads</DialogTitle>
+              <DialogDescription>
+                A etapa <strong>{moveStageDialog?.nome}</strong> tem{' '}
+                {moveStageDialog?.leadsCount ?? 0} lead(s). Escolha uma etapa de destino
+                para mover os leads antes de excluir.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="move-target">Mover leads para</Label>
+              <select
+                id="move-target"
+                value={moveTargetStageId}
+                onChange={(e) => setMoveTargetStageId(e.target.value)}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Selecione uma etapa</option>
+                {activePipeline?.stages
+                  .filter((s) => s.id !== moveStageDialog?.id)
+                  .sort((a, b) => a.ordem - b.ordem)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.nome}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setMoveStageDialog(null);
+                  setMoveTargetStageId('');
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={!moveTargetStageId || deleteStageWithMove.isPending}
+                onClick={() => {
+                  if (!moveStageDialog || !moveTargetStageId) return;
+                  deleteStageWithMove.mutate({
+                    id: moveStageDialog.id,
+                    targetStageId: moveTargetStageId,
+                  });
+                }}
+              >
+                Mover e excluir
               </Button>
             </DialogFooter>
           </DialogContent>
