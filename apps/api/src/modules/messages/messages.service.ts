@@ -674,7 +674,7 @@ export class MessagesService {
       ExtendedTextMessage: MessageType.TEXT,
       Conversation:        MessageType.TEXT,
     };
-    const mediaTypes = new Set([MessageType.AUDIO, MessageType.IMAGE, MessageType.VIDEO, MessageType.DOCUMENT]);
+    const mediaTypes = new Set<MessageType>([MessageType.AUDIO, MessageType.IMAGE, MessageType.VIDEO, MessageType.DOCUMENT]);
 
     let added = 0;
     let mediaFixed = 0;
