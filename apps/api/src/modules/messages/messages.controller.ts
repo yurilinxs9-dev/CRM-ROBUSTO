@@ -77,6 +77,12 @@ export class MessagesController {
     }
   }
 
+  @Post('sync-chat/:leadId')
+  @Roles(UserRole.OPERADOR)
+  syncChat(@Param('leadId') leadId: string, @Req() req: Record<string, unknown>) {
+    return this.messagesService.syncChat(leadId, req.user as AuthUser);
+  }
+
   @Get('history/:leadId')
   getHistory(
     @Param('leadId') leadId: string,

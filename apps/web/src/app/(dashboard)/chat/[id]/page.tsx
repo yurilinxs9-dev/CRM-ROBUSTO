@@ -383,6 +383,23 @@ export default function ChatDetailPage() {
     onError: () => toast.error('Erro ao excluir lead.'),
   });
 
+  const syncChatMutation = useMutation({
+    mutationFn: async (): Promise<{ added: number; mediaFixed: number }> => {
+      const res = await api.post(`/api/messages/sync-chat/${leadId}`);
+      return res.data;
+    },
+    onSuccess: (data) => {
+      if (data.added > 0 || data.mediaFixed > 0) {
+        toast.success(`Sincronizado: ${data.added} novas, ${data.mediaFixed} mídias`);
+        queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+        queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      } else {
+        toast.success('Já está sincronizado');
+      }
+    },
+    onError: () => toast.error('Erro ao sincronizar com WhatsApp'),
+  });
+
   // --- Mark as read on mount ---
   useEffect(() => {
     if (!leadId) return;
@@ -745,6 +762,8 @@ export default function ChatDetailPage() {
           onMarkRead={() => markReadMutation.mutate()}
           onClearConversation={handleClearConversation}
           onDeleteLead={handleDeleteLead}
+          onSyncChat={() => syncChatMutation.mutate()}
+          syncing={syncChatMutation.isPending}
         />
       )}
 

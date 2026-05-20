@@ -6,6 +6,7 @@ import {
   CheckCheck,
   Info,
   MoreVertical,
+  RefreshCw,
   Trash2,
 } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -50,6 +51,8 @@ interface ChatHeaderProps {
   onMarkRead: () => void;
   onClearConversation: () => void;
   onDeleteLead: () => void;
+  onSyncChat?: () => void;
+  syncing?: boolean;
 }
 
 export function ChatHeader({
@@ -60,6 +63,8 @@ export function ChatHeader({
   onMarkRead,
   onClearConversation,
   onDeleteLead,
+  onSyncChat,
+  syncing = false,
 }: ChatHeaderProps) {
   const router = useRouter();
   const presence = presenceLabel(lead);
@@ -168,6 +173,12 @@ export function ChatHeader({
               <CheckCheck size={14} className="mr-2" />
               Marcar como lido
             </DropdownMenuItem>
+            {onSyncChat && (
+              <DropdownMenuItem onClick={onSyncChat} disabled={syncing}>
+                <RefreshCw size={14} className={`mr-2 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Sincronizando...' : 'Sincronizar com WhatsApp'}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={onOpenDetails} className="sm:hidden">
               <Info size={14} className="mr-2" />
               Detalhes do lead

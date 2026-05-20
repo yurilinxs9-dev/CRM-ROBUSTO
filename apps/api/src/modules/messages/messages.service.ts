@@ -323,7 +323,7 @@ export class MessagesService {
     const probedDuration = await this.audio.probeDurationSeconds(opusBuffer, 'audio/ogg');
 
     const filename = `audio/${lead_id}/${uuid()}.ogg`;
-    await this.media.upload(filename, opusBuffer, 'audio/ogg; codecs=opus');
+    await this.media.upload(filename, opusBuffer, 'audio/ogg');
     const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
 
     const message = await this.prisma.message.create({
@@ -335,7 +335,7 @@ export class MessagesService {
         type: MessageType.AUDIO,
         content: null,
         media_url: filename,
-        media_mimetype: 'audio/ogg; codecs=opus',
+        media_mimetype: 'audio/ogg',
         media_size_bytes: opusBuffer.length,
         media_duration_seconds: probedDuration,
         status: 'PENDING',
@@ -623,5 +623,148 @@ export class MessagesService {
       messages: signed,
       nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
     };
+  }
+
+  /**
+   * Backfill missing messages for a lead by pulling history from UazAPI.
+   * Re-downloads any media that did not arrive through the webhook (UazAPI
+   * occasionally drops `messages` events for individual chats — see fix log).
+   */
+  async syncChat(leadId: string, user: AuthUser): Promise<{ added: number; mediaFixed: number }> {
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true, telefone: true, instancia_whatsapp: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: lead.instancia_whatsapp
+        ? { nome: lead.instancia_whatsapp, tenant_id: user.tenantId }
+        : { tenant_id: user.tenantId, status: { in: ['open', 'connected'] } },
+      orderBy: { created_at: 'asc' },
+    });
+    if (!instance) throw new NotFoundException('Instancia ativa nao encontrada');
+
+    const cfg = (instance.config as InstanceConfig | null) ?? {};
+    const tok = cfg.uazapi_token;
+    if (!tok) throw new BadGatewayException('Instancia sem uazapi_token');
+
+    const chatid = `${lead.telefone}@s.whatsapp.net`;
+    const findRes = await fetch(`${this.baseUrl}/message/find`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', token: tok },
+      body: JSON.stringify({ chatid, limit: 50 }),
+    });
+    if (!findRes.ok) throw new BadGatewayException(`UazAPI find ${findRes.status}`);
+    const findJson = (await findRes.json()) as { messages?: Array<Record<string, unknown>> };
+    const remote = findJson.messages ?? [];
+
+    const existing = await this.prisma.message.findMany({
+      where: { lead_id: lead.id },
+      select: { id: true, whatsapp_message_id: true, media_url: true, type: true },
+    });
+    const known = new Map(existing.map((m) => [m.whatsapp_message_id ?? '', m]));
+
+    const typeMap: Record<string, MessageType> = {
+      AudioMessage:        MessageType.AUDIO,
+      ImageMessage:        MessageType.IMAGE,
+      VideoMessage:        MessageType.VIDEO,
+      DocumentMessage:     MessageType.DOCUMENT,
+      StickerMessage:      MessageType.STICKER,
+      ExtendedTextMessage: MessageType.TEXT,
+      Conversation:        MessageType.TEXT,
+    };
+    const mediaTypes = new Set([MessageType.AUDIO, MessageType.IMAGE, MessageType.VIDEO, MessageType.DOCUMENT]);
+
+    let added = 0;
+    let mediaFixed = 0;
+    for (const m of remote.slice().sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp))) {
+      const wid = m.messageid as string;
+      const fromMe = Boolean(m.fromMe);
+      const mtype = typeMap[m.messageType as string] ?? MessageType.TEXT;
+      const content = m.content as Record<string, unknown> | string | undefined;
+      const txt =
+        typeof content === 'string'
+          ? content
+          : ((content as Record<string, unknown>)?.text as string | undefined) ?? '';
+      const ts = m.messageTimestamp ? new Date(Number(m.messageTimestamp)) : new Date();
+
+      const existingRow = known.get(wid);
+      let messageId = existingRow?.id;
+
+      if (!existingRow) {
+        const created = await this.prisma.message.create({
+          data: {
+            lead_id: lead.id,
+            tenant_id: user.tenantId,
+            instance_name: instance.nome,
+            whatsapp_message_id: wid,
+            direction: fromMe ? 'OUTGOING' : 'INCOMING',
+            type: mtype,
+            content: txt || null,
+            status: fromMe ? 'SENT' : 'DELIVERED',
+            created_at: ts,
+          },
+          select: { id: true },
+        });
+        messageId = created.id;
+        added++;
+      }
+
+      if (messageId && mediaTypes.has(mtype) && (!existingRow || !existingRow.media_url)) {
+        try {
+          const dlRes = await fetch(`${this.baseUrl}/message/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', token: tok },
+            body: JSON.stringify({ id: wid }),
+          });
+          if (!dlRes.ok) continue;
+          const dlInfo = (await dlRes.json()) as { fileURL?: string; mimetype?: string };
+          if (!dlInfo.fileURL) continue;
+          const buf = Buffer.from(await (await fetch(dlInfo.fileURL)).arrayBuffer());
+          const ext = mimeToExt(dlInfo.mimetype ?? 'application/octet-stream');
+          const kind: MediaKind =
+            mtype === MessageType.AUDIO ? 'audio'
+            : mtype === MessageType.IMAGE ? 'image'
+            : mtype === MessageType.VIDEO ? 'video' : 'document';
+          const path = `${user.tenantId}/${kind}/${messageId}.${ext}`;
+          await this.media.upload(path, buf, dlInfo.mimetype ?? 'application/octet-stream');
+          let waveform: number[] | null = null;
+          const wfRaw = (content as Record<string, unknown>)?.waveform;
+          if (typeof wfRaw === 'string') {
+            try {
+              waveform = Array.from(Buffer.from(wfRaw, 'base64')).slice(0, 64).map((x) => x / 255);
+            } catch { /* ignore */ }
+          }
+          await this.prisma.message.update({
+            where: { id: messageId },
+            data: {
+              media_url: path,
+              media_mimetype: dlInfo.mimetype ?? null,
+              media_size_bytes: buf.length,
+              media_duration_seconds:
+                typeof (content as Record<string, unknown>)?.seconds === 'number'
+                  ? ((content as Record<string, unknown>).seconds as number)
+                  : null,
+              media_waveform_peaks: waveform ?? undefined,
+            },
+          });
+          mediaFixed++;
+        } catch (err) {
+          this.logger.warn(`syncChat media fix failed for ${wid}: ${String(err)}`);
+        }
+      }
+    }
+
+    if (added > 0 || mediaFixed > 0) {
+      await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: { ultima_interacao: new Date() },
+      });
+      await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+      this.gateway.emitMessageStatusUpdate(lead.id, 'sync', 'SYNCED');
+    }
+
+    return { added, mediaFixed };
   }
 }

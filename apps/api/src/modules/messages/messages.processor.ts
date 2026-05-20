@@ -67,9 +67,18 @@ export class MessagesSendProcessor extends WorkerHost {
     }
     // Re-sign URL in case the queue delay outran the signature TTL.
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
-    const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'ptt';
-    const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'auto') as string;
-    const opusMime = 'audio/ogg; codecs=opus';
+    // Default to `audio+ptt` (type:audio + ptt:true) — matches what UazAPI's
+    // Baileys backend forwards to WhatsApp as a voice note. `type:ptt` worked
+    // historically but some UazAPI builds reject it with "invalid type".
+    const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'audio+ptt';
+    // Default to base64 — inline upload removes any dependency on the Supabase
+    // signed-URL window (which expired before UazAPI could fetch it and caused
+    // "audio nao disponivel" on the recipient's phone).
+    const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'base64') as string;
+    // Plain `audio/ogg` — Baileys auto-detects opus from the file header. The
+    // explicit "; codecs=opus" parameter caused some clients (notably iOS) to
+    // misparse the bubble and refuse playback.
+    const opusMime = 'audio/ogg';
     const payload = (fileRef: string, withMime: boolean): Record<string, unknown> => {
       const base = pttField === 'audio+ptt'
         ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
