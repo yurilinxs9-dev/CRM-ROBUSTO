@@ -67,22 +67,21 @@ export class MessagesSendProcessor extends WorkerHost {
     }
     // Re-sign URL in case the queue delay outran the signature TTL.
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
-    // Default to `audio+ptt` (type:audio + ptt:true) — matches what UazAPI's
-    // Baileys backend forwards to WhatsApp as a voice note. `type:ptt` worked
-    // historically but some UazAPI builds reject it with "invalid type".
-    const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'audio+ptt';
-    // Default to base64 — inline upload removes any dependency on the Supabase
-    // signed-URL window (which expired before UazAPI could fetch it and caused
-    // "audio nao disponivel" on the recipient's phone).
+    // PTT mode requires `streamingSidecar` on the WhatsApp protobuf — Baileys
+    // generates it from the raw audio buffer, but the UazAPI build we're
+    // hitting doesn't. Without sidecar iOS/Android show "Áudio não disponível".
+    // Default ptt=false sends as a regular audio bubble (player works fine,
+    // just no waveform). Set UAZAPI_AUDIO_PTT=true to opt back in.
+    const sendAsPtt = (process.env['UAZAPI_AUDIO_PTT'] ?? 'false').toLowerCase() === 'true';
+    // Default base64 — inline upload removes dependency on the Supabase
+    // signed-URL window (which expired before UazAPI could fetch it).
     const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'base64') as string;
-    // Plain `audio/ogg` — Baileys auto-detects opus from the file header. The
-    // explicit "; codecs=opus" parameter caused some clients (notably iOS) to
-    // misparse the bubble and refuse playback.
+    // Plain `audio/ogg` — Baileys auto-detects opus from the file header.
     const opusMime = 'audio/ogg';
     const payload = (fileRef: string, withMime: boolean): Record<string, unknown> => {
-      const base = pttField === 'audio+ptt'
+      const base: Record<string, unknown> = sendAsPtt
         ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
-        : { number: d.telefone, type: 'ptt', ptt: true, file: fileRef };
+        : { number: d.telefone, type: 'audio', ptt: false, file: fileRef };
       return withMime ? { ...base, mimetype: opusMime } : base;
     };
 
