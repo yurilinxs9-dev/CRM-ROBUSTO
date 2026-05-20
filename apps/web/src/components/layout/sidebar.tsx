@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -29,10 +29,11 @@ export const NAV_ITEMS: NavEntry[] = [
 interface SidebarProps {
   collapsed?: boolean;
   onNavigate?: () => void;
+  onToggleCollapse?: () => void;
   className?: string;
 }
 
-export function Sidebar({ collapsed = false, onNavigate, className }: SidebarProps) {
+export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, className }: SidebarProps) {
   const role = useAuthStore((s) => s.user?.role);
   // VISUALIZADOR nao tem acesso a Conversas — escondemos do menu.
   const visibleNav = NAV_ITEMS.filter(
@@ -43,12 +44,12 @@ export function Sidebar({ collapsed = false, onNavigate, className }: SidebarPro
     <aside
       aria-label="Navegação principal"
       className={cn(
-        'flex h-full flex-col border-r border-border bg-card',
+        'relative flex h-full flex-col border-r border-border bg-card transition-[width] duration-200',
         collapsed ? 'w-16' : 'w-[260px]',
         className,
       )}
     >
-      {/* Logo */}
+      {/* Logo + Toggle */}
       <div
         className={cn(
           'flex h-14 items-center gap-2 border-b border-border px-4',
@@ -58,7 +59,22 @@ export function Sidebar({ collapsed = false, onNavigate, className }: SidebarPro
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
           <span className="text-sm font-bold text-primary-foreground">C</span>
         </div>
-        {!collapsed && <span className="font-semibold tracking-tight">CRM Pro</span>}
+        {!collapsed && <span className="flex-1 font-semibold tracking-tight">CRM Pro</span>}
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? 'Expandir menu' : 'Recolher menu'}
+            title={collapsed ? 'Expandir menu' : 'Recolher menu'}
+            className={cn(
+              'flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              collapsed && 'absolute right-1 top-3',
+            )}
+          >
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </button>
+        )}
       </div>
 
       {/* Nav */}

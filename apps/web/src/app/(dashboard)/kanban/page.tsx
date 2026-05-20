@@ -23,7 +23,7 @@ import {
   horizontalListSortingStrategy,
   arrayMove,
 } from '@dnd-kit/sortable';
-import { Search, Plus, Download } from 'lucide-react';
+import { Search, Plus, Download, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -100,6 +100,20 @@ export default function KanbanPage() {
     try { return (localStorage.getItem('kanban-tab') as 'escritorio' | 'meus') ?? 'meus'; }
     catch { return 'meus'; }
   });
+  const [headerCollapsed, setHeaderCollapsed] = useState<boolean>(false);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('kanban-header-collapsed');
+      if (stored === '1') setHeaderCollapsed(true);
+    } catch { /* noop */ }
+  }, []);
+  const toggleHeaderCollapsed = useCallback(() => {
+    setHeaderCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('kanban-header-collapsed', next ? '1' : '0'); } catch { /* noop */ }
+      return next;
+    });
+  }, []);
 
   const [activePipelineId, setActivePipelineId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -748,9 +762,23 @@ export default function KanbanPage() {
   const stageSortableIds = useMemo(() => orderedStages.map((s) => `stage-${s.id}`), [orderedStages]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
+      {/* Floating expand button (visible when fully collapsed) */}
+      {headerCollapsed && (
+        <button
+          type="button"
+          onClick={toggleHeaderCollapsed}
+          aria-label="Expandir cabeçalho"
+          title="Expandir cabeçalho"
+          className="absolute top-2 right-3 z-20 flex h-8 w-8 items-center justify-center rounded-full border bg-card shadow-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      )}
+
       {/* Header with PipelineSwitcher */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b">
+      {!headerCollapsed && (
+      <div className="flex items-center gap-3 px-4 py-2 border-b">
         <h1 className="text-lg font-semibold shrink-0">Pipeline</h1>
         <div className="flex-1 min-w-0">
           <PipelineSwitcher
@@ -768,9 +796,20 @@ export default function KanbanPage() {
           <Plus className="h-4 w-4 mr-1" />
           Novo Lead
         </Button>
+        <button
+          type="button"
+          onClick={toggleHeaderCollapsed}
+          aria-label="Recolher cabeçalho"
+          title="Recolher cabeçalho"
+          className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronUp className="h-4 w-4" />
+        </button>
       </div>
+      )}
 
       {/* Metrics header */}
+      {!headerCollapsed && (
       <div className="grid grid-cols-3 gap-2 px-4 py-2 border-b bg-muted/20">
         <div className="rounded-md border bg-background px-3 py-2">
           <p className="text-[11px] uppercase text-muted-foreground">Total de leads</p>
@@ -789,8 +828,10 @@ export default function KanbanPage() {
           </p>
         </div>
       </div>
+      )}
 
       {/* Filters */}
+      {!headerCollapsed && (
       <div className="flex items-center gap-2 px-4 py-2 border-b">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -834,9 +875,10 @@ export default function KanbanPage() {
           Exportar CSV
         </Button>
       </div>
+      )}
 
       {/* Pool tabs */}
-      {isPoolEnabled && (
+      {!headerCollapsed && isPoolEnabled && (
         <div className="px-4 pt-2 border-b">
           <Tabs
             value={isOperador ? 'meus' : activeTab}
@@ -861,7 +903,7 @@ export default function KanbanPage() {
       )}
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden px-3 pt-2 pb-1">
         {isLoading ? (
           <div className="flex gap-4 h-full">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -885,7 +927,7 @@ export default function KanbanPage() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext items={stageSortableIds} strategy={horizontalListSortingStrategy}>
-              <div className="flex gap-4 h-full min-w-full pb-4">
+              <div className="flex gap-3 h-full min-w-full">
                 {orderedStages.map((stage, idx) => (
                   <StageColumn
                     key={stage.id}

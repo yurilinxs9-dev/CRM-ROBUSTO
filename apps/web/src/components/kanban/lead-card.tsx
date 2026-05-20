@@ -188,7 +188,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       <Card
         ref={ref}
         className={cn(
-          'group relative p-3 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
+          'group relative p-2 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
           isDragging && 'opacity-50 rotate-1 shadow-xl',
           selected && 'ring-2 ring-primary border-primary',
           className,
@@ -273,16 +273,16 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
-        <div className="flex items-start gap-2 mb-2">
-          <Avatar className="h-8 w-8 shrink-0">
+        <div className="flex items-start gap-2 mb-1">
+          <Avatar className="h-7 w-7 shrink-0">
             {lead.foto_url ? <AvatarImage src={lead.foto_url} alt={lead.nome} /> : null}
-            <AvatarFallback className="text-xs font-semibold">
+            <AvatarFallback className="text-[10px] font-semibold">
               {getInitials(lead.nome)}
             </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold truncate">{lead.nome}</p>
-            <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+            <p className="text-[13px] font-semibold leading-tight truncate">{lead.nome}</p>
+            <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1 leading-tight">
               <MessageCircle className="h-3 w-3 text-emerald-500 shrink-0" />
               {formatPhone(lead.telefone)}
             </p>
@@ -290,13 +290,13 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
         </div>
 
         {lead.ultima_mensagem_preview && (
-          <p className="text-xs text-muted-foreground line-clamp-1 mb-2">
+          <p className="text-[11px] text-muted-foreground line-clamp-1 mb-1">
             {lead.ultima_mensagem_preview}
           </p>
         )}
 
         {((lead.tags && lead.tags.length > 0) || pendingTasks > 0) && (
-          <div className="flex flex-wrap items-center gap-1 mb-2">
+          <div className="flex flex-wrap items-center gap-1 mb-1">
             {pendingTasks > 0 && (
               <Badge
                 variant="outline"
@@ -314,29 +314,27 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </div>
         )}
 
-        <div className="flex items-center justify-between gap-2 text-xs">
-          <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
-            {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
-          </Badge>
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center justify-between gap-2 text-[11px]">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0 leading-tight', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
+              {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
+            </Badge>
+            {isPoolEnabled && lead.responsavel && (
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground truncate">
+                <Avatar className="h-3.5 w-3.5 shrink-0">
+                  <AvatarFallback className="text-[8px]">
+                    {getInitials(lead.responsavel.nome)}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="truncate">{lead.responsavel.nome.split(' ')[0]}</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 min-w-0">
             {lead.valor_estimado && <span className="font-medium text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>}
             <span className="text-muted-foreground shrink-0">{timeAgo(lead.ultima_interacao, lead.created_at)}</span>
           </div>
         </div>
-
-        {/* Pool: owner indicator */}
-        {isPoolEnabled && lead.responsavel && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <Avatar className="h-4 w-4 shrink-0">
-              <AvatarFallback className="text-[8px]">
-                {getInitials(lead.responsavel.nome)}
-              </AvatarFallback>
-            </Avatar>
-            <span className="text-[10px] text-muted-foreground truncate">
-              {lead.responsavel.nome.split(' ')[0]}
-            </span>
-          </div>
-        )}
 
         {/* Hover action buttons */}
         {(onOpenChat || onQuickTask || onArchiveLead) && (

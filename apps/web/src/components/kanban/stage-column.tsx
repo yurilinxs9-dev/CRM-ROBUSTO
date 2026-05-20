@@ -350,7 +350,7 @@ function StageColumnImpl({
         <div
           ref={setDropRef}
           className={cn(
-            'p-2 space-y-2 min-h-[200px] transition-colors',
+            'p-2 space-y-1.5 min-h-[200px] transition-colors',
             isOver && 'bg-primary/5',
           )}
         >

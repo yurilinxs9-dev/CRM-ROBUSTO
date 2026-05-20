@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth.store';
 import { Sidebar } from '@/components/layout/sidebar';
@@ -25,10 +25,30 @@ function getTokenExp(token: string): number {
   }
 }
 
+const SIDEBAR_COLLAPSED_KEY = 'crm:sidebar-collapsed';
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { accessToken, isAuthenticated, hydrated, updateToken } = useAuthStore();
   const router = useRouter();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+      if (stored === '1') setSidebarCollapsed(true);
+    } catch {}
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {}
+      return next;
+    });
+  }, []);
 
   // Wait for zustand persist to rehydrate from localStorage BEFORE deciding
   // whether to redirect — otherwise a hard refresh always bounces the user
@@ -140,7 +160,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <NotificationPrompt />
         <div className="flex h-screen overflow-hidden bg-background text-foreground">
           <div className="hidden md:block">
-            <Sidebar />
+            <Sidebar collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
             <Header />
