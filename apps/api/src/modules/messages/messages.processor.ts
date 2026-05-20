@@ -87,7 +87,10 @@ export class MessagesSendProcessor extends WorkerHost {
       res = await postPayload(`data:audio/ogg;base64,${buf}`, true);
     } else {
       try {
-        res = await postPayload(freshUrl, false);
+        // Always send mimetype so UazAPI/Baileys forwards as PTT (audio/ogg;
+        // codecs=opus). Without it, WhatsApp may treat it as generic media
+        // and the client shows "nao foi possivel reproduzir".
+        res = await postPayload(freshUrl, true);
       } catch (err) {
         if (strategy === 'auto') {
           this.logger.warn(`[handleAudio] URL strategy failed, retrying with base64`);
