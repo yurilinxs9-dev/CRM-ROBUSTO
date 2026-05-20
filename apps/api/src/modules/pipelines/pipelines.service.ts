@@ -329,11 +329,6 @@ export class PipelinesService {
       where: { id, tenant_id: user.tenantId },
     });
     if (!stage) throw new NotFoundException('Stage nao encontrada');
-    if (stage.is_won || stage.is_lost) {
-      throw new ConflictException(
-        'Nao e possivel excluir etapas marcadas como ganho ou perda',
-      );
-    }
     const leadsCount = await this.prisma.lead.count({
       where: { estagio_id: id, tenant_id: user.tenantId },
     });
@@ -355,11 +350,6 @@ export class PipelinesService {
       where: { id, tenant_id: user.tenantId },
     });
     if (!stage) throw new NotFoundException('Stage nao encontrada');
-    if (stage.is_won || stage.is_lost) {
-      throw new ConflictException(
-        'Nao e possivel excluir etapas marcadas como ganho ou perda',
-      );
-    }
     const target = await this.prisma.stage.findFirst({
       where: { id: targetStageId, tenant_id: user.tenantId, pipeline_id: stage.pipeline_id },
       select: { id: true },
