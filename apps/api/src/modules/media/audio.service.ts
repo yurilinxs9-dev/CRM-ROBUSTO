@@ -22,11 +22,10 @@ export class AudioService {
       await fs.promises.mkdir(this.tmpDir, { recursive: true });
       await fs.promises.writeFile(inputPath, inputBuffer);
 
-      // WhatsApp PTT spec (Baileys/Signal protocol):
-      //   container: OGG, codec: libopus, sample rate: 16000 Hz, channels: mono,
-      //   bitrate: 24-32 kbit/s, application: voip (voice activity detection),
-      //   no video, no metadata. Frame duration 20ms is the WhatsApp default —
-      //   higher values trigger "Não foi possível reproduzir" on iOS.
+      // Encoding original que disparava UazAPI a gerar streamingSidecar.
+      // NAO ADICIONAR `-application voip`, `-frame_duration` ou trocar -vbr
+      // pra `constrained` — isso faz UazAPI parar de gerar sidecar e cliente
+      // recebe "Audio nao disponivel".
       await execFileAsync(process.env.FFMPEG_PATH ?? 'ffmpeg', [
         '-i', inputPath,
         '-vn',
@@ -35,9 +34,7 @@ export class AudioService {
         '-b:a', '32k',
         '-ar', '16000',
         '-ac', '1',
-        '-application', 'voip',
-        '-frame_duration', '20',
-        '-vbr', 'constrained',
+        '-vbr', 'on',
         '-f', 'ogg',
         '-y',
         outputPath,

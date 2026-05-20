@@ -67,21 +67,17 @@ export class MessagesSendProcessor extends WorkerHost {
     }
     // Re-sign URL in case the queue delay outran the signature TTL.
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
-    // PTT mode requires `streamingSidecar` on the WhatsApp protobuf — Baileys
-    // generates it from the raw audio buffer, but the UazAPI build we're
-    // hitting doesn't. Without sidecar iOS/Android show "Áudio não disponível".
-    // Default ptt=false sends as a regular audio bubble (player works fine,
-    // just no waveform). Set UAZAPI_AUDIO_PTT=true to opt back in.
-    const sendAsPtt = (process.env['UAZAPI_AUDIO_PTT'] ?? 'false').toLowerCase() === 'true';
-    // Default base64 — inline upload removes dependency on the Supabase
-    // signed-URL window (which expired before UazAPI could fetch it).
+    // UazAPI gera streamingSidecar quando recebe ogg/opus encoded com
+    // -vbr on + mimetype completo (`audio/ogg; codecs=opus`). Sidecar e o
+    // que da o visual PTT (mic preto + onda) e a reproducao no celular.
+    // Envia como type:ptt + ptt:true + mimetype completo.
+    const pttField = process.env['UAZAPI_PTT_FIELD'] ?? 'audio+ptt';
     const strategy = (process.env['AUDIO_SEND_STRATEGY'] ?? 'base64') as string;
-    // Plain `audio/ogg` — Baileys auto-detects opus from the file header.
-    const opusMime = 'audio/ogg';
+    const opusMime = 'audio/ogg; codecs=opus';
     const payload = (fileRef: string, withMime: boolean): Record<string, unknown> => {
-      const base: Record<string, unknown> = sendAsPtt
+      const base = pttField === 'audio+ptt'
         ? { number: d.telefone, type: 'audio', ptt: true, file: fileRef }
-        : { number: d.telefone, type: 'audio', ptt: false, file: fileRef };
+        : { number: d.telefone, type: 'ptt', ptt: true, file: fileRef };
       return withMime ? { ...base, mimetype: opusMime } : base;
     };
 
