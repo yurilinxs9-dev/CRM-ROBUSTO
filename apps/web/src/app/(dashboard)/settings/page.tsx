@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { ProfileTab } from './components/ProfileTab';
 import { TeamTab } from './components/TeamTab';
 import { GeneralTab } from './components/GeneralTab';
+import { WebhooksTab } from './components/WebhooksTab';
 
 const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
 
@@ -20,6 +21,7 @@ export default function SettingsPage() {
           <TabsTrigger value="profile">👤 Meu Perfil</TabsTrigger>
           {canManageTeam && <TabsTrigger value="team">👥 Equipe</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="general">⚙️ Geral</TabsTrigger>}
+          {canManageTeam && <TabsTrigger value="webhooks">🔗 Webhooks</TabsTrigger>}
         </TabsList>
         <TabsContent value="profile">
           <ProfileTab />
@@ -32,6 +34,11 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="general">
             <GeneralTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="webhooks">
+            <WebhooksTab />
           </TabsContent>
         )}
       </Tabs>

@@ -87,6 +87,7 @@ model Tenant {
   webhook_logs       WebhookLog[]
   push_subscriptions PushSubscription[]
   instances_hidden   InstanceHidden[]
+  outbound_webhooks  OutboundWebhook[]
 
   @@index([owner_id])
 }
@@ -474,6 +475,41 @@ model Task {
   @@index([responsavel_id, status])
   @@index([lead_id])
   @@index([tenant_id])
+}
+
+model OutboundWebhook {
+  id             String            @id @default(uuid())
+  tenant_id      String
+  tenant         Tenant            @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  name           String
+  url            String
+  events         String[]
+  active         Boolean           @default(true)
+  secret         String?
+  custom_headers Json?
+  created_at     DateTime          @default(now())
+  updated_at     DateTime          @updatedAt
+  deliveries     WebhookDelivery[]
+
+  @@index([tenant_id, active])
+}
+
+model WebhookDelivery {
+  id            String          @id @default(uuid())
+  webhook_id    String
+  webhook       OutboundWebhook @relation(fields: [webhook_id], references: [id], onDelete: Cascade)
+  event_type    String
+  payload       Json
+  status_code   Int?
+  response_body String?
+  success       Boolean
+  error         String?
+  duration_ms   Int?
+  attempt       Int             @default(1)
+  created_at    DateTime        @default(now())
+
+  @@index([webhook_id, created_at])
+  @@index([created_at])
 }
 
 model PushSubscription {

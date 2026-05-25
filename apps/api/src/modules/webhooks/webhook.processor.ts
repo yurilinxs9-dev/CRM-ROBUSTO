@@ -8,6 +8,7 @@ import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
 import { MediaPipelineService } from '../media/media-pipeline.service';
 import { PushService } from '../push/push.service';
+import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import {
   type ExtractedMessage,
   extractFromEvolution,
@@ -50,6 +51,7 @@ export class WebhookProcessor extends WorkerHost {
     private mediaService: MediaService,
     private mediaPipeline: MediaPipelineService,
     private push: PushService,
+    private outboundWebhooks: OutboundWebhooksService,
   ) {
     super();
   }
@@ -488,6 +490,18 @@ export class WebhookProcessor extends WorkerHost {
     // until the `message:media-ready` event arrives.
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
     this.gateway.emitNewMessage(lead.id, message, tenantId);
+
+    if (tenantId) {
+      this.outboundWebhooks.dispatchMessageCreated({
+        tenantId,
+        messageId: message.id,
+        leadId: lead.id,
+        text: extracted.content ?? null,
+        channel: 'whatsapp',
+        direction: isFromMe ? 'outbound' : 'inbound',
+        type: String(extracted.type),
+      }).catch((err) => this.logger.warn(`dispatch message.created: ${String(err)}`));
+    }
 
     if (!isFromMe) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;

@@ -14,6 +14,7 @@ import { InstancesService } from '../instances/instances.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
 import { PushService } from '../push/push.service';
+import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -105,6 +106,7 @@ export class LeadsService {
     private gateway: CrmGateway,
     private media: MediaService,
     private push: PushService,
+    private outboundWebhooks: OutboundWebhooksService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
@@ -473,6 +475,13 @@ export class LeadsService {
     });
 
     await this.invalidateLeadsCache(user.tenantId);
+
+    this.outboundWebhooks.dispatchLeadEvent({
+      tenantId: user.tenantId,
+      eventType: 'lead.created',
+      leadId: lead.id,
+    }).catch(err => this.logger.warn(`dispatch lead.created: ${String(err)}`));
+
     return lead;
   }
 
@@ -571,6 +580,15 @@ export class LeadsService {
       this.logger.warn(`emitLeadUpdated failed for lead ${id}: ${String(err)}`);
     }
 
+    if (changedFields.length > 0) {
+      this.outboundWebhooks.dispatchLeadEvent({
+        tenantId: user.tenantId,
+        eventType: 'lead.updated',
+        leadId: id,
+        changes: { fields: changedFields, before: dadosAntes, after: dadosDepois },
+      }).catch(err => this.logger.warn(`dispatch lead.updated: ${String(err)}`));
+    }
+
     return updated;
   }
 
@@ -641,6 +659,23 @@ export class LeadsService {
       );
     } catch (err) {
       this.logger.warn(`emitLeadStageChanged failed for lead ${id}: ${String(err)}`);
+    }
+
+    {
+      const newStageMeta = await this.prisma.stage.findUnique({
+        where: { id: estagio_id },
+        select: { is_won: true, is_lost: true },
+      });
+      const eventType: 'deal.won' | 'deal.lost' | 'lead.updated' =
+        newStageMeta?.is_won ? 'deal.won'
+        : newStageMeta?.is_lost ? 'deal.lost'
+        : 'lead.updated';
+      this.outboundWebhooks.dispatchLeadEvent({
+        tenantId: user.tenantId,
+        eventType,
+        leadId: id,
+        changes: { from_stage_id: lead.estagio_id, to_stage_id: estagio_id },
+      }).catch(err => this.logger.warn(`dispatch ${eventType}: ${String(err)}`));
     }
 
     // Fire-and-forget enqueue of stage auto-actions; failure must not break the move.

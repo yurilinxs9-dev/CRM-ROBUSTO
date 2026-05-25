@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { MessageType } from '@prisma/client';
 import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
+import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 
 const sendTextSchema = z.object({
   lead_id: z.string().uuid(),
@@ -77,8 +78,28 @@ export class MessagesService {
     private cache: RedisCacheService,
     private mediaPipeline: MediaPipelineService,
     @InjectQueue(MESSAGES_SEND_QUEUE) private readonly sendQueue: Queue<SendMessageJobData>,
+    private outboundWebhooks: OutboundWebhooksService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
+  }
+
+  private emitMsgWebhook(args: {
+    tenantId: string;
+    messageId: string;
+    leadId: string;
+    text: string | null;
+    type: string;
+    direction: 'inbound' | 'outbound';
+  }) {
+    this.outboundWebhooks.dispatchMessageCreated({
+      tenantId: args.tenantId,
+      messageId: args.messageId,
+      leadId: args.leadId,
+      text: args.text,
+      channel: 'whatsapp',
+      direction: args.direction,
+      type: args.type,
+    }).catch(err => this.logger.warn(`dispatch message.created: ${String(err)}`));
   }
 
   private async resolveLeadAndToken(leadId: string, user: AuthUser) {
@@ -249,6 +270,10 @@ export class MessagesService {
         tenant_id: user.tenantId,
       },
     });
+    this.emitMsgWebhook({
+      tenantId: user.tenantId, messageId: message.id, leadId: lead_id,
+      text: outboundContent, type: 'TEXT', direction: 'outbound',
+    });
 
     // Avançar cadência manual se houver follow-up pendente
     const cadenceUpdate: Record<string, unknown> = {
@@ -343,6 +368,10 @@ export class MessagesService {
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
+    });
+    this.emitMsgWebhook({
+      tenantId: user.tenantId, messageId: message.id, leadId: lead_id,
+      text: null, type: 'AUDIO', direction: 'outbound',
     });
 
     await this.prisma.lead.update({
@@ -444,6 +473,10 @@ export class MessagesService {
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
       },
+    });
+    this.emitMsgWebhook({
+      tenantId: user.tenantId, messageId: message.id, leadId: lead_id,
+      text: outboundCaption ?? null, type: String(msgType), direction: 'outbound',
     });
 
     await this.prisma.lead.update({

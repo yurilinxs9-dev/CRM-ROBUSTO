@@ -25,6 +25,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { AutomationModule } from './modules/automation/automation.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { PushModule } from './modules/push/push.module';
+import { OutboundWebhooksModule } from './modules/outbound-webhooks/outbound-webhooks.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -100,6 +101,7 @@ import { CacheModule } from './common/cache/cache.module';
     AutomationModule,
     TenantsModule,
     PushModule,
+    OutboundWebhooksModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },
