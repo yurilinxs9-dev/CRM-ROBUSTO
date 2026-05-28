@@ -323,9 +323,13 @@ export class WebhookProcessor extends WorkerHost {
         ultima_interacao: new Date(),
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
-        mensagens_nao_lidas: { increment: isFromMe ? 0 : 1 },
+        mensagens_nao_lidas: isFromMe ? 0 : { increment: 1 },
       },
     });
+
+    if (isFromMe) {
+      this.gateway.emitLeadUnreadReset(lead.id, tenantId);
+    }
 
     // Auto-assign só na situação clássica: lead em pool e dono da instância
     // é admin/gerente (modo Compartilhado) ou modo Individual. Nunca sobrepõe
