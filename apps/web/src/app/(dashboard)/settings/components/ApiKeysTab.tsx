@@ -3,10 +3,11 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Plus, Trash2, KeyRound } from 'lucide-react';
+import { Plus, Trash2, KeyRound, BookOpen, ChevronDown } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ApiKeyFormDialog } from './api-keys/ApiKeyFormDialog';
+import { ApiDocs } from './api-keys/ApiDocs';
 
 export interface ApiKey {
   id: string;
@@ -29,6 +30,7 @@ function fmtDate(v: string | null): string {
 export function ApiKeysTab() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
+  const [docsOpen, setDocsOpen] = useState(false);
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ['api-keys'],
@@ -106,6 +108,25 @@ export function ApiKeysTab() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* Documentação da API */}
+      <div className="border rounded-lg">
+        <button
+          type="button"
+          onClick={() => setDocsOpen((v) => !v)}
+          className="w-full flex items-center gap-2 p-4 text-left hover:bg-accent/50 transition rounded-lg"
+        >
+          <BookOpen className="w-4 h-4" />
+          <span className="font-medium">Documentação da API</span>
+          <span className="text-sm text-muted-foreground">— endpoints, autenticação e exemplos</span>
+          <ChevronDown className={`w-4 h-4 ml-auto transition-transform ${docsOpen ? 'rotate-180' : ''}`} />
+        </button>
+        {docsOpen && (
+          <div className="border-t p-4">
+            <ApiDocs />
+          </div>
+        )}
       </div>
 
       <ApiKeyFormDialog open={createOpen} onClose={() => setCreateOpen(false)} />
