@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Bell, Menu } from 'lucide-react';
+import { Bell, Menu, Loader2 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from 
 import { Sidebar, NAV_ITEMS } from './sidebar';
 import { HeaderSearch } from './header-search';
 import { UserMenu } from './user-menu';
+import { useSocketStatus } from '@/hooks/use-socket-status';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 
@@ -24,6 +25,7 @@ function usePageTitle() {
 export function Header() {
   const [open, setOpen] = useState(false);
   const title = usePageTitle();
+  const connected = useSocketStatus();
   const qc = useQueryClient();
 
   const { data: overdue = [] } = useQuery<Array<{ id: string; titulo: string }>>({
@@ -71,6 +73,17 @@ export function Header() {
       </Sheet>
 
       <h1 className="truncate text-base font-semibold tracking-tight">{title}</h1>
+
+      {!connected && (
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
+          style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b' }}
+          title="Reconectando ao tempo real"
+        >
+          <Loader2 className="h-3 w-3 animate-spin" />
+          <span className="hidden sm:inline">Reconectando…</span>
+        </span>
+      )}
 
       <div className="flex-1" />
 
