@@ -48,10 +48,13 @@ export function SocketEventsProvider({ children }: { children: React.ReactNode }
 
     socket.on('lead:new-message', schedule);
     socket.on('lead:unread-reset', schedule);
+    // Ao reconectar, eventos do gap foram perdidos — refetch a lista/kanban.
+    socket.on('connect', schedule);
 
     return () => {
       socket.off('lead:new-message', schedule);
       socket.off('lead:unread-reset', schedule);
+      socket.off('connect', schedule);
       if (trailing) clearTimeout(trailing);
     };
   }, [queryClient]);

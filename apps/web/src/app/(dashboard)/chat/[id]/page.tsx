@@ -128,6 +128,11 @@ export default function ChatDetailPage() {
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     enabled: !!leadId,
     staleTime: MESSAGES_STALE,
+    // Rede de segurança: o realtime vem do WS (message:new), mas se o socket
+    // cair/zumbificar, eventos são perdidos e a conversa congelava até navegar.
+    // Poll leve + refetch ao reconectar garantem que nenhuma msg suma.
+    refetchInterval: 15000,
+    refetchOnReconnect: true,
   });
 
   const messages = useMemo(() => {
@@ -523,15 +528,24 @@ export default function ChatDetailPage() {
       );
     };
 
+    // Ao (re)conectar após queda/sleep, eventos emitidos durante o gap foram
+    // perdidos pelo Socket.IO — refetch a conversa pra recuperar o que faltou.
+    const onReconnect = () => {
+      queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+    };
+
     socket.on('message:new', handleNew);
     socket.on('message:status-updated', handleStatus);
     socket.on('message:media-ready', handleMediaReady);
+    socket.on('connect', onReconnect);
 
     return () => {
       leaveLead(leadId);
       socket.off('message:new', handleNew);
       socket.off('message:status-updated', handleStatus);
       socket.off('message:media-ready', handleMediaReady);
+      socket.off('connect', onReconnect);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, queryClient]);
