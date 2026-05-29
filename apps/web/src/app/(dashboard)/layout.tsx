@@ -8,6 +8,8 @@ import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TaskNotifications } from '@/components/layout/task-notifications';
 import { NotificationPrompt } from '@/components/notification-prompt';
+import { AnnouncementBanner } from '@/components/layout/announcement-banner';
+import { ImpersonationBanner } from '@/components/layout/impersonation-banner';
 import { connectSocket, disconnectSocket, reconnectSocket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import { SocketEventsProvider } from '@/providers/socket-events-provider';
@@ -28,7 +30,7 @@ function getTokenExp(token: string): number {
 const SIDEBAR_COLLAPSED_KEY = 'crm:sidebar-collapsed';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { accessToken, isAuthenticated, hydrated, updateToken } = useAuthStore();
+  const { accessToken, isAuthenticated, hydrated, updateToken, updateUser, setTenant } = useAuthStore();
   const router = useRouter();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -59,6 +61,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.push('/login');
     }
   }, [hydrated, isAuthenticated, accessToken, router]);
+
+  // Sincroniza o perfil (is_platform_admin, tenant, nome) com o servidor.
+  // Reexecuta ao trocar o token (ex.: impersonação) pra refletir o usuário ativo.
+  useEffect(() => {
+    if (!hydrated || (!isAuthenticated && !accessToken)) return;
+    api
+      .get('/api/auth/me')
+      .then(({ data }) => {
+        if (data?.user) {
+          updateUser({
+            is_platform_admin: data.user.is_platform_admin,
+            nome: data.user.nome,
+            avatar_url: data.user.avatar_url,
+          });
+        }
+        if (data?.tenant) setTenant(data.tenant);
+      })
+      .catch(() => { /* não-crítico */ });
+  }, [hydrated, isAuthenticated, accessToken, updateUser, setTenant]);
 
   /**
    * Proactively refresh the access token. Returns the new token or null on failure.
@@ -163,7 +184,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Sidebar collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
+            <ImpersonationBanner />
             <Header />
+            <AnnouncementBanner />
             <main className="flex-1 overflow-auto bg-background">{children}</main>
           </div>
         </div>

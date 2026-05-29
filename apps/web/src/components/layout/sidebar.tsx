@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -35,6 +35,7 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, className }: SidebarProps) {
   const role = useAuthStore((s) => s.user?.role);
+  const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
   // VISUALIZADOR nao tem acesso a Conversas — escondemos do menu.
   const visibleNav = NAV_ITEMS.filter(
     (item) => !(item.href === '/chat' && role === 'VISUALIZADOR'),
@@ -90,6 +91,15 @@ export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, class
             onNavigate={onNavigate}
           />
         ))}
+        {isPlatformAdmin && (
+          <NavItem
+            href="/admin"
+            label="Admin"
+            icon={Shield}
+            collapsed={collapsed}
+            onNavigate={onNavigate}
+          />
+        )}
       </nav>
 
       <Separator />
