@@ -258,12 +258,85 @@ export class DashboardService {
       };
     });
 
+    // ---- Métricas adicionais (additivas, não quebram o contrato anterior) ----
+    const since14 = new Date(now);
+    since14.setDate(now.getDate() - 13);
+    since14.setHours(0, 0, 0, 0);
+
+    const [respLeads, openConversations, pendingTasks, wonValueAgg, trendRows] =
+      (await Promise.all([
+        this.prisma.lead.findMany({
+          where: {
+            tenant_id: user.tenantId,
+            last_customer_message_at: { not: null },
+            last_agent_message_at: { not: null },
+          },
+          select: { last_customer_message_at: true, last_agent_message_at: true },
+          orderBy: { ultima_interacao: 'desc' },
+          take: 500,
+        }),
+        this.prisma.lead.count({
+          where: { tenant_id: user.tenantId, mensagens_nao_lidas: { gt: 0 } },
+        }),
+        this.prisma.task.count({
+          where: { tenant_id: user.tenantId, status: 'PENDENTE' },
+        }),
+        this.prisma.lead.aggregate({
+          where: { tenant_id: user.tenantId, estagio: { is_won: true } },
+          _sum: { valor_estimado: true },
+        }),
+        this.prisma.$queryRaw<{ day: Date; count: number }[]>`
+          SELECT date_trunc('day', created_at) AS day, COUNT(*)::int AS count
+          FROM "Lead"
+          WHERE tenant_id = ${user.tenantId} AND created_at >= ${since14}
+          GROUP BY 1 ORDER BY 1 ASC`,
+      ])) as [
+        Array<{ last_customer_message_at: Date | null; last_agent_message_at: Date | null }>,
+        number,
+        number,
+        { _sum: { valor_estimado: unknown } },
+        Array<{ day: Date; count: number }>,
+      ];
+
+    // Tempo médio de resposta: delta entre última msg do cliente e nossa resposta,
+    // ignorando negativos (resposta veio antes) e outliers > 24h.
+    const deltas = respLeads
+      .filter((l) => l.last_customer_message_at && l.last_agent_message_at)
+      .map(
+        (l) =>
+          (l.last_agent_message_at!.getTime() - l.last_customer_message_at!.getTime()) / 60000,
+      )
+      .filter((d) => d > 0 && d < 60 * 24);
+    const avgResponseMinutes = deltas.length
+      ? Math.round(deltas.reduce((a, b) => a + b, 0) / deltas.length)
+      : 0;
+
+    const wonValue = wonValueAgg._sum.valor_estimado
+      ? Number(wonValueAgg._sum.valor_estimado)
+      : 0;
+
+    // Série de 14 dias preenchendo lacunas com zero.
+    const trendMap = new Map(
+      trendRows.map((r) => [new Date(r.day).toISOString().slice(0, 10), Number(r.count)]),
+    );
+    const leadsTrend: { date: string; count: number }[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      leadsTrend.push({ date: key, count: trendMap.get(key) ?? 0 });
+    }
+
     return {
       totalLeads,
       leadsThisWeek,
       leadsLastWeek,
-      avgResponseMinutes: 0,
+      avgResponseMinutes,
       conversionRate,
+      wonValue,
+      openConversations,
+      pendingTasks,
+      leadsTrend,
       leadsByStage: stageCounts,
       leadsByTemp,
       recentActivity,

@@ -28,22 +28,22 @@ export function KpiCard({ icon: Icon, label, value, sub, trend, loading }: KpiCa
 
   return (
     <div
-      className="rounded-xl border p-5 transition-colors hover:border-[var(--border-strong)]"
+      className="rounded-xl border p-4 sm:p-5 transition-colors hover:border-[var(--border-strong)]"
       style={{ background: 'var(--bg-surface-2)', borderColor: 'var(--border-default)' }}
     >
-      <div className="flex items-start justify-between mb-3">
-        <p className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <p className="text-[11px] sm:text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
           {label}
         </p>
         <div
-          className="w-9 h-9 rounded-lg flex items-center justify-center"
+          className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center shrink-0"
           style={{ background: 'var(--primary-subtle)' }}
         >
           <Icon size={16} style={{ color: 'var(--primary)' }} />
         </div>
       </div>
       <p
-        className="text-3xl font-bold tracking-tight"
+        className="text-2xl sm:text-3xl font-bold tracking-tight"
         style={{ color: 'var(--text-primary)', fontFeatureSettings: '"tnum"' }}
       >
         {value}

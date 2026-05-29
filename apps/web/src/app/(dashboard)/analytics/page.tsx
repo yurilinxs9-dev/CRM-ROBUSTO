@@ -538,6 +538,26 @@ function AnalyticsPageInner() {
     [router, searchParams],
   );
 
+  // Atalho: define from+to numa só navegação (evita corrida entre 2 replaces).
+  const setRange = useCallback(
+    (days: number) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('from', format(subDays(new Date(), days), 'yyyy-MM-dd'));
+      params.set('to', format(new Date(), 'yyyy-MM-dd'));
+      router.replace(`/analytics?${params.toString()}`);
+    },
+    [router, searchParams],
+  );
+
+  const activePreset = useMemo(() => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    if (to !== today) return null;
+    for (const d of [7, 30, 90]) {
+      if (from === format(subDays(new Date(), d), 'yyyy-MM-dd')) return d;
+    }
+    return null;
+  }, [from, to]);
+
   // Pipelines
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
     queryKey: ['pipelines'],
@@ -612,7 +632,7 @@ function AnalyticsPageInner() {
   });
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-end gap-4">
         <div className="flex-1">
@@ -629,6 +649,36 @@ function AnalyticsPageInner() {
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Quick presets */}
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+              Período
+            </span>
+            <div className="flex rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border-default)' }}>
+              {[
+                { d: 7, label: '7d' },
+                { d: 30, label: '30d' },
+                { d: 90, label: '90d' },
+              ].map((p) => {
+                const active = activePreset === p.d;
+                return (
+                  <button
+                    key={p.d}
+                    type="button"
+                    onClick={() => setRange(p.d)}
+                    className="h-9 px-3 text-sm font-medium transition-colors"
+                    style={{
+                      background: active ? 'var(--primary)' : 'transparent',
+                      color: active ? 'white' : 'var(--text-secondary)',
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Date from */}
           <div className="flex flex-col gap-0.5">
             <label

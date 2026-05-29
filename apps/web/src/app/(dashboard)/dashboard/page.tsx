@@ -16,10 +16,15 @@ import {
   ThermometerSun,
   AlertCircle,
   Plus,
+  LineChart,
+  MessageSquare,
+  CheckSquare,
+  DollarSign,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { KpiCard } from '@/components/dashboard/kpi-card';
+import { AreaChart, type TrendPoint } from '@/components/dashboard/area-chart';
 import { FunnelChart, type FunnelStage } from '@/components/dashboard/funnel-chart';
 import { TemperatureDonut, type TempDatum } from '@/components/dashboard/temperature-donut';
 import { ActivityFeed, type ActivityItem } from '@/components/dashboard/activity-feed';
@@ -35,6 +40,10 @@ interface DashboardStats {
   leadsLastWeek: number;
   conversionRate: number;
   avgResponseMinutes: number;
+  wonValue: number;
+  openConversations: number;
+  pendingTasks: number;
+  leadsTrend: TrendPoint[];
   leadsByTemp: TempDatum[];
   recentActivity: ActivityItem[];
   topOperators: OperatorRow[];
@@ -44,6 +53,11 @@ const numberFmt = new Intl.NumberFormat('pt-BR');
 const percentFmt = new Intl.NumberFormat('pt-BR', {
   style: 'percent',
   maximumFractionDigits: 1,
+});
+const brlFmt = new Intl.NumberFormat('pt-BR', {
+  style: 'currency',
+  currency: 'BRL',
+  maximumFractionDigits: 0,
 });
 
 function formatMinutes(mins: number): string {
@@ -65,15 +79,17 @@ function SectionCard({
   icon: Icon,
   children,
   className = '',
+  action,
 }: {
   title: string;
   icon: LucideIcon;
   children: React.ReactNode;
   className?: string;
+  action?: React.ReactNode;
 }) {
   return (
     <div
-      className={`rounded-xl border p-5 transition-colors hover:border-[var(--border-strong)] ${className}`}
+      className={`rounded-xl border p-4 sm:p-5 transition-colors hover:border-[var(--border-strong)] ${className}`}
       style={{ background: 'var(--bg-surface-2)', borderColor: 'var(--border-default)' }}
     >
       <div className="flex items-center gap-2 mb-5">
@@ -81,24 +97,73 @@ function SectionCard({
         <h3 className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>
           {title}
         </h3>
+        {action && <div className="ml-auto">{action}</div>}
       </div>
       {children}
     </div>
   );
 }
 
+function MiniStat({
+  icon: Icon,
+  label,
+  value,
+  tone = 'default',
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  tone?: 'default' | 'success' | 'warn';
+}) {
+  const color =
+    tone === 'success' ? '#22c55e' : tone === 'warn' ? '#f59e0b' : 'var(--text-primary)';
+  return (
+    <div
+      className="rounded-xl border p-4 flex items-center gap-3"
+      style={{ background: 'var(--bg-surface-2)', borderColor: 'var(--border-default)' }}
+    >
+      <div
+        className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+        style={{ background: 'var(--primary-subtle)' }}
+      >
+        <Icon size={18} style={{ color: 'var(--primary)' }} />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {label}
+        </p>
+        <p
+          className="text-xl font-bold tracking-tight truncate"
+          style={{ color, fontFeatureSettings: '"tnum"' }}
+        >
+          {value}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function DashboardHeader() {
   return (
-    <div>
-      <h2
-        className="text-2xl font-semibold tracking-tight"
-        style={{ color: 'var(--text-primary)' }}
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <h2
+          className="text-xl sm:text-2xl font-semibold tracking-tight"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          Dashboard
+        </h2>
+        <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          Visão geral do funil em tempo real
+        </p>
+      </div>
+      <span
+        className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full shrink-0"
+        style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}
       >
-        Dashboard
-      </h2>
-      <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-        Visão geral do funil de vendas
-      </p>
+        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+        Ao vivo
+      </span>
     </div>
   );
 }
@@ -115,8 +180,6 @@ export default function DashboardPage() {
     refetchInterval: 30_000,
   });
 
-  // Eventos podem chegar em rajada (msgs em massa, drag-drop kanban). Debounce
-  // evita refetch por evento e mantém o dashboard responsivo sem floodar a API.
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const socket = getSocket();
@@ -141,10 +204,10 @@ export default function DashboardPage() {
 
   if (!isLoading && stats && stats.totalLeads === 0) {
     return (
-      <div className="p-6 space-y-6">
+      <div className="p-4 sm:p-6 space-y-6">
         <DashboardHeader />
         <div
-          className="rounded-xl border p-12 flex flex-col items-center justify-center text-center"
+          className="rounded-xl border p-8 sm:p-12 flex flex-col items-center justify-center text-center"
           style={{ background: 'var(--bg-surface-2)', borderColor: 'var(--border-default)' }}
         >
           <div
@@ -173,7 +236,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
       <DashboardHeader />
 
       {isError && (
@@ -190,7 +253,8 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* KPIs primários */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {isLoading ? (
           <>
             <KpiCard icon={Users} label="" value="" loading />
@@ -211,7 +275,7 @@ export default function DashboardPage() {
               icon={TrendingUp}
               label="Leads esta semana"
               value={numberFmt.format(stats?.leadsThisWeek ?? 0)}
-              sub={`Semana passada: ${numberFmt.format(stats?.leadsLastWeek ?? 0)}`}
+              sub={`Anterior: ${numberFmt.format(stats?.leadsLastWeek ?? 0)}`}
             />
             <KpiCard
               icon={Target}
@@ -229,6 +293,48 @@ export default function DashboardPage() {
         )}
       </div>
 
+      {/* Tendência + stats secundários */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <SectionCard title="Leads (últimos 14 dias)" icon={LineChart} className="lg:col-span-2">
+          {isLoading ? (
+            <Skeleton className="h-[180px] w-full" />
+          ) : (
+            <AreaChart data={stats?.leadsTrend ?? []} />
+          )}
+        </SectionCard>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-3 sm:gap-4">
+          {isLoading ? (
+            <>
+              <Skeleton className="h-[72px] w-full rounded-xl" />
+              <Skeleton className="h-[72px] w-full rounded-xl" />
+              <Skeleton className="h-[72px] w-full rounded-xl" />
+            </>
+          ) : (
+            <>
+              <MiniStat
+                icon={MessageSquare}
+                label="Conversas não lidas"
+                value={numberFmt.format(stats?.openConversations ?? 0)}
+                tone={stats && stats.openConversations > 0 ? 'warn' : 'default'}
+              />
+              <MiniStat
+                icon={CheckSquare}
+                label="Tarefas pendentes"
+                value={numberFmt.format(stats?.pendingTasks ?? 0)}
+              />
+              <MiniStat
+                icon={DollarSign}
+                label="Valor ganho"
+                value={brlFmt.format(stats?.wonValue ?? 0)}
+                tone="success"
+              />
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Funil + Temperatura */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <SectionCard title="Funil de Vendas" icon={BarChart3} className="lg:col-span-2">
           {isLoading ? (
@@ -254,6 +360,7 @@ export default function DashboardPage() {
         </SectionCard>
       </div>
 
+      {/* Atividade + Operadores */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SectionCard title="Atividade Recente" icon={Activity}>
           {isLoading ? (
