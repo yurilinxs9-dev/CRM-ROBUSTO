@@ -248,7 +248,7 @@ export default function ChatDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     },
-    onError: (err: unknown, _vars, ctx) => {
+    onError: (err: unknown, vars, ctx) => {
       const tempId = ctx?.tempId;
       if (tempId) {
         queryClient.setQueryData<MessagesQueryData>(['messages', leadId], (old) => {
@@ -267,7 +267,31 @@ export default function ChatDetailPage() {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data
           ?.message ?? 'Erro ao enviar mensagem.';
-      toast.error(msg);
+      toast.error(msg, {
+        action: {
+          label: 'Reenviar',
+          onClick: () => {
+            // remove a bolha FALHA antiga e reenvia com novo tempId
+            if (tempId) {
+              queryClient.setQueryData<MessagesQueryData>(['messages', leadId], (old) => {
+                if (!old) return old;
+                return {
+                  ...old,
+                  pages: old.pages.map((p) => ({
+                    ...p,
+                    messages: p.messages.filter((m) => m.id !== tempId),
+                  })),
+                };
+              });
+            }
+            sendTextMutation.mutate({
+              content: vars.content,
+              isNote: vars.isNote,
+              tempId: crypto.randomUUID(),
+            });
+          },
+        },
+      });
     },
   });
 
