@@ -20,6 +20,8 @@ import {
   ArrowLeft,
   ArrowRight,
   GripVertical,
+  Trophy,
+  Ban,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -218,7 +220,14 @@ function StageColumnImpl({
     <div
       ref={setSortableRef}
       style={sortableStyle}
-      className="flex-shrink-0 w-80 flex flex-col h-full bg-muted/30 rounded-lg border"
+      className={cn(
+        'flex-shrink-0 w-80 flex flex-col h-full rounded-lg border',
+        stage.is_won
+          ? 'bg-emerald-500/5 border-emerald-500/20'
+          : stage.is_lost
+            ? 'bg-red-500/5 border-red-500/20'
+            : 'bg-muted/30',
+      )}
     >
       {/* Top accent border using stage color */}
       <div className="h-1 w-full rounded-t-lg" style={{ backgroundColor: stage.cor }} aria-hidden />
@@ -259,7 +268,11 @@ function StageColumnImpl({
               {stage.nome}
             </button>
           )}
-          <span className="text-xs text-muted-foreground tabular-nums">({leads.length})</span>
+          {stage.is_won && <Trophy className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="Etapa de ganho" />}
+          {stage.is_lost && <Ban className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label="Etapa de perda" />}
+          <span className="rounded-full bg-background px-1.5 text-[11px] font-semibold text-muted-foreground tabular-nums shrink-0">
+            {leads.length}
+          </span>
           {bulkActive && onSelectAllInStage && leads.length > 0 && (
             <button
               type="button"
@@ -339,8 +352,9 @@ function StageColumnImpl({
           </DropdownMenu>
         </div>
         {total > 0 && (
-          <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-            {formatBRL(String(total))}
+          <p className="mt-1 text-xs tabular-nums">
+            <span className="text-muted-foreground">Total: </span>
+            <span className="font-semibold text-emerald-500">{formatBRL(String(total))}</span>
           </p>
         )}
       </div>
