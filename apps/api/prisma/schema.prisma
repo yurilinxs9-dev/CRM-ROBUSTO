@@ -109,6 +109,7 @@ model User {
   ativo           Boolean            @default(true)
   especialidade   String?
   titulo          String?
+  is_platform_admin Boolean          @default(false)
   tenant_id       String
   tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
   owned_tenants   Tenant[]           @relation("TenantOwner")
@@ -576,4 +577,43 @@ model ApiRequestLog {
 
   @@index([tenant_id, created_at])
   @@index([api_key_id, created_at])
+}
+
+enum AnnouncementLevel {
+  INFO
+  WARNING
+  MAINTENANCE
+}
+
+// Avisos da plataforma (manutenção/instabilidade/recados) criados pelo admin de
+// plataforma e exibidos pra todos os usuários (banner/popup). target_tenant_id
+// null = todos os tenants; preenchido = só aquele tenant.
+model Announcement {
+  id              String            @id @default(uuid())
+  title           String
+  body            String
+  level           AnnouncementLevel @default(INFO)
+  active          Boolean           @default(true)
+  target_tenant_id String?
+  created_by      String
+  created_at      DateTime          @default(now())
+  expires_at      DateTime?
+
+  @@index([active, created_at])
+  @@index([target_tenant_id])
+}
+
+// Auditoria das ações do admin de plataforma (impersonação, broadcast, etc).
+model AdminAuditLog {
+  id              String   @id @default(uuid())
+  admin_user_id   String
+  action          String
+  target_tenant_id String?
+  target_user_id  String?
+  detail          Json?
+  ip              String?
+  created_at      DateTime @default(now())
+
+  @@index([admin_user_id, created_at])
+  @@index([created_at])
 }
