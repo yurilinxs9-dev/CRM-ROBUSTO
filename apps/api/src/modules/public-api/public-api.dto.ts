@@ -22,5 +22,16 @@ export const addTagsSchema = z.object({
   tags: z.array(z.string().min(1).max(50)).min(1).max(20),
 });
 
+export const createContactSchema = z.object({
+  name: z.string().min(1).max(200),
+  phone: z.string().min(8).max(30),
+  email: z.string().email().optional(),
+  tags: z.array(z.string().min(1).max(50)).max(20).optional(),
+});
+
+export const conversationMessagesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+});
+
 export type ListContactsQuery = z.infer<typeof listContactsQuerySchema>;
 export type SendConversationBody = z.infer<typeof sendConversationSchema>;

@@ -11,11 +11,18 @@ import { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
+  conversationMessagesQuerySchema,
+  createContactSchema,
   listContactsQuerySchema,
   sendConversationSchema,
   updateStatusSchema,
 } from './public-api.dto';
-import { CONTACT_SELECT, toContactDto } from './public-serializers';
+import {
+  CONTACT_SELECT,
+  MESSAGE_SELECT,
+  toContactDto,
+  toMessageDto,
+} from './public-serializers';
 
 /** Aceita vários sinônimos PT/EN → enum canônico de status de conversa. */
 const STATUS_MAP: Record<string, ConversationStatus> = {
@@ -82,7 +89,80 @@ export class PublicApiService {
     return toContactDto(lead);
   }
 
+  /** Cria um contato (Lead). Resolve pipeline/stage/instância default do tenant. */
+  async createContact(tenantId: string, body: unknown) {
+    const d = createContactSchema.parse(body);
+
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { tenant_id: tenantId },
+      orderBy: { ordem: 'asc' },
+      select: { id: true, stages: { orderBy: { ordem: 'asc' }, take: 1, select: { id: true } } },
+    });
+    if (!pipeline || !pipeline.stages[0]) {
+      throw new BadRequestException('Tenant sem pipeline/estágio configurado.');
+    }
+
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { tenant_id: tenantId },
+      orderBy: [{ ultimo_check: 'desc' }, { created_at: 'asc' }],
+      select: { nome: true },
+    });
+
+    const phone = d.phone.replace(/\D/g, '') || d.phone;
+    const lead = await this.prisma.lead.create({
+      data: {
+        nome: d.name,
+        telefone: phone,
+        email: d.email ?? null,
+        tags: d.tags ?? [],
+        origem: 'MANUAL',
+        tenant_id: tenantId,
+        pipeline_id: pipeline.id,
+        estagio_id: pipeline.stages[0].id,
+        instancia_whatsapp: inst?.nome ?? '',
+        responsavel_id: null,
+      },
+      select: CONTACT_SELECT,
+    });
+
+    await this.prisma.leadActivity.create({
+      data: {
+        lead_id: lead.id,
+        tipo: 'api_contact_created',
+        descricao: 'Contato criado via API',
+        tenant_id: tenantId,
+      },
+    });
+
+    return toContactDto(lead);
+  }
+
   // ---- Conversas (mensagens sobre um Lead) ----------------------------------
+
+  /** Retorna a conversa: contato + mensagens recentes (exclui notas internas). */
+  async getConversation(tenantId: string, conversationId: string, query: unknown) {
+    const q = conversationMessagesQuerySchema.parse(query);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: conversationId, tenant_id: tenantId },
+      select: CONTACT_SELECT,
+    });
+    if (!lead) throw new NotFoundException('Conversa não encontrada.');
+
+    const messages = await this.prisma.message.findMany({
+      where: { lead_id: conversationId, tenant_id: tenantId, is_internal_note: false },
+      orderBy: { created_at: 'desc' },
+      take: q.limit,
+      select: MESSAGE_SELECT,
+    });
+
+    return {
+      conversation_id: conversationId,
+      contact: toContactDto(lead),
+      status: lead.atendimento_status,
+      messages: messages.map(toMessageDto),
+      pagination: { limit: q.limit, count: messages.length },
+    };
+  }
 
   /**
    * Inicia/continua uma conversa enviando uma mensagem ao contato.

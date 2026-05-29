@@ -47,3 +47,48 @@ export const CONTACT_SELECT = {
   atendimento_status: true,
   created_at: true,
 } as const;
+
+// ---- Mensagens (contrato público de conversa) -----------------------------
+
+export interface MessageSource {
+  id: string;
+  direction: 'INCOMING' | 'OUTGOING';
+  type: string;
+  content: string | null;
+  media_url: string | null;
+  status: string;
+  created_at: Date;
+}
+
+export interface MessageDto {
+  id: string;
+  direction: 'incoming' | 'outgoing';
+  type: string;
+  text: string | null;
+  media_url: string | null;
+  status: string;
+  created_at: string;
+}
+
+export function toMessageDto(m: MessageSource): MessageDto {
+  return {
+    id: m.id,
+    direction: m.direction === 'INCOMING' ? 'incoming' : 'outgoing',
+    type: m.type.toLowerCase(),
+    text: m.content ?? null,
+    // só expõe URL já pública (http); paths internos do Storage não vazam.
+    media_url: m.media_url && /^https?:\/\//i.test(m.media_url) ? m.media_url : null,
+    status: m.status.toLowerCase(),
+    created_at: m.created_at.toISOString(),
+  };
+}
+
+export const MESSAGE_SELECT = {
+  id: true,
+  direction: true,
+  type: true,
+  content: true,
+  media_url: true,
+  status: true,
+  created_at: true,
+} as const;

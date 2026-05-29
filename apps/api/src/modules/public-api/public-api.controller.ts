@@ -56,6 +56,25 @@ export class PublicApiController {
     return this.svc.getContact(this.tenantId(req), id);
   }
 
+  // 2.1b — Criar contato
+  @Post('users')
+  @HttpCode(201)
+  @RequireScopes('contacts:write')
+  createUser(@Body() body: unknown, @Req() req: ApiRequest) {
+    return this.svc.createContact(this.tenantId(req), body);
+  }
+
+  // Histórico da conversa (contato + mensagens recentes)
+  @Get('conversations/:id')
+  @RequireScopes('conversations:read')
+  getConversation(
+    @Param('id') id: string,
+    @Req() req: ApiRequest,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.svc.getConversation(this.tenantId(req), id, query);
+  }
+
   // 2.2 — Enviar nova conversa/mensagem
   @Post('conversations')
   @HttpCode(201)
