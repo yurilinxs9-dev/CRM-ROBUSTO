@@ -40,7 +40,10 @@ export function NotificationBell() {
     staleTime: 10_000,
   });
 
-  const unread = items.filter((n) => !n.lida).length;
+  // Mostra só as NÃO-LIDAS — ao ver/responder, a notificação sai da lista
+  // (não acumula notificação já vista).
+  const visible = items.filter((n) => !n.lida);
+  const unread = visible.length;
 
   useEffect(() => {
     const s = getSocket();
@@ -93,13 +96,13 @@ export function NotificationBell() {
         </div>
 
         <div className="max-h-96 overflow-y-auto">
-          {items.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="flex flex-col items-center gap-2 px-3 py-10 text-center text-muted-foreground">
               <Bell className="h-7 w-7 opacity-40" />
-              <p className="text-sm">Nenhuma notificação</p>
+              <p className="text-sm">Nenhuma notificação nova</p>
             </div>
           ) : (
-            items.map((n) => (
+            visible.map((n) => (
               <button
                 key={n.id}
                 type="button"

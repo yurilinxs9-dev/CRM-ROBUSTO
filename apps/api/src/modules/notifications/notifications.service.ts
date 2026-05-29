@@ -29,4 +29,13 @@ export class NotificationsService {
     });
     return { ok: true, updated: res.count };
   }
+
+  /** Marca como lidas as notificações de uma conversa (ao abrir/responder). */
+  async markByLead(leadId: string, user: AuthUser) {
+    const res = await this.prisma.notification.updateMany({
+      where: { user_id: user.id, tenant_id: user.tenantId, link: `/chat/${leadId}`, lida: false },
+      data: { lida: true },
+    });
+    return { ok: true, updated: res.count };
+  }
 }

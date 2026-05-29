@@ -18,6 +18,11 @@ export class NotificationsController {
     return this.service.markAllRead(req.user as AuthUser);
   }
 
+  @Patch('read-by-lead/:leadId')
+  markByLead(@Param('leadId') leadId: string, @Req() req: Record<string, unknown>) {
+    return this.service.markByLead(leadId, req.user as AuthUser);
+  }
+
   @Patch(':id/read')
   markRead(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.service.markRead(id, req.user as AuthUser);

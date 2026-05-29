@@ -437,6 +437,11 @@ export default function ChatDetailPage() {
   useEffect(() => {
     if (!leadId) return;
     markReadMutation.mutate();
+    // Limpa as notificações do sino dessa conversa (ao abrir/responder).
+    api
+      .patch(`/api/notifications/read-by-lead/${leadId}`)
+      .then(() => queryClient.invalidateQueries({ queryKey: ['notifications'] }))
+      .catch(() => { /* silencioso */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
 
