@@ -145,15 +145,39 @@ export function ApiDocs() {
           code={`curl ${BASE}/users \\
   -H "Authorization: Bearer crmk_seu_token_aqui"`}
         />
-        <a
-          href={`${BASE}/openapi.json`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 text-xs font-medium border rounded-md px-3 py-1.5 hover:bg-accent transition"
-        >
-          <Download className="w-3.5 h-3.5" />
-          Baixar OpenAPI (importável no Postman / Insomnia)
-        </a>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const res = await fetch(`${BASE}/openapi.json`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'crm-whatsapp-openapi.json';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+              } catch {
+                window.open(`${BASE}/openapi.json`, '_blank');
+              }
+            }}
+            className="inline-flex items-center gap-2 text-xs font-medium border rounded-md px-3 py-1.5 hover:bg-accent transition"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Baixar OpenAPI (.json)
+          </button>
+          <a
+            href={`${BASE}/openapi.json`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-muted-foreground underline hover:text-foreground"
+          >
+            ou ver no navegador
+          </a>
+        </div>
         <p className="text-xs text-muted-foreground flex items-start gap-1.5">
           <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
           <span><code className="bg-secondary px-1 rounded">user</code>/<code className="bg-secondary px-1 rounded">contact</code> e <code className="bg-secondary px-1 rounded">conversation</code> são o mesmo recurso (o contato/lead). <code className="bg-secondary px-1 rounded">conversation_id</code> = id do contato.</span>
