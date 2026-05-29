@@ -13,7 +13,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 14% 10%;
 
-    --primary: 152 100% 33%;
+    --primary: #00a859;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 220 14% 96%;
@@ -33,6 +33,35 @@
     --ring: 152 100% 33%;
 
     --radius: 0.5rem;
+
+    /* ----------------------------------------------------------------------
+     * Tokens de design custom — usados via style inline em Dashboard, Analytics,
+     * Settings e gráficos. Antes viviam em src/styles/globals.css (não importado),
+     * então ficavam UNDEFINED em runtime. Definidos aqui para resolverem de fato.
+     * Paleta dark (o app roda sempre em .dark — <html className="dark">).
+     * -------------------------------------------------------------------- */
+    --bg-base:        #0a0d0f;
+    --bg-surface-1:   #0f1419;
+    --bg-surface-2:   #151d27;
+    --bg-surface-3:   #1c2733;
+    --bg-surface-4:   #253447;
+    --border-subtle:  #1e2d3d;
+    --border-default: #2d4059;
+    --border-strong:  #3d5a7a;
+    --text-primary:   #e8edf2;
+    --text-secondary: #8899aa;
+    --text-muted:     #6b7f92;
+    --primary-subtle: rgba(0, 168, 89, 0.14);
+    --primary-hover:  #008f4c;
+    --primary-border: rgba(0, 168, 89, 0.30);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger:  #ef4444;
+    --info:    #0ea5e9;
+    --temp-cold: #38bdf8;
+    --temp-warm: #fb923c;
+    --temp-hot:  #f97316;
+    --temp-fire: #ef4444;
   }
 
   .dark {
@@ -45,7 +74,7 @@
     --popover: 222 14% 9%;
     --popover-foreground: 210 20% 96%;
 
-    --primary: 152 100% 38%;
+    --primary: #00a859;
     --primary-foreground: 222 14% 7%;
 
     --secondary: 222 12% 14%;

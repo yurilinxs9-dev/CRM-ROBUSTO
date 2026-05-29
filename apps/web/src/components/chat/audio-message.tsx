@@ -117,7 +117,7 @@ function AudioMessageComponent({ messageId, src, isOutgoing = false, waveformPea
       const instance = WaveSurfer.create({
         container: containerRef.current,
         waveColor: isOutgoing ? 'rgba(255,255,255,0.4)' : 'rgba(148,163,184,0.5)',
-        progressColor: isOutgoing ? '#ffffff' : 'hsl(var(--primary))',
+        progressColor: isOutgoing ? '#ffffff' : 'var(--primary)',
         cursorColor: 'transparent',
         height: 32,
         barWidth: 2,

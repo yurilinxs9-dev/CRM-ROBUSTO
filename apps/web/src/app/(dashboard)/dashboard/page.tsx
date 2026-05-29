@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PageHeader } from '@/components/layout/page-header';
 import { KpiCard } from '@/components/dashboard/kpi-card';
 import { AreaChart, type TrendPoint } from '@/components/dashboard/area-chart';
 import { FunnelChart, type FunnelStage } from '@/components/dashboard/funnel-chart';
@@ -143,31 +144,6 @@ function MiniStat({
   );
 }
 
-function DashboardHeader() {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div>
-        <h2
-          className="text-xl sm:text-2xl font-semibold tracking-tight"
-          style={{ color: 'var(--text-primary)' }}
-        >
-          Dashboard
-        </h2>
-        <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          Visão geral do funil em tempo real
-        </p>
-      </div>
-      <span
-        className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full shrink-0"
-        style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}
-      >
-        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
-        Ao vivo
-      </span>
-    </div>
-  );
-}
-
 export default function DashboardPage() {
   const queryClient = useQueryClient();
 
@@ -205,7 +181,7 @@ export default function DashboardPage() {
   if (!isLoading && stats && stats.totalLeads === 0) {
     return (
       <div className="p-4 sm:p-6 space-y-6">
-        <DashboardHeader />
+        <PageHeader title="Dashboard" subtitle="Visão geral do funil em tempo real" live />
         <div
           className="rounded-xl border p-8 sm:p-12 flex flex-col items-center justify-center text-center"
           style={{ background: 'var(--bg-surface-2)', borderColor: 'var(--border-default)' }}
@@ -237,7 +213,7 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
-      <DashboardHeader />
+      <PageHeader title="Dashboard" subtitle="Visão geral do funil em tempo real" live />
 
       {isError && (
         <div
