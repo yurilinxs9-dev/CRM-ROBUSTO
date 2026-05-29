@@ -1,6 +1,7 @@
 'use client';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PageHeader } from '@/components/layout/page-header';
 import { useAuthStore } from '@/stores/auth.store';
 import { ProfileTab } from './components/ProfileTab';
 import { TeamTab } from './components/TeamTab';
@@ -15,8 +16,10 @@ export default function SettingsPage() {
   const canManageTeam = role && MANAGE_ROLES.includes(role);
 
   return (
-    <div className="p-6">
-      <h2 className="text-xl font-semibold mb-6">Configurações</h2>
+    <div className="p-4 sm:p-6">
+      <div className="mb-6">
+        <PageHeader title="Configurações" subtitle="Perfil, equipe, integrações e API" />
+      </div>
       <Tabs defaultValue="profile">
         <TabsList className="mb-6">
           <TabsTrigger value="profile">👤 Meu Perfil</TabsTrigger>

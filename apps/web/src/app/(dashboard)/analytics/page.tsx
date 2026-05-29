@@ -18,6 +18,7 @@ import {
 import { format, subDays } from 'date-fns';
 import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PageHeader } from '@/components/layout/page-header';
 import { KpiCard } from '@/components/dashboard/kpi-card';
 import {
   Select,
@@ -634,21 +635,11 @@ function AnalyticsPageInner() {
   return (
     <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end gap-4">
-        <div className="flex-1">
-          <h2
-            className="text-2xl font-semibold tracking-tight"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            Analytics
-          </h2>
-          <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            Métricas de funil, conversão e performance da equipe
-          </p>
-        </div>
-
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="Analytics"
+        subtitle="Métricas de funil, conversão e performance da equipe"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
           {/* Quick presets */}
           <div className="flex flex-col gap-0.5">
             <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
@@ -755,7 +746,8 @@ function AnalyticsPageInner() {
             </div>
           )}
         </div>
-      </div>
+        }
+      />
 
       {/* Error banner */}
       {overviewError && (
