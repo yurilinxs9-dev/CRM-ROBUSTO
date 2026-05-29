@@ -14,7 +14,9 @@ import {
   conversationMessagesQuerySchema,
   createContactSchema,
   listContactsQuerySchema,
+  listConversationsQuerySchema,
   sendConversationSchema,
+  updateContactSchema,
   updateStatusSchema,
 } from './public-api.dto';
 import {
@@ -137,7 +139,54 @@ export class PublicApiService {
     return toContactDto(lead);
   }
 
+  /** Atualiza um contato (nome, email e/ou tags). */
+  async updateContact(tenantId: string, id: string, body: unknown) {
+    const d = updateContactSchema.parse(body);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    const data: Record<string, unknown> = {};
+    if (d.name !== undefined) data.nome = d.name;
+    if (d.email !== undefined) data.email = d.email;
+    if (d.tags !== undefined) data.tags = d.tags;
+
+    const updated = await this.prisma.lead.update({ where: { id }, data, select: CONTACT_SELECT });
+    this.gateway.emitLeadUpdated(id, data, tenantId);
+    return toContactDto(updated);
+  }
+
   // ---- Conversas (mensagens sobre um Lead) ----------------------------------
+
+  /** Lista conversas (contatos) com filtro opcional por status e tag. */
+  async listConversations(tenantId: string, query: unknown) {
+    const q = listConversationsQuerySchema.parse(query);
+    const where: Record<string, unknown> = { tenant_id: tenantId };
+    if (q.status) where.atendimento_status = q.status.toUpperCase();
+    if (q.tag) where.tags = { array_contains: q.tag };
+
+    const [total, leads] = await this.prisma.$transaction([
+      this.prisma.lead.count({ where }),
+      this.prisma.lead.findMany({
+        where,
+        orderBy: { ultima_interacao: 'desc' },
+        take: q.limit,
+        skip: q.offset,
+        select: CONTACT_SELECT,
+      }),
+    ]);
+
+    return {
+      data: leads.map((l) => ({
+        conversation_id: l.id,
+        contact: toContactDto(l),
+        status: l.atendimento_status,
+      })),
+      pagination: { total, limit: q.limit, offset: q.offset },
+    };
+  }
 
   /** Retorna a conversa: contato + mensagens recentes (exclui notas internas). */
   async getConversation(tenantId: string, conversationId: string, query: unknown) {

@@ -37,6 +37,12 @@ export function ApiKeysTab() {
     queryFn: async () => (await api.get<ApiKey[]>(API)).data,
   });
 
+  const { data: usage } = useQuery<{ window_days: number; by_key: { api_key_id: string; total: number; errors: number }[] }>({
+    queryKey: ['api-keys-usage'],
+    queryFn: async () => (await api.get(`${API}/usage`)).data,
+  });
+  const usageMap = new Map((usage?.by_key ?? []).map((u) => [u.api_key_id, u]));
+
   const revokeMut = useMutation({
     mutationFn: async (id: string) => api.delete(`${API}/${id}`),
     onSuccess: () => {
@@ -93,6 +99,16 @@ export function ApiKeysTab() {
               <div className="text-xs text-muted-foreground mt-2">
                 Criada {fmtDate(k.created_at)} · Último uso: {fmtDate(k.last_used_at)}
               </div>
+              {(() => {
+                const u = usageMap.get(k.id);
+                if (!u) return null;
+                return (
+                  <div className="text-xs mt-1 flex gap-3">
+                    <span className="text-muted-foreground">{u.total} req (7d)</span>
+                    {u.errors > 0 && <span className="text-red-600">{u.errors} erro(s)</span>}
+                  </div>
+                );
+              })()}
             </div>
             {k.active && (
               <div className="flex items-center gap-1 flex-shrink-0">

@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 import { MessagesModule } from '../messages/messages.module';
 import { PublicApiController } from './public-api.controller';
+import { PublicDocsController } from './public-docs.controller';
 import { ApiKeysController } from './api-keys.controller';
 import { PublicApiService } from './public-api.service';
 import { ApiKeyService } from './api-key.service';
 import { ApiKeyGuard } from './guards/api-key.guard';
 import { ScopesGuard } from './guards/scopes.guard';
 import { PublicRateLimitGuard } from './guards/public-rate-limit.guard';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
+import { AuditInterceptor } from './audit.interceptor';
 
 /**
  * API HTTP pública (/api/v1) + gestão de API keys (/api/api-keys).
@@ -15,13 +18,15 @@ import { PublicRateLimitGuard } from './guards/public-rate-limit.guard';
  */
 @Module({
   imports: [MessagesModule],
-  controllers: [PublicApiController, ApiKeysController],
+  controllers: [PublicApiController, PublicDocsController, ApiKeysController],
   providers: [
     PublicApiService,
     ApiKeyService,
     ApiKeyGuard,
     ScopesGuard,
     PublicRateLimitGuard,
+    IdempotencyInterceptor,
+    AuditInterceptor,
   ],
   exports: [ApiKeyService],
 })

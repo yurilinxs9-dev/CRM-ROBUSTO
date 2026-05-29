@@ -10,12 +10,15 @@ import {
   Req,
   UseFilters,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { PublicApiService } from './public-api.service';
 import { ApiKeyGuard } from './guards/api-key.guard';
 import { ScopesGuard } from './guards/scopes.guard';
 import { PublicRateLimitGuard } from './guards/public-rate-limit.guard';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
+import { AuditInterceptor } from './audit.interceptor';
 import { PublicExceptionFilter } from './public-exception.filter';
 import { RequireScopes } from './scopes';
 import type { ApiAuth } from './api-auth';
@@ -35,6 +38,7 @@ interface ApiRequest extends Request {
  */
 @Controller({ path: 'v1' })
 @UseGuards(ApiKeyGuard, PublicRateLimitGuard, ScopesGuard)
+@UseInterceptors(AuditInterceptor, IdempotencyInterceptor)
 @UseFilters(PublicExceptionFilter)
 export class PublicApiController {
   constructor(private readonly svc: PublicApiService) {}
@@ -62,6 +66,20 @@ export class PublicApiController {
   @RequireScopes('contacts:write')
   createUser(@Body() body: unknown, @Req() req: ApiRequest) {
     return this.svc.createContact(this.tenantId(req), body);
+  }
+
+  // 2.1c — Atualizar contato
+  @Patch('users/:id')
+  @RequireScopes('contacts:write')
+  updateUser(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
+    return this.svc.updateContact(this.tenantId(req), id, body);
+  }
+
+  // Listar conversas (filtro ?status= ?tag= ?limit= ?offset=)
+  @Get('conversations')
+  @RequireScopes('conversations:read')
+  listConversations(@Req() req: ApiRequest, @Query() query: Record<string, unknown>) {
+    return this.svc.listConversations(this.tenantId(req), query);
   }
 
   // Histórico da conversa (contato + mensagens recentes)

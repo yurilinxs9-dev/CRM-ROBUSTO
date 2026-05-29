@@ -6,6 +6,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { RedisCacheService } from '../../../common/cache/redis-cache.service';
 import type { ApiAuth } from '../api-auth';
 
 interface ApiRequest extends Request {
@@ -13,44 +14,30 @@ interface ApiRequest extends Request {
 }
 
 /**
- * Rate-limit por API key (fixed window). In-memory — adequado ao deploy atual
- * (backend single-container). Se escalar pra múltiplas réplicas, trocar por
- * contador no Redis (RedisCacheService) para limite global consistente.
+ * Rate-limit por API key usando Redis (fixed window) — limite global e
+ * consistente entre múltiplas réplicas do backend. Fail-open: se o Redis
+ * estiver indisponível (incr → 0), a requisição passa.
  */
 @Injectable()
 export class PublicRateLimitGuard implements CanActivate {
-  private readonly windowMs = 60_000;
+  private readonly windowSeconds = 60;
   private readonly max = 120; // req/min por chave
-  private readonly hits = new Map<string, { count: number; resetAt: number }>();
 
-  canActivate(context: ExecutionContext): boolean {
+  constructor(private readonly cache: RedisCacheService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<ApiRequest>();
-    const key = req.apiAuth?.keyId ?? req.ip ?? 'anon';
-    const now = Date.now();
+    const id = req.apiAuth?.keyId ?? req.ip ?? 'anon';
+    const window = Math.floor(Date.now() / 1000 / this.windowSeconds);
+    const key = `ratelimit:apikey:${id}:${window}`;
 
-    const cur = this.hits.get(key);
-    if (!cur || cur.resetAt <= now) {
-      this.hits.set(key, { count: 1, resetAt: now + this.windowMs });
-      this.sweep(now);
-      return true;
-    }
-
-    cur.count += 1;
-    if (cur.count > this.max) {
-      const retryAfter = Math.ceil((cur.resetAt - now) / 1000);
+    const count = await this.cache.incr(key, this.windowSeconds);
+    if (count > this.max) {
       throw new HttpException(
-        { error: 'Too Many Requests', message: `Limite de requisições excedido. Tente em ${retryAfter}s.` },
+        { error: 'Too Many Requests', message: `Limite de ${this.max} req/min excedido.` },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
     return true;
-  }
-
-  /** Remove janelas expiradas ocasionalmente para o Map não crescer sem limite. */
-  private sweep(now: number): void {
-    if (this.hits.size < 1000) return;
-    for (const [k, v] of this.hits) {
-      if (v.resetAt <= now) this.hits.delete(k);
-    }
   }
 }

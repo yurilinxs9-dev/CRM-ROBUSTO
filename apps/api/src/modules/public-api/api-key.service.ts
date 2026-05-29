@@ -68,6 +68,32 @@ export class ApiKeyService {
     return { ok: true };
   }
 
+  /** Métricas de uso por chave nos últimos 7 dias (total + erros 4xx/5xx). */
+  async usage(tenantId: string) {
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const [totals, errors] = await Promise.all([
+      this.prisma.apiRequestLog.groupBy({
+        by: ['api_key_id'],
+        where: { tenant_id: tenantId, created_at: { gte: since } },
+        _count: { _all: true },
+      }),
+      this.prisma.apiRequestLog.groupBy({
+        by: ['api_key_id'],
+        where: { tenant_id: tenantId, created_at: { gte: since }, status_code: { gte: 400 } },
+        _count: { _all: true },
+      }),
+    ]);
+    const errMap = new Map(errors.map((e) => [e.api_key_id, e._count._all]));
+    return {
+      window_days: 7,
+      by_key: totals.map((t) => ({
+        api_key_id: t.api_key_id,
+        total: t._count._all,
+        errors: errMap.get(t.api_key_id) ?? 0,
+      })),
+    };
+  }
+
   /**
    * Verifica um token em claro vindo do header Authorization.
    * Retorna o contexto de auth ou null se inválido/revogado.

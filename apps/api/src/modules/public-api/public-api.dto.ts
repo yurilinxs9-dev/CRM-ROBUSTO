@@ -33,5 +33,22 @@ export const conversationMessagesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
 });
 
+export const updateContactSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+    email: z.string().email().nullable().optional(),
+    tags: z.array(z.string().min(1).max(50)).max(50).optional(),
+  })
+  .refine((d) => d.name !== undefined || d.email !== undefined || d.tags !== undefined, {
+    message: 'Nada para atualizar (envie name, email ou tags)',
+  });
+
+export const listConversationsQuerySchema = z.object({
+  status: z.enum(['open', 'pending', 'resolved', 'OPEN', 'PENDING', 'RESOLVED']).optional(),
+  tag: z.string().min(1).max(50).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+});
+
 export type ListContactsQuery = z.infer<typeof listContactsQuerySchema>;
 export type SendConversationBody = z.infer<typeof sendConversationSchema>;

@@ -71,6 +71,22 @@ export class RedisCacheService implements OnModuleDestroy {
   }
 
   /**
+   * Atomic increment of a counter with TTL set on first hit (fixed window).
+   * Returns the new count, or 0 when Redis is disabled/unavailable (fail-open).
+   */
+  async incr(key: string, ttlSeconds: number): Promise<number> {
+    if (!this.client) return 0;
+    try {
+      const n = await this.client.incr(key);
+      if (n === 1) await this.client.expire(key, ttlSeconds);
+      return n;
+    } catch (err) {
+      this.logger.warn(`incr(${key}) failed: ${String(err)}`);
+      return 0;
+    }
+  }
+
+  /**
    * Delete all keys matching a glob pattern (e.g. `leads:list:tenant-1:*`).
    * Uses SCAN + UNLINK to avoid blocking Redis.
    */

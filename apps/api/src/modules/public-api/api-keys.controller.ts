@@ -35,6 +35,12 @@ export class ApiKeysController {
     return this.keys.list(this.tenantId(req));
   }
 
+  @Get('usage')
+  @Roles(UserRole.GERENTE)
+  usage(@Req() req: Record<string, unknown>) {
+    return this.keys.usage(this.tenantId(req));
+  }
+
   @Post()
   @Roles(UserRole.GERENTE)
   create(@Body() body: unknown, @Req() req: Record<string, unknown>) {

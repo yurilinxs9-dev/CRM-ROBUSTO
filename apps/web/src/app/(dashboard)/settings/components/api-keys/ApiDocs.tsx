@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Copy, Check, ChevronRight, Zap, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Copy, Check, ChevronRight, Zap, ShieldCheck, AlertCircle, Download } from 'lucide-react';
 
 // Base URL real (NEXT_PUBLIC_API_URL pode vir como "//host" — normaliza p/ https).
 const RAW = process.env.NEXT_PUBLIC_API_URL || '';
@@ -145,6 +145,15 @@ export function ApiDocs() {
           code={`curl ${BASE}/users \\
   -H "Authorization: Bearer crmk_seu_token_aqui"`}
         />
+        <a
+          href={`${BASE}/openapi.json`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 text-xs font-medium border rounded-md px-3 py-1.5 hover:bg-accent transition"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Baixar OpenAPI (importável no Postman / Insomnia)
+        </a>
         <p className="text-xs text-muted-foreground flex items-start gap-1.5">
           <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
           <span><code className="bg-secondary px-1 rounded">user</code>/<code className="bg-secondary px-1 rounded">contact</code> e <code className="bg-secondary px-1 rounded">conversation</code> são o mesmo recurso (o contato/lead). <code className="bg-secondary px-1 rounded">conversation_id</code> = id do contato.</span>
@@ -236,6 +245,25 @@ export function ApiDocs() {
   "created_at": "2026-05-29T12:00:00.000Z"
 }`}
           />
+          <Endpoint
+            method="PATCH"
+            path="/users/:id"
+            scope="contacts:write"
+            desc="Atualiza um contato. Envie ao menos um campo: name, email ou tags."
+            curl={`curl -X PATCH ${BASE}/users/UUID \\
+  -H "Authorization: Bearer crmk_..." \\
+  -H "Content-Type: application/json" \\
+  -d '{ "name": "João S. Souza", "tags": ["cliente"] }'`}
+            response={`{
+  "id": "uuid",
+  "name": "João S. Souza",
+  "email": "joao@email.com",
+  "phone": "5511988887777",
+  "tags": ["cliente"],
+  "status": "OPEN",
+  "created_at": "2026-05-29T12:00:00.000Z"
+}`}
+          />
         </div>
       </section>
 
@@ -243,6 +271,24 @@ export function ApiDocs() {
       <section className="space-y-2">
         <h4 className="font-semibold text-base">Conversas</h4>
         <div className="space-y-2">
+          <Endpoint
+            method="GET"
+            path="/conversations"
+            scope="conversations:read"
+            desc="Lista conversas (contatos). Filtros: ?status=open|pending|resolved ?tag= ?limit= ?offset=."
+            curl={`curl "${BASE}/conversations?status=pending&limit=20" \\
+  -H "Authorization: Bearer crmk_..."`}
+            response={`{
+  "data": [
+    {
+      "conversation_id": "uuid",
+      "contact": { "id": "uuid", "name": "Maria", "phone": "5511...", "status": "PENDING" },
+      "status": "PENDING"
+    }
+  ],
+  "pagination": { "total": 1, "limit": 20, "offset": 0 }
+}`}
+          />
           <Endpoint
             method="POST"
             path="/conversations"
@@ -316,6 +362,32 @@ export function ApiDocs() {
 { "conversation_id": "uuid", "tags": ["suporte", "urgente"] }`}
           />
         </div>
+      </section>
+
+      {/* Boas práticas */}
+      <section className="space-y-2">
+        <h4 className="font-semibold text-base">Boas práticas</h4>
+        <ul className="text-sm text-muted-foreground space-y-1.5 list-disc list-inside">
+          <li>
+            <strong>Idempotência:</strong> em POST/PATCH, envie o header{' '}
+            <code className="bg-secondary px-1 rounded">Idempotency-Key</code> (um id único por operação).
+            Se a requisição for repetida com a mesma chave (ex.: retry de rede), a resposta original é
+            devolvida sem duplicar a ação — a resposta vem com{' '}
+            <code className="bg-secondary px-1 rounded">Idempotent-Replayed: true</code>.
+          </li>
+          <li>
+            <strong>Rate limit:</strong> 120 requisições por minuto por chave. Acima disso retorna{' '}
+            <code className="bg-secondary px-1 rounded">429</code>.
+          </li>
+        </ul>
+        <CodeBlock
+          lang="bash"
+          code={`curl -X POST ${BASE}/conversations \\
+  -H "Authorization: Bearer crmk_..." \\
+  -H "Idempotency-Key: pedido-12345" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "user_id": "UUID", "message": "Oi!" }'`}
+        />
       </section>
 
       {/* Status codes */}

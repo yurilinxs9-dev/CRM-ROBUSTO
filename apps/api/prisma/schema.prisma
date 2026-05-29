@@ -560,3 +560,20 @@ model ApiKey {
   @@index([tenant_id, active])
   @@index([prefix])
 }
+
+// Auditoria de uso da API pública — uma linha por requisição autenticada.
+// Sem FK p/ ApiKey (a chave pode ser deletada e o log deve persistir).
+model ApiRequestLog {
+  id          String   @id @default(uuid())
+  tenant_id   String
+  api_key_id  String?
+  method      String
+  path        String
+  status_code Int
+  duration_ms Int
+  ip          String?
+  created_at  DateTime @default(now())
+
+  @@index([tenant_id, created_at])
+  @@index([api_key_id, created_at])
+}
