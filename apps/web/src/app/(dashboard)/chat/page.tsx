@@ -60,7 +60,10 @@ export default function ChatPage() {
       return res.data;
     },
     staleTime: LEADS_STALE,
-    refetchInterval: 3000,
+    // Realtime via WebSocket (SocketEventsProvider invalida no evento). O poll
+    // é só rede de segurança se o WS cair — 12s em vez de 3s corta o load de
+    // refetch de 10k leads em 4× sem perder reatividade perceptível.
+    refetchInterval: 12000,
   });
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({

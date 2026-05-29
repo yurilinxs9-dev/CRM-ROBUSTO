@@ -214,7 +214,9 @@ export default function KanbanPage() {
     },
     enabled: !!activePipelineId,
     placeholderData: keepPreviousData,
-    refetchInterval: 3000,
+    // Realtime via WebSocket invalida no evento; poll é só fallback. 12s em vez
+    // de 3s corta load sem perder reatividade (WS move o card na hora).
+    refetchInterval: 12000,
   });
 
   const selectAllInStage = useCallback(
