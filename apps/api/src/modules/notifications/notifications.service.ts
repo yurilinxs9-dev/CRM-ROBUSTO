@@ -21,4 +21,12 @@ export class NotificationsService {
     if (!existing) throw new NotFoundException('Notificacao nao encontrada');
     return this.prisma.notification.update({ where: { id }, data: { lida: true } });
   }
+
+  async markAllRead(user: AuthUser) {
+    const res = await this.prisma.notification.updateMany({
+      where: { user_id: user.id, tenant_id: user.tenantId, lida: false },
+      data: { lida: true },
+    });
+    return { ok: true, updated: res.count };
+  }
 }

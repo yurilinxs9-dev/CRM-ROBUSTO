@@ -13,6 +13,11 @@ export class NotificationsController {
     return this.service.findAll(req.user as AuthUser);
   }
 
+  @Patch('read-all')
+  markAllRead(@Req() req: Record<string, unknown>) {
+    return this.service.markAllRead(req.user as AuthUser);
+  }
+
   @Patch(':id/read')
   markRead(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.service.markRead(id, req.user as AuthUser);

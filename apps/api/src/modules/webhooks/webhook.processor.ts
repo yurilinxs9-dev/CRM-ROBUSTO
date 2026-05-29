@@ -525,10 +525,11 @@ export class WebhookProcessor extends WorkerHost {
         void this.push.sendToUsers(targetUserIds, {
           title: lead.nome,
           body: preview,
-          url: `/leads/${lead.id}`,
+          url: `/chat/${lead.id}`,
           tag: `msg-${lead.id}`,
           data: { leadId: lead.id, type: 'message' },
         });
+        void this.createMessageNotifications(targetUserIds, tenantId, lead.id, lead.nome, preview);
       }
     }
 
@@ -552,6 +553,50 @@ export class WebhookProcessor extends WorkerHost {
     if (lead.nome === lead.telefone || !lead.foto_url || fotoStale) {
       void this.leadsService.syncProfileSafe(lead.id);
     }
+  }
+
+  /**
+   * Notificação in-app: mantém 1 entrada NÃO-LIDA por conversa por usuário
+   * (atualiza a existente em vez de empilhar) e emite via WS pro sino do Header.
+   * Off-critical-path (chamado com void).
+   */
+  private async createMessageNotifications(
+    userIds: string[],
+    tenantId: string,
+    leadId: string,
+    leadNome: string,
+    preview: string,
+  ): Promise<void> {
+    const link = `/chat/${leadId}`;
+    await Promise.all(
+      userIds.map(async (uid) => {
+        try {
+          const existing = await this.prisma.notification.findFirst({
+            where: { user_id: uid, tenant_id: tenantId, tipo: 'message', link, lida: false },
+            select: { id: true },
+          });
+          const notif = existing
+            ? await this.prisma.notification.update({
+                where: { id: existing.id },
+                data: { titulo: leadNome, conteudo: preview, created_at: new Date() },
+              })
+            : await this.prisma.notification.create({
+                data: {
+                  user_id: uid,
+                  tenant_id: tenantId,
+                  titulo: leadNome,
+                  conteudo: preview,
+                  tipo: 'message',
+                  link,
+                  lida: false,
+                },
+              });
+          this.gateway.emitNotification(uid, notif);
+        } catch (err) {
+          this.logger.warn(`Falha criando notificação in-app p/ ${uid}: ${String(err)}`);
+        }
+      }),
+    );
   }
 
   /**

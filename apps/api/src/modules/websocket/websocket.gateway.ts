@@ -131,4 +131,9 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitLeadUpdated(leadId: string, data: unknown, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:updated', { leadId, ...(data as object) });
   }
+
+  /** Notificação in-app para um usuário específico (alimenta o sino do Header). */
+  emitNotification(userId: string, notification: unknown) {
+    this.server.to(`user:${userId}`).emit('notification:new', notification);
+  }
 }
