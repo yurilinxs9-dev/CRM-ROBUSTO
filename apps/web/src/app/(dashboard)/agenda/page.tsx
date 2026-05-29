@@ -26,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/cn';
 
+import { PageHeader } from '@/components/layout/page-header';
 import { TaskCard } from '@/components/agenda/task-card';
 import { NewTaskDialog } from '@/components/agenda/new-task-dialog';
 import { AgendaTask, PRIORIDADE_COLOR, Prioridade } from '@/components/agenda/types';
@@ -100,15 +101,15 @@ export default function AgendaPage() {
 
   return (
     <div className="flex h-full flex-col gap-4 p-4 md:p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Agenda</h1>
-          <p className="text-sm text-muted-foreground">Gerencie tarefas, follow-ups e lembretes</p>
-        </div>
-        <Button onClick={handleNew}>
-          <Plus className="mr-2 h-4 w-4" /> Nova Tarefa
-        </Button>
-      </div>
+      <PageHeader
+        title="Agenda"
+        subtitle="Gerencie tarefas, follow-ups e lembretes"
+        actions={
+          <Button onClick={handleNew}>
+            <Plus className="mr-2 h-4 w-4" /> Nova Tarefa
+          </Button>
+        }
+      />
 
       <Tabs value={view} onValueChange={(v) => setView(v as ViewKey)} className="flex flex-1 flex-col">
         <TabsList>

@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Bell, Menu, Search } from 'lucide-react';
+import { Bell, Menu } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Sidebar, NAV_ITEMS } from './sidebar';
+import { HeaderSearch } from './header-search';
 import { UserMenu } from './user-menu';
 import { api } from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -75,15 +75,7 @@ export function Header() {
       <div className="flex-1" />
 
       {/* Quick search */}
-      <div className="relative hidden md:block">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          type="search"
-          placeholder="Buscar..."
-          aria-label="Buscar"
-          className="h-9 w-64 pl-9"
-        />
-      </div>
+      <HeaderSearch />
 
       {/* Notifications */}
       <Button variant="ghost" size="icon" className="relative" aria-label="Notificações">

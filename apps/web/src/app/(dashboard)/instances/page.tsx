@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { PageHeader } from '@/components/layout/page-header';
 import { InstanceCard, type InstanceCardData } from '@/components/instances/instance-card';
 import { QrDialog } from '@/components/instances/qr-dialog';
 import { NewInstanceDialog } from '@/components/instances/new-instance-dialog';
@@ -198,16 +199,16 @@ export default function InstancesPage() {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Instâncias WhatsApp</h1>
-          <p className="text-sm text-muted-foreground mt-1">Gerencie as conexões do WhatsApp</p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-1.5 h-4 w-4" />
-          Nova Instância
-        </Button>
-      </div>
+      <PageHeader
+        title="Instâncias WhatsApp"
+        subtitle="Gerencie as conexões do WhatsApp"
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            Nova Instância
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
