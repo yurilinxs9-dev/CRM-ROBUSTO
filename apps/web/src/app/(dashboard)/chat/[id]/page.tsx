@@ -55,10 +55,6 @@ interface MessagesQueryData {
 const LEAD_STALE = 30_000;
 const MESSAGES_STALE = 10_000;
 
-/** Throttle de auto-reconciliação por lead (evita re-sync a cada abrir). */
-const autoSyncCache = new Map<string, number>();
-const AUTO_SYNC_THROTTLE_MS = 120_000;
-
 export default function ChatDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -445,19 +441,11 @@ export default function ChatDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
 
-  // --- Reconciliação ao abrir: puxa as últimas msgs da UazAPI em background.
-  // Pega qualquer webhook que a UazAPI tenha dropado (único furo real do
-  // realtime). Silencioso, throttle 2min por lead, não bloqueia a UI.
-  useEffect(() => {
-    if (!leadId) return;
-    const last = autoSyncCache.get(leadId) ?? 0;
-    if (Date.now() - last < AUTO_SYNC_THROTTLE_MS) return;
-    autoSyncCache.set(leadId, Date.now());
-    api
-      .post(`/api/messages/sync-chat/${leadId}`)
-      .then(() => queryClient.invalidateQueries({ queryKey: ['messages', leadId] }))
-      .catch(() => { /* silencioso — é só rede de segurança */ });
-  }, [leadId, queryClient]);
+  // NOTA: a auto-sync ao abrir foi removida — ela puxava o histórico inteiro
+  // do número via UazAPI (/message/find), e um número reusado em vários tenants
+  // de teste trazia conversas de outros contextos. Sync agora só manual (botão).
+  // A reatividade já é garantida por WS + poll + refetch no reconnect (que leem
+  // o NOSSO banco, sempre escopado por tenant).
 
   // --- Socket ---
   useEffect(() => {
