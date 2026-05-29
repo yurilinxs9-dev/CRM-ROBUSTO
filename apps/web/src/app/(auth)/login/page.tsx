@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle } from 'lucide-react';
 import {
   Button,
   Card,
@@ -15,15 +14,9 @@ import {
   Label,
   Switch,
 } from '@/components/ui';
+import { AuthBranding, AuthLogo } from '@/components/layout/auth-branding';
 import { useAuthStore } from '@/stores/auth.store';
 import { api } from '@/lib/api';
-
-const FEATURES = [
-  'Multi-instância WhatsApp',
-  'Kanban drag-and-drop',
-  'Chat espelhado em tempo real',
-  'Métricas e dashboards',
-] as const;
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -83,40 +76,13 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
-      <aside className="hidden md:flex md:w-1/2 flex-col justify-between p-12 bg-gradient-to-br from-background via-background to-primary/10 border-r border-border relative overflow-hidden">
-        <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-primary/10 blur-3xl pointer-events-none" />
-        <div className="absolute bottom-0 left-0 w-72 h-72 rounded-full bg-primary/5 blur-3xl pointer-events-none" />
-
-        <div className="relative">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-primary shadow-lg shadow-primary/20" />
-            <span className="text-3xl font-bold tracking-tight">CRM Pro</span>
-          </div>
-        </div>
-
-        <div className="relative space-y-8 max-w-md">
-          <h2 className="text-4xl font-bold leading-tight">
-            Gerencie seu funil de vendas com WhatsApp em tempo real
-          </h2>
-          <ul className="space-y-4">
-            {FEATURES.map((feature) => (
-              <li key={feature} className="flex items-center gap-3 text-base text-muted-foreground">
-                <CheckCircle className="w-5 h-5 text-primary shrink-0" aria-hidden="true" />
-                <span>{feature}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <p className="relative text-sm text-muted-foreground">© 2026 CRM Pro</p>
-      </aside>
+      <AuthBranding />
 
       <main className="w-full md:w-1/2 flex items-center justify-center p-6 sm:p-12">
         <Card className="w-full max-w-md">
           <CardHeader className="space-y-2">
-            <div className="flex md:hidden items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-xl bg-primary" />
-              <span className="text-2xl font-bold">CRM Pro</span>
+            <div className="md:hidden mb-2">
+              <AuthLogo />
             </div>
             <CardTitle className="text-2xl">Bem-vindo de volta</CardTitle>
             <CardDescription>Entre com suas credenciais</CardDescription>

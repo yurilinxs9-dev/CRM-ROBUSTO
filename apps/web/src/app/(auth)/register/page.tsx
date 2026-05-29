@@ -13,6 +13,7 @@ import {
   Input,
   Label,
 } from '@/components/ui';
+import { AuthBranding, AuthLogo } from '@/components/layout/auth-branding';
 import { useAuthStore } from '@/stores/auth.store';
 import { api } from '@/lib/api';
 
@@ -76,14 +77,16 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-2">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-xl bg-primary" />
-            <span className="text-2xl font-bold">CRM Pro</span>
-          </div>
-          <CardTitle className="text-2xl">Criar conta</CardTitle>
+    <div className="min-h-screen flex bg-background text-foreground">
+      <AuthBranding headline="Crie seu escritório e comece a vender pelo WhatsApp" />
+
+      <main className="w-full md:w-1/2 flex items-center justify-center overflow-y-auto p-6 sm:p-12">
+        <Card className="my-8 w-full max-w-md">
+          <CardHeader className="space-y-2">
+            <div className="md:hidden mb-2">
+              <AuthLogo />
+            </div>
+            <CardTitle className="text-2xl">Criar conta</CardTitle>
           <CardDescription>
             Crie sua conta e seu escritório. Para entrar em um escritório existente, peça ao administrador para adicionar você.
           </CardDescription>
@@ -201,7 +204,8 @@ export default function RegisterPage() {
             </a>
           </span>
         </CardFooter>
-      </Card>
+        </Card>
+      </main>
     </div>
   );
 }
