@@ -26,6 +26,7 @@ import { AutomationModule } from './modules/automation/automation.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
 import { PushModule } from './modules/push/push.module';
 import { OutboundWebhooksModule } from './modules/outbound-webhooks/outbound-webhooks.module';
+import { PublicApiModule } from './modules/public-api/public-api.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -102,6 +103,7 @@ import { CacheModule } from './common/cache/cache.module';
     TenantsModule,
     PushModule,
     OutboundWebhooksModule,
+    PublicApiModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },

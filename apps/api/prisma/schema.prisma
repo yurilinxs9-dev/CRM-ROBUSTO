@@ -57,6 +57,12 @@ enum MessageStatus {
   FAILED
 }
 
+enum ConversationStatus {
+  OPEN
+  PENDING
+  RESOLVED
+}
+
 model Tenant {
   id         String   @id @default(uuid())
   nome       String
@@ -88,6 +94,7 @@ model Tenant {
   push_subscriptions PushSubscription[]
   instances_hidden   InstanceHidden[]
   outbound_webhooks  OutboundWebhook[]
+  api_keys           ApiKey[]
 
   @@index([owner_id])
 }
@@ -219,6 +226,10 @@ model Lead {
   assumed_at DateTime?
   is_private Boolean   @default(false)
 
+  // Status de atendimento (ortogonal ao funil/stage) — usado pela API pública
+  // e pelo CRM interno para marcar conversas abertas/pendentes/resolvidas.
+  atendimento_status ConversationStatus @default(OPEN)
+
   @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
   @@index([responsavel_id, estagio_id])
   @@index([instancia_whatsapp])
@@ -227,6 +238,7 @@ model Lead {
   @@index([ultima_interacao])
   @@index([score])
   @@index([tenant_id])
+  @@index([tenant_id, atendimento_status])
 }
 
 model Message {
@@ -527,4 +539,24 @@ model PushSubscription {
 
   @@index([user_id])
   @@index([tenant_id])
+}
+
+// Chave de API para integrações externas (REST pública /api/v1).
+// Múltiplas por tenant, com escopo. Guardamos apenas o hash SHA-256 do token —
+// o valor em claro só é exibido uma vez, na criação (padrão GitHub PAT).
+model ApiKey {
+  id           String    @id @default(uuid())
+  tenant_id    String
+  tenant       Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  name         String
+  key_hash     String    @unique
+  prefix       String
+  scopes       String[]
+  active       Boolean   @default(true)
+  last_used_at DateTime?
+  revoked_at   DateTime?
+  created_at   DateTime  @default(now())
+
+  @@index([tenant_id, active])
+  @@index([prefix])
 }
