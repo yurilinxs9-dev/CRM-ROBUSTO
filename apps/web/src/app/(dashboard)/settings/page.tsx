@@ -6,6 +6,7 @@ import { ProfileTab } from './components/ProfileTab';
 import { TeamTab } from './components/TeamTab';
 import { GeneralTab } from './components/GeneralTab';
 import { WebhooksTab } from './components/WebhooksTab';
+import { ApiKeysTab } from './components/ApiKeysTab';
 
 const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
 
@@ -22,6 +23,7 @@ export default function SettingsPage() {
           {canManageTeam && <TabsTrigger value="team">👥 Equipe</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="general">⚙️ Geral</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="webhooks">🔗 Webhooks</TabsTrigger>}
+          {canManageTeam && <TabsTrigger value="api-keys">🔑 API Keys</TabsTrigger>}
         </TabsList>
         <TabsContent value="profile">
           <ProfileTab />
@@ -39,6 +41,11 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="webhooks">
             <WebhooksTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="api-keys">
+            <ApiKeysTab />
           </TabsContent>
         )}
       </Tabs>
