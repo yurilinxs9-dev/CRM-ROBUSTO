@@ -116,15 +116,23 @@ export function WebhookFormDialog({ open, webhook, onClose }: Props) {
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               placeholder="Ex: Integração IA - Resposta Rápida"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
             />
           </div>
 
           <div>
             <Label>URL do webhook</Label>
             <Input
+              type="url"
+              name="webhook_target_url"
               value={form.url}
               onChange={(e) => setForm({ ...form, url: e.target.value })}
               placeholder="https://n8n.seudominio.com/webhook/abc123"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
             />
           </div>
 
@@ -162,6 +170,9 @@ export function WebhookFormDialog({ open, webhook, onClose }: Props) {
               value={form.secret}
               onChange={(e) => setForm({ ...form, secret: e.target.value })}
               placeholder="Assinatura em header X-CRM-Signature"
+              autoComplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
             />
           </div>
 

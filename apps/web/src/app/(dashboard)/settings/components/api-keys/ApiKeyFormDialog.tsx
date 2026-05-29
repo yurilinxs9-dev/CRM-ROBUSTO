@@ -93,6 +93,9 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Ex: n8n - automação atendimento"
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
                 />
               </div>
 
