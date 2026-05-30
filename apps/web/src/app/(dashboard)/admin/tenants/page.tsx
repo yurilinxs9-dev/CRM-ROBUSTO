@@ -17,6 +17,7 @@ interface TenantRow {
   users: number;
   leads: number;
   instances: number;
+  active_instances: number;
 }
 
 const numberFmt = new Intl.NumberFormat('pt-BR');
@@ -72,7 +73,12 @@ export default function AdminTenantsPage() {
                     <td className="px-3 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{t.pool_enabled ? 'Compartilhado' : 'Individual'}</td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.users)}</td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.leads)}</td>
-                    <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.instances)}</td>
+                    <td className="px-3 py-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        <span className="h-2 w-2 rounded-full" style={{ background: t.active_instances > 0 ? '#22c55e' : t.instances > 0 ? '#ef4444' : '#6b7280' }} />
+                        {t.active_instances > 0 ? `${t.active_instances} ativa(s)` : t.instances > 0 ? 'desconectado' : 'sem instância'}
+                      </span>
+                    </td>
                     <td className="px-3 py-3 text-right">
                       <Link href={`/admin/tenants/${t.id}`} className="inline-flex text-muted-foreground hover:text-foreground"><ChevronRight className="h-4 w-4" /></Link>
                     </td>

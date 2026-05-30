@@ -9,6 +9,7 @@ import { PageHeader } from '@/components/layout/page-header';
 const TABS = [
   { href: '/admin', label: 'Visão geral' },
   { href: '/admin/tenants', label: 'Clientes' },
+  { href: '/admin/health', label: 'Saúde' },
   { href: '/admin/logs', label: 'Logs' },
   { href: '/admin/announcements', label: 'Avisos' },
 ];

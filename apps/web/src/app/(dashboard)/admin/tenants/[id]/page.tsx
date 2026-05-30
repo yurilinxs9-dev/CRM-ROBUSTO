@@ -1,9 +1,9 @@
 'use client';
 
 import { useParams, useRouter } from 'next/navigation';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, LogIn, Smartphone, Users, Contact, MessageSquare } from 'lucide-react';
+import { ArrowLeft, LogIn, Smartphone, Users, Contact, MessageSquare, Ban, Trash2, ShieldCheck, Power } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -28,6 +28,7 @@ export default function AdminTenantDetailPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
+  const qc = useQueryClient();
   const startImpersonation = useAuthStore((s) => s.startImpersonation);
 
   const { data, isLoading } = useQuery<TenantDetail>({
@@ -47,9 +48,31 @@ export default function AdminTenantDetailPage() {
     onError: () => toast.error('Falha ao entrar como usuário'),
   });
 
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['admin-tenant', id] });
+
+  const banUser = useMutation({
+    mutationFn: async ({ userId, banned }: { userId: string; banned: boolean }) =>
+      api.patch(`/api/platform-admin/users/${userId}/ban`, { banned }),
+    onSuccess: (_d, v) => { toast.success(v.banned ? 'Usuário banido' : 'Usuário reativado'); invalidate(); },
+    onError: () => toast.error('Falha na ação'),
+  });
+  const deleteUser = useMutation({
+    mutationFn: async (userId: string) => api.delete(`/api/platform-admin/users/${userId}`),
+    onSuccess: () => { toast.success('Usuário excluído'); invalidate(); },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao excluir'),
+  });
+  const suspendTenant = useMutation({
+    mutationFn: async (suspended: boolean) => api.patch(`/api/platform-admin/tenants/${id}/suspend`, { suspended }),
+    onSuccess: (_d, suspended) => { toast.success(suspended ? 'Workspace suspenso' : 'Workspace reativado'); invalidate(); },
+    onError: () => toast.error('Falha ao suspender'),
+  });
+
   if (isLoading || !data) {
     return <div className="space-y-3"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full rounded-xl" /></div>;
   }
+
+  const suspended = data.users.length > 0 && data.users.every((u) => !u.ativo);
+  const ownerId = data.owner?.id;
 
   const stat = (icon: typeof Users, label: string, value: number) => (
     <div className="rounded-lg border px-3 py-2 flex items-center gap-2" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-2)' }}>
@@ -65,11 +88,29 @@ export default function AdminTenantDetailPage() {
         <ArrowLeft className="h-4 w-4" /> Clientes
       </button>
 
-      <div>
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>{data.nome}</h3>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Owner: {data.owner?.nome} ({data.owner?.email}) · {data.pool_enabled ? 'Compartilhado' : 'Individual'}
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+            {data.nome}
+            {suspended && <span className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>SUSPENSO</span>}
+          </h3>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            Owner: {data.owner?.nome} ({data.owner?.email}) · {data.pool_enabled ? 'Compartilhado' : 'Individual'}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          disabled={suspendTenant.isPending}
+          onClick={() => {
+            if (confirm(suspended ? `Reativar workspace "${data.nome}"?` : `Suspender "${data.nome}"? Todos os usuários ficam sem acesso.`)) {
+              suspendTenant.mutate(!suspended);
+            }
+          }}
+        >
+          <Power className="mr-1 h-3.5 w-3.5" /> {suspended ? 'Reativar workspace' : 'Suspender workspace'}
+        </Button>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -100,10 +141,30 @@ export default function AdminTenantDetailPage() {
                   <td className="px-3 py-2.5 text-xs">
                     <span style={{ color: u.ativo ? '#22c55e' : 'var(--text-muted)' }}>{u.ativo ? 'ativo' : 'inativo'}</span>
                   </td>
-                  <td className="px-3 py-2.5 text-right">
-                    <Button size="sm" variant="outline" className="h-7 text-xs" disabled={impersonate.isPending} onClick={() => impersonate.mutate(u.id)}>
-                      <LogIn className="mr-1 h-3.5 w-3.5" /> Entrar como
-                    </Button>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center justify-end gap-1">
+                      <Button size="sm" variant="outline" className="h-7 text-xs" disabled={impersonate.isPending} onClick={() => impersonate.mutate(u.id)}>
+                        <LogIn className="mr-1 h-3.5 w-3.5" /> Entrar como
+                      </Button>
+                      <Button
+                        size="icon" variant="ghost" className="h-7 w-7"
+                        title={u.ativo ? 'Banir' : 'Reativar'}
+                        disabled={banUser.isPending}
+                        onClick={() => banUser.mutate({ userId: u.id, banned: u.ativo })}
+                      >
+                        {u.ativo ? <Ban className="h-3.5 w-3.5 text-amber-500" /> : <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />}
+                      </Button>
+                      {u.id !== ownerId && (
+                        <Button
+                          size="icon" variant="ghost" className="h-7 w-7"
+                          title="Excluir usuário"
+                          disabled={deleteUser.isPending}
+                          onClick={() => { if (confirm(`Excluir ${u.email}? Ação irreversível.`)) deleteUser.mutate(u.id); }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -41,6 +42,26 @@ export class PlatformAdminController {
   @Get('logs')
   logs() {
     return this.svc.logs();
+  }
+
+  @Get('health')
+  health() {
+    return this.svc.health();
+  }
+
+  @Patch('users/:id/ban')
+  banUser(@Param('id') id: string, @Body() body: { banned: boolean }, @Req() req: Request) {
+    return this.svc.setUserBanned(this.user(req), id, !!body?.banned);
+  }
+
+  @Delete('users/:id')
+  deleteUser(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.deleteUser(this.user(req), id);
+  }
+
+  @Patch('tenants/:id/suspend')
+  suspendTenant(@Param('id') id: string, @Body() body: { suspended: boolean }, @Req() req: Request) {
+    return this.svc.setTenantSuspended(this.user(req), id, !!body?.suspended);
   }
 
   @Post('impersonate/:userId')

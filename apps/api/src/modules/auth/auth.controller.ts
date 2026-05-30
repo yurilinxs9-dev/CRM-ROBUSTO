@@ -45,9 +45,9 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   @HttpCode(200)
-  async login(@Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { email, senha, remember } = loginSchema.parse(body);
-    const { accessToken, refreshToken } = await this.authService.login(email, senha, remember);
+    const { accessToken, refreshToken } = await this.authService.login(email, senha, remember, req.ip);
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,

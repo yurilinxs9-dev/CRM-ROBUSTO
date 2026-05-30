@@ -13,14 +13,33 @@ export class AuthService {
     private config: ConfigService,
   ) {}
 
-  async login(email: string, senha: string, remember = false) {
+  async login(email: string, senha: string, remember = false, ip?: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user || !user.ativo) throw new UnauthorizedException('Credenciais invalidas');
-
+    const fail = async (reason: string): Promise<never> => {
+      await this.logLogin(user?.id ?? null, email, false, ip, reason);
+      throw new UnauthorizedException('Credenciais invalidas');
+    };
+    if (!user) return fail('user_not_found');
+    if (!user.ativo) return fail('inactive');
     const valid = await bcrypt.compare(senha, user.senha_hash);
-    if (!valid) throw new UnauthorizedException('Credenciais invalidas');
+    if (!valid) return fail('bad_password');
 
+    await this.logLogin(user.id, email, true, ip);
     return this.generateTokens(user, remember);
+  }
+
+  /** Registra tentativa de login (sucesso/falha + IP) pra auditoria no painel admin. */
+  private async logLogin(userId: string | null, email: string, success: boolean, ip?: string, reason?: string) {
+    try {
+      await this.prisma.adminAuditLog.create({
+        data: {
+          admin_user_id: userId ?? 'anonymous',
+          action: success ? 'login_success' : 'login_failed',
+          detail: { email, ...(reason ? { reason } : {}) },
+          ip: ip ?? null,
+        },
+      });
+    } catch { /* nunca quebrar o login por causa do log */ }
   }
 
   async generateTokens(
