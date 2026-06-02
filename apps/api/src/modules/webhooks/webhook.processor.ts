@@ -509,19 +509,37 @@ export class WebhookProcessor extends WorkerHost {
 
     if (!isFromMe) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;
-      let targetUserIds: string[];
+      const targetSet = new Set<string>();
       if (lead.responsavel_id) {
-        targetUserIds = [lead.responsavel_id];
+        targetSet.add(lead.responsavel_id);
       } else if (tenantId) {
         const poolUsers = await this.prisma.user.findMany({
           where: { tenant_id: tenantId, ativo: true, role: { not: 'VISUALIZADOR' } },
           select: { id: true },
         });
-        targetUserIds = poolUsers.map((u) => u.id);
-      } else {
-        targetUserIds = [];
+        poolUsers.forEach((u) => targetSet.add(u.id));
       }
+      // Supervisão: SUPER_ADMIN/GERENTE acompanham TODAS as conversas do tenant
+      // (modo Individual também). Sem isso, lead atribuído a um operador só
+      // notificava o operador — o dono da operação nunca era avisado e a msg
+      // "não chegava" pra ele apesar de estar no banco.
+      if (tenantId) {
+        const supervisors = await this.prisma.user.findMany({
+          where: { tenant_id: tenantId, ativo: true, role: { in: ['SUPER_ADMIN', 'GERENTE'] } },
+          select: { id: true },
+        });
+        supervisors.forEach((s) => targetSet.add(s.id));
+      }
+      const targetUserIds = [...targetSet];
       if (targetUserIds.length > 0) {
+        // Nome do dono do lead — usado pra etiquetar no sino do supervisor
+        // ("Equipe · Alex"). Pro próprio dono fica NULL ("Seus leads").
+        const responsavelNome = lead.responsavel_id
+          ? (await this.prisma.user.findUnique({
+              where: { id: lead.responsavel_id },
+              select: { nome: true },
+            }))?.nome ?? null
+          : null;
         void this.push.sendToUsers(targetUserIds, {
           title: lead.nome,
           body: preview,
@@ -529,7 +547,15 @@ export class WebhookProcessor extends WorkerHost {
           tag: `msg-${lead.id}`,
           data: { leadId: lead.id, type: 'message' },
         });
-        void this.createMessageNotifications(targetUserIds, tenantId, lead.id, lead.nome, preview);
+        void this.createMessageNotifications(
+          targetUserIds,
+          tenantId,
+          lead.id,
+          lead.nome,
+          preview,
+          lead.responsavel_id ?? null,
+          responsavelNome,
+        );
       }
     }
 
@@ -566,10 +592,15 @@ export class WebhookProcessor extends WorkerHost {
     leadId: string,
     leadNome: string,
     preview: string,
+    responsavelId: string | null,
+    responsavelNome: string | null,
   ): Promise<void> {
     const link = `/chat/${leadId}`;
     await Promise.all(
       userIds.map(async (uid) => {
+        // Pro dono do lead (ou lead sem dono) → NULL = "Seus leads".
+        // Pro supervisor → nome do operador = agrupa "Equipe · {nome}".
+        const label = uid === responsavelId ? null : responsavelNome;
         try {
           const existing = await this.prisma.notification.findFirst({
             where: { user_id: uid, tenant_id: tenantId, tipo: 'message', link, lida: false },
@@ -578,7 +609,7 @@ export class WebhookProcessor extends WorkerHost {
           const notif = existing
             ? await this.prisma.notification.update({
                 where: { id: existing.id },
-                data: { titulo: leadNome, conteudo: preview, created_at: new Date() },
+                data: { titulo: leadNome, conteudo: preview, responsavel_nome: label, created_at: new Date() },
               })
             : await this.prisma.notification.create({
                 data: {
@@ -588,6 +619,7 @@ export class WebhookProcessor extends WorkerHost {
                   conteudo: preview,
                   tipo: 'message',
                   link,
+                  responsavel_nome: label,
                   lida: false,
                 },
               });

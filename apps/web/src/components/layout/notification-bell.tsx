@@ -18,7 +18,36 @@ interface Notif {
   tipo: string;
   lida: boolean;
   link?: string | null;
+  responsavel_nome?: string | null;
   created_at: string;
+}
+
+interface NotifGroup {
+  key: string;
+  label: string;
+  items: Notif[];
+}
+
+// Separa "Seus leads" (responsavel_nome NULL) dos leads de cada operador
+// ("Equipe · {nome}"). Seus leads sempre primeiro; equipes em ordem alfabética.
+function groupNotifs(items: Notif[]): NotifGroup[] {
+  const own: Notif[] = [];
+  const byOperator = new Map<string, Notif[]>();
+  for (const n of items) {
+    const nome = n.responsavel_nome?.trim();
+    if (!nome) {
+      own.push(n);
+    } else {
+      if (!byOperator.has(nome)) byOperator.set(nome, []);
+      byOperator.get(nome)!.push(n);
+    }
+  }
+  const groups: NotifGroup[] = [];
+  if (own.length > 0) groups.push({ key: '__own__', label: 'Seus leads', items: own });
+  for (const nome of [...byOperator.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'))) {
+    groups.push({ key: nome, label: `Equipe · ${nome}`, items: byOperator.get(nome)! });
+  }
+  return groups;
 }
 
 function timeAgo(date: string): string {
@@ -44,6 +73,7 @@ export function NotificationBell() {
   // (não acumula notificação já vista).
   const visible = items.filter((n) => !n.lida);
   const unread = visible.length;
+  const groups = groupNotifs(visible);
 
   useEffect(() => {
     const s = getSocket();
@@ -102,25 +132,30 @@ export function NotificationBell() {
               <p className="text-sm">Nenhuma notificação nova</p>
             </div>
           ) : (
-            visible.map((n) => (
-              <button
-                key={n.id}
-                type="button"
-                onClick={() => openNotif(n)}
-                className="flex w-full items-start gap-2.5 border-b px-3 py-2.5 text-left transition-colors hover:bg-accent"
-              >
-                <span
-                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${n.lida ? 'bg-transparent' : 'bg-primary'}`}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1">
-                  <span className={`block truncate text-sm ${n.lida ? 'font-medium' : 'font-semibold'}`}>
-                    {n.titulo}
+            groups.map((g) => (
+              <div key={g.key}>
+                <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-muted/60 px-3 py-1 backdrop-blur supports-[backdrop-filter]:bg-muted/40">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {g.label}
                   </span>
-                  <span className="block truncate text-xs text-muted-foreground">{n.conteudo}</span>
-                  <span className="mt-0.5 block text-[11px] text-muted-foreground">{timeAgo(n.created_at)}</span>
-                </span>
-              </button>
+                  <span className="text-[11px] text-muted-foreground/70">({g.items.length})</span>
+                </div>
+                {g.items.map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => openNotif(n)}
+                    className="flex w-full items-start gap-2.5 border-b px-3 py-2.5 text-left transition-colors hover:bg-accent"
+                  >
+                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">{n.titulo}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{n.conteudo}</span>
+                      <span className="mt-0.5 block text-[11px] text-muted-foreground">{timeAgo(n.created_at)}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             ))
           )}
         </div>

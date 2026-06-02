@@ -591,6 +591,7 @@ export class MessagesService {
       return { messages: [], nextCursor: undefined };
     }
 
+    const isResponsavel = lead.responsavel_id === user.id;
     let ownedInstances: string[] = [];
     if (user.role === UserRole.OPERADOR) {
       ownedInstances = (
@@ -600,7 +601,7 @@ export class MessagesService {
         })
       ).map((r) => r.nome);
       const accessible =
-        lead.responsavel_id === user.id ||
+        isResponsavel ||
         (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
       if (!accessible) {
         return { messages: [], nextCursor: undefined };
@@ -608,8 +609,10 @@ export class MessagesService {
     }
     // Gerente, SuperAdmin: passam direto, veem todas as mensagens do lead.
 
+    // Dono do lead vê a conversa inteira (todos os números). Filtro por
+    // instância só pra operador que acessa via número próprio sem ser o dono.
     const messagesFilter =
-      user.role === UserRole.OPERADOR && ownedInstances.length
+      user.role === UserRole.OPERADOR && !isResponsavel && ownedInstances.length
         ? { instance_name: { in: ownedInstances } }
         : {};
 

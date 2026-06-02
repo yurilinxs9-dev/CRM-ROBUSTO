@@ -936,10 +936,11 @@ export class LeadsService {
     // sem filtro por instância nem por assumed_at — supervisão completa.
     // Operador segue restrito a leads onde é responsável OU da própria
     // instância (Individual).
+    const isResponsavel = lead.responsavel_id === user.id;
     let ownedInstances: string[] = [];
     if (!isManager) {
       ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-      const accessible = lead.responsavel_id === user.id ||
+      const accessible = isResponsavel ||
         (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
       if (!accessible) {
         return { messages: [], nextCursor: undefined };
@@ -948,11 +949,16 @@ export class LeadsService {
     // Histórico antes do claim só é escondido pra OPERADOR; manager sempre
     // tem visão completa.
     const hideHistory = !isManager && !!lead.assumed_at;
+    // Dono do lead vê a conversa INTEIRA, mesmo trechos que entraram por outro
+    // número (cliente que falou com mais de uma instância). O filtro por
+    // instância só vale pra quem acessa via instância própria SEM ser o
+    // responsável — aí limita ao que passou pelo número dele.
+    const filterByInstance = !isManager && !isResponsavel && ownedInstances.length > 0;
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(!isManager && ownedInstances.length
+        ...(filterByInstance
           ? { instance_name: { in: ownedInstances } }
           : {}),
         ...(hideHistory

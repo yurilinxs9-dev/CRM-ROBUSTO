@@ -434,6 +434,10 @@ model Notification {
   tipo       String
   lida       Boolean  @default(false)
   link       String?
+  // Dono do lead que originou a notificação. NULL = lead do próprio
+  // destinatário ("Seus leads"); preenchido = supervisão de lead de operador
+  // (agrupa "Equipe · {nome}" no sino).
+  responsavel_nome String?
   tenant_id  String
   tenant     Tenant   @relation(fields: [tenant_id], references: [id])
   created_at DateTime @default(now())
