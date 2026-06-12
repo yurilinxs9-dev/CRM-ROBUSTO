@@ -9,4 +9,7 @@ export interface ApiAuth {
   keyId: string;
   tenantId: string;
   scopes: ApiScope[];
+  /** F-03: chave marcada como serviço de IA → mensagens enviadas como
+   *  sender_type='ai' e sujeitas à trava ai_blocked. Default false = 'system'. */
+  isAi: boolean;
 }

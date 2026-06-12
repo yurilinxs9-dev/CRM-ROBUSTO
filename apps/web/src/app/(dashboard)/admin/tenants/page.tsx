@@ -7,6 +7,7 @@ import { Search, ChevronRight } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { CopyId } from '@/components/ui/copy-id';
 
 interface TenantRow {
   id: string;
@@ -35,6 +36,7 @@ export default function AdminTenantsPage() {
     return data.filter(
       (t) =>
         t.nome.toLowerCase().includes(term) ||
+        t.id.toLowerCase().includes(term) ||
         t.owner?.email.toLowerCase().includes(term) ||
         t.owner?.nome.toLowerCase().includes(term),
     );
@@ -44,7 +46,7 @@ export default function AdminTenantsPage() {
     <div className="space-y-4">
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar cliente ou owner..." className="pl-9" autoComplete="off" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar cliente, owner ou ID..." className="pl-9" autoComplete="off" />
       </div>
 
       {isLoading ? (
@@ -55,7 +57,7 @@ export default function AdminTenantsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ background: 'var(--bg-surface-2)', borderBottom: '1px solid var(--border-default)' }}>
-                  {['Cliente', 'Owner', 'Modelo', 'Usuários', 'Leads', 'Instâncias', ''].map((h) => (
+                  {['Cliente', 'ID', 'Owner', 'Modelo', 'Usuários', 'Leads', 'Instâncias', ''].map((h) => (
                     <th key={h} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{h}</th>
                   ))}
                 </tr>
@@ -65,6 +67,9 @@ export default function AdminTenantsPage() {
                   <tr key={t.id} className="hover:bg-accent/40 transition-colors" style={{ borderBottom: '1px solid var(--border-default)' }}>
                     <td className="px-3 py-3">
                       <Link href={`/admin/tenants/${t.id}`} className="font-medium hover:underline" style={{ color: 'var(--text-primary)' }}>{t.nome}</Link>
+                    </td>
+                    <td className="px-3 py-3">
+                      <CopyId value={t.id} />
                     </td>
                     <td className="px-3 py-3" style={{ color: 'var(--text-secondary)' }}>
                       <div className="truncate max-w-[200px]">{t.owner?.nome ?? '—'}</div>
@@ -85,7 +90,7 @@ export default function AdminTenantsPage() {
                   </tr>
                 ))}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={7} className="px-3 py-10 text-center text-muted-foreground">Nenhum cliente.</td></tr>
+                  <tr><td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">Nenhum cliente.</td></tr>
                 )}
               </tbody>
             </table>

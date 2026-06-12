@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Shield, UserCheck, UserX, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { useSectors } from '@/hooks/use-sectors';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,8 @@ interface TeamMember {
   avatar_url?: string | null;
   titulo?: string | null;
   especialidade?: string | null;
+  sector_id?: string | null;
+  sector?: { id: string; name: string } | null;
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -64,8 +67,11 @@ export function TeamTab() {
   const [newEmail, setNewEmail] = useState('');
   const [newSenha, setNewSenha] = useState('');
   const [newRole, setNewRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
+  const [newSectorId, setNewSectorId] = useState('');
   const [linkEmail, setLinkEmail] = useState('');
   const [linkRole, setLinkRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
+
+  const { data: sectors = [] } = useSectors();
 
   const { data: members = [], isLoading } = useQuery<TeamMember[]>({
     queryKey: ['team'],
@@ -77,14 +83,14 @@ export function TeamTab() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole });
+      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole, sector_id: newSectorId });
     },
     onSuccess: () => {
       toast.success('Membro adicionado!');
       queryClient.invalidateQueries({ queryKey: ['team'] });
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
-      setNewNome(''); setNewEmail(''); setNewSenha(''); setNewRole('OPERADOR');
+      setNewNome(''); setNewEmail(''); setNewSenha(''); setNewRole('OPERADOR'); setNewSectorId('');
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -129,6 +135,10 @@ export function TeamTab() {
     updateMutation.mutate({ id: m.id, data: { role } });
   };
 
+  const changeSector = (m: TeamMember, sector_id: string) => {
+    updateMutation.mutate({ id: m.id, data: { sector_id } });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -165,9 +175,28 @@ export function TeamTab() {
                   {m.especialidade && (
                     <p className="text-xs text-muted-foreground truncate">{m.especialidade}</p>
                   )}
+                  {m.sector?.name && (
+                    <p className="text-xs text-muted-foreground truncate">Setor: {m.sector.name}</p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
+                  {!isSuperAdmin && (
+                    <Select
+                      value={m.sector_id ?? ''}
+                      onValueChange={(v) => changeSector(m, v)}
+                      disabled={updateMutation.isPending}
+                    >
+                      <SelectTrigger className="h-7 w-32 text-xs">
+                        <SelectValue placeholder="Setor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sectors.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   {isSuperAdmin ? (
                     <Badge variant="outline" className={ROLE_BADGE['SUPER_ADMIN']}>
                       <Shield className="h-3 w-3 mr-1" />
@@ -265,6 +294,19 @@ export function TeamTab() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-1.5">
+                <Label>Setor <span className="text-red-500">*</span></Label>
+                <Select value={newSectorId} onValueChange={setNewSectorId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={sectors.length ? 'Selecione um setor' : 'Crie um setor primeiro (aba Setores)'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sectors.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           ) : (
             <div className="space-y-3 py-2">
@@ -294,7 +336,7 @@ export function TeamTab() {
             {addMode === 'create' ? (
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8}
+                disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8 || !newSectorId}
               >
                 {createMutation.isPending ? 'Adicionando...' : 'Adicionar'}
               </Button>

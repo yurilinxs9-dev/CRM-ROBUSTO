@@ -218,7 +218,7 @@ export class PublicApiService {
    * Reusa MessagesService.sendText (mesma esteira UazAPI/fila/WS do app interno),
    * autenticando como o owner do tenant — a integração age em nome do workspace.
    */
-  async sendMessage(tenantId: string, body: unknown) {
+  async sendMessage(tenantId: string, body: unknown, isAi = false) {
     const data = sendConversationSchema.parse(body);
     if (data.type !== 'text') {
       throw new BadRequestException('Apenas type "text" é suportado nesta versão.');
@@ -226,14 +226,32 @@ export class PublicApiService {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id: data.user_id, tenant_id: tenantId },
-      select: { id: true },
+      select: { id: true, ai_blocked: true },
     });
     if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    // F-03: a IA respeita a trava da conversa. Se um humano interferiu
+    // (ai_blocked=true), a IA não envia nada — retorna 'skipped' sem erro.
+    if (isAi && lead.ai_blocked) {
+      return {
+        id: null,
+        conversation_id: data.user_id,
+        status: 'skipped',
+        reason: 'ai_blocked',
+        channel: data.channel,
+        type: data.type,
+      };
+    }
+
+    // Chave is_ai → 'ai' (sujeito à trava); demais integrações → 'system' (neutro,
+    // nunca bloqueia a IA). Humano via app/web continua sendo 'user' no outro path.
+    const senderType = isAi ? 'ai' : 'system';
 
     const actor = await this.ownerActor(tenantId);
     const message = await this.messages.sendText(
       { lead_id: data.user_id, content: data.message },
       actor,
+      { senderType },
     );
 
     return {

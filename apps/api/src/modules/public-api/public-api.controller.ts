@@ -47,6 +47,10 @@ export class PublicApiController {
     return (req.apiAuth as ApiAuth).tenantId;
   }
 
+  private isAi(req: ApiRequest): boolean {
+    return (req.apiAuth as ApiAuth).isAi === true;
+  }
+
   // 2.1 — Buscar usuários/contatos
   @Get('users')
   @RequireScopes('contacts:read')
@@ -98,7 +102,7 @@ export class PublicApiController {
   @HttpCode(201)
   @RequireScopes('conversations:write')
   sendConversation(@Body() body: unknown, @Req() req: ApiRequest) {
-    return this.svc.sendMessage(this.tenantId(req), body);
+    return this.svc.sendMessage(this.tenantId(req), body, this.isAi(req));
   }
 
   // Variante aninhada /users/:id/conversations
@@ -110,7 +114,7 @@ export class PublicApiController {
     @Body() body: Record<string, unknown>,
     @Req() req: ApiRequest,
   ) {
-    return this.svc.sendMessage(this.tenantId(req), { ...body, user_id: id });
+    return this.svc.sendMessage(this.tenantId(req), { ...body, user_id: id }, this.isAi(req));
   }
 
   // 2.3 — Atualizar status da conversa

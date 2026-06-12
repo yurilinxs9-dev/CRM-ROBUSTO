@@ -8,6 +8,9 @@ import { generateApiKey, hashApiKey } from './api-key.util';
 const createKeySchema = z.object({
   name: z.string().min(1).max(100),
   scopes: z.array(z.enum(API_SCOPES)).min(1),
+  // F-03: marca a chave como serviço de IA (mensagens viram sender_type='ai'
+  // e respeitam ai_blocked). Default false.
+  is_ai: z.boolean().optional().default(false),
 });
 
 @Injectable()
@@ -26,6 +29,7 @@ export class ApiKeyService {
         name: true,
         prefix: true,
         scopes: true,
+        is_ai: true,
         active: true,
         last_used_at: true,
         revoked_at: true,
@@ -50,8 +54,9 @@ export class ApiKeyService {
         key_hash: hash,
         prefix,
         scopes: data.scopes,
+        is_ai: data.is_ai,
       },
-      select: { id: true, name: true, prefix: true, scopes: true, created_at: true },
+      select: { id: true, name: true, prefix: true, scopes: true, is_ai: true, created_at: true },
     });
 
     return { ...created, token };
@@ -104,7 +109,7 @@ export class ApiKeyService {
     const hash = hashApiKey(token);
     const key = await this.prisma.apiKey.findFirst({
       where: { key_hash: hash, active: true },
-      select: { id: true, tenant_id: true, scopes: true },
+      select: { id: true, tenant_id: true, scopes: true, is_ai: true },
     });
     if (!key) return null;
 
@@ -116,6 +121,7 @@ export class ApiKeyService {
       keyId: key.id,
       tenantId: key.tenant_id,
       scopes: key.scopes as ApiAuth['scopes'],
+      isAi: key.is_ai,
     };
   }
 }

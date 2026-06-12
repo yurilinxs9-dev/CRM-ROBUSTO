@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import { CopyId } from '@/components/ui/copy-id';
 
 interface TenantUser {
   id: string; nome: string; email: string; role: string; ativo: boolean; is_platform_admin: boolean;
@@ -97,6 +98,9 @@ export default function AdminTenantDetailPage() {
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
             Owner: {data.owner?.nome} ({data.owner?.email}) · {data.pool_enabled ? 'Compartilhado' : 'Individual'}
           </p>
+          <div className="mt-1">
+            <CopyId value={data.id} label="Tenant ID:" full />
+          </div>
         </div>
         <Button
           size="sm"
@@ -127,7 +131,7 @@ export default function AdminTenantDetailPage() {
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: 'var(--bg-surface-2)', borderBottom: '1px solid var(--border-default)' }}>
-                {['Nome', 'Email', 'Papel', 'Status', ''].map((h) => (
+                {['Nome', 'Email', 'ID', 'Papel', 'Status', ''].map((h) => (
                   <th key={h} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{h}</th>
                 ))}
               </tr>
@@ -137,6 +141,7 @@ export default function AdminTenantDetailPage() {
                 <tr key={u.id} style={{ borderBottom: '1px solid var(--border-default)' }}>
                   <td className="px-3 py-2.5" style={{ color: 'var(--text-primary)' }}>{u.nome}</td>
                   <td className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-secondary)' }}>{u.email}</td>
+                  <td className="px-3 py-2.5"><CopyId value={u.id} /></td>
                   <td className="px-3 py-2.5 text-xs" style={{ color: 'var(--text-secondary)' }}>{u.role}</td>
                   <td className="px-3 py-2.5 text-xs">
                     <span style={{ color: u.ativo ? '#22c55e' : 'var(--text-muted)' }}>{u.ativo ? 'ativo' : 'inativo'}</span>

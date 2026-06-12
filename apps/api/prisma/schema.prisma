@@ -63,6 +63,16 @@ enum ConversationStatus {
   RESOLVED
 }
 
+// Quem produziu a mensagem (F-03). Decidido SEMPRE no backend, nunca pelo
+// cliente: 'user' (humano via app/web/celular) bloqueia a IA na conversa;
+// 'ai' (serviço de IA via API key is_ai) não bloqueia; 'system' (cadência,
+// automação, integração não-IA, msg de entrada do cliente) é neutro.
+enum SenderType {
+  user
+  ai
+  system
+}
+
 model Tenant {
   id         String   @id @default(uuid())
   nome       String
@@ -74,6 +84,10 @@ model Tenant {
   pool_enabled              Boolean @default(false)
   prefix_enabled            Boolean @default(true)
   notification_lead_minutes Int     @default(15)
+  // F-02: opt-in por tenant. Só quando true (E pool_enabled) os leads novos
+  // entram no rodízio round-robin por setor. Default false = comportamento atual
+  // preservado (lead no pool fica sem dono).
+  round_robin_enabled       Boolean @default(false)
 
   owner              User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users              User[]             @relation("TenantMembers")
@@ -95,6 +109,7 @@ model Tenant {
   instances_hidden   InstanceHidden[]
   outbound_webhooks  OutboundWebhook[]
   api_keys           ApiKey[]
+  sectors            Sector[]
 
   @@index([owner_id])
 }
@@ -112,6 +127,11 @@ model User {
   is_platform_admin Boolean          @default(false)
   tenant_id       String
   tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
+  // F-01: setor do colaborador. Nullable na migration p/ backfill; depois NOT NULL.
+  // App exige via Zod. SetNull no delete do setor preservaria histórico, mas como
+  // será NOT NULL usamos Restrict (setor só some via soft delete active=false).
+  sector_id       String?
+  sector          Sector?            @relation(fields: [sector_id], references: [id], onDelete: Restrict)
   owned_tenants   Tenant[]           @relation("TenantOwner")
   owned_instances WhatsappInstance[] @relation("OwnedInstances")
   created_at      DateTime           @default(now())
@@ -130,6 +150,7 @@ model User {
 
   @@index([email])
   @@index([tenant_id])
+  @@index([sector_id])
 }
 
 model Pipeline {
@@ -227,6 +248,11 @@ model Lead {
   assumed_at DateTime?
   is_private Boolean   @default(false)
 
+  // F-03: trava da IA na conversa. Setado TRUE quando uma mensagem 'user'
+  // (humano) é enviada. A IA checa este flag antes de responder. Só humano/admin
+  // reseta para FALSE. Mensagens 'ai'/'system' não alteram.
+  ai_blocked Boolean   @default(false)
+
   // Status de atendimento (ortogonal ao funil/stage) — usado pela API pública
   // e pelo CRM interno para marcar conversas abertas/pendentes/resolvidas.
   atendimento_status ConversationStatus @default(OPEN)
@@ -264,6 +290,12 @@ model Message {
   media_archived         Boolean          @default(false)
   status                 MessageStatus    @default(PENDING)
   is_internal_note       Boolean          @default(false)
+  // F-03: identificação de remetente. sender_type decidido no backend (default
+  // 'system' neutro). sender_id = id do humano quando 'user' (espelha
+  // sent_by_user_id, mantido p/ compat). Default na migration: histórico com
+  // sent_by_user_id vira 'user', resto 'system'.
+  sender_type            SenderType       @default(system)
+  sender_id              String?
   sent_by_user_id        String?
   sent_by                User?            @relation("SentBy", fields: [sent_by_user_id], references: [id])
   visible_to_user_id     String?
@@ -315,6 +347,10 @@ model WhatsappInstance {
   owner          User             @relation("OwnedInstances", fields: [owner_user_id], references: [id])
   tenant_id      String
   tenant         Tenant           @relation(fields: [tenant_id], references: [id])
+  // F-02: setor que atende este número. Define o rodízio de destino dos leads
+  // que entram por esta instância. Null = cai no setor "Sem Setor" do tenant.
+  sector_id      String?
+  sector         Sector?          @relation(fields: [sector_id], references: [id], onDelete: SetNull)
   created_at     DateTime         @default(now())
   updated_at     DateTime         @updatedAt
   user_instances UserInstance[]
@@ -557,6 +593,9 @@ model ApiKey {
   key_hash     String    @unique
   prefix       String
   scopes       String[]
+  // F-03: marca a chave como serviço de IA. Só keys is_ai=true enviam mensagens
+  // como sender_type='ai' (e respeitam ai_blocked). Demais integrações='system'.
+  is_ai        Boolean   @default(false)
   active       Boolean   @default(true)
   last_used_at DateTime?
   revoked_at   DateTime?
@@ -620,4 +659,48 @@ model AdminAuditLog {
 
   @@index([admin_user_id, created_at])
   @@index([created_at])
+}
+
+// F-01 — Setor do colaborador. Escopo por tenant (multi-tenant). Soft delete via
+// active=false: some do dropdown mas preserva o histórico dos usuários vinculados.
+model Sector {
+  id         String   @id @default(uuid())
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  name       String
+  active     Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  users         User[]
+  instances     WhatsappInstance[]
+  queue_pointer QueuePointer?
+
+  @@unique([tenant_id, name])
+  @@index([tenant_id, active])
+}
+
+// F-02 — Ponteiro persistente do round-robin por setor. 1 linha por setor.
+// Sobrevive a restart do servidor (posição da fila não se perde). O algoritmo
+// faz SELECT ... FOR UPDATE nesta linha dentro de transação p/ evitar corrida.
+model QueuePointer {
+  sector_id     String   @id
+  sector        Sector   @relation(fields: [sector_id], references: [id], onDelete: Cascade)
+  current_index Int      @default(0)
+  updated_at    DateTime @updatedAt
+}
+
+// F-02 — Auditoria de cada atribuição automática. Sem FK (logs persistem mesmo
+// se setor/lead/usuário sumirem).
+model AssignmentLog {
+  id         String   @id @default(uuid())
+  tenant_id  String
+  sector_id  String
+  lead_id    String
+  user_id    String? // null = lead entrou em espera (setor sem usuários ativos)
+  reason     String // 'round_robin' | 'waiting_no_agents'
+  created_at DateTime @default(now())
+
+  @@index([tenant_id, created_at])
+  @@index([sector_id, created_at])
 }

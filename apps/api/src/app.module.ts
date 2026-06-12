@@ -28,6 +28,8 @@ import { PushModule } from './modules/push/push.module';
 import { OutboundWebhooksModule } from './modules/outbound-webhooks/outbound-webhooks.module';
 import { PublicApiModule } from './modules/public-api/public-api.module';
 import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
+import { SectorsModule } from './modules/sectors/sectors.module';
+import { QueueModule } from './modules/queue/queue.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
 
@@ -106,6 +108,8 @@ import { CacheModule } from './common/cache/cache.module';
     OutboundWebhooksModule,
     PublicApiModule,
     PlatformAdminModule,
+    SectorsModule,
+    QueueModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionFilter },

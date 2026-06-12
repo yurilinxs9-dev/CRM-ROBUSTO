@@ -16,6 +16,7 @@ export interface Tenant {
   nome: string;
   pool_enabled: boolean;
   prefix_enabled?: boolean;
+  round_robin_enabled?: boolean;
 }
 
 interface AuthState {

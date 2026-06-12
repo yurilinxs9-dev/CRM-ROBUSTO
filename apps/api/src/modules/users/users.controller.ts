@@ -35,6 +35,8 @@ const createMemberSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(8).max(100),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
+  // F-01: setor obrigatório no cadastro.
+  sector_id: z.string().uuid({ message: 'Setor é obrigatório' }),
 });
 
 const linkMemberSchema = z.object({
@@ -47,6 +49,7 @@ const updateMemberSchema = z.object({
   titulo: z.string().max(50).nullable().optional(),
   especialidade: z.string().max(100).nullable().optional(),
   ativo: z.boolean().optional(),
+  sector_id: z.string().uuid().optional(),
 });
 
 @Controller('users')

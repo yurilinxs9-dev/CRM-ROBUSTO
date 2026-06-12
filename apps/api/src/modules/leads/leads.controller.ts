@@ -133,4 +133,14 @@ export class LeadsController {
   markAsRead(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.markAsRead(id, req.user as AuthUser);
   }
+
+  /**
+   * F-03: liga/desliga a trava da IA na conversa. Só humano/admin pode resetar
+   * (blocked=false) para a IA voltar a responder, ou travar manualmente.
+   */
+  @Patch(':id/ai-block')
+  @Roles(UserRole.OPERADOR)
+  setAiBlock(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.setAiBlocked(id, body, req.user as AuthUser);
+  }
 }

@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean };
 
 interface Instance {
   id: string;
@@ -56,6 +56,26 @@ export function GeneralTab() {
         checked
           ? 'Atendimento Compartilhado ativado.'
           : 'Atendimento Individual ativado.',
+      );
+    } catch {
+      toast.error('Erro ao salvar configuração.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleRoundRobinToggle = async (checked: boolean) => {
+    setIsPending(true);
+    try {
+      const { data } = await api.patch<TenantSettings>(
+        '/api/tenants/settings',
+        { round_robin_enabled: checked },
+      );
+      setTenant(data);
+      toast.success(
+        checked
+          ? 'Distribuição automática (round-robin) ativada.'
+          : 'Distribuição automática desativada.',
       );
     } catch {
       toast.error('Erro ao salvar configuração.');
@@ -141,6 +161,26 @@ export function GeneralTab() {
             </p>
           </div>
         )}
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">
+            Distribuição automática por setor (round-robin)
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Só no Atendimento Compartilhado. Quando ativo, cada novo lead é
+            atribuído automaticamente ao próximo atendente do setor, em rodízio
+            (A, B, A, B…), em vez de ficar no pool aguardando alguém assumir. O
+            setor de destino vem do número de WhatsApp que recebeu a mensagem.
+          </p>
+        </div>
+        <Switch
+          checked={tenant.round_robin_enabled === true}
+          onCheckedChange={handleRoundRobinToggle}
+          disabled={isPending || !tenant.pool_enabled}
+          aria-label="Distribuição round-robin"
+        />
       </div>
 
       <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">

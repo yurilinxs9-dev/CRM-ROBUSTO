@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/layout/page-header';
 import { useAuthStore } from '@/stores/auth.store';
 import { ProfileTab } from './components/ProfileTab';
 import { TeamTab } from './components/TeamTab';
+import { SectorsTab } from './components/SectorsTab';
 import { GeneralTab } from './components/GeneralTab';
 import { WebhooksTab } from './components/WebhooksTab';
 import { ApiKeysTab } from './components/ApiKeysTab';
@@ -24,6 +25,7 @@ export default function SettingsPage() {
         <TabsList className="mb-6">
           <TabsTrigger value="profile">👤 Meu Perfil</TabsTrigger>
           {canManageTeam && <TabsTrigger value="team">👥 Equipe</TabsTrigger>}
+          {canManageTeam && <TabsTrigger value="sectors">🏷️ Setores</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="general">⚙️ Geral</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="webhooks">🔗 Webhooks</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="api-keys">🔑 API Keys</TabsTrigger>}
@@ -34,6 +36,11 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="team">
             <TeamTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="sectors">
+            <SectorsTab />
           </TabsContent>
         )}
         {canManageTeam && (

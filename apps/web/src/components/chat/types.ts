@@ -22,6 +22,7 @@ export interface ChatLead {
   estagio_id: string;
   mensagens_nao_lidas: number;
   foto_url?: string | null;
+  ai_blocked?: boolean;
   valor_estimado?: string | number | null;
   ultima_interacao?: string;
   email?: string | null;

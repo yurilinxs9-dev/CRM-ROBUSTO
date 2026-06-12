@@ -87,7 +87,7 @@ export class AuthService {
       }),
       this.prisma.tenant.findUnique({
         where: { id: tenantId },
-        select: { id: true, nome: true, pool_enabled: true, prefix_enabled: true },
+        select: { id: true, nome: true, pool_enabled: true, prefix_enabled: true, round_robin_enabled: true },
       }),
     ]);
     if (!user) throw new UnauthorizedException();

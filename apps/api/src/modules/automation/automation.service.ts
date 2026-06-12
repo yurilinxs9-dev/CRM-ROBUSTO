@@ -133,7 +133,8 @@ export class AutomationService {
 
           this.logger.log(`Cadência AUTO: Disparando lead ${lead.id} (Passo ${currentStepIndex + 1})`);
           try {
-            await this.messages.sendText({ lead_id: lead.id, content: nextStep.template }, sysUser);
+            // F-03: cadência automática é 'system' — não bloqueia a IA.
+            await this.messages.sendText({ lead_id: lead.id, content: nextStep.template }, sysUser, { senderType: 'system' });
             autoFired++;
           } catch (err) {
             this.logger.error(`Cadência AUTO: erro lead ${lead.id}: ${String(err)}`);

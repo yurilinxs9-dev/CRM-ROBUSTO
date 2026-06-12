@@ -22,6 +22,16 @@ import { PageHeader } from '@/components/layout/page-header';
 import { InstanceCard, type InstanceCardData } from '@/components/instances/instance-card';
 import { QrDialog } from '@/components/instances/qr-dialog';
 import { NewInstanceDialog } from '@/components/instances/new-instance-dialog';
+import { useSectors } from '@/hooks/use-sectors';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+const NO_SECTOR = '__none__';
 
 interface QrResponse {
   qrcode?: { base64?: string };
@@ -43,6 +53,19 @@ export default function InstancesPage() {
       return (data as InstanceCardData[]) ?? [];
     },
     refetchInterval: 5_000,
+  });
+
+  const { data: sectors = [] } = useSectors();
+
+  // F-02: define o setor que atende cada número (destino do round-robin).
+  const setSectorMutation = useMutation({
+    mutationFn: async ({ id, sectorId }: { id: string; sectorId: string | null }) =>
+      api.patch(`/api/instances/${id}/sector`, { sector_id: sectorId }),
+    onSuccess: () => {
+      toast.success('Setor da instância atualizado');
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+    },
+    onError: () => toast.error('Erro ao definir setor'),
   });
 
   const createMutation = useMutation({
@@ -236,16 +259,42 @@ export default function InstancesPage() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {instances.map((inst) => (
-            <InstanceCard
-              key={inst.id}
-              instance={inst}
-              onConnect={handleConnect}
-              onReconnect={(nome) => reconnectMutation.mutate(nome)}
-              onDelete={(nome) => setDeleteTarget(nome)}
-              reconnecting={reconnectMutation.isPending && reconnectMutation.variables === inst.nome}
-            />
-          ))}
+          {instances.map((inst) => {
+            const sectorId = (inst as { sector_id?: string | null }).sector_id ?? null;
+            return (
+              <div key={inst.id} className="flex flex-col gap-2">
+                <InstanceCard
+                  instance={inst}
+                  onConnect={handleConnect}
+                  onReconnect={(nome) => reconnectMutation.mutate(nome)}
+                  onDelete={(nome) => setDeleteTarget(nome)}
+                  reconnecting={reconnectMutation.isPending && reconnectMutation.variables === inst.nome}
+                />
+                {sectors.length > 0 && (
+                  <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
+                    <span className="text-xs text-muted-foreground shrink-0">Setor:</span>
+                    <Select
+                      value={sectorId ?? NO_SECTOR}
+                      onValueChange={(v) =>
+                        setSectorMutation.mutate({ id: inst.id, sectorId: v === NO_SECTOR ? null : v })
+                      }
+                      disabled={setSectorMutation.isPending}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="Sem setor" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_SECTOR}>Sem setor (padrão)</SelectItem>
+                        {sectors.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

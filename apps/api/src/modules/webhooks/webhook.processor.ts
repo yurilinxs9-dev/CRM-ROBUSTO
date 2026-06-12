@@ -9,6 +9,7 @@ import { MediaService } from '../media/media.service';
 import { MediaPipelineService } from '../media/media-pipeline.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
+import { AssignmentService } from '../queue/assignment.service';
 import {
   type ExtractedMessage,
   extractFromEvolution,
@@ -52,8 +53,31 @@ export class WebhookProcessor extends WorkerHost {
     private mediaPipeline: MediaPipelineService,
     private push: PushService,
     private outboundWebhooks: OutboundWebhooksService,
+    private assignment: AssignmentService,
   ) {
     super();
+  }
+
+  /**
+   * F-02: setor sem agentes ativos — lead fica em espera (sem dono). Avisa os
+   * supervisores (SUPER_ADMIN/GERENTE) por push para que alguém assuma.
+   */
+  private async notifyNoAgents(tenantId: string, leadId: string, leadNome: string) {
+    const supervisors = await this.prisma.user.findMany({
+      where: { tenant_id: tenantId, ativo: true, role: { in: ['SUPER_ADMIN', 'GERENTE'] } },
+      select: { id: true },
+    });
+    if (supervisors.length === 0) return;
+    void this.push.sendToUsers(
+      supervisors.map((s) => s.id),
+      {
+        title: 'Lead sem setor disponível',
+        body: `${leadNome} chegou mas o setor não tem atendentes ativos.`,
+        url: `/chat/${leadId}`,
+        tag: `no-agents-${leadId}`,
+        data: { leadId, type: 'no_agents' },
+      },
+    );
   }
 
   @OnWorkerEvent('failed')
@@ -283,7 +307,7 @@ export class WebhookProcessor extends WorkerHost {
 
     const tenant = await this.prisma.tenant.findFirst({
       where: { id: tenantId },
-      select: { pool_enabled: true },
+      select: { pool_enabled: true, round_robin_enabled: true },
     });
 
     // Instância dona de SUPER_ADMIN/GERENTE auto-atribui sempre ao dono,
@@ -296,8 +320,12 @@ export class WebhookProcessor extends WorkerHost {
       : null;
     const ownerIsManager =
       ownerUser?.role === 'SUPER_ADMIN' || ownerUser?.role === 'GERENTE';
-    const responsavelId =
-      tenant?.pool_enabled && !ownerIsManager ? null : instance.owner_user_id;
+    // Modo Compartilhado para operador: lead entra sem dono (pool).
+    const inPool = Boolean(tenant?.pool_enabled) && !ownerIsManager;
+    const responsavelId = inPool ? null : instance.owner_user_id;
+    // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E
+    // está em modo Compartilhado. Caso contrário, comportamento atual intacto.
+    const wantRoundRobin = inPool && tenant?.round_robin_enabled === true;
 
     const lead = await this.prisma.lead.upsert({
       where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
@@ -341,6 +369,31 @@ export class WebhookProcessor extends WorkerHost {
       });
       lead.responsavel_id = fixed.responsavel_id;
       lead.instancia_whatsapp = fixed.instancia_whatsapp;
+    }
+
+    // F-02: Round-robin por setor. Só para lead de CLIENTE (inbound) ainda no
+    // pool. O lock no ponteiro (dentro de assignBySector) serializa concorrentes.
+    // updateMany condicional (responsavel_id IS NULL) evita atribuição dupla se
+    // duas mensagens do mesmo lead chegarem juntas.
+    if (lead.responsavel_id === null && wantRoundRobin && !isFromMe) {
+      const sectorId = await this.assignment.resolveSectorForInstance(
+        tenantId,
+        instance.sector_id,
+      );
+      const result = await this.assignment.assignBySector(tenantId, sectorId, lead.id);
+      if (result.userId) {
+        const upd = await this.prisma.lead.updateMany({
+          where: { id: lead.id, responsavel_id: null },
+          data: { responsavel_id: result.userId, instancia_whatsapp: instance.nome },
+        });
+        if (upd.count > 0) {
+          lead.responsavel_id = result.userId;
+          lead.instancia_whatsapp = instance.nome;
+        }
+      } else {
+        // Setor sem agentes ativos → lead em espera; avisa supervisores.
+        await this.notifyNoAgents(tenantId, lead.id, lead.nome);
+      }
     }
 
     // Heal lead names that were corrupted before the fix above shipped.
@@ -465,12 +518,25 @@ export class WebhookProcessor extends WorkerHost {
         media_filename: extracted.media?.filename,
         media_size_bytes: extracted.media?.size_bytes,
         status: isFromMe ? 'SENT' : 'DELIVERED',
+        // F-03: msg de entrada do cliente é neutra ('system'). isFromMe que chega
+        // aqui (não foi deduplicado como eco de CRM/IA) é resposta NATIVA do humano
+        // pelo celular → 'user' (bloqueia a IA). Ecos de envios do CRM/IA já
+        // retornaram antes deste ponto, então nunca marcam 'user' por engano.
+        sender_type: isFromMe ? 'user' : 'system',
         metadata,
         visible_to_user_id: lead.responsavel_id ?? null,
         tenant_id: tenantId,
       },
       update: {},
     });
+
+    // F-03: humano respondeu pelo celular → trava a IA na conversa.
+    if (isFromMe) {
+      await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: { ai_blocked: true },
+      }).catch((err) => this.logger.warn(`ai_blocked set falhou lead=${lead.id}: ${String(err)}`));
+    }
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code === 'P2002') {

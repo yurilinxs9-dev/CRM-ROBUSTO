@@ -37,6 +37,7 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
   const qc = useQueryClient();
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<string[]>([]);
+  const [isAi, setIsAi] = useState(false);
   const [created, setCreated] = useState<CreatedKey | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -44,6 +45,7 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
     if (open) {
       setName('');
       setScopes([]);
+      setIsAi(false);
       setCreated(null);
       setCopied(false);
     }
@@ -54,6 +56,7 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
       const { data } = await api.post<CreatedKey>('/api/api-keys', {
         name: name.trim(),
         scopes,
+        is_ai: isAi,
       });
       return data;
     },
@@ -124,6 +127,25 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="rounded-md border p-3">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 mt-0.5 rounded border-input"
+                    checked={isAi}
+                    onChange={(e) => setIsAi(e.target.checked)}
+                  />
+                  <span className="text-sm">
+                    Esta chave é de um <strong>serviço de IA</strong>
+                    <span className="block text-xs text-muted-foreground mt-0.5">
+                      Mensagens enviadas por esta chave são marcadas como IA e respeitam o
+                      bloqueio automático quando um humano assume a conversa. Deixe desmarcado
+                      para integrações comuns (n8n, Zapier).
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
 

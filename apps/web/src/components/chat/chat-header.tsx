@@ -3,12 +3,17 @@
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
+  Bot,
+  BotOff,
   CheckCheck,
   Info,
   MoreVertical,
   RefreshCw,
   Trash2,
 } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { api } from '@/lib/api';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import {
@@ -67,8 +72,22 @@ export function ChatHeader({
   syncing = false,
 }: ChatHeaderProps) {
   const router = useRouter();
+  const qc = useQueryClient();
   const presence = presenceLabel(lead);
   const isOnline = presence === 'online';
+
+  // F-03: liga/desliga a trava da IA na conversa. Só humano/admin reseta.
+  const aiBlockMut = useMutation({
+    mutationFn: async (blocked: boolean) =>
+      api.patch(`/api/leads/${lead.id}/ai-block`, { blocked }),
+    onSuccess: (_d, blocked) => {
+      toast.success(blocked ? 'IA bloqueada nesta conversa' : 'IA liberada para responder');
+      qc.invalidateQueries({ queryKey: ['lead'] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['chat'] });
+    },
+    onError: () => toast.error('Falha ao alterar a IA'),
+  });
   // Format digit-only placeholder names so unresolved WhatsApp contacts don't
   // render as raw numbers in the header. Real names are left untouched.
   const displayName = /^\+?\d{8,}$/.test(lead.nome.trim())
@@ -113,14 +132,21 @@ export function ChatHeader({
         <span className="truncate text-sm font-semibold text-foreground">
           {displayName}
         </span>
-        <span
-          className={
-            isOnline
-              ? 'truncate text-[11px] font-medium text-green-600 dark:text-green-400'
-              : 'truncate text-[11px] text-muted-foreground'
-          }
-        >
-          {presence}
+        <span className="flex items-center gap-1.5">
+          <span
+            className={
+              isOnline
+                ? 'truncate text-[11px] font-medium text-green-600 dark:text-green-400'
+                : 'truncate text-[11px] text-muted-foreground'
+            }
+          >
+            {presence}
+          </span>
+          {lead.ai_blocked && (
+            <span className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium text-amber-600 bg-amber-500/15">
+              <BotOff size={10} /> IA off
+            </span>
+          )}
         </span>
       </button>
 
@@ -172,6 +198,16 @@ export function ChatHeader({
             <DropdownMenuItem onClick={onMarkRead}>
               <CheckCheck size={14} className="mr-2" />
               Marcar como lido
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => aiBlockMut.mutate(!lead.ai_blocked)}
+              disabled={aiBlockMut.isPending}
+            >
+              {lead.ai_blocked ? (
+                <><Bot size={14} className="mr-2 text-emerald-500" /> Liberar IA</>
+              ) : (
+                <><BotOff size={14} className="mr-2 text-amber-500" /> Bloquear IA</>
+              )}
             </DropdownMenuItem>
             {onSyncChat && (
               <DropdownMenuItem onClick={onSyncChat} disabled={syncing}>

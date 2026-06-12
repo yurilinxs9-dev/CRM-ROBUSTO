@@ -13,10 +13,20 @@ import type { AuthUser } from '../../common/types/auth-user';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
-import { MessageType } from '@prisma/client';
+import { MessageType, SenderType } from '@prisma/client';
 import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
+
+/**
+ * F-03 — Opções de envio. senderType decide quem enviou (default 'user', o
+ * caminho do app/web humano). Os controllers humanos não passam nada → 'user';
+ * a API pública passa 'ai' (key is_ai) ou 'system'; a automação passa 'system'.
+ * Só 'user' bloqueia a IA na conversa (ai_blocked=true).
+ */
+export interface SendOptions {
+  senderType?: SenderType;
+}
 
 const sendTextSchema = z.object({
   lead_id: z.string().uuid(),
@@ -242,9 +252,13 @@ export class MessagesService {
     return `*${label}*\n\n`;
   }
 
-  async sendText(data: unknown, user: AuthUser) {
+  async sendText(data: unknown, user: AuthUser, opts: SendOptions = {}) {
     const { lead_id, content } = sendTextSchema.parse(data);
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+
+    // F-03: sender_type decidido no backend. Default 'user' (envio humano).
+    const senderType: SenderType = opts.senderType ?? 'user';
+    const senderId = senderType === 'user' ? user.id : null;
 
     const prefix = await this.buildOutboundPrefix(
       user.tenantId,
@@ -265,6 +279,8 @@ export class MessagesService {
         type: 'TEXT',
         content: outboundContent,
         status: 'PENDING',
+        sender_type: senderType,
+        sender_id: senderId,
         sent_by_user_id: user.id,
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
@@ -284,6 +300,8 @@ export class MessagesService {
       cadenceUpdate.proximo_followup = null;
       cadenceUpdate.cadence_step_index = lead.cadence_step_index + 1;
     }
+    // F-03: humano enviou → trava a IA na conversa.
+    if (senderType === 'user') cadenceUpdate.ai_blocked = true;
     await this.prisma.lead.update({ where: { id: lead_id }, data: cadenceUpdate });
 
     await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
@@ -331,6 +349,8 @@ export class MessagesService {
         content,
         status: 'READ',
         is_internal_note: true,
+        // Nota interna não vai ao cliente nem bloqueia a IA → 'system'.
+        sender_type: 'system',
         sent_by_user_id: user.id,
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
@@ -338,11 +358,13 @@ export class MessagesService {
     });
   }
 
-  async sendAudio(file: Express.Multer.File, body: unknown, user: AuthUser) {
+  async sendAudio(file: Express.Multer.File, body: unknown, user: AuthUser, opts: SendOptions = {}) {
     const { lead_id } = z.object({ lead_id: z.string().uuid() }).parse(body);
     if (!file) throw new NotFoundException('Arquivo de audio ausente');
 
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+    const senderType: SenderType = opts.senderType ?? 'user';
+    const senderId = senderType === 'user' ? user.id : null;
 
     const opusBuffer = await this.audio.convertToOpus(file.buffer, file.mimetype);
     const probedDuration = await this.audio.probeDurationSeconds(opusBuffer, 'audio/ogg');
@@ -364,6 +386,8 @@ export class MessagesService {
         media_size_bytes: opusBuffer.length,
         media_duration_seconds: probedDuration,
         status: 'PENDING',
+        sender_type: senderType,
+        sender_id: senderId,
         sent_by_user_id: user.id,
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
@@ -376,7 +400,11 @@ export class MessagesService {
 
     await this.prisma.lead.update({
       where: { id: lead_id },
-      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
+      data: {
+        ultima_interacao: new Date(),
+        last_agent_message_at: new Date(),
+        ...(senderType === 'user' ? { ai_blocked: true } : {}),
+      },
     });
 
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
@@ -401,7 +429,7 @@ export class MessagesService {
     return { ...message, media_url: signedUrl };
   }
 
-  async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser) {
+  async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser, opts: SendOptions = {}) {
     const { lead_id, caption } = z
       .object({
         lead_id: z.string().uuid(),
@@ -411,6 +439,8 @@ export class MessagesService {
     if (!file) throw new NotFoundException('Arquivo ausente');
 
     const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+    const senderType: SenderType = opts.senderType ?? 'user';
+    const senderId = senderType === 'user' ? user.id : null;
 
     let processed: Awaited<ReturnType<MediaPipelineService['processMultipart']>>;
     try {
@@ -469,6 +499,8 @@ export class MessagesService {
         media_thumbnail_path: thumbnailPath ?? null,
         media_poster_path: posterPath ?? null,
         status: 'PENDING',
+        sender_type: senderType,
+        sender_id: senderId,
         sent_by_user_id: user.id,
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
@@ -481,7 +513,11 @@ export class MessagesService {
 
     await this.prisma.lead.update({
       where: { id: lead_id },
-      data: { ultima_interacao: new Date(), last_agent_message_at: new Date() },
+      data: {
+        ultima_interacao: new Date(),
+        last_agent_message_at: new Date(),
+        ...(senderType === 'user' ? { ai_blocked: true } : {}),
+      },
     });
 
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.

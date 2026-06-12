@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -237,6 +237,30 @@ export class InstancesService implements OnModuleInit {
       },
       orderBy: { created_at: 'asc' },
     });
+  }
+
+  /**
+   * F-02: define o setor que atende o número (destino do round-robin). null
+   * volta a cair no setor padrão "Sem Setor". Valida que ambos são do tenant.
+   */
+  async setSector(instanceId: string, sectorId: string | null, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { id: instanceId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!instance) throw new NotFoundException('Instância não encontrada');
+    if (sectorId) {
+      const sector = await this.prisma.sector.findFirst({
+        where: { id: sectorId, tenant_id: user.tenantId, active: true },
+        select: { id: true },
+      });
+      if (!sector) throw new BadRequestException('Setor inválido ou inativo');
+    }
+    await this.prisma.whatsappInstance.update({
+      where: { id: instanceId },
+      data: { sector_id: sectorId },
+    });
+    return { ok: true, sector_id: sectorId };
   }
 
   async create(nome: string, user: AuthUser) {

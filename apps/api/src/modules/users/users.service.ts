@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
+import { SectorsService } from '../sectors/sectors.service';
 import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import * as bcrypt from 'bcryptjs';
@@ -16,6 +17,8 @@ const TEAM_SELECT = {
   titulo: true,
   especialidade: true,
   created_at: true,
+  sector_id: true,
+  sector: { select: { id: true, name: true } },
 } as const;
 
 @Injectable()
@@ -23,6 +26,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private media: MediaService,
+    private sectors: SectorsService,
   ) {}
 
   findAll(user: AuthUser) {
@@ -35,7 +39,7 @@ export class UsersService {
 
   async createTeamMember(
     caller: AuthUser,
-    dto: { nome: string; email: string; senha: string; role: string },
+    dto: { nome: string; email: string; senha: string; role: string; sector_id: string },
   ) {
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível criar SUPER_ADMIN');
@@ -44,14 +48,17 @@ export class UsersService {
     if (!validRoles.includes(dto.role as UserRole)) {
       throw new BadRequestException('Role inválida');
     }
+    // F-01: setor obrigatório e validado contra o tenant (não dá pra criar
+    // usuário sem setor). Garante que o setor existe, é do tenant e está ativo.
+    const sectorId = await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id);
     const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (exists) throw new ConflictException('Email já cadastrado');
 
     const senha_hash = await bcrypt.hash(dto.senha, 12);
     const userId = randomUUID();
     await this.prisma.$executeRaw`
-      INSERT INTO "User" (id, nome, email, senha_hash, role, ativo, tenant_id, created_at, updated_at)
-      VALUES (${userId}, ${dto.nome}, ${dto.email}, ${senha_hash}, ${dto.role}::"UserRole", true, ${caller.tenantId}, NOW(), NOW())
+      INSERT INTO "User" (id, nome, email, senha_hash, role, ativo, tenant_id, sector_id, created_at, updated_at)
+      VALUES (${userId}, ${dto.nome}, ${dto.email}, ${senha_hash}, ${dto.role}::"UserRole", true, ${caller.tenantId}, ${sectorId}, NOW(), NOW())
     `;
     return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: TEAM_SELECT });
   }
@@ -78,7 +85,7 @@ export class UsersService {
   async updateTeamMember(
     caller: AuthUser,
     targetId: string,
-    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean },
+    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string },
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
@@ -97,6 +104,9 @@ export class UsersService {
     if (dto.titulo !== undefined) data.titulo = dto.titulo;
     if (dto.especialidade !== undefined) data.especialidade = dto.especialidade;
     if (dto.ativo !== undefined) data.ativo = dto.ativo;
+    if (dto.sector_id !== undefined) {
+      data.sector_id = await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id);
+    }
 
     return this.prisma.user.update({
       where: { id: targetId },

@@ -7,6 +7,7 @@ import { WebhookSecretGuard } from './guards/webhook-secret.guard';
 import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { PushModule } from '../push/push.module';
     LeadsModule,
     MediaModule,
     PushModule,
+    QueueModule,
   ],
   controllers: [WebhooksController],
   providers: [WebhookProcessor, WebhookSecretGuard],

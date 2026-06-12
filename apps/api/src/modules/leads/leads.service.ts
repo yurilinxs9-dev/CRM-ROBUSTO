@@ -1094,6 +1094,27 @@ export class LeadsService {
     res.send(csv);
   }
 
+  /**
+   * F-03: liga/desliga a trava da IA na conversa. blocked=false reabre a IA
+   * (a integração volta a responder); blocked=true trava manualmente.
+   */
+  async setAiBlocked(leadId: string, body: unknown, user: AuthUser) {
+    const { blocked } = z.object({ blocked: z.boolean() }).parse(body);
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+    await this.prisma.lead.update({ where: { id: leadId }, data: { ai_blocked: blocked } });
+    await this.invalidateLeadsCache(user.tenantId);
+    try {
+      this.gateway.emitLeadUpdated(leadId, { ai_blocked: blocked }, user.tenantId);
+    } catch (err) {
+      this.logger.warn(`emitLeadUpdated (ai_blocked) failed for lead ${leadId}: ${String(err)}`);
+    }
+    return { ok: true, ai_blocked: blocked };
+  }
+
   async markAsRead(leadId: string, user: AuthUser) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
