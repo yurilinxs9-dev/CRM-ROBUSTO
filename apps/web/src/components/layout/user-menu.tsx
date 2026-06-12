@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { CopyId } from '@/components/ui/copy-id';
 import { cn } from '@/lib/cn';
 
 interface UserMenuProps {
@@ -74,6 +75,11 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
         <DropdownMenuLabel className="flex flex-col gap-0.5">
           <span className="text-sm font-medium leading-tight">{name}</span>
           {user?.email && <span className="text-xs font-normal text-muted-foreground">{user.email}</span>}
+          {user?.id && (
+            <div className="pt-1">
+              <CopyId value={user.id} label="ID:" />
+            </div>
+          )}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem disabled>

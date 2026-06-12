@@ -6,6 +6,7 @@ import { Plus, Shield, UserCheck, UserX, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { useSectors } from '@/hooks/use-sectors';
+import { CopyId } from '@/components/ui/copy-id';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -178,6 +179,7 @@ export function TeamTab() {
                   {m.sector?.name && (
                     <p className="text-xs text-muted-foreground truncate">Setor: {m.sector.name}</p>
                   )}
+                  <CopyId value={m.id} label="ID:" />
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
