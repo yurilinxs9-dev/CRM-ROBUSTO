@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield } from 'lucide-react';
+import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -21,6 +21,7 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/analytics', label: 'Analytics', icon: BarChart3, exact: true },
   { href: '/kanban', label: 'Kanban', icon: Kanban },
   { href: '/chat', label: 'Conversas', icon: MessageSquare },
+  { href: '/followup', label: 'Follow-up IA', icon: Megaphone },
   { href: '/agenda', label: 'Agenda', icon: CalendarDays },
   { href: '/instances', label: 'Instâncias', icon: Smartphone },
   { href: '/settings', label: 'Configurações', icon: Settings },
@@ -37,8 +38,11 @@ export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, class
   const role = useAuthStore((s) => s.user?.role);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
   // VISUALIZADOR nao tem acesso a Conversas — escondemos do menu.
+  // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).
   const visibleNav = NAV_ITEMS.filter(
-    (item) => !(item.href === '/chat' && role === 'VISUALIZADOR'),
+    (item) =>
+      !(item.href === '/chat' && role === 'VISUALIZADOR') &&
+      !(item.href === '/followup' && role !== 'SUPER_ADMIN' && role !== 'GERENTE'),
   );
 
   return (

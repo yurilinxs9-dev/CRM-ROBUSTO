@@ -17,6 +17,7 @@ import {
   Paperclip,
   Send,
   Smile,
+  Sparkles,
   Trash2,
   Video,
   X,
@@ -42,6 +43,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ReplyPreview, type ReplyTarget } from './reply-preview';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
 
 const EMOJIS = [
   '😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🥳',
@@ -56,6 +59,8 @@ interface ChatComposerProps {
   conversationKey?: string;
   /** Pre-fill text (e.g. cadence template). Applied once when set. */
   initialText?: string | null;
+  /** Lead em foco — habilita o botão "Sugerir resposta" (IA). */
+  leadId?: string | null;
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
   onSendText: (content: string, isInternalNote: boolean) => void;
@@ -74,6 +79,7 @@ export function ChatComposer({
   sending,
   conversationKey,
   initialText,
+  leadId,
   replyTarget,
   onCancelReply,
   onSendText,
@@ -82,6 +88,25 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const [text, setText] = useState('');
   const [isNote, setIsNote] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+
+  const handleSuggest = useCallback(async () => {
+    if (!leadId || suggesting) return;
+    setSuggesting(true);
+    try {
+      const { data } = await api.post<{ suggestion: string }>('/api/ai/suggest-reply', { lead_id: leadId });
+      if (data.suggestion) {
+        setText(data.suggestion);
+        setTimeout(() => textareaRef.current?.focus(), 50);
+      } else {
+        toast.error('IA não retornou sugestão');
+      }
+    } catch {
+      toast.error('Falha ao gerar sugestão (verifique a config de IA)');
+    } finally {
+      setSuggesting(false);
+    }
+  }, [leadId, suggesting]);
 
   const [emojiOpen, setEmojiOpen] = useState(false);
 
@@ -468,6 +493,21 @@ export function ChatComposer({
           >
             <NotebookPen size={18} />
           </Button>
+
+          {leadId && !isNote && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Sugerir resposta com IA"
+              title="Sugerir resposta (IA)"
+              onClick={handleSuggest}
+              disabled={disabled || suggesting}
+              className="h-10 w-10 flex-shrink-0"
+            >
+              <Sparkles size={18} className={cn('text-[var(--primary)]', suggesting && 'animate-pulse')} />
+            </Button>
+          )}
 
           <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
             <PopoverTrigger asChild>

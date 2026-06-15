@@ -76,6 +76,10 @@ backups/
 coverage/
 .nyc_output/
 
+# ---- Scripts de diagnóstico ad-hoc + relatórios locais ----
+scripts/diag-*.js
+relatorio-*.md
+
 # ---- Arquivos locais com credenciais embutidas ----
 PROMPT-MASTER-CRM.md
 

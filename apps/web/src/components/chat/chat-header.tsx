@@ -33,6 +33,7 @@ import {
 import { formatDistanceToNowStrict } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { ChatLead, ChatStage, formatPhone, getInitials } from './types';
+import { CopilotSheet } from '@/components/ai/copilot-sheet';
 
 /** "online" if interacted within 2min, else "visto por último há …". */
 function presenceLabel(lead: ChatLead): string {
@@ -172,6 +173,8 @@ export function ChatHeader({
             ))}
           </SelectContent>
         </Select>
+
+        <CopilotSheet leadId={lead.id} />
 
         <Button
           variant="outline"

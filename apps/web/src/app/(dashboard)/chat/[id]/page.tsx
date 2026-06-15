@@ -992,6 +992,7 @@ export default function ChatDetailPage() {
             disabled={!currentLead}
             sending={sending}
             conversationKey={leadId}
+            leadId={leadId}
             initialText={followupComposerText}
             replyTarget={replyTarget}
             onCancelReply={() => setReplyTarget(null)}

@@ -29,6 +29,8 @@ import { OutboundWebhooksModule } from './modules/outbound-webhooks/outbound-web
 import { PublicApiModule } from './modules/public-api/public-api.module';
 import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 import { SectorsModule } from './modules/sectors/sectors.module';
+import { AiModule } from './modules/ai/ai.module';
+import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
@@ -109,6 +111,8 @@ import { CacheModule } from './common/cache/cache.module';
     PublicApiModule,
     PlatformAdminModule,
     SectorsModule,
+    AiModule,
+    BroadcastsModule,
     QueueModule,
   ],
   providers: [

@@ -704,3 +704,140 @@ model AssignmentLog {
   @@index([tenant_id, created_at])
   @@index([sector_id, created_at])
 }
+
+// ── IA NATIVA ────────────────────────────────────────────────────────────────
+// Provedor do modelo. 'openai_compatible' cobre OpenAI, OpenRouter, Groq, Ollama
+// e qualquer endpoint compatível (base_url + model_id livre). 'anthropic' = API
+// nativa Claude. Adicionar provider novo = novo valor aqui + adapter no backend.
+enum AiProvider {
+  openai_compatible
+  anthropic
+}
+
+// Capacidade de IA que originou uma chamada (para custo/auditoria e toggles).
+enum AiFeature {
+  copilot
+  suggest
+  autoreply
+  followup
+}
+
+// Configuração de modelo de IA — escopo de PLATAFORMA (só super admin gerencia).
+// O super admin cadastra QUALQUER modelo: basta provider + model_id (string livre)
+// e, p/ openai_compatible, a base_url do gateway/endpoint. A chave fica cifrada
+// (AES-256-GCM) e NUNCA é retornada ao client (só máscara).
+model AiModelConfig {
+  id          String     @id @default(uuid())
+  label       String // nome amigável exibido no seletor de modelo
+  provider    AiProvider
+  base_url    String? // openai_compatible: URL do endpoint/gateway. null = default do provider
+  model_id    String // string livre do modelo (ex: gpt-4o, claude-opus-4-8, meta-llama/...)
+  api_key_enc String // chave de API cifrada em repouso (iv:tag:ciphertext base64)
+  temperature Float      @default(0.7)
+  max_tokens  Int        @default(1024)
+  active      Boolean    @default(true)
+  is_default  Boolean    @default(false)
+  created_by  String
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  usage_logs AiUsageLog[]
+
+  @@index([active])
+}
+
+// Comportamento do agente de IA — escopo de plataforma (linha única/singleton).
+// system_prompt e persona moldam todas as capacidades; os *_enabled ligam/desligam
+// cada recurso globalmente. default_model_id aponta o modelo usado quando o
+// chamador não especifica um.
+model AiAgentConfig {
+  id                String   @id @default(uuid())
+  system_prompt     String   @default("")
+  persona           String?
+  copilot_enabled   Boolean  @default(true)
+  suggest_enabled   Boolean  @default(true)
+  autoreply_enabled Boolean  @default(false)
+  followup_enabled  Boolean  @default(false)
+  default_model_id  String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+}
+
+// Auditoria + base de custo de cada chamada de IA. Sem FK p/ tenant/lead (logs
+// persistem mesmo se o recurso sumir). model_config_id = SetNull p/ preservar
+// histórico após exclusão do modelo.
+model AiUsageLog {
+  id              String         @id @default(uuid())
+  tenant_id       String?
+  model_config_id String?
+  model_config    AiModelConfig? @relation(fields: [model_config_id], references: [id], onDelete: SetNull)
+  feature         AiFeature
+  tokens_in       Int            @default(0)
+  tokens_out      Int            @default(0)
+  est_cost        Decimal?       @db.Decimal(12, 6)
+  lead_id         String?
+  created_at      DateTime       @default(now())
+
+  @@index([tenant_id, created_at])
+  @@index([model_config_id, created_at])
+}
+
+// ── FOLLOW-UP / BROADCAST POR IA ─────────────────────────────────────────────
+enum BroadcastMode {
+  template // texto fixo (com placeholder {{nome}})
+  ai       // IA gera a mensagem personalizada por lead a partir de ai_instruction
+}
+
+enum BroadcastStatus {
+  draft
+  running
+  paused
+  done
+  canceled
+}
+
+enum BroadcastTargetStatus {
+  pending
+  sent
+  failed
+  skipped // lead com ai_blocked, sem telefone, ou removido
+}
+
+// Disparo em massa por etapa/segmento com throttle (ex.: 1 msg a cada 5 min).
+// Sem FK p/ Tenant (mesmo padrão de ApiRequestLog) — escopo por tenant_id.
+model Broadcast {
+  id               String          @id @default(uuid())
+  tenant_id        String
+  name             String
+  stage_id         String? // segmenta por etapa do funil (opcional)
+  segment          Json? // filtros extras (temperatura/tags) — extensível
+  mode             BroadcastMode   @default(template)
+  template         String? // usado quando mode=template
+  ai_instruction   String? // usado quando mode=ai
+  model_config_id  String? // modelo de IA (null = default da plataforma)
+  throttle_seconds Int             @default(300) // espaçamento entre envios
+  respect_ai_block Boolean         @default(true) // pula leads com ai_blocked
+  status           BroadcastStatus @default(draft)
+  created_by       String
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+  last_dispatch_at DateTime? // base do throttle (quando mandou o último)
+
+  targets BroadcastTarget[]
+
+  @@index([tenant_id, status])
+  @@index([status])
+}
+
+model BroadcastTarget {
+  id           String                @id @default(uuid())
+  broadcast_id String
+  broadcast    Broadcast             @relation(fields: [broadcast_id], references: [id], onDelete: Cascade)
+  lead_id      String
+  status       BroadcastTargetStatus @default(pending)
+  sent_at      DateTime?
+  error        String?
+  created_at   DateTime              @default(now())
+
+  @@index([broadcast_id, status])
+}
