@@ -7,6 +7,7 @@ import { LeadsSyncProcessor } from './leads-sync.processor';
 import { InstancesModule } from '../instances/instances.module';
 import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
+import { QueueModule } from '../queue/queue.module';
 import { PIPELINE_AUTO_ACTIONS_QUEUE } from '../pipelines/auto-actions.processor';
 
 const LEADS_SYNC_QUEUE = 'leads-sync';
@@ -39,6 +40,7 @@ class LeadsSyncScheduler implements OnModuleInit {
     InstancesModule,
     MediaModule,
     PushModule,
+    QueueModule,
     BullModule.registerQueue({ name: LEADS_SYNC_QUEUE }),
     BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }),
   ],

@@ -15,6 +15,7 @@ import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
+import { AssignmentService } from '../queue/assignment.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -66,6 +67,9 @@ const createLeadSchema = z.object({
 const reassignSchema = z.object({
   novoResponsavelId: z.string().uuid(),
 });
+const moveToSectorSchema = z.object({
+  sectorId: z.string().uuid(),
+});
 
 const roleHierarchy: Record<string, number> = {
   SUPER_ADMIN: 4,
@@ -107,6 +111,7 @@ export class LeadsService {
     private media: MediaService,
     private push: PushService,
     private outboundWebhooks: OutboundWebhooksService,
+    private assignment: AssignmentService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
@@ -873,6 +878,108 @@ export class LeadsService {
       data: { leadId, type: 'reassign' },
     });
     return { id: leadId, responsavel_id: novoResponsavelId, instancia_whatsapp: ownedInstance?.nome };
+  }
+
+  /**
+   * Move a conversa para um setor e redistribui em round-robin entre os
+   * agentes ativos daquele setor (mesma fila A,B,A,B do webhook de entrada —
+   * compartilha QueuePointer/AssignmentLog via AssignmentService).
+   *
+   * Ex.: setor "Atacado" com Adjaine e Romilda → 1º lead p/ Adjaine, 2º p/
+   * Romilda, 3º p/ Adjaine, etc. O ponteiro é único por setor: chamadas manuais
+   * e automáticas avançam a MESMA fila.
+   *
+   * Setor sem agentes ativos → lead volta ao pool (espera), supervisores avisados.
+   */
+  async moveToSector(leadId: string, body: unknown, user: AuthUser) {
+    const { sectorId } = moveToSectorSchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { id: true, nome: true, responsavel_id: true },
+    });
+    if (!lead) throw new NotFoundException('Lead nao encontrado');
+
+    // Auth: responsável atual OU gerente+ (espelha reassign/returnToPool).
+    const isOwner = lead.responsavel_id === user.id;
+    const isManager = (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
+    if (!isOwner && !isManager) {
+      throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem mover de setor');
+    }
+
+    const sector = await this.prisma.sector.findFirst({
+      where: { id: sectorId, tenant_id: user.tenantId, active: true },
+      select: { id: true, name: true },
+    });
+    if (!sector) throw new BadRequestException('Setor nao encontrado, inativo ou de outro tenant');
+
+    // Round-robin: escolhe o próximo agente do setor e avança o ponteiro.
+    const result = await this.assignment.assignBySector(user.tenantId, sectorId, leadId);
+
+    if (!result.userId) {
+      // Sem agentes ativos: lead em espera no pool.
+      await this.prisma.lead.update({
+        where: { id: leadId },
+        data: { responsavel_id: null, assumed_at: null, is_private: false },
+      });
+      await this.prisma.leadActivity.create({
+        data: {
+          lead_id: leadId,
+          user_id: user.id,
+          tipo: 'MOVED_TO_SECTOR',
+          descricao: `Movido para o setor ${sector.name} (sem agentes ativos — em espera)`,
+          dados_antes: { responsavel_id: lead.responsavel_id },
+          dados_depois: { sector_id: sectorId, responsavel_id: null },
+          tenant_id: user.tenantId,
+        },
+      });
+      await this.invalidateLeadsCache(user.tenantId);
+      this.gateway.emitLeadUpdated(leadId, { responsavel_id: null }, user.tenantId);
+      return { id: leadId, sector_id: sectorId, responsavel_id: null, reason: result.reason };
+    }
+
+    const ownedInstance = await this.findOwnedInstance(result.userId, user.tenantId);
+    await this.prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        responsavel_id: result.userId,
+        // Novo responsável começa do zero (sem histórico do anterior).
+        assumed_at: new Date(),
+        is_private: false,
+        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+      },
+    });
+    await this.prisma.leadActivity.create({
+      data: {
+        lead_id: leadId,
+        user_id: user.id,
+        tipo: 'MOVED_TO_SECTOR',
+        descricao: `Movido para o setor ${sector.name} (round-robin)`,
+        dados_antes: { responsavel_id: lead.responsavel_id },
+        dados_depois: { sector_id: sectorId, responsavel_id: result.userId },
+        tenant_id: user.tenantId,
+      },
+    });
+    await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUpdated(
+      leadId,
+      { responsavel_id: result.userId, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
+      user.tenantId,
+    );
+    void this.push.sendToUsers([result.userId], {
+      title: 'Novo lead atribuido',
+      body: `${lead.nome} foi distribuido para voce (${sector.name})`,
+      url: `/leads/${leadId}`,
+      tag: `sector-${leadId}`,
+      data: { leadId, type: 'move-to-sector' },
+    });
+    return {
+      id: leadId,
+      sector_id: sectorId,
+      responsavel_id: result.userId,
+      instancia_whatsapp: ownedInstance?.nome,
+      reason: result.reason,
+    };
   }
 
   async returnToPool(leadId: string, user: AuthUser) {
