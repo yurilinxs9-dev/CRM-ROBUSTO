@@ -5,6 +5,7 @@ import { MessagesController } from './messages.controller';
 import { MessagesService } from './messages.service';
 import { MediaModule } from '../media/media.module';
 import { MessagesSendProcessor } from './messages.processor';
+import { MessagesRecoveryService } from './messages-recovery.service';
 import { MESSAGES_SEND_QUEUE } from './messages.queue';
 
 @Module({
@@ -14,10 +15,14 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
     BullModule.registerQueue({
       name: MESSAGES_SEND_QUEUE,
       defaultJobOptions: {
-        // attempts=2: send is non-idempotent on UazAPI side, so retries can
-        // duplicate messages on the customer's WhatsApp. The processor has an
-        // alreadySent() guard, but capping retries narrows the blast radius.
-        attempts: 2,
+        // attempts=4 com backoff exponencial (10s, 20s, 40s): cobre instabilidade
+        // curta da UazAPI (ex.: 503 momentâneo) sem ação humana. Envio não é
+        // idempotente, mas o guard alreadySent() do processor confere o
+        // whatsapp_message_id (vindo do echo webhook) antes de cada retry, então
+        // se a msg JÁ saiu o retry é abortado — não duplica no cliente.
+        // Falhas que sobrevivem às 4 tentativas viram FAILED e entram na
+        // varredura de recuperação (MessagesRecoveryService).
+        attempts: 4,
         backoff: { type: 'exponential', delay: 10_000 },
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
@@ -25,7 +30,7 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
     }),
   ],
   controllers: [MessagesController],
-  providers: [MessagesService, MessagesSendProcessor],
+  providers: [MessagesService, MessagesSendProcessor, MessagesRecoveryService],
   exports: [MessagesService],
 })
 export class MessagesModule {}

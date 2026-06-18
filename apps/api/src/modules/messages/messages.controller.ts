@@ -59,6 +59,13 @@ export class MessagesController {
     return this.messagesService.createInternalNote(body, req.user as AuthUser);
   }
 
+  // Reenvio manual de uma mensagem que falhou (botão "Reenviar" na bolha FAILED).
+  @Post(':id/resend')
+  @Roles(UserRole.OPERADOR)
+  resend(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.messagesService.resend(id, { user: req.user as AuthUser });
+  }
+
   @Get(':id/media')
   async getMedia(@Param('id') id: string, @Req() req: Record<string, unknown>, @Res() res: Response) {
     try {

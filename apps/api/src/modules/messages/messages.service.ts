@@ -13,7 +13,7 @@ import type { AuthUser } from '../../common/types/auth-user';
 import { firstValueFrom } from 'rxjs';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
-import { MessageType, SenderType } from '@prisma/client';
+import { MessageType, SenderType, Prisma } from '@prisma/client';
 import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
@@ -543,6 +543,122 @@ export class MessagesService {
     });
 
     return { ...message, media_url: signedUrl };
+  }
+
+  /**
+   * Reenfileira uma mensagem de saída que falhou (status FAILED, sem
+   * whatsapp_message_id). Reutiliza a MESMA linha de Message — não cria outra —
+   * então o histórico/ordem da conversa não muda. Usado por:
+   *   - botão "Reenviar" do atendente (ctx.user → checa permissão)
+   *   - varredura automática de recuperação (ctx.system → resolve instância viva)
+   *
+   * Idempotência: se a msg já saiu (tem wamid ou status SENT), aborta sem
+   * reenviar. O guard alreadySent() do processor é a segunda barreira.
+   */
+  async resend(messageId: string, ctx: { user?: AuthUser } = {}): Promise<{ id: string; status: string }> {
+    const msg = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!msg) throw new NotFoundException('Mensagem nao encontrada');
+    if (msg.direction !== 'OUTGOING' || msg.is_internal_note) {
+      throw new ForbiddenException('Apenas mensagens de saida podem ser reenviadas');
+    }
+    if (msg.whatsapp_message_id || msg.status === 'SENT') {
+      return { id: msg.id, status: 'already_sent' };
+    }
+
+    // Resolve instância + token. Manual: valida permissão do usuário; sistema:
+    // pega a instância viva do tenant (lead pode ter trocado de instância).
+    let token: string;
+    let instanceName: string;
+    let telefone: string;
+    if (ctx.user) {
+      const r = await this.resolveLeadAndToken(msg.lead_id, ctx.user);
+      token = r.token;
+      instanceName = r.instanceName;
+      telefone = r.lead.telefone;
+    } else {
+      const lead = await this.prisma.lead.findFirst({
+        where: { id: msg.lead_id, tenant_id: msg.tenant_id },
+        select: { telefone: true, instancia_whatsapp: true },
+      });
+      if (!lead) throw new NotFoundException('Lead nao encontrado');
+      const ctxResolved = await this.resolveSystemSendContext(msg.tenant_id, lead.instancia_whatsapp);
+      token = ctxResolved.token;
+      instanceName = ctxResolved.instanceName;
+      telefone = lead.telefone;
+    }
+
+    // Marca PENDING e incrementa o contador de reenvios (lido pela varredura).
+    const prevMeta = (msg.metadata && typeof msg.metadata === 'object')
+      ? (msg.metadata as Record<string, unknown>)
+      : {};
+    const resendCount = (typeof prevMeta.resend_count === 'number' ? prevMeta.resend_count : 0) + 1;
+    await this.prisma.message.update({
+      where: { id: msg.id },
+      data: {
+        status: 'PENDING',
+        metadata: { ...prevMeta, resend_count: resendCount, last_resend_at: new Date().toISOString() } as Prisma.InputJsonValue,
+      },
+    });
+
+    // Re-enfileira o job do tipo correto, reconstruindo o payload da própria row.
+    if (msg.type === MessageType.TEXT) {
+      await this.sendQueue.add('send-text', {
+        kind: 'text', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
+        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        content: msg.content ?? '',
+      });
+    } else if (msg.type === MessageType.AUDIO) {
+      const storagePath = msg.media_url ?? '';
+      const signedUrl = await this.media.getSignedUrl(storagePath, 3600);
+      await this.sendQueue.add('send-audio', {
+        kind: 'audio', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
+        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        storagePath, signedUrl, durationSeconds: msg.media_duration_seconds ?? undefined,
+      });
+    } else {
+      const storagePath = msg.media_url ?? '';
+      const signedUrl = await this.media.getSignedUrl(storagePath, 3600);
+      const mediaType: MediaKind =
+        msg.type === MessageType.IMAGE ? 'image'
+        : msg.type === MessageType.VIDEO ? 'video'
+        : 'document';
+      await this.sendQueue.add('send-media', {
+        kind: 'media', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
+        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        storagePath, signedUrl, mimetype: msg.media_mimetype ?? 'application/octet-stream',
+        mediaType, caption: msg.content ?? undefined, filename: msg.media_filename ?? undefined,
+      });
+    }
+
+    this.gateway.emitMessageStatusUpdate(msg.lead_id, msg.id, 'PENDING');
+    return { id: msg.id, status: 'PENDING' };
+  }
+
+  /**
+   * Resolve instância viva + token p/ reenvio em modo sistema (sem usuário).
+   * Prefere a instância atual do lead; se offline/ausente, cai em qualquer
+   * instância ativa do tenant (modo compartilhado).
+   */
+  private async resolveSystemSendContext(
+    tenantId: string,
+    leadInstanceName: string | null,
+  ): Promise<{ token: string; instanceName: string }> {
+    const liveStatuses = ['open', 'connected', 'connecting'];
+    let instance = leadInstanceName
+      ? await this.prisma.whatsappInstance.findFirst({ where: { nome: leadInstanceName, tenant_id: tenantId } })
+      : null;
+    if (!instance || !liveStatuses.includes(instance.status)) {
+      instance = await this.prisma.whatsappInstance.findFirst({
+        where: { tenant_id: tenantId, status: { in: liveStatuses } },
+        orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+      });
+    }
+    if (!instance || !liveStatuses.includes(instance.status)) {
+      throw new NotFoundException('Nenhuma instancia WhatsApp conectada para reenvio');
+    }
+    const cfg = (instance.config ?? {}) as InstanceConfig;
+    if (!cfg.uazapi_token) throw new NotFoundException('Token UazAPI ausente para a instancia');
+    return { token: cfg.uazapi_token, instanceName: instance.nome };
   }
 
   async streamMedia(messageId: string, user: AuthUser): Promise<{

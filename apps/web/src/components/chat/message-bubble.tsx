@@ -12,6 +12,7 @@ import {
   MapPin,
   NotebookPen,
   Reply,
+  RotateCw,
   User as UserIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -50,6 +51,22 @@ async function downloadMediaViaProxy(messageId: string, filename: string) {
     URL.revokeObjectURL(url);
   } catch (err) {
     console.error(`[Document] download failed for msg=${messageId}:`, err);
+  }
+}
+
+/** Reenfileira uma mensagem que falhou no envio. */
+async function resendMessage(messageId: string): Promise<boolean> {
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const res = await fetch(`/api/messages/${messageId}/resend`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      credentials: 'include',
+    });
+    return res.ok;
+  } catch (err) {
+    console.error(`[resend] failed for msg=${messageId}:`, err);
+    return false;
   }
 }
 
@@ -110,6 +127,7 @@ function MessageBubbleComponent({
   reactions,
 }: MessageBubbleProps) {
   const [imgOpen, setImgOpen] = useState(false);
+  const [resending, setResending] = useState(false);
   const outgoing = isOutgoingDir(message.direction);
   const note = message.is_internal_note;
   const type = (message.type ?? 'TEXT').toString().toUpperCase();
@@ -347,6 +365,29 @@ function MessageBubbleComponent({
           <span>{formatTime(message.created_at)}</span>
           {outgoing && <StatusIcon status={message.status} />}
         </div>
+
+        {/* Falha no envio: aviso + reenvio manual (rede de segurança além do
+            retry automático do backend). */}
+        {outgoing && message.status === 'FAILED' && (
+          <div className="mt-1 flex items-center justify-end gap-2 text-[10px] text-destructive">
+            <span>Não enviada</span>
+            <button
+              type="button"
+              disabled={resending}
+              onClick={async () => {
+                setResending(true);
+                const ok = await resendMessage(message.id);
+                // Sucesso → o status vira PENDING via WebSocket; mantém o botão
+                // travado até a atualização chegar. Falha → libera p/ tentar de novo.
+                if (!ok) setResending(false);
+              }}
+              className="flex items-center gap-1 rounded-full border border-destructive/40 px-2 py-0.5 font-medium transition hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <RotateCw size={11} className={resending ? 'animate-spin' : undefined} />
+              {resending ? 'Reenviando...' : 'Reenviar'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

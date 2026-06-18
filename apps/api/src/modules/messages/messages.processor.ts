@@ -141,15 +141,41 @@ export class MessagesSendProcessor extends WorkerHost {
   async onFailed(job: Job<SendMessageJobData>, err: Error): Promise<void> {
     const attempts = job.opts?.attempts ?? 3;
     if (job.attemptsMade >= attempts) {
-      this.logger.error(`[${job.name}] final failure ${job.id}: ${err.message}`);
+      const { status, code } = this.classifyError(err);
+      this.logger.error(`[${job.name}] final failure ${job.id}: ${err.message} (status=${status ?? '-'} code=${code ?? '-'})`);
+      // Preserva o resend_count que a varredura de recuperação grava na metadata;
+      // sem o merge, cada FAILED zeraria o contador e o reenvio nunca pararia.
+      const prev = await this.prisma.message
+        .findUnique({ where: { id: job.data.messageId }, select: { metadata: true } })
+        .catch(() => null);
+      const prevMeta = (prev?.metadata && typeof prev.metadata === 'object')
+        ? (prev.metadata as Record<string, unknown>)
+        : {};
       await this.prisma.message.update({
         where: { id: job.data.messageId },
-        data: { status: 'FAILED', metadata: { send_error: err.message } as Prisma.InputJsonValue },
+        data: {
+          status: 'FAILED',
+          metadata: {
+            ...prevMeta,
+            send_error: err.message,
+            send_error_status: status ?? null,
+            send_error_code: code ?? null,
+            failed_at: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
       }).catch((e: unknown) => this.logger.error(`failed to persist FAILED status: ${(e as Error).message}`));
       this.emitStatus(job.data.leadId, job.data.messageId, 'FAILED');
       // M4: invalidate list/history caches so UI reflects FAILED badge immediately.
       await this.invalidateCache(job.data.leadId, job.data.tenantId);
     }
+  }
+
+  /** Extrai status HTTP e código de rede do erro (axios) p/ classificar retry. */
+  private classifyError(err: unknown): { status: number | null; code: string | null } {
+    const e = err as { response?: { status?: number }; status?: number; code?: string };
+    const status = e?.response?.status ?? (typeof e?.status === 'number' ? e.status : null);
+    const code = typeof e?.code === 'string' ? e.code : null;
+    return { status: status ?? null, code };
   }
 
   /**
