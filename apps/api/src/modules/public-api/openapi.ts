@@ -373,9 +373,18 @@ export const openApiSpec = {
       post: {
         summary: 'Transferir conversa para um setor',
         description:
-          'Move a conversa para o setor informado e a distribui em round-robin entre os ' +
-          'agentes ativos do setor (mesma fila do recebimento automático). Se o setor não ' +
-          'tiver agentes ativos, a conversa fica sem responsável (em espera) — `status: "waiting"`.',
+          'Move a conversa para o setor informado e a distribui automaticamente entre os ' +
+          'agentes ativos do setor seguindo **round-robin** (fila circular justa, não ' +
+          'aleatória). A ordem é estável e o ponteiro da fila é persistido por setor — ' +
+          'chamadas manuais (esta rota) e o recebimento automático de novas conversas ' +
+          'avançam o MESMO ponteiro.\n\n' +
+          'Exemplo — setor "Atacado" com os agentes Adjaine e Romilda:\n' +
+          '1ª conversa → Adjaine · 2ª → Romilda · 3ª → Adjaine · 4ª → Romilda … e assim por diante.\n\n' +
+          'Se um agente for desativado no meio do rodízio, ele sai da fila e a próxima ' +
+          'conversa cai no próximo agente ativo. Se o setor não tiver NENHUM agente ativo, ' +
+          'a conversa fica sem responsável (em espera) e retorna `status: "waiting"` ' +
+          '(`responsavel_id: null`); caso contrário retorna `status: "assigned"` com o ' +
+          '`responsavel_id` do agente escolhido.',
         tags: ['Conversas'],
         security: [{ bearerAuth: ['conversations:write'] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
@@ -405,6 +414,26 @@ export const openApiSpec = {
                     sector_id: { type: 'string', format: 'uuid' },
                     responsavel_id: { type: 'string', format: 'uuid', nullable: true },
                     status: { type: 'string', enum: ['assigned', 'waiting'] },
+                  },
+                },
+                examples: {
+                  assigned: {
+                    summary: 'Distribuída em round-robin (ex.: caiu na Adjaine)',
+                    value: {
+                      conversation_id: '11111111-1111-1111-1111-111111111111',
+                      sector_id: '22222222-2222-2222-2222-222222222222',
+                      responsavel_id: '33333333-3333-3333-3333-333333333333',
+                      status: 'assigned',
+                    },
+                  },
+                  waiting: {
+                    summary: 'Setor sem agentes ativos — em espera',
+                    value: {
+                      conversation_id: '11111111-1111-1111-1111-111111111111',
+                      sector_id: '22222222-2222-2222-2222-222222222222',
+                      responsavel_id: null,
+                      status: 'waiting',
+                    },
                   },
                 },
               },
