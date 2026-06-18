@@ -316,6 +316,59 @@ export class InstancesService implements OnModuleInit {
     return { instanceName: nome, status: 'connecting' };
   }
 
+  // Importa uma instancia JA existente na UazAPI usando o token dela.
+  // Nao cria instancia nova nem registra webhook (pra nao roubar o webhook de
+  // outro sistema que use o mesmo numero — o fan-out fica a cargo do aggregator).
+  async importByToken(nome: string, uazapiToken: string, user: AuthUser) {
+    const nomeTrim = (nome ?? '').trim();
+    const token = (uazapiToken ?? '').trim();
+    const tokenRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!nomeTrim) throw new BadRequestException('Nome da instancia obrigatorio');
+    if (!tokenRe.test(token)) {
+      throw new BadRequestException('Token invalido. Cole o Instance Token da UazAPI (formato UUID).');
+    }
+
+    // Valida o token consultando o status. Token invalido => UazAPI responde 401.
+    const { data } = await firstValueFrom(
+      this.http.get<UazApiStatusResponse>(`${this.baseUrl}/instance/status`, {
+        headers: this.headers(token),
+      }),
+    );
+
+    const rawStatus = data.instance?.status ?? 'disconnected';
+    const statusMap: Record<string, string> = {
+      connected: 'open',
+      connecting: 'connecting',
+      disconnected: 'disconnected',
+    };
+    const status = statusMap[rawStatus] ?? rawStatus;
+    const jid = data.status?.jid ?? null;
+    const telefone = jid ? jid.split('@')[0].split(':')[0] : undefined;
+
+    const existing = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: nomeTrim, tenant_id: user.tenantId },
+    });
+    if (existing) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: existing.id },
+        data: { status, config: { uazapi_token: token }, ...(telefone ? { telefone } : {}) },
+      });
+    } else {
+      await this.prisma.whatsappInstance.create({
+        data: {
+          nome: nomeTrim,
+          status,
+          config: { uazapi_token: token },
+          owner_user_id: user.id,
+          tenant_id: user.tenantId,
+          ...(telefone ? { telefone } : {}),
+        },
+      });
+    }
+
+    return { instanceName: nomeTrim, status };
+  }
+
   async getQrCode(nome: string, user: AuthUser) {
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(

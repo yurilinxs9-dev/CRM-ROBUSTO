@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, MessageCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { Plus, MessageCircle, AlertTriangle, Loader2, KeyRound } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { api } from '@/lib/api';
@@ -30,8 +30,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 const NO_SECTOR = '__none__';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface QrResponse {
   qrcode?: { base64?: string };
@@ -45,6 +48,11 @@ export default function InstancesPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [qrTarget, setQrTarget] = useState<string | null>(null);
   const [qrBase64, setQrBase64] = useState<string | null>(null);
+
+  // Importar por token (avançado / discreto)
+  const [tokenOpen, setTokenOpen] = useState(false);
+  const [tokenNome, setTokenNome] = useState('');
+  const [tokenValue, setTokenValue] = useState('');
 
   const { data: instances = [], isLoading } = useQuery<InstanceCardData[]>({
     queryKey: ['instances'],
@@ -83,6 +91,21 @@ export default function InstancesPage() {
       void fetchQr(target);
     },
     onError: () => toast.error('Erro ao criar instância'),
+  });
+
+  const importMutation = useMutation({
+    mutationFn: async (vars: { nome: string; uazapi_token: string }) => {
+      const { data } = await api.post('/api/instances/import-token', vars);
+      return data as InstanceCardData;
+    },
+    onSuccess: () => {
+      toast.success('Instância importada');
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+      setTokenOpen(false);
+      setTokenNome('');
+      setTokenValue('');
+    },
+    onError: () => toast.error('Token inválido ou instância não encontrada'),
   });
 
   const reconnectMutation = useMutation({
@@ -226,10 +249,19 @@ export default function InstancesPage() {
         title="Instâncias WhatsApp"
         subtitle="Gerencie as conexões do WhatsApp"
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            Nova Instância
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              Nova Instância
+            </Button>
+            <button
+              type="button"
+              onClick={() => setTokenOpen(true)}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <KeyRound className="h-3 w-3" /> Conectar por token
+            </button>
+          </div>
         }
       />
 
@@ -342,6 +374,51 @@ export default function InstancesPage() {
             >
               {deleteMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Excluir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={tokenOpen} onOpenChange={setTokenOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Conectar por token</DialogTitle>
+            <DialogDescription>
+              Para um número já conectado na UazAPI. Cole o Instance Token — não lê QR e não altera o webhook existente.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="token-nome">Nome da instância</Label>
+              <Input
+                id="token-nome"
+                value={tokenNome}
+                onChange={(e) => setTokenNome(e.target.value)}
+                placeholder="ex: numero-adler"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="token-value">Instance Token</Label>
+              <Input
+                id="token-value"
+                value={tokenValue}
+                onChange={(e) => setTokenValue(e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">Painel UazAPI → instância → Instance Token</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTokenOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => importMutation.mutate({ nome: tokenNome.trim(), uazapi_token: tokenValue.trim() })}
+              disabled={importMutation.isPending || !tokenNome.trim() || !UUID_RE.test(tokenValue.trim())}
+            >
+              {importMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Importar
             </Button>
           </DialogFooter>
         </DialogContent>

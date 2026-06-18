@@ -25,6 +25,16 @@ export class InstancesController {
     return this.instancesService.create(nome, req.user as AuthUser);
   }
 
+  @Post('import-token')
+  @Roles(UserRole.GERENTE)
+  importByToken(
+    @Body('nome') nome: string,
+    @Body('uazapi_token') uazapiToken: string,
+    @Req() req: Record<string, unknown>,
+  ) {
+    return this.instancesService.importByToken(nome, uazapiToken, req.user as AuthUser);
+  }
+
   @Get(':nome/qr')
   @Roles(UserRole.OPERADOR)
   getQrCode(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
