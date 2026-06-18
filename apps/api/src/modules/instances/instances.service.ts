@@ -351,14 +351,14 @@ export class InstancesService implements OnModuleInit {
     if (existing) {
       await this.prisma.whatsappInstance.update({
         where: { id: existing.id },
-        data: { status, config: { uazapi_token: token }, ...(telefone ? { telefone } : {}) },
+        data: { status, config: { uazapi_token: token, imported: true }, ...(telefone ? { telefone } : {}) },
       });
     } else {
       await this.prisma.whatsappInstance.create({
         data: {
           nome: nomeTrim,
           status,
-          config: { uazapi_token: token },
+          config: { uazapi_token: token, imported: true },
           owner_user_id: user.id,
           tenant_id: user.tenantId,
           ...(telefone ? { telefone } : {}),
@@ -546,7 +546,7 @@ export class InstancesService implements OnModuleInit {
     const cfg = (instance.config ?? {}) as InstanceConfig;
     const token = cfg.uazapi_token;
 
-    if (token) {
+    if (token && !cfg.imported) {
       await firstValueFrom(
         this.http.delete(`${this.baseUrl}/instance`, {
           headers: { ...this.adminHeaders(), ...this.headers(token) },
