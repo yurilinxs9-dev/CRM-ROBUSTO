@@ -18,6 +18,10 @@ export const updateStatusSchema = z.object({
   status: z.string().min(1),
 });
 
+export const moveToSectorSchema = z.object({
+  sector_id: z.string().uuid({ message: 'sector_id deve ser um UUID válido' }),
+});
+
 export const addTagsSchema = z.object({
   tags: z.array(z.string().min(1).max(50)).min(1).max(20),
 });

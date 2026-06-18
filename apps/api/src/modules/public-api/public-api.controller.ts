@@ -131,4 +131,18 @@ export class PublicApiController {
   addTags(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
     return this.svc.addTags(this.tenantId(req), id, body);
   }
+
+  // 2.5 — Listar setores do tenant (para descobrir o sector_id)
+  @Get('sectors')
+  @RequireScopes('conversations:read')
+  listSectors(@Req() req: ApiRequest) {
+    return this.svc.listSectors(this.tenantId(req));
+  }
+
+  // 2.6 — Transferir conversa para um setor (round-robin entre os agentes ativos)
+  @Post('conversations/:id/sector')
+  @RequireScopes('conversations:write')
+  moveToSector(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
+    return this.svc.moveToSector(this.tenantId(req), id, body);
+  }
 }

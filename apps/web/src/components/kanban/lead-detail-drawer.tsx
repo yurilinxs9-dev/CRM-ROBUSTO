@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2, Undo2 } from 'lucide-react';
+import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2, Undo2, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
@@ -46,6 +46,12 @@ interface Tag {
   id: string;
   nome: string;
   cor: string;
+}
+
+interface Sector {
+  id: string;
+  name: string;
+  active: boolean;
 }
 
 interface LeadDetail {
@@ -154,6 +160,16 @@ export function LeadDetailDrawer({
     refetchOnMount: 'always',
   });
 
+  // Setores ativos do tenant (popular o dropdown "Transferir para setor").
+  const { data: sectors = [] } = useQuery<Sector[]>({
+    queryKey: ['sectors'],
+    queryFn: async () => {
+      const res = await api.get('/api/sectors');
+      return res.data as Sector[];
+    },
+    enabled: open,
+  });
+
   // ---- Form state ----
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
@@ -213,6 +229,21 @@ export function LeadDetailDrawer({
     onError: () => toast.error('Erro ao transferir lead.'),
   });
 
+  // Move a conversa para um setor — o backend faz round-robin entre os agentes
+  // ativos daquele setor (mesma fila do webhook de entrada).
+  const moveToSectorMutation = useMutation({
+    mutationFn: async (sectorId: string) => {
+      await api.post(`/api/leads/${leadId}/move-to-sector`, { sectorId });
+    },
+    onSuccess: () => {
+      toast.success('Lead transferido para o setor.');
+      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
+    },
+    onError: () => toast.error('Erro ao transferir lead para o setor.'),
+  });
+
   const returnToPoolMutation = useMutation({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/return-to-pool`); },
     onSuccess: () => {
@@ -257,6 +288,29 @@ export function LeadDetailDrawer({
       toast.error('Erro ao atualizar lead.');
     },
   });
+
+  // Bloco reutilizado: "Transferir para setor" (só aparece se houver setores).
+  const sectorSelect = sectors.length > 0 && (
+    <div className="space-y-1.5">
+      <Label className="flex items-center gap-1">
+        <Layers className="h-3 w-3" />
+        Transferir para setor
+      </Label>
+      <Select
+        disabled={moveToSectorMutation.isPending}
+        onValueChange={(v) => moveToSectorMutation.mutate(v)}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="Selecionar setor..." />
+        </SelectTrigger>
+        <SelectContent>
+          {sectors.map((s) => (
+            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
 
   // ---- Render ----
   return (
@@ -448,6 +502,7 @@ export function LeadDetailDrawer({
                           </Select>
                         </div>
                       )}
+                      {(currentUser?.role === 'GERENTE' || currentUser?.role === 'SUPER_ADMIN') && sectorSelect}
                     </div>
                   ) : (
                     (() => {
@@ -485,6 +540,7 @@ export function LeadDetailDrawer({
                               </Select>
                             </div>
                           )}
+                          {canReassign && sectorSelect}
                           {canReassign && (
                             <Button
                               variant="outline"

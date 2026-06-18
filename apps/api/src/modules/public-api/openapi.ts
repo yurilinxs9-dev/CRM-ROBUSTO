@@ -333,5 +333,87 @@ export const openApiSpec = {
         },
       },
     },
+    '/sectors': {
+      get: {
+        summary: 'Listar setores',
+        description:
+          'Retorna os setores ativos do tenant. Use o `id` retornado como `sector_id` ' +
+          'ao transferir uma conversa para um setor.',
+        tags: ['Setores'],
+        security: [{ bearerAuth: ['conversations:read'] }],
+        responses: {
+          '200': {
+            description: 'Lista de setores ativos',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    data: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'string', format: 'uuid' },
+                          name: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': errResp('Token ausente/inválido'),
+          '403': errResp('Escopo insuficiente'),
+        },
+      },
+    },
+    '/conversations/{id}/sector': {
+      post: {
+        summary: 'Transferir conversa para um setor',
+        description:
+          'Move a conversa para o setor informado e a distribui em round-robin entre os ' +
+          'agentes ativos do setor (mesma fila do recebimento automático). Se o setor não ' +
+          'tiver agentes ativos, a conversa fica sem responsável (em espera) — `status: "waiting"`.',
+        tags: ['Conversas'],
+        security: [{ bearerAuth: ['conversations:write'] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['sector_id'],
+                properties: {
+                  sector_id: { type: 'string', format: 'uuid', description: 'ID do setor (ver GET /sectors)' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Conversa movida',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    conversation_id: { type: 'string', format: 'uuid' },
+                    sector_id: { type: 'string', format: 'uuid' },
+                    responsavel_id: { type: 'string', format: 'uuid', nullable: true },
+                    status: { type: 'string', enum: ['assigned', 'waiting'] },
+                  },
+                },
+              },
+            },
+          },
+          '400': errResp('Setor inválido, inativo ou de outro tenant'),
+          '404': errResp('Conversa não encontrada'),
+        },
+      },
+    },
   },
 } as const;

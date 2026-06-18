@@ -7,6 +7,7 @@ import {
 import { ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
+import { LeadsService } from '../leads/leads.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
@@ -15,6 +16,7 @@ import {
   createContactSchema,
   listContactsQuerySchema,
   listConversationsQuerySchema,
+  moveToSectorSchema,
   sendConversationSchema,
   updateContactSchema,
   updateStatusSchema,
@@ -51,6 +53,7 @@ export class PublicApiService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly messages: MessagesService,
+    private readonly leads: LeadsService,
     private readonly gateway: CrmGateway,
   ) {}
 
@@ -341,6 +344,44 @@ export class PublicApiService {
     this.gateway.emitLeadUpdated(conversationId, { tags: merged }, tenantId);
 
     return { conversation_id: conversationId, tags: merged };
+  }
+
+  // ---- Setores --------------------------------------------------------------
+
+  /** Lista os setores ativos do tenant (para descobrir o sector_id). */
+  async listSectors(tenantId: string) {
+    const sectors = await this.prisma.sector.findMany({
+      where: { tenant_id: tenantId, active: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+    });
+    return { data: sectors };
+  }
+
+  /**
+   * Move a conversa (lead) para um setor. Reusa LeadsService.moveToSector —
+   * mesma esteira do app interno: round-robin entre os agentes ativos do setor
+   * (compartilha o ponteiro da fila com o webhook de entrada). Setor sem agentes
+   * ativos → lead fica em espera no pool.
+   */
+  async moveToSector(tenantId: string, conversationId: string, body: unknown) {
+    const { sector_id } = moveToSectorSchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: conversationId, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Conversa não encontrada.');
+
+    const actor = await this.ownerActor(tenantId);
+    const result = await this.leads.moveToSector(conversationId, { sectorId: sector_id }, actor);
+
+    return {
+      conversation_id: conversationId,
+      sector_id: result.sector_id,
+      responsavel_id: result.responsavel_id,
+      status: result.responsavel_id ? 'assigned' : 'waiting',
+    };
   }
 
   // ---- Helpers --------------------------------------------------------------
