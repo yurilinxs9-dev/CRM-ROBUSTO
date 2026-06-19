@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Queue } from 'bullmq';
 import { Request } from 'express';
 import * as crypto from 'node:crypto';
@@ -28,6 +29,7 @@ const webhookSchema = z.object({
   data: z.unknown().optional(),
 }).passthrough();
 
+@SkipThrottle()
 @Controller('webhook')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
