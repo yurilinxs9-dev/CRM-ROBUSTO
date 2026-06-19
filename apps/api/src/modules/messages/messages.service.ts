@@ -186,12 +186,18 @@ export class MessagesService {
         }
       }
     } else {
-      // Modo Individual: prefere instância do lead se for do user.
-      instance = instanceOfLead && instanceOfLead.owner_user_id === user.id
+      // Modo Individual: prefere instância do lead se for do user E estiver viva.
+      const ofLead = instanceOfLead && instanceOfLead.owner_user_id === user.id
         ? instanceOfLead
         : null;
-      // Auto-swap: user é responsável mas instância do lead não é dele.
-      if (!instance && lead.responsavel_id === user.id) {
+      instance = ofLead && liveStatuses.includes(ofLead.status) ? ofLead : null;
+      // Auto-swap: instância do lead morta/ausente — cai pra uma instância viva
+      // do user. Responsável faz swap; gerente/super-admin também (já passaram
+      // o gate de acesso acima).
+      const canSwap = lead.responsavel_id === user.id
+        || user.role === UserRole.GERENTE
+        || user.role === UserRole.SUPER_ADMIN;
+      if (!instance && canSwap) {
         const own = await this.prisma.whatsappInstance.findFirst({
           where: {
             tenant_id: user.tenantId,
