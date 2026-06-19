@@ -388,6 +388,50 @@ export function ApiDocs() {
         </div>
       </section>
 
+      {/* Endpoints — Setores (round-robin) */}
+      <section className="space-y-2">
+        <h4 className="font-semibold text-base">Setores & distribuição</h4>
+        <p className="text-xs text-muted-foreground">
+          Transfira uma conversa para um setor (ex.: <strong>Atacado</strong> / <strong>Varejo</strong>).
+          A conversa é distribuída automaticamente entre os agentes ativos do setor em fila
+          circular (round-robin): 1º lead → agente A, 2º → agente B, 3º → agente A, e assim por
+          diante. Se o setor não tiver agente ativo, a conversa fica em espera no pool
+          (<code className="bg-secondary px-1 rounded">status: waiting</code>).
+        </p>
+        <div className="space-y-2">
+          <Endpoint
+            method="GET"
+            path="/sectors"
+            scope="conversations:read"
+            desc="Lista os setores ativos do workspace. Use o id retornado como sector_id na transferência."
+            curl={`curl ${BASE}/sectors \\
+  -H "Authorization: Bearer crmk_..."`}
+            response={`{
+  "data": [
+    { "id": "uuid-atacado", "name": "Atacado" },
+    { "id": "uuid-varejo",  "name": "Varejo" }
+  ]
+}`}
+          />
+          <Endpoint
+            method="POST"
+            path="/conversations/:id/sector"
+            scope="conversations:write"
+            desc="Move a conversa para o setor e atribui um agente por round-robin entre os agentes ativos. :id = conversation_id (id do contato). responsavel_id na resposta indica o agente sorteado."
+            curl={`curl -X POST ${BASE}/conversations/UUID/sector \\
+  -H "Authorization: Bearer crmk_..." \\
+  -H "Content-Type: application/json" \\
+  -d '{ "sector_id": "uuid-atacado" }'`}
+            response={`{
+  "conversation_id": "uuid",
+  "sector_id": "uuid-atacado",
+  "responsavel_id": "uuid-do-agente",
+  "status": "assigned"   // "waiting" se o setor não tiver agente ativo
+}`}
+          />
+        </div>
+      </section>
+
       {/* Boas práticas */}
       <section className="space-y-2">
         <h4 className="font-semibold text-base">Boas práticas</h4>
