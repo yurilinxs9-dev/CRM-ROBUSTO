@@ -25,6 +25,9 @@ const leadsListPattern = (tenantId: string) => `leads:list:${tenantId}:*`;
 
 interface InstanceConfig {
   uazapi_token?: string;
+  provider?: 'uazapi' | 'evolution';
+  evolution_token?: string;
+  evolution_base_url?: string;
   [key: string]: unknown;
 }
 
@@ -1265,18 +1268,32 @@ export class LeadsService {
     if (lead.instancia_whatsapp) {
       const instance = await this.prisma.whatsappInstance.findFirst({
         where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
-        select: { config: true },
+        select: { config: true, nome: true },
       });
       const cfg = (instance?.config ?? {}) as InstanceConfig;
-      const token = cfg.uazapi_token;
-      if (token) {
-        this.instances
-          .markChatRead(token, lead.telefone, messageIds)
-          .catch((err: unknown) =>
-            this.logger.warn(
-              `markChatRead UazAPI falhou lead=${leadId}: ${String(err)}`,
-            ),
-          );
+      if (cfg.provider === 'evolution') {
+        const apikey = cfg.evolution_token;
+        const baseUrl = cfg.evolution_base_url || process.env['EVOLUTION_BASE_URL'] || '';
+        if (apikey && baseUrl && instance) {
+          this.instances
+            .markChatReadEvolution(baseUrl, apikey, instance.nome, lead.telefone, messageIds)
+            .catch((err: unknown) =>
+              this.logger.warn(
+                `markChatRead Evolution falhou lead=${leadId}: ${String(err)}`,
+              ),
+            );
+        }
+      } else {
+        const token = cfg.uazapi_token;
+        if (token) {
+          this.instances
+            .markChatRead(token, lead.telefone, messageIds)
+            .catch((err: unknown) =>
+              this.logger.warn(
+                `markChatRead UazAPI falhou lead=${leadId}: ${String(err)}`,
+              ),
+            );
+        }
       }
     }
   }

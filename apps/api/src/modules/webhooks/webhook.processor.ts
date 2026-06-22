@@ -112,6 +112,10 @@ export class WebhookProcessor extends WorkerHost {
         case 'contacts.upsert':
           await this.handleContactsUpsert(job.data);
           break;
+        case 'chats.update':
+        case 'chats.upsert':
+          await this.handleChatsUpdate(job.data);
+          break;
         case 'uazapi.messages':
         case 'uazapi.message':
           await this.handleUazapiMessage(job.data);
@@ -1196,6 +1200,54 @@ export class WebhookProcessor extends WorkerHost {
         },
         data: { nome },
       });
+    }
+  }
+
+  /**
+   * Evolution `chats.update`/`chats.upsert`: o WhatsApp avisa quando o estado de
+   * leitura de um chat muda. Quando o operador lê a conversa no CELULAR (app
+   * oficial), `unreadCount` cai a 0 — refletimos isso zerando as não-lidas no
+   * CRM e marcando as INCOMING como READ, pra não ficar "não lida" no CRM depois
+   * de já ter lido no celular (sincronização bidirecional do badge). Só agimos
+   * quando unreadCount=0; valores >0 já são cobertos pelo fluxo de mensagem.
+   */
+  private async handleChatsUpdate(data: Obj) {
+    const instanceName = data?.instance as string | undefined;
+    const instance = await this.findEvolutionInstanceByName(instanceName);
+    if (!instance) return;
+
+    const raw = data?.data;
+    const chats = (Array.isArray(raw) ? raw : [raw]) as Array<Obj | undefined>;
+    for (const chat of chats) {
+      if (!chat) continue;
+      const remoteJid =
+        (chat.remoteJid as string | undefined) ?? (chat.id as string | undefined);
+      if (!remoteJid || remoteJid.includes('@g.us')) continue;
+
+      // unreadCount pode vir ausente (update parcial sem leitura) — só zeramos
+      // quando explicitamente 0.
+      const unread = chat.unreadCount;
+      const isRead = unread === 0 || unread === '0';
+      if (!isRead) continue;
+
+      const phone = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+      if (!phone) continue;
+      const lead = await this.prisma.lead.findFirst({
+        where: { telefone: phone, tenant_id: instance.tenant_id },
+        select: { id: true, mensagens_nao_lidas: true },
+      });
+      if (!lead || lead.mensagens_nao_lidas === 0) continue;
+
+      await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: { mensagens_nao_lidas: 0 },
+      });
+      await this.prisma.message.updateMany({
+        where: { lead_id: lead.id, direction: 'INCOMING', status: { not: 'READ' } },
+        data: { status: 'READ' },
+      });
+      if (instance.tenant_id) await this.leadsService.invalidateLeadsCache(instance.tenant_id);
+      this.gateway.emitLeadUnreadReset(lead.id, instance.tenant_id);
     }
   }
 }

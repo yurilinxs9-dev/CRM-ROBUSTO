@@ -397,7 +397,14 @@ export class InstancesService implements OnModuleInit {
   }
 
   private evoEvents(): string[] {
-    return ['MESSAGES_UPSERT', 'MESSAGES_UPDATE', 'CONNECTION_UPDATE', 'CONTACTS_UPSERT'];
+    return [
+      'MESSAGES_UPSERT',
+      'MESSAGES_UPDATE',
+      'CONNECTION_UPDATE',
+      'CONTACTS_UPSERT',
+      // CHATS_UPDATE: leitura no celular zera unreadCount → sincroniza badge no CRM.
+      'CHATS_UPDATE',
+    ];
   }
 
   /**
@@ -685,6 +692,39 @@ export class InstancesService implements OnModuleInit {
       ),
     ).catch((err: unknown) => {
       this.logger.warn(`chat/read falhou number=${number}: ${String(err)}`);
+      return null;
+    });
+  }
+
+  /**
+   * Manda read-receipt (check azul + zera não-lidas no celular) pro WhatsApp via
+   * Evolution. Sem isso, ler/responder no CRM não desmarca a conversa no app
+   * oficial — o operador via "não lida" no celular mesmo já tendo respondido.
+   *
+   * Evolution v2: POST /chat/markMessageAsRead/{instance} com
+   * { readMessages: [{ remoteJid, fromMe, id }] }. As msgs são as INCOMING do
+   * cliente (fromMe=false), remoteJid = numero@s.whatsapp.net.
+   */
+  async markChatReadEvolution(
+    baseUrl: string,
+    apikey: string,
+    instanceName: string,
+    number: string,
+    messageIds: string[],
+  ): Promise<void> {
+    if (!apikey || !number || messageIds.length === 0) return;
+    const remoteJid = `${number}@s.whatsapp.net`;
+    const readMessages = messageIds.map((id) => ({ remoteJid, fromMe: false, id }));
+    await firstValueFrom(
+      this.http.post(
+        `${baseUrl}/chat/markMessageAsRead/${instanceName}`,
+        { readMessages },
+        { headers: this.evoHeaders(apikey), timeout: 10000 },
+      ),
+    ).catch((err: unknown) => {
+      this.logger.warn(
+        `markMessageAsRead Evolution falhou inst=${instanceName} number=${number}: ${String(err)}`,
+      );
       return null;
     });
   }
