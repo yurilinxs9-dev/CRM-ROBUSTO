@@ -59,6 +59,11 @@ export class PlatformAdminController {
     return this.svc.deleteUser(this.user(req), id);
   }
 
+  @Delete('tenants/:id')
+  deleteTenant(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.deleteTenant(this.user(req), id);
+  }
+
   @Patch('tenants/:id/suspend')
   suspendTenant(@Param('id') id: string, @Body() body: { suspended: boolean }, @Req() req: Request) {
     return this.svc.setTenantSuspended(this.user(req), id, !!body?.suspended);

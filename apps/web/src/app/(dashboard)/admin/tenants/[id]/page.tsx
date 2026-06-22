@@ -67,6 +67,11 @@ export default function AdminTenantDetailPage() {
     onSuccess: (_d, suspended) => { toast.success(suspended ? 'Workspace suspenso' : 'Workspace reativado'); invalidate(); },
     onError: () => toast.error('Falha ao suspender'),
   });
+  const deleteTenant = useMutation({
+    mutationFn: async () => api.delete(`/api/platform-admin/tenants/${id}`),
+    onSuccess: () => { toast.success('Cliente excluído'); router.push('/admin/tenants'); },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao excluir'),
+  });
 
   if (isLoading || !data) {
     return <div className="space-y-3"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full rounded-xl" /></div>;
@@ -102,19 +107,39 @@ export default function AdminTenantDetailPage() {
             <CopyId value={data.id} label="Tenant ID:" full />
           </div>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-8 text-xs"
-          disabled={suspendTenant.isPending}
-          onClick={() => {
-            if (confirm(suspended ? `Reativar workspace "${data.nome}"?` : `Suspender "${data.nome}"? Todos os usuários ficam sem acesso.`)) {
-              suspendTenant.mutate(!suspended);
-            }
-          }}
-        >
-          <Power className="mr-1 h-3.5 w-3.5" /> {suspended ? 'Reativar workspace' : 'Suspender workspace'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={suspendTenant.isPending}
+            onClick={() => {
+              if (confirm(suspended ? `Reativar workspace "${data.nome}"?` : `Suspender "${data.nome}"? Todos os usuários ficam sem acesso.`)) {
+                suspendTenant.mutate(!suspended);
+              }
+            }}
+          >
+            <Power className="mr-1 h-3.5 w-3.5" /> {suspended ? 'Reativar workspace' : 'Suspender workspace'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs border-red-500/40 text-red-500 hover:bg-red-500/10"
+            disabled={deleteTenant.isPending}
+            onClick={() => {
+              const typed = window.prompt(
+                `EXCLUSÃO TOTAL e irreversível de "${data.nome}":\n` +
+                  `${numberFmt.format(data.counts.users)} usuário(s), ${numberFmt.format(data.counts.leads)} lead(s), ${numberFmt.format(data.counts.messages)} mensagem(ns) e ${data.instances.length} instância(s) serão apagados.\n\n` +
+                  `Para confirmar, digite o nome do cliente:`,
+              );
+              if (typed === null) return;
+              if (typed.trim() !== data.nome.trim()) { toast.error('Nome não confere — exclusão cancelada'); return; }
+              deleteTenant.mutate();
+            }}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" /> Excluir cliente
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
