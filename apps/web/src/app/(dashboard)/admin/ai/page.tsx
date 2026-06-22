@@ -214,7 +214,7 @@ export default function AdminAiPage() {
             </div>
             <div>
               <Label>Model ID</Label>
-              <Input value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} placeholder={form.provider === 'anthropic' ? 'claude-opus-4-8' : 'gpt-4o ou meta-llama/...'} autoComplete="off" />
+              <Input value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} placeholder={form.provider === 'anthropic' ? 'claude-haiku-4-5 (mais barato)' : 'gpt-4o ou meta-llama/...'} autoComplete="off" />
             </div>
             <div>
               <Label>Base URL <span style={{ color: 'var(--text-muted)' }}>(opcional)</span></Label>
