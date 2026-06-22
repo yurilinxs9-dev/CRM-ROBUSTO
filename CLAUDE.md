@@ -6,7 +6,7 @@
 - DB: Supabase PostgreSQL + Storage
 - ORM: Prisma (SEMPRE usar directUrl para migrations)
 - Filas: BullMQ + Redis (container crm-redis)
-- WhatsApp: UazAPI (Baileys-compatible payloads)
+- WhatsApp: multi-provider por instância (`config.provider`). UazAPI **e** Evolution API v2 (self-hosted, Baileys) — fallback/troca sem deploy. Envio: `messages.processor` branch por provider; recebimento: `webhook.processor` já trata eventos Evolution (`messages.upsert` etc.) e UazAPI. Inbound extractor `extractFromEvolution` já existia (CRM nasceu em Evolution). Env: `EVOLUTION_BASE_URL`, `EVOLUTION_API_KEY`. Deploy do gateway: `deploy/evolution/`.
 - IA: módulo `ai/` provider-agnóstico (Anthropic SDK + OpenAI-compatible); modelos platform-scoped (super admin), chaves cifradas AES-256-GCM (`AI_ENCRYPTION_KEY`)
 
 ## Regras CRITICAS

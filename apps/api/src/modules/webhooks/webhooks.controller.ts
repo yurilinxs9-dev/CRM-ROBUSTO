@@ -87,6 +87,33 @@ export class WebhooksController {
   }
 
   @Public()
+  @Post('evolution')
+  async handleEvolution(@Body() body: unknown) {
+    const payload = webhookSchema.parse(body);
+
+    // Evolution v2 envia { event: 'messages.upsert' | 'connection.update' | ...,
+    // instance, data }. Os handlers Evolution do WebhookProcessor já tratam
+    // esses nomes de evento crus — basta enfileirar como wppconnect faz.
+    const tenantId = await this.resolveTenantByInstanceName(payload.instance ?? null);
+
+    await this.prisma.webhookLog.create({
+      data: {
+        event: payload.event,
+        instance: payload.instance,
+        payload: JSON.parse(JSON.stringify(payload)),
+        processed: false,
+        tenant_id: tenantId,
+      },
+    });
+
+    await this.webhookQueue.add(payload.event, payload, {
+      jobId: `${payload.event}-${Date.now()}-${Math.random()}`,
+    });
+
+    return { received: true };
+  }
+
+  @Public()
   @Post('uazapi')
   async handleUazapi(@Body() body: unknown) {
     const payload = (body ?? {}) as Record<string, unknown>;

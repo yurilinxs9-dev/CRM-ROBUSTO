@@ -45,11 +45,17 @@ export class MessagesSendProcessor extends WorkerHost {
       this.logger.warn(`[handleText] skipping retry — message ${d.messageId} already delivered`);
       return;
     }
-    const res = await firstValueFrom(this.http.post<Record<string, unknown>>(
-      `${d.uazBaseUrl}/send/text`,
-      { number: d.telefone, text: d.content },
-      { headers: { token: d.uazToken } },
-    ));
+    const res = d.provider === 'evolution'
+      ? await firstValueFrom(this.http.post<Record<string, unknown>>(
+          `${d.evoBaseUrl}/message/sendText/${d.instanceName}`,
+          { number: d.telefone, text: d.content },
+          { headers: { apikey: d.evoApiKey } },
+        ))
+      : await firstValueFrom(this.http.post<Record<string, unknown>>(
+          `${d.uazBaseUrl}/send/text`,
+          { number: d.telefone, text: d.content },
+          { headers: { token: d.uazToken } },
+        ));
     const waId = this.extractWhatsappMessageId(res.data);
     await this.prisma.message.update({
       where: { id: d.messageId },
@@ -67,6 +73,26 @@ export class MessagesSendProcessor extends WorkerHost {
     }
     // Re-sign URL in case the queue delay outran the signature TTL.
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
+
+    // Evolution: PTT via /message/sendWhatsAppAudio com base64 puro. O próprio
+    // Evolution transcodifica p/ opus + gera o waveform/PTT (encoding:true).
+    if (d.provider === 'evolution') {
+      const b64 = await this.fetchAsBase64(freshUrl);
+      const res = await firstValueFrom(this.http.post<Record<string, unknown>>(
+        `${d.evoBaseUrl}/message/sendWhatsAppAudio/${d.instanceName}`,
+        { number: d.telefone, audio: b64, encoding: true },
+        { headers: { apikey: d.evoApiKey } },
+      ));
+      const waId = this.extractWhatsappMessageId(res.data);
+      await this.prisma.message.update({
+        where: { id: d.messageId },
+        data: { status: 'SENT', whatsapp_message_id: waId },
+      });
+      this.emitStatus(d.leadId, d.messageId, 'SENT');
+      await this.invalidateCache(d.leadId, d.tenantId);
+      return;
+    }
+
     // UazAPI gera streamingSidecar quando recebe ogg/opus encoded com
     // -vbr on + mimetype completo (`audio/ogg; codecs=opus`). Sidecar e o
     // que da o visual PTT (mic preto + onda) e a reproducao no celular.
@@ -122,12 +148,31 @@ export class MessagesSendProcessor extends WorkerHost {
       return;
     }
     const freshUrl = await this.media.getSignedUrl(d.storagePath, 3600);
-    const body: Record<string, unknown> = { number: d.telefone, type: d.mediaType, file: freshUrl };
-    if (d.caption)  body['text'] = d.caption;    // UazAPI uses 'text' for caption
-    if (d.filename) body['docName'] = d.filename;
-    const res = await firstValueFrom(this.http.post<Record<string, unknown>>(
-      `${d.uazBaseUrl}/send/media`, body, { headers: { token: d.uazToken } },
-    ));
+
+    let res: { data: Record<string, unknown> };
+    if (d.provider === 'evolution') {
+      // Evolution: /message/sendMedia aceita URL no campo `media`. mediatype
+      // ∈ image|video|document (áudio sai por handleAudio).
+      const evoBody: Record<string, unknown> = {
+        number: d.telefone,
+        mediatype: d.mediaType,
+        mimetype: d.mimetype,
+        media: freshUrl,
+      };
+      if (d.caption)  evoBody['caption'] = d.caption;
+      if (d.filename) evoBody['fileName'] = d.filename;
+      res = await firstValueFrom(this.http.post<Record<string, unknown>>(
+        `${d.evoBaseUrl}/message/sendMedia/${d.instanceName}`, evoBody,
+        { headers: { apikey: d.evoApiKey } },
+      ));
+    } else {
+      const body: Record<string, unknown> = { number: d.telefone, type: d.mediaType, file: freshUrl };
+      if (d.caption)  body['text'] = d.caption;    // UazAPI uses 'text' for caption
+      if (d.filename) body['docName'] = d.filename;
+      res = await firstValueFrom(this.http.post<Record<string, unknown>>(
+        `${d.uazBaseUrl}/send/media`, body, { headers: { token: d.uazToken } },
+      ));
+    }
     const waId = this.extractWhatsappMessageId(res.data);
     await this.prisma.message.update({
       where: { id: d.messageId },

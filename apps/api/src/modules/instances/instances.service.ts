@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, BadGatewayException, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -46,7 +46,23 @@ export interface UazApiStatusResponse {
 interface InstanceConfig {
   uazapi_token?: string;
   uazapi_id?: string;
+  provider?: 'uazapi' | 'evolution';
+  evolution_token?: string;
+  evolution_base_url?: string;
   [key: string]: unknown;
+}
+
+interface EvoCreateResponse {
+  instance?: { instanceName?: string; status?: string };
+  hash?: string | { apikey?: string };
+  qrcode?: { base64?: string; code?: string };
+}
+
+interface EvoConnectResponse {
+  base64?: string;
+  code?: string;
+  qrcode?: { base64?: string; code?: string };
+  instance?: { state?: string };
 }
 
 @Injectable()
@@ -56,6 +72,9 @@ export class InstancesService implements OnModuleInit {
   private readonly adminToken: string;
   private readonly webhookUrl: string;
   private readonly publicUrl: string;
+  private readonly evoBaseUrl: string;
+  private readonly evoApiKey: string;
+  private readonly evoWebhookUrl: string;
 
   constructor(
     private http: HttpService,
@@ -66,6 +85,9 @@ export class InstancesService implements OnModuleInit {
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
     this.publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
     this.webhookUrl = `${this.publicUrl}/api/webhook/uazapi`;
+    this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
+    this.evoApiKey = this.config.get<string>('EVOLUTION_API_KEY', '');
+    this.evoWebhookUrl = `${this.publicUrl}/api/webhook/evolution`;
   }
 
   /**
@@ -367,6 +389,121 @@ export class InstancesService implements OnModuleInit {
     }
 
     return { instanceName: nomeTrim, status };
+  }
+
+  /** Headers do servidor Evolution (admin/global). */
+  private evoHeaders(apikey?: string): Record<string, string> {
+    return { 'Content-Type': 'application/json', apikey: apikey ?? this.evoApiKey };
+  }
+
+  private evoEvents(): string[] {
+    return ['MESSAGES_UPSERT', 'MESSAGES_UPDATE', 'CONNECTION_UPDATE', 'CONTACTS_UPSERT'];
+  }
+
+  /**
+   * Cria uma instância no Evolution API (Baileys), registra o webhook apontando
+   * pra /api/webhook/evolution e persiste provider+token no config. Retorna o
+   * QR base64 pra parear. Espelha create() do UazAPI mas no gateway Evolution.
+   */
+  async createEvolution(nome: string, user: AuthUser) {
+    if (!this.evoBaseUrl) throw new BadRequestException('EVOLUTION_BASE_URL não configurado');
+
+    const { data } = await firstValueFrom(
+      this.http.post<EvoCreateResponse>(
+        `${this.evoBaseUrl}/instance/create`,
+        {
+          instanceName: nome,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+          webhook: {
+            url: this.evoWebhookUrl,
+            byEvents: false,
+            base64: false,
+            events: this.evoEvents(),
+          },
+        },
+        { headers: this.evoHeaders() },
+      ),
+    );
+
+    const evolution_token =
+      typeof data.hash === 'string' ? data.hash : data.hash?.apikey;
+    if (!evolution_token) {
+      throw new BadGatewayException('Evolution não retornou apikey da instância (hash)');
+    }
+    const qrBase64 = data.qrcode?.base64 ?? null;
+
+    // Best-effort: garante webhook setado mesmo em versões que ignoram o campo
+    // webhook no create. Idempotente.
+    await firstValueFrom(
+      this.http.post(
+        `${this.evoBaseUrl}/webhook/set/${nome}`,
+        {
+          webhook: {
+            enabled: true,
+            url: this.evoWebhookUrl,
+            webhookByEvents: false,
+            webhookBase64: false,
+            events: this.evoEvents(),
+          },
+        },
+        { headers: this.evoHeaders(evolution_token) },
+      ),
+    ).catch((err: unknown) =>
+      this.logger.warn(`Falha ao setar webhook Evolution para ${nome}: ${String(err)}`),
+    );
+
+    const config = { provider: 'evolution' as const, evolution_token };
+    const existing = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+    });
+    if (existing) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: existing.id },
+        data: { status: 'connecting', config },
+      });
+    } else {
+      await this.prisma.whatsappInstance.create({
+        data: {
+          nome,
+          status: 'connecting',
+          config,
+          owner_user_id: user.id,
+          tenant_id: user.tenantId,
+        },
+      });
+    }
+
+    return { instanceName: nome, status: 'connecting', base64: qrBase64 };
+  }
+
+  /** Busca/renova o QR de uma instância Evolution. */
+  async getQrCodeEvolution(nome: string, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+    });
+    if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+    const cfg = (instance.config ?? {}) as InstanceConfig;
+    const apikey = cfg.evolution_token;
+    if (!apikey) throw new NotFoundException(`Token Evolution ausente para instancia ${nome}`);
+    const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+
+    const { data } = await firstValueFrom(
+      this.http.get<EvoConnectResponse>(`${baseUrl}/instance/connect/${nome}`, {
+        headers: this.evoHeaders(apikey),
+      }),
+    );
+
+    const qr = data.base64 ?? data.qrcode?.base64 ?? null;
+    if (!qr) {
+      // Sem QR → provavelmente já conectado.
+      await this.prisma.whatsappInstance.update({
+        where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
+        data: { status: 'open', ultimo_check: new Date() },
+      });
+      return { base64: null, alreadyConnected: true };
+    }
+    return { base64: qr, alreadyConnected: false };
   }
 
   async getQrCode(nome: string, user: AuthUser) {

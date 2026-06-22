@@ -8,8 +8,18 @@ interface JobBase {
   tenantId: string;
   instanceName: string;
   telefone: string;
-  uazBaseUrl: string;
-  uazToken: string;
+  /**
+   * Gateway de WhatsApp. Ausente = 'uazapi' (retrocompatível com jobs antigos
+   * enfileirados antes da migração). 'evolution' usa o adapter Evolution API.
+   */
+  provider?: 'uazapi' | 'evolution';
+  // UazAPI: base global + token por instância (header `token`).
+  uazBaseUrl?: string;
+  uazToken?: string;
+  // Evolution: base do servidor + apikey da instância (header `apikey`);
+  // o nome da instância (instanceName) entra na URL.
+  evoBaseUrl?: string;
+  evoApiKey?: string;
 }
 
 export interface SendTextJobData extends JobBase {

@@ -885,7 +885,10 @@ export class WebhookProcessor extends WorkerHost {
 
   private async handleMessageUpsert(data: Obj) {
     const rawData = data?.data as Obj | undefined;
-    const msg = (rawData?.message || rawData) as Obj | undefined;
+    // Evolution v2.3.x: data.data = { key, message, pushName, ... } (key e
+    // message são irmãos). Versões antigas aninhavam tudo em data.data.message.
+    // Se já houver `key` no nível atual, este É o wrapper; senão desce um nível.
+    const msg = (rawData?.key ? rawData : (rawData?.message ?? rawData)) as Obj | undefined;
     if (!msg) {
       this.logger.warn('Evolution payload sem message');
       return;

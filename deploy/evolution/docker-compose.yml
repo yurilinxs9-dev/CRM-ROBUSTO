@@ -1,0 +1,61 @@
+# Evolution API v2 — gateway WhatsApp self-hosted (alternativa/fallback ao UazAPI).
+# Sobe no MESMO VPS do CRM (187.127.11.117). Stack isolada: Postgres + Redis
+# próprios pra não acoplar ao banco do CRM (Supabase) nem ao crm-redis.
+#
+# Deploy:
+#   1. cp .env.example .env  &&  editar AUTHENTICATION_API_KEY + SERVER_URL
+#   2. docker compose up -d
+#   3. checar: curl -H "apikey: $KEY" http://localhost:8080/instance/fetchInstances
+#
+# Depois, no backend do CRM, setar:
+#   EVOLUTION_BASE_URL=http://evolution-api:8080   (se na mesma docker network)
+#   EVOLUTION_API_KEY=<AUTHENTICATION_API_KEY>
+#   WEBHOOK_PUBLIC_URL=<url pública do backend>     (já existe)
+
+services:
+  evolution-api:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: evolution-api
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - evolution-postgres
+      - evolution-redis
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - evolution-net
+
+  evolution-postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_pg:/var/lib/postgresql/data
+    networks:
+      - evolution-net
+
+  evolution-redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    restart: always
+    volumes:
+      - evolution_redis:/data
+    networks:
+      - evolution-net
+
+volumes:
+  evolution_instances:
+  evolution_pg:
+  evolution_redis:
+
+networks:
+  evolution-net:
+    driver: bridge
