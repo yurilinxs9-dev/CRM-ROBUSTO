@@ -96,6 +96,25 @@ export default function InstancesPage() {
     onError: () => toast.error('Erro ao criar instância'),
   });
 
+  // Migração in-place UazAPI → Evolution: cria a Evolution com o MESMO nome, o
+  // backend converte o row existente (leads continuam vinculados). Abre o QR
+  // pra escanear. Sem digitar nome, sem re-apontar lead.
+  const migrateMutation = useMutation({
+    mutationFn: async (nome: string) => {
+      const { data } = await api.post('/api/instances/evolution', { nome });
+      return data as InstanceCardData & { base64?: string };
+    },
+    onSuccess: (created, nome) => {
+      toast.success('Migrando para Evolution — escaneie o QR');
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+      const target = created?.nome ?? nome;
+      setQrTarget(target);
+      if (created?.base64) setQrBase64(created.base64);
+      else void fetchQr(target);
+    },
+    onError: () => toast.error('Erro ao migrar instância'),
+  });
+
   const importMutation = useMutation({
     mutationFn: async (vars: { nome: string; uazapi_token: string }) => {
       const { data } = await api.post('/api/instances/import-token', vars);
@@ -303,6 +322,16 @@ export default function InstancesPage() {
                   onConnect={handleConnect}
                   onReconnect={(nome) => reconnectMutation.mutate(nome)}
                   onDelete={(nome) => setDeleteTarget(nome)}
+                  onMigrate={(nome) => {
+                    if (
+                      confirm(
+                        `Migrar "${nome}" para Evolution?\n\nO número será desconectado da UazAPI e você escaneará um novo QR. Os leads e o histórico são preservados (mesmo nome).`,
+                      )
+                    ) {
+                      migrateMutation.mutate(nome);
+                    }
+                  }}
+                  migrating={migrateMutation.isPending && migrateMutation.variables === inst.nome}
                   reconnecting={reconnectMutation.isPending && reconnectMutation.variables === inst.nome}
                 />
                 {sectors.length > 0 && (

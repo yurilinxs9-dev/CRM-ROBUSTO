@@ -1,6 +1,6 @@
 'use client';
 
-import { MessageCircle, QrCode, RotateCcw, Trash2, Loader2 } from 'lucide-react';
+import { MessageCircle, QrCode, RotateCcw, Trash2, Loader2, ArrowRightLeft } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,6 +13,7 @@ export interface InstanceCardData {
   telefone?: string | null;
   status: string;
   ultimo_check?: string | null;
+  config?: { provider?: 'uazapi' | 'evolution' } | null;
 }
 
 type StatusKind = 'connected' | 'connecting' | 'disconnected';
@@ -28,11 +29,15 @@ interface Props {
   onConnect: (nome: string) => void;
   onReconnect: (nome: string) => void;
   onDelete: (nome: string) => void;
+  onMigrate?: (nome: string) => void;
+  migrating?: boolean;
   reconnecting?: boolean;
 }
 
-export function InstanceCard({ instance, onConnect, onReconnect, onDelete, reconnecting }: Props) {
+export function InstanceCard({ instance, onConnect, onReconnect, onDelete, onMigrate, migrating, reconnecting }: Props) {
   const status = resolveStatus(instance.status);
+  // provider ausente = UazAPI (legado). Só UazAPI oferece migração pra Evolution.
+  const isUazapi = instance.config?.provider !== 'evolution';
 
   const badge =
     status.kind === 'connected' ? (
@@ -72,7 +77,8 @@ export function InstanceCard({ instance, onConnect, onReconnect, onDelete, recon
             : 'Sem verificação recente'}
         </p>
 
-        <div className="flex items-center gap-2 pt-1">
+        <div className="space-y-2 pt-1">
+        <div className="flex items-center gap-2">
           {status.kind === 'disconnected' && (
             <Button size="sm" className="flex-1" onClick={() => onConnect(instance.nome)}>
               <QrCode className="mr-1.5 h-3.5 w-3.5" />
@@ -110,6 +116,23 @@ export function InstanceCard({ instance, onConnect, onReconnect, onDelete, recon
           >
             <Trash2 className="h-4 w-4" />
           </Button>
+        </div>
+        {isUazapi && onMigrate && (
+          <Button
+            size="sm"
+            variant="secondary"
+            className="w-full"
+            onClick={() => onMigrate(instance.nome)}
+            disabled={migrating}
+          >
+            {migrating ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ArrowRightLeft className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            Migrar pra Evolution
+          </Button>
+        )}
         </div>
       </CardContent>
     </Card>
