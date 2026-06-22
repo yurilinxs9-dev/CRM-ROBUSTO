@@ -507,6 +507,14 @@ export class InstancesService implements OnModuleInit {
   }
 
   async getQrCode(nome: string, user: AuthUser) {
+    // Despacha por provider: Evolution usa o fluxo próprio (connect).
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+      select: { config: true },
+    });
+    if ((inst?.config as InstanceConfig | null)?.provider === 'evolution') {
+      return this.getQrCodeEvolution(nome, user);
+    }
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.post<UazApiConnectResponse & { connected?: boolean }>(
@@ -542,6 +550,31 @@ export class InstancesService implements OnModuleInit {
   }
 
   async checkStatus(nome: string, user: AuthUser) {
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+      select: { config: true },
+    });
+    const cfg = (inst?.config ?? {}) as InstanceConfig;
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      if (!apikey) throw new NotFoundException(`Token Evolution ausente para instancia ${nome}`);
+      const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+      const { data } = await firstValueFrom(
+        this.http.get<{ instance?: { state?: string } }>(
+          `${baseUrl}/instance/connectionState/${nome}`,
+          { headers: this.evoHeaders(apikey) },
+        ),
+      );
+      const stateMap: Record<string, string> = {
+        open: 'open', connecting: 'connecting', close: 'close',
+      };
+      const status = stateMap[data.instance?.state ?? ''] ?? 'disconnected';
+      await this.prisma.whatsappInstance.update({
+        where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
+        data: { status, ultimo_check: new Date() },
+      });
+      return data;
+    }
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.get<UazApiStatusResponse>(`${this.baseUrl}/instance/status`, {
@@ -681,17 +714,34 @@ export class InstancesService implements OnModuleInit {
     }
 
     const cfg = (instance.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
 
-    if (token && !cfg.imported) {
-      await firstValueFrom(
-        this.http.delete(`${this.baseUrl}/instance`, {
-          headers: { ...this.adminHeaders(), ...this.headers(token) },
-        }),
-      ).catch((err: unknown) => {
-        this.logger.warn(`Falha ao deletar instancia UazAPI ${nome}: ${String(err)}`);
-        return null;
-      });
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+      if (apikey && baseUrl) {
+        // Logout (encerra sessão) + delete no servidor Evolution.
+        await firstValueFrom(
+          this.http.delete(`${baseUrl}/instance/logout/${nome}`, { headers: this.evoHeaders(apikey) }),
+        ).catch(() => null);
+        await firstValueFrom(
+          this.http.delete(`${baseUrl}/instance/delete/${nome}`, { headers: this.evoHeaders(apikey) }),
+        ).catch((err: unknown) => {
+          this.logger.warn(`Falha ao deletar instancia Evolution ${nome}: ${String(err)}`);
+          return null;
+        });
+      }
+    } else {
+      const token = cfg.uazapi_token;
+      if (token && !cfg.imported) {
+        await firstValueFrom(
+          this.http.delete(`${this.baseUrl}/instance`, {
+            headers: { ...this.adminHeaders(), ...this.headers(token) },
+          }),
+        ).catch((err: unknown) => {
+          this.logger.warn(`Falha ao deletar instancia UazAPI ${nome}: ${String(err)}`);
+          return null;
+        });
+      }
     }
 
     await this.prisma.whatsappInstance.delete({ where: { id: instance.id } }).catch((err: unknown) => {

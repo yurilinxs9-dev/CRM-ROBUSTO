@@ -78,17 +78,20 @@ export default function InstancesPage() {
 
   const createMutation = useMutation({
     mutationFn: async (nome: string) => {
-      const { data } = await api.post('/api/instances', { nome });
-      return data as InstanceCardData;
+      // Gateway padrão: Evolution API (self-hosted). O QR já volta no response.
+      const { data } = await api.post('/api/instances/evolution', { nome });
+      return data as InstanceCardData & { base64?: string };
     },
     onSuccess: (created, nome) => {
       toast.success('Instância criada');
       queryClient.invalidateQueries({ queryKey: ['instances'] });
       setCreateOpen(false);
-      // Auto-open QR for the new instance
+      // Auto-open QR for the new instance — usa o base64 do próprio create,
+      // com fallback pro fetch caso não tenha vindo.
       const target = created?.nome ?? nome;
       setQrTarget(target);
-      void fetchQr(target);
+      if (created?.base64) setQrBase64(created.base64);
+      else void fetchQr(target);
     },
     onError: () => toast.error('Erro ao criar instância'),
   });
