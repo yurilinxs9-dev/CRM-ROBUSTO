@@ -48,6 +48,23 @@ export class WebhooksController {
     return inst?.tenant_id ?? null;
   }
 
+  /**
+   * Igual ao acima mas escopado a provider='evolution'. Nomes de instância só
+   * são únicos por tenant no banco, mas o webhook Evolution só traz o nome —
+   * quando há instâncias homônimas em tenants diferentes (UazAPI antiga vs
+   * Evolution nova), o nome cru resolvia o tenant errado e o webhookLog era
+   * gravado no tenant errado. Fallback ao nome cru se não houver Evolution.
+   */
+  private async resolveTenantByEvolutionInstance(name: string | null): Promise<string | null> {
+    if (!name) return null;
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: name, config: { path: ['provider'], equals: 'evolution' } },
+      select: { tenant_id: true },
+    });
+    if (inst) return inst.tenant_id;
+    return this.resolveTenantByInstanceName(name);
+  }
+
   private async resolveTenantByUazapiToken(token: string | undefined): Promise<string | null> {
     if (!token) return null;
     const inst = await this.prisma.whatsappInstance.findFirst({
@@ -94,7 +111,7 @@ export class WebhooksController {
     // Evolution v2 envia { event: 'messages.upsert' | 'connection.update' | ...,
     // instance, data }. Os handlers Evolution do WebhookProcessor já tratam
     // esses nomes de evento crus — basta enfileirar como wppconnect faz.
-    const tenantId = await this.resolveTenantByInstanceName(payload.instance ?? null);
+    const tenantId = await this.resolveTenantByEvolutionInstance(payload.instance ?? null);
 
     await this.prisma.webhookLog.create({
       data: {

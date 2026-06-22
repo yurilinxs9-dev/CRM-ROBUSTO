@@ -153,6 +153,27 @@ export class WebhookProcessor extends WorkerHost {
     return this.prisma.whatsappInstance.findFirst({ where: { nome: name } });
   }
 
+  /**
+   * Resolve a instância de um webhook Evolution pelo nome.
+   *
+   * CRÍTICO: `nome` só é único POR tenant (@@unique([tenant_id, nome])), mas o
+   * payload Evolution só carrega o nome — sem tenant. Quando dois tenants têm
+   * instâncias homônimas (ex.: uma UazAPI antiga "teste" e uma Evolution nova
+   * "teste"), o findFirst por nome cru pegava a errada → mensagens caíam no
+   * tenant errado, emit ia pra sala errada e o usuário não via nada em tempo
+   * real. Como nomes de instância são globalmente únicos no servidor Evolution,
+   * escopar por provider='evolution' desambígua. Fallback ao nome cru só quando
+   * não existe nenhuma instância Evolution com esse nome (compat com registros
+   * antigos sem o campo provider).
+   */
+  private async findEvolutionInstanceByName(name: string | undefined) {
+    if (!name) return null;
+    const evo = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: name, config: { path: ['provider'], equals: 'evolution' } },
+    });
+    return evo ?? this.findInstanceByName(name);
+  }
+
   private async findInstanceByUazapiToken(token: string | undefined) {
     if (!token) return null;
     return this.prisma.whatsappInstance.findFirst({
@@ -903,7 +924,7 @@ export class WebhookProcessor extends WorkerHost {
     }
     if (remoteJid.includes('@g.us')) return; // group
 
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) {
       throw new Error(`Evolution instancia desconhecida: ${instanceName}`);
     }
@@ -981,7 +1002,7 @@ export class WebhookProcessor extends WorkerHost {
     };
     const status = stateMap[rawState] ?? rawState;
 
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) return;
     await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
@@ -1142,7 +1163,7 @@ export class WebhookProcessor extends WorkerHost {
     // that happen to share the same phone number (cross-tenant data leakage
     // and the root cause of the "nomes iguais" bug seen in the chat list).
     const instanceName = data?.instance as string | undefined;
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) {
       this.logger.warn(
         `contacts.upsert ignorado — instancia desconhecida: ${instanceName}`,
