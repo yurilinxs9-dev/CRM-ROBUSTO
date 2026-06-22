@@ -158,10 +158,23 @@ export class LeadsService {
       where: { nome: lead.instancia_whatsapp, tenant_id: lead.tenant_id },
     });
     const cfg = (instance?.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
-    if (!token) return lead;
 
-    const profile = await this.instances.fetchProfile(token, lead.telefone);
+    let profile: { name?: string; imageUrl?: string };
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      const baseUrl = cfg.evolution_base_url || process.env['EVOLUTION_BASE_URL'] || '';
+      if (!apikey || !baseUrl || !instance) return lead;
+      profile = await this.instances.fetchProfileEvolution(
+        baseUrl,
+        apikey,
+        instance.nome,
+        lead.telefone,
+      );
+    } else {
+      const token = cfg.uazapi_token;
+      if (!token) return lead;
+      profile = await this.instances.fetchProfile(token, lead.telefone);
+    }
     const data: { nome?: string; foto_url?: string } = {};
     // With force=true (data-repair sweep) we always trust UazAPI's name.
     // Otherwise only fill the placeholder name (digits-only) to avoid

@@ -648,6 +648,60 @@ export class InstancesService implements OnModuleInit {
   }
 
   /**
+   * Versão Evolution do fetchProfile (nome + foto). Sem isso, leads de
+   * instâncias Evolution ficavam sem foto e, quando não havia pushName, sem
+   * nome — o syncProfile antigo só sabia falar UazAPI.
+   *  - foto: POST /chat/fetchProfilePictureUrl/{inst} { number } → profilePictureUrl
+   *  - nome: POST /chat/findContacts/{inst} { where: { id: jid } } → pushName
+   */
+  async fetchProfileEvolution(
+    baseUrl: string,
+    apikey: string,
+    instanceName: string,
+    number: string,
+  ): Promise<{ name?: string; imageUrl?: string }> {
+    if (!apikey || !number) return {};
+    const jid = `${number}@s.whatsapp.net`;
+    const headers = this.evoHeaders(apikey);
+    let imageUrl: string | undefined;
+    let name: string | undefined;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post<Record<string, unknown>>(
+          `${baseUrl}/chat/fetchProfilePictureUrl/${instanceName}`,
+          { number },
+          { headers, timeout: 15000 },
+        ),
+      );
+      const url = (data?.profilePictureUrl as string | undefined) ?? (data?.url as string | undefined);
+      if (url && url.trim()) imageUrl = url.trim();
+    } catch (err) {
+      this.logger.warn(`fetchProfilePictureUrl Evolution falhou ${number}: ${String(err)}`);
+    }
+
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post<Array<Record<string, unknown>>>(
+          `${baseUrl}/chat/findContacts/${instanceName}`,
+          { where: { id: jid } },
+          { headers, timeout: 15000 },
+        ),
+      );
+      const c = Array.isArray(data) ? data[0] : undefined;
+      const n =
+        (c?.pushName as string | undefined) ??
+        (c?.name as string | undefined) ??
+        (c?.verifiedName as string | undefined);
+      if (n && n.trim()) name = n.trim();
+    } catch (err) {
+      this.logger.warn(`findContacts Evolution falhou ${number}: ${String(err)}`);
+    }
+
+    return { name, imageUrl };
+  }
+
+  /**
    * Marca msgs como lidas no WhatsApp do remetente (check azul no celular
    * nativo) + reseta contador de não lidas no UazAPI. Best-effort: erros
    * só logam, não derrubam o fluxo de leitura local.
