@@ -352,13 +352,25 @@ export class WebhookProcessor extends WorkerHost {
     // está em modo Compartilhado. Caso contrário, comportamento atual intacto.
     const wantRoundRobin = inPool && tenant?.round_robin_enabled === true;
 
+    // Escopo de identidade do lead (fim da colisão de números):
+    // - Compartilhado (pool_enabled): tenant_id → 1 lead por telefone+pipeline.
+    // - Individual: owner_user_id da instância → cada número é um lead isolado.
+    const leadScope = tenant?.pool_enabled ? tenantId : instance.owner_user_id;
+
     const lead = await this.prisma.lead.upsert({
-      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
+      where: {
+        telefone_pipeline_scope: {
+          telefone: phone,
+          pipeline_id: ctx.pipeline.id,
+          lead_scope: leadScope,
+        },
+      },
       create: {
         nome: incomingPushName || phone,
         telefone: phone,
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instance.nome,
+        lead_scope: leadScope,
         pipeline_id: ctx.pipeline.id,
         estagio_id: ctx.firstStage.id,
         estagio_entered_at: new Date(),

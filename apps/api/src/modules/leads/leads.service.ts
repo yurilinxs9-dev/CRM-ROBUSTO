@@ -487,6 +487,9 @@ export class LeadsService {
         data: {
           ...parsed,
           responsavel_id: parsed.responsavel_id || (tenant?.pool_enabled ? null : user.id),
+          // Escopo de identidade: pool → tenant (1 lead/tenant); Individual →
+          // dono (responsável atribuído ou o criador) = lead isolado por número.
+          lead_scope: tenant?.pool_enabled ? user.tenantId : (parsed.responsavel_id || user.id),
           origem: 'MANUAL',
           tenant_id: user.tenantId,
           position: initialPosition,

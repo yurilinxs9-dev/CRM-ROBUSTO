@@ -126,6 +126,9 @@ export class PublicApiService {
         estagio_id: pipeline.stages[0].id,
         instancia_whatsapp: inst?.nome ?? '',
         responsavel_id: null,
+        // Sem dono definido na API → escopo tenant-wide (seed). Inbound de um
+        // número específico em modo Individual pode gerar lead próprio depois.
+        lead_scope: tenantId,
       },
       select: CONTACT_SELECT,
     });
