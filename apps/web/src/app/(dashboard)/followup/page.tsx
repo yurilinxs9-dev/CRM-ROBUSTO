@@ -22,6 +22,10 @@ interface Broadcast {
   throttle_seconds: number; stage_id: string | null;
   _count?: { targets: number }; target_counts?: Record<string, number>;
 }
+interface Target {
+  lead_id: string; nome: string; telefone: string | null;
+  responsavel_nome: string | null; ai_blocked: boolean; status: string;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', running: 'Rodando', paused: 'Pausado', done: 'Concluído', canceled: 'Cancelado',
@@ -33,6 +37,7 @@ const STATUS_COLOR: Record<string, string> = {
 export default function FollowupPage() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [stageId, setStageId] = useState('');
   const [mode, setMode] = useState<'template' | 'ai'>('ai');
@@ -89,6 +94,15 @@ export default function FollowupPage() {
     onError: () => toast.error('Falha na ação'),
   });
 
+  // Preview dos alvos antes do Play — busca quando há um broadcast em confirmação.
+  const { data: previewTargets = [], isFetching: previewLoading } = useQuery<Target[]>({
+    queryKey: ['broadcast-targets', confirmId],
+    queryFn: async () => (await api.get<Target[]>(`/api/broadcasts/${confirmId}/targets`)).data,
+    enabled: !!confirmId,
+  });
+  const confirmBroadcast = broadcasts.find((b) => b.id === confirmId) ?? null;
+  const willSend = previewTargets.filter((t) => t.status === 'pending' && !t.ai_blocked);
+
   const valid = name.trim() && (mode === 'template' ? template.trim() : aiInstruction.trim());
 
   return (
@@ -125,7 +139,7 @@ export default function FollowupPage() {
                   </div>
                   <div className="flex gap-1 shrink-0">
                     {(b.status === 'draft' || b.status === 'paused') && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => action.mutate({ id: b.id, op: 'start' })}><Play className="h-4 w-4 text-emerald-500" /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => setConfirmId(b.id)}><Play className="h-4 w-4 text-emerald-500" /></Button>
                     )}
                     {b.status === 'running' && (
                       <Button size="icon" variant="ghost" className="h-8 w-8" title="Pausar" onClick={() => action.mutate({ id: b.id, op: 'pause' })}><Pause className="h-4 w-4 text-amber-500" /></Button>
@@ -212,6 +226,60 @@ export default function FollowupPage() {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button>
             <Button onClick={() => create.mutate()} disabled={!valid || create.isPending}>{create.isPending ? 'Criando...' : 'Criar follow-up'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmação antes do Play — mostra exatamente quais leads serão atingidos */}
+      <Dialog open={!!confirmId} onOpenChange={(o) => { if (!o) setConfirmId(null); }}>
+        <DialogContent className="max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader><DialogTitle>Disparar &quot;{confirmBroadcast?.name}&quot;?</DialogTitle></DialogHeader>
+          {previewLoading ? (
+            <div className="space-y-2 py-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-9 w-full rounded-md" />)}</div>
+          ) : (
+            <>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                Vai enviar para <strong style={{ color: 'var(--text-primary)' }}>{willSend.length}</strong> lead(s)
+                {previewTargets.length !== willSend.length && (
+                  <span style={{ color: 'var(--text-muted)' }}> · {previewTargets.length - willSend.length} pulado(s)</span>
+                )}:
+              </p>
+              <div className="overflow-y-auto -mx-2 px-2 divide-y" style={{ borderColor: 'var(--border-default)' }}>
+                {previewTargets.map((t) => {
+                  const skip = t.status !== 'pending' || t.ai_blocked;
+                  return (
+                    <div key={t.lead_id} className="flex items-center justify-between gap-2 py-2 text-sm" style={{ opacity: skip ? 0.5 : 1 }}>
+                      <div className="min-w-0">
+                        <p className="truncate" style={{ color: 'var(--text-primary)' }}>{t.nome}</p>
+                        <p className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                          {t.responsavel_nome ? `Dono: ${t.responsavel_nome}` : 'Sem dono'}{t.telefone ? ` · ${t.telefone}` : ''}
+                        </p>
+                      </div>
+                      <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                        {t.status === 'sent' ? 'já enviado' : t.ai_blocked ? 'IA bloqueada' : t.status === 'pending' ? '' : t.status}
+                      </span>
+                    </div>
+                  );
+                })}
+                {previewTargets.length === 0 && (
+                  <p className="py-4 text-sm text-center" style={{ color: 'var(--text-muted)' }}>Nenhum lead nessa segmentação.</p>
+                )}
+              </div>
+            </>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmId(null)}>Cancelar</Button>
+            <Button
+              disabled={previewLoading || willSend.length === 0 || action.isPending}
+              onClick={() => {
+                if (!confirmId) return;
+                action.mutate({ id: confirmId, op: 'start' }, {
+                  onSuccess: () => { toast.success('Follow-up iniciado'); setConfirmId(null); },
+                });
+              }}
+            >
+              {action.isPending ? 'Iniciando...' : `Confirmar e disparar (${willSend.length})`}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

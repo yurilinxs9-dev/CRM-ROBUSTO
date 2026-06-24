@@ -45,6 +45,11 @@ export class BroadcastsController {
     return this.svc.get(this.user(req), id);
   }
 
+  @Get(':id/targets')
+  targets(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.targets(this.user(req), id);
+  }
+
   @Post()
   @Roles(UserRole.GERENTE)
   create(@Body() body: unknown, @Req() req: Request) {

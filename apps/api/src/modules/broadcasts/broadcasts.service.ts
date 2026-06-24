@@ -46,6 +46,51 @@ export class BroadcastsService {
     return { ...b, target_counts: byStatus };
   }
 
+  /**
+   * Preview dos alvos: lista os leads que o disparo vai atingir, com nome,
+   * dono (responsável) e se está bloqueado pela IA — pro front mostrar a
+   * confirmação ANTES do Play. Evita a surpresa de mandar pra lead de outro
+   * dono que não aparece no Kanban filtrado do criador.
+   */
+  async targets(user: AuthUser, id: string) {
+    const b = await this.prisma.broadcast.findFirst({
+      where: { id, tenant_id: user.tenantId },
+      select: { id: true, respect_ai_block: true },
+    });
+    if (!b) throw new NotFoundException('Broadcast não encontrado');
+
+    const rows = await this.prisma.broadcastTarget.findMany({
+      where: { broadcast_id: id },
+      orderBy: { created_at: 'asc' },
+      select: { lead_id: true, status: true },
+    });
+    const leadIds = rows.map((r) => r.lead_id);
+    const leads = await this.prisma.lead.findMany({
+      where: { id: { in: leadIds }, tenant_id: user.tenantId },
+      select: { id: true, nome: true, telefone: true, responsavel_id: true, ai_blocked: true },
+    });
+    const leadById = new Map(leads.map((l) => [l.id, l]));
+
+    const respIds = [...new Set(leads.map((l) => l.responsavel_id).filter((x): x is string => !!x))];
+    const owners = await this.prisma.user.findMany({
+      where: { id: { in: respIds } },
+      select: { id: true, nome: true },
+    });
+    const ownerById = new Map(owners.map((o) => [o.id, o.nome]));
+
+    return rows.map((r) => {
+      const lead = leadById.get(r.lead_id);
+      return {
+        lead_id: r.lead_id,
+        nome: lead?.nome ?? '(lead removido)',
+        telefone: lead?.telefone ?? null,
+        responsavel_nome: lead?.responsavel_id ? ownerById.get(lead.responsavel_id) ?? null : null,
+        ai_blocked: b.respect_ai_block ? (lead?.ai_blocked ?? false) : false,
+        status: r.status,
+      };
+    });
+  }
+
   async create(user: AuthUser, dto: CreateBroadcastInput) {
     if (dto.mode === 'template' && !dto.template?.trim()) {
       throw new BadRequestException('template é obrigatório no modo template');
