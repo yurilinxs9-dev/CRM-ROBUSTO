@@ -302,6 +302,15 @@ export class LeadsService {
       where.responsavel_id = user.id;
     }
 
+    // Chat é SEMPRE individual: qualquer role (inclusive GERENTE/SUPER_ADMIN)
+    // enxerga só as próprias conversas no módulo de chat (scope='chat'). A
+    // supervisão global do tenant fica no Kanban/lista (sem scope). Sem isto,
+    // o manager/owner via TODAS as conversas no chat — "todo mundo via o de
+    // todo mundo" mesmo em tenant modo Individual.
+    if (filters.scope === 'chat') {
+      where.responsavel_id = user.id;
+    }
+
     // Privacidade ao "Assumir": após claim, lead vira is_private=true e só
     // o responsável enxerga — independente de role. Bloqueia outros gerentes
     // ou super-admins de bisbilhotar conversas que outro gestor já assumiu.
