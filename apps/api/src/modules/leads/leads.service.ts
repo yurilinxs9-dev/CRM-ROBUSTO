@@ -289,35 +289,42 @@ export class LeadsService {
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    // Privacy estrita: OPERADOR (sempre) e qualquer role no scope='chat'
-    // veem APENAS leads onde são o responsável atual. Sem OR por instância
-    // — operador não enxerga lead alheio só porque a msg passou pelo número
-    // dele, evita leak pelo Kanban.
-    // Operador e Visualizador sao restritos ao escopo proprio em qualquer view.
-    // Gerente e SuperAdmin veem tudo do tenant (filtro de is_private aplicado abaixo).
-    if (
-      user.role === UserRole.OPERADOR ||
-      user.role === UserRole.VISUALIZADOR
-    ) {
-      where.responsavel_id = user.id;
-    }
+    // Visibilidade depende do MODO do tenant:
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
+    const poolEnabled = Boolean(tenant?.pool_enabled);
+    const isManager =
+      user.role === UserRole.GERENTE || user.role === UserRole.SUPER_ADMIN;
 
-    // Chat é SEMPRE individual: qualquer role (inclusive GERENTE/SUPER_ADMIN)
-    // enxerga só as próprias conversas no módulo de chat (scope='chat'). A
-    // supervisão global do tenant fica no Kanban/lista (sem scope). Sem isto,
-    // o manager/owner via TODAS as conversas no chat — "todo mundo via o de
-    // todo mundo" mesmo em tenant modo Individual.
-    if (filters.scope === 'chat') {
-      where.responsavel_id = user.id;
+    if (poolEnabled) {
+      // COMPARTILHADO: a conversa no pool (sem responsável) é de TODOS; assim que
+      // é transferida a um operador, vira só dele. GERENTE/SUPER_ADMIN supervisionam
+      // tudo (só não bisbilhotam lead privado/assumido de outro responsável).
+      if (isManager) {
+        where.OR = [{ is_private: false }, { responsavel_id: user.id }];
+      } else {
+        // operador/visualizador: pool não-privado + as próprias conversas
+        where.OR = [
+          { responsavel_id: null, is_private: false },
+          { responsavel_id: user.id },
+        ];
+      }
+    } else {
+      // INDIVIDUAL: cada um vê só as próprias conversas. Operador/Visualizador
+      // sempre; no chat, QUALQUER role (anti-leak Cajuru: gestor não vê chat
+      // alheio — supervisão global fica no Kanban/lista).
+      if (
+        user.role === UserRole.OPERADOR ||
+        user.role === UserRole.VISUALIZADOR ||
+        filters.scope === 'chat'
+      ) {
+        where.responsavel_id = user.id;
+      }
+      // Privacidade ao "Assumir": lead is_private só aparece p/ o responsável.
+      where.OR = [{ is_private: false }, { responsavel_id: user.id }];
     }
-
-    // Privacidade ao "Assumir": após claim, lead vira is_private=true e só
-    // o responsável enxerga — independente de role. Bloqueia outros gerentes
-    // ou super-admins de bisbilhotar conversas que outro gestor já assumiu.
-    where.OR = [
-      { is_private: false },
-      { responsavel_id: user.id },
-    ];
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
@@ -487,9 +494,9 @@ export class LeadsService {
         data: {
           ...parsed,
           responsavel_id: parsed.responsavel_id || (tenant?.pool_enabled ? null : user.id),
-          // Escopo de identidade: pool → tenant (1 lead/tenant); Individual →
-          // dono (responsável atribuído ou o criador) = lead isolado por número.
-          lead_scope: tenant?.pool_enabled ? user.tenantId : (parsed.responsavel_id || user.id),
+          // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
+          // (pool e Individual). Evita duplicar o mesmo contato por dono.
+          lead_scope: user.tenantId,
           origem: 'MANUAL',
           tenant_id: user.tenantId,
           position: initialPosition,

@@ -352,10 +352,13 @@ export class WebhookProcessor extends WorkerHost {
     // está em modo Compartilhado. Caso contrário, comportamento atual intacto.
     const wantRoundRobin = inPool && tenant?.round_robin_enabled === true;
 
-    // Escopo de identidade do lead (fim da colisão de números):
-    // - Compartilhado (pool_enabled): tenant_id → 1 lead por telefone+pipeline.
-    // - Individual: owner_user_id da instância → cada número é um lead isolado.
-    const leadScope = tenant?.pool_enabled ? tenantId : instance.owner_user_id;
+    // Escopo de identidade do lead: SEMPRE tenant_id → 1 lead por telefone+pipeline,
+    // tanto no Compartilhado quanto no Individual. Antes o Individual escopava por
+    // owner_user_id da instância, mas como um cliente fala com vários números da
+    // empresa, cada instância criava um lead próprio → mesmo contato duplicado no
+    // Kanban (inclusive pro mesmo operador após reassign). Isolamento cross-operador
+    // fica por conta de responsavel_id + visibilidade, não da duplicação de linha.
+    const leadScope = tenantId;
 
     const lead = await this.prisma.lead.upsert({
       where: {
@@ -966,13 +969,27 @@ export class WebhookProcessor extends WorkerHost {
   }
 
   private async handleMessageUpdate(data: Obj) {
-    const updates = data?.data as Array<Obj> | undefined;
-    if (!Array.isArray(updates)) return;
+    // Evolution v2 envia `data` como OBJETO flat ({ keyId, status, ... }); o
+    // shape Baileys/wppconnect antigo era um ARRAY de { key:{id}, update:{status} }.
+    // Sem normalizar, o objeto flat caía no `!Array.isArray` e TODOS os acks de
+    // entrega/leitura eram descartados — outbound Evolution ficava preso em SENT
+    // (nunca ✓✓) e ERRO de entrega nunca virava FAILED visível.
+    const raw = data?.data;
+    const updates: Array<Obj> = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object'
+        ? [raw as Obj]
+        : [];
+    if (updates.length === 0) return;
     for (const update of updates) {
       const key = update?.key as Obj | undefined;
-      const messageId = key?.id as string | undefined;
+      const messageId =
+        (key?.id as string | undefined) ??
+        (update?.keyId as string | undefined);
       const updateData = update?.update as Obj | undefined;
-      const status = updateData?.status as string | undefined;
+      const status =
+        (updateData?.status as string | undefined) ??
+        (update?.status as string | undefined);
       if (!messageId || !status) continue;
 
       const statusMap: Record<string, string> = {
