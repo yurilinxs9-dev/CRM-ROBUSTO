@@ -349,7 +349,8 @@ export class MessagesService {
     if (senderType === 'user') cadenceUpdate.ai_blocked = true;
     await this.prisma.lead.update({ where: { id: lead_id }, data: cadenceUpdate });
 
-    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    // Board atualizado ao vivo via WebSocket (setQueryData no front). O delPattern
+    // por-envio era redundante e fazia SCAN no Redis a cada msg → removido.
     this.gateway.emitNewMessage(lead_id, message, user.tenantId);
 
     await this.sendQueue.add('send-text', {
@@ -451,9 +452,9 @@ export class MessagesService {
       },
     });
 
-    // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // Emit with signed URL so the frontend can render media immediately.
-    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    // Board freshness é ao vivo via WebSocket; delPattern por-envio removido
+    // (era redundante + SCAN no Redis a cada msg).
     this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
 
     await this.sendQueue.add('send-audio', {
@@ -563,9 +564,9 @@ export class MessagesService {
       },
     });
 
-    // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // Emit with signed URL so the frontend can render media immediately.
-    await this.cache.delPattern(`leads:list:${user.tenantId}:*`);
+    // Board freshness é ao vivo via WebSocket; delPattern por-envio removido
+    // (era redundante + SCAN no Redis a cada msg).
     this.gateway.emitNewMessage(lead_id, { ...message, media_url: signedUrl }, user.tenantId);
 
     await this.sendQueue.add('send-media', {

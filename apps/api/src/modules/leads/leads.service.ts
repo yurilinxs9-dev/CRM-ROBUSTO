@@ -20,7 +20,10 @@ import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
-const LEADS_LIST_TTL_SECONDS = 2;
+// Board é atualizado ao vivo via WebSocket (setQueryData no front); o cache só
+// serve o reload frio. TTL maior corta re-query da lista pesada sem perder
+// frescor. Mutações (claim/stage/archive/…) e inbound seguem invalidando na hora.
+const LEADS_LIST_TTL_SECONDS = 10;
 const leadsListPattern = (tenantId: string) => `leads:list:${tenantId}:*`;
 
 interface InstanceConfig {
