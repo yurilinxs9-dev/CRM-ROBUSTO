@@ -112,6 +112,10 @@ export class WebhookProcessor extends WorkerHost {
         case 'contacts.upsert':
           await this.handleContactsUpsert(job.data);
           break;
+        case 'chats.update':
+        case 'chats.upsert':
+          await this.handleChatsUpdate(job.data);
+          break;
         case 'uazapi.messages':
         case 'uazapi.message':
           await this.handleUazapiMessage(job.data);
@@ -151,6 +155,27 @@ export class WebhookProcessor extends WorkerHost {
   private async findInstanceByName(name: string | undefined) {
     if (!name) return null;
     return this.prisma.whatsappInstance.findFirst({ where: { nome: name } });
+  }
+
+  /**
+   * Resolve a instância de um webhook Evolution pelo nome.
+   *
+   * CRÍTICO: `nome` só é único POR tenant (@@unique([tenant_id, nome])), mas o
+   * payload Evolution só carrega o nome — sem tenant. Quando dois tenants têm
+   * instâncias homônimas (ex.: uma UazAPI antiga "teste" e uma Evolution nova
+   * "teste"), o findFirst por nome cru pegava a errada → mensagens caíam no
+   * tenant errado, emit ia pra sala errada e o usuário não via nada em tempo
+   * real. Como nomes de instância são globalmente únicos no servidor Evolution,
+   * escopar por provider='evolution' desambígua. Fallback ao nome cru só quando
+   * não existe nenhuma instância Evolution com esse nome (compat com registros
+   * antigos sem o campo provider).
+   */
+  private async findEvolutionInstanceByName(name: string | undefined) {
+    if (!name) return null;
+    const evo = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: name, config: { path: ['provider'], equals: 'evolution' } },
+    });
+    return evo ?? this.findInstanceByName(name);
   }
 
   private async findInstanceByUazapiToken(token: string | undefined) {
@@ -327,13 +352,25 @@ export class WebhookProcessor extends WorkerHost {
     // está em modo Compartilhado. Caso contrário, comportamento atual intacto.
     const wantRoundRobin = inPool && tenant?.round_robin_enabled === true;
 
+    // Escopo de identidade do lead (fim da colisão de números):
+    // - Compartilhado (pool_enabled): tenant_id → 1 lead por telefone+pipeline.
+    // - Individual: owner_user_id da instância → cada número é um lead isolado.
+    const leadScope = tenantId;
+
     const lead = await this.prisma.lead.upsert({
-      where: { telefone_pipeline_id: { telefone: phone, pipeline_id: ctx.pipeline.id } },
+      where: {
+        telefone_pipeline_scope: {
+          telefone: phone,
+          pipeline_id: ctx.pipeline.id,
+          lead_scope: leadScope,
+        },
+      },
       create: {
         nome: incomingPushName || phone,
         telefone: phone,
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instance.nome,
+        lead_scope: leadScope,
         pipeline_id: ctx.pipeline.id,
         estagio_id: ctx.firstStage.id,
         estagio_entered_at: new Date(),
@@ -885,7 +922,10 @@ export class WebhookProcessor extends WorkerHost {
 
   private async handleMessageUpsert(data: Obj) {
     const rawData = data?.data as Obj | undefined;
-    const msg = (rawData?.message || rawData) as Obj | undefined;
+    // Evolution v2.3.x: data.data = { key, message, pushName, ... } (key e
+    // message são irmãos). Versões antigas aninhavam tudo em data.data.message.
+    // Se já houver `key` no nível atual, este É o wrapper; senão desce um nível.
+    const msg = (rawData?.key ? rawData : (rawData?.message ?? rawData)) as Obj | undefined;
     if (!msg) {
       this.logger.warn('Evolution payload sem message');
       return;
@@ -900,7 +940,7 @@ export class WebhookProcessor extends WorkerHost {
     }
     if (remoteJid.includes('@g.us')) return; // group
 
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) {
       throw new Error(`Evolution instancia desconhecida: ${instanceName}`);
     }
@@ -926,13 +966,22 @@ export class WebhookProcessor extends WorkerHost {
   }
 
   private async handleMessageUpdate(data: Obj) {
-    const updates = data?.data as Array<Obj> | undefined;
-    if (!Array.isArray(updates)) return;
+    const raw = data?.data;
+    const updates: Array<Obj> = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object'
+        ? [raw as Obj]
+        : [];
+    if (updates.length === 0) return;
     for (const update of updates) {
       const key = update?.key as Obj | undefined;
-      const messageId = key?.id as string | undefined;
+      const messageId =
+        (key?.id as string | undefined) ??
+        (update?.keyId as string | undefined);
       const updateData = update?.update as Obj | undefined;
-      const status = updateData?.status as string | undefined;
+      const status =
+        (updateData?.status as string | undefined) ??
+        (update?.status as string | undefined);
       if (!messageId || !status) continue;
 
       const statusMap: Record<string, string> = {
@@ -978,7 +1027,7 @@ export class WebhookProcessor extends WorkerHost {
     };
     const status = stateMap[rawState] ?? rawState;
 
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) return;
     await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
@@ -1139,7 +1188,7 @@ export class WebhookProcessor extends WorkerHost {
     // that happen to share the same phone number (cross-tenant data leakage
     // and the root cause of the "nomes iguais" bug seen in the chat list).
     const instanceName = data?.instance as string | undefined;
-    const instance = await this.findInstanceByName(instanceName);
+    const instance = await this.findEvolutionInstanceByName(instanceName);
     if (!instance) {
       this.logger.warn(
         `contacts.upsert ignorado — instancia desconhecida: ${instanceName}`,
@@ -1172,6 +1221,54 @@ export class WebhookProcessor extends WorkerHost {
         },
         data: { nome },
       });
+    }
+  }
+
+  /**
+   * Evolution `chats.update`/`chats.upsert`: o WhatsApp avisa quando o estado de
+   * leitura de um chat muda. Quando o operador lê a conversa no CELULAR (app
+   * oficial), `unreadCount` cai a 0 — refletimos isso zerando as não-lidas no
+   * CRM e marcando as INCOMING como READ, pra não ficar "não lida" no CRM depois
+   * de já ter lido no celular (sincronização bidirecional do badge). Só agimos
+   * quando unreadCount=0; valores >0 já são cobertos pelo fluxo de mensagem.
+   */
+  private async handleChatsUpdate(data: Obj) {
+    const instanceName = data?.instance as string | undefined;
+    const instance = await this.findEvolutionInstanceByName(instanceName);
+    if (!instance) return;
+
+    const raw = data?.data;
+    const chats = (Array.isArray(raw) ? raw : [raw]) as Array<Obj | undefined>;
+    for (const chat of chats) {
+      if (!chat) continue;
+      const remoteJid =
+        (chat.remoteJid as string | undefined) ?? (chat.id as string | undefined);
+      if (!remoteJid || remoteJid.includes('@g.us')) continue;
+
+      // unreadCount pode vir ausente (update parcial sem leitura) — só zeramos
+      // quando explicitamente 0.
+      const unread = chat.unreadCount;
+      const isRead = unread === 0 || unread === '0';
+      if (!isRead) continue;
+
+      const phone = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+      if (!phone) continue;
+      const lead = await this.prisma.lead.findFirst({
+        where: { telefone: phone, tenant_id: instance.tenant_id },
+        select: { id: true, mensagens_nao_lidas: true },
+      });
+      if (!lead || lead.mensagens_nao_lidas === 0) continue;
+
+      await this.prisma.lead.update({
+        where: { id: lead.id },
+        data: { mensagens_nao_lidas: 0 },
+      });
+      await this.prisma.message.updateMany({
+        where: { lead_id: lead.id, direction: 'INCOMING', status: { not: 'READ' } },
+        data: { status: 'READ' },
+      });
+      if (instance.tenant_id) await this.leadsService.invalidateLeadsCache(instance.tenant_id);
+      this.gateway.emitLeadUnreadReset(lead.id, instance.tenant_id);
     }
   }
 }

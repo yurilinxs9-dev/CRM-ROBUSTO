@@ -25,6 +25,9 @@ const leadsListPattern = (tenantId: string) => `leads:list:${tenantId}:*`;
 
 interface InstanceConfig {
   uazapi_token?: string;
+  provider?: 'uazapi' | 'evolution';
+  evolution_token?: string;
+  evolution_base_url?: string;
   [key: string]: unknown;
 }
 
@@ -155,10 +158,23 @@ export class LeadsService {
       where: { nome: lead.instancia_whatsapp, tenant_id: lead.tenant_id },
     });
     const cfg = (instance?.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
-    if (!token) return lead;
 
-    const profile = await this.instances.fetchProfile(token, lead.telefone);
+    let profile: { name?: string; imageUrl?: string };
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      const baseUrl = cfg.evolution_base_url || process.env['EVOLUTION_BASE_URL'] || '';
+      if (!apikey || !baseUrl || !instance) return lead;
+      profile = await this.instances.fetchProfileEvolution(
+        baseUrl,
+        apikey,
+        instance.nome,
+        lead.telefone,
+      );
+    } else {
+      const token = cfg.uazapi_token;
+      if (!token) return lead;
+      profile = await this.instances.fetchProfile(token, lead.telefone);
+    }
     const data: { nome?: string; foto_url?: string } = {};
     // With force=true (data-repair sweep) we always trust UazAPI's name.
     // Otherwise only fill the placeholder name (digits-only) to avoid
@@ -283,6 +299,15 @@ export class LeadsService {
       user.role === UserRole.OPERADOR ||
       user.role === UserRole.VISUALIZADOR
     ) {
+      where.responsavel_id = user.id;
+    }
+
+    // Chat é SEMPRE individual: qualquer role (inclusive GERENTE/SUPER_ADMIN)
+    // enxerga só as próprias conversas no módulo de chat (scope='chat'). A
+    // supervisão global do tenant fica no Kanban/lista (sem scope). Sem isto,
+    // o manager/owner via TODAS as conversas no chat — "todo mundo via o de
+    // todo mundo" mesmo em tenant modo Individual.
+    if (filters.scope === 'chat') {
       where.responsavel_id = user.id;
     }
 
@@ -462,6 +487,9 @@ export class LeadsService {
         data: {
           ...parsed,
           responsavel_id: parsed.responsavel_id || (tenant?.pool_enabled ? null : user.id),
+          // Escopo de identidade: pool → tenant (1 lead/tenant); Individual →
+          // dono (responsável atribuído ou o criador) = lead isolado por número.
+          lead_scope: user.tenantId,
           origem: 'MANUAL',
           tenant_id: user.tenantId,
           position: initialPosition,
@@ -1265,18 +1293,32 @@ export class LeadsService {
     if (lead.instancia_whatsapp) {
       const instance = await this.prisma.whatsappInstance.findFirst({
         where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
-        select: { config: true },
+        select: { config: true, nome: true },
       });
       const cfg = (instance?.config ?? {}) as InstanceConfig;
-      const token = cfg.uazapi_token;
-      if (token) {
-        this.instances
-          .markChatRead(token, lead.telefone, messageIds)
-          .catch((err: unknown) =>
-            this.logger.warn(
-              `markChatRead UazAPI falhou lead=${leadId}: ${String(err)}`,
-            ),
-          );
+      if (cfg.provider === 'evolution') {
+        const apikey = cfg.evolution_token;
+        const baseUrl = cfg.evolution_base_url || process.env['EVOLUTION_BASE_URL'] || '';
+        if (apikey && baseUrl && instance) {
+          this.instances
+            .markChatReadEvolution(baseUrl, apikey, instance.nome, lead.telefone, messageIds)
+            .catch((err: unknown) =>
+              this.logger.warn(
+                `markChatRead Evolution falhou lead=${leadId}: ${String(err)}`,
+              ),
+            );
+        }
+      } else {
+        const token = cfg.uazapi_token;
+        if (token) {
+          this.instances
+            .markChatRead(token, lead.telefone, messageIds)
+            .catch((err: unknown) =>
+              this.logger.warn(
+                `markChatRead UazAPI falhou lead=${leadId}: ${String(err)}`,
+              ),
+            );
+        }
       }
     }
   }

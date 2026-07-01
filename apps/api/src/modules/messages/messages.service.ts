@@ -41,8 +41,19 @@ const internalNoteSchema = z.object({
 interface InstanceConfig {
   uazapi_token?: string;
   uazapi_id?: string;
+  /** Gateway de WhatsApp da instância. Ausente = 'uazapi' (retrocompatível). */
+  provider?: 'uazapi' | 'evolution';
+  /** Evolution: apikey/hash da instância (header `apikey`). */
+  evolution_token?: string;
+  /** Evolution: override opcional do servidor; default = EVOLUTION_BASE_URL. */
+  evolution_base_url?: string;
   [key: string]: unknown;
 }
+
+/** Dados de transporte resolvidos a partir do config da instância. */
+type Transport =
+  | { provider: 'uazapi'; instanceName: string; baseUrl: string; token: string }
+  | { provider: 'evolution'; instanceName: string; baseUrl: string; apiKey: string };
 
 type MediaKind = 'image' | 'video' | 'audio' | 'document';
 
@@ -77,6 +88,7 @@ function mimeToExt(mimetype: string): string {
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
   private readonly baseUrl: string;
+  private readonly evoBaseUrl: string;
 
   constructor(
     private http: HttpService,
@@ -91,6 +103,35 @@ export class MessagesService {
     private outboundWebhooks: OutboundWebhooksService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
+    this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
+  }
+
+  /**
+   * Resolve o transporte (gateway) a partir do config da instância. provider
+   * ausente = UazAPI (retrocompatível). Lança se faltar o token do provider.
+   */
+  private resolveTransport(instance: { nome: string; config: unknown }): Transport {
+    const cfg = (instance.config ?? {}) as InstanceConfig;
+    if (cfg.provider === 'evolution') {
+      const apiKey = cfg.evolution_token;
+      if (!apiKey) throw new NotFoundException('Token Evolution ausente para a instancia');
+      const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+      if (!baseUrl) throw new NotFoundException('EVOLUTION_BASE_URL não configurado');
+      return { provider: 'evolution', instanceName: instance.nome, baseUrl, apiKey };
+    }
+    const token = cfg.uazapi_token;
+    if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
+    return { provider: 'uazapi', instanceName: instance.nome, baseUrl: this.baseUrl, token };
+  }
+
+  /** Campos do job específicos do provider (espalhados no payload da fila). */
+  private jobTransport(t: Transport): Pick<
+    SendMessageJobData,
+    'provider' | 'uazBaseUrl' | 'uazToken' | 'evoBaseUrl' | 'evoApiKey'
+  > {
+    return t.provider === 'evolution'
+      ? { provider: 'evolution', evoBaseUrl: t.baseUrl, evoApiKey: t.apiKey }
+      : { provider: 'uazapi', uazBaseUrl: t.baseUrl, uazToken: t.token };
   }
 
   private emitMsgWebhook(args: {
@@ -228,10 +269,8 @@ export class MessagesService {
     if (!liveStatuses.includes(instance.status)) {
       throw new NotFoundException('Sua instância WhatsApp não está conectada');
     }
-    const cfg = (instance.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
-    if (!token) throw new NotFoundException('Token UazAPI ausente para a instancia');
-    return { lead, token, instanceName: instance.nome };
+    const transport = this.resolveTransport(instance);
+    return { lead, transport, instanceName: transport.instanceName };
   }
 
   private async buildOutboundPrefix(
@@ -260,7 +299,7 @@ export class MessagesService {
 
   async sendText(data: unknown, user: AuthUser, opts: SendOptions = {}) {
     const { lead_id, content } = sendTextSchema.parse(data);
-    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+    const { lead, transport, instanceName } = await this.resolveLeadAndToken(lead_id, user);
 
     // F-03: sender_type decidido no backend. Default 'user' (envio humano).
     const senderType: SenderType = opts.senderType ?? 'user';
@@ -320,8 +359,7 @@ export class MessagesService {
       tenantId: user.tenantId,
       instanceName,
       telefone: lead.telefone,
-      uazBaseUrl: this.baseUrl,
-      uazToken: token,
+      ...this.jobTransport(transport),
       content: outboundContent,
     });
 
@@ -368,7 +406,7 @@ export class MessagesService {
     const { lead_id } = z.object({ lead_id: z.string().uuid() }).parse(body);
     if (!file) throw new NotFoundException('Arquivo de audio ausente');
 
-    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+    const { lead, transport, instanceName } = await this.resolveLeadAndToken(lead_id, user);
     const senderType: SenderType = opts.senderType ?? 'user';
     const senderId = senderType === 'user' ? user.id : null;
 
@@ -425,8 +463,7 @@ export class MessagesService {
       tenantId: user.tenantId,
       instanceName,
       telefone: lead.telefone,
-      uazBaseUrl: this.baseUrl,
-      uazToken: token,
+      ...this.jobTransport(transport),
       storagePath: filename,
       signedUrl,
       durationSeconds: probedDuration,
@@ -444,7 +481,7 @@ export class MessagesService {
       .parse(body);
     if (!file) throw new NotFoundException('Arquivo ausente');
 
-    const { lead, token, instanceName } = await this.resolveLeadAndToken(lead_id, user);
+    const { lead, transport, instanceName } = await this.resolveLeadAndToken(lead_id, user);
     const senderType: SenderType = opts.senderType ?? 'user';
     const senderId = senderType === 'user' ? user.id : null;
 
@@ -538,8 +575,7 @@ export class MessagesService {
       tenantId: user.tenantId,
       instanceName,
       telefone: lead.telefone,
-      uazBaseUrl: this.baseUrl,
-      uazToken: token,
+      ...this.jobTransport(transport),
       storagePath,
       signedUrl,
       mimetype: processed.mimetype,
@@ -573,13 +609,11 @@ export class MessagesService {
 
     // Resolve instância + token. Manual: valida permissão do usuário; sistema:
     // pega a instância viva do tenant (lead pode ter trocado de instância).
-    let token: string;
-    let instanceName: string;
+    let transport: Transport;
     let telefone: string;
     if (ctx.user) {
       const r = await this.resolveLeadAndToken(msg.lead_id, ctx.user);
-      token = r.token;
-      instanceName = r.instanceName;
+      transport = r.transport;
       telefone = r.lead.telefone;
     } else {
       const lead = await this.prisma.lead.findFirst({
@@ -587,11 +621,10 @@ export class MessagesService {
         select: { telefone: true, instancia_whatsapp: true },
       });
       if (!lead) throw new NotFoundException('Lead nao encontrado');
-      const ctxResolved = await this.resolveSystemSendContext(msg.tenant_id, lead.instancia_whatsapp);
-      token = ctxResolved.token;
-      instanceName = ctxResolved.instanceName;
+      transport = await this.resolveSystemSendContext(msg.tenant_id, lead.instancia_whatsapp);
       telefone = lead.telefone;
     }
+    const instanceName = transport.instanceName;
 
     // Marca PENDING e incrementa o contador de reenvios (lido pela varredura).
     const prevMeta = (msg.metadata && typeof msg.metadata === 'object')
@@ -610,7 +643,7 @@ export class MessagesService {
     if (msg.type === MessageType.TEXT) {
       await this.sendQueue.add('send-text', {
         kind: 'text', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
-        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        instanceName, telefone, ...this.jobTransport(transport),
         content: msg.content ?? '',
       });
     } else if (msg.type === MessageType.AUDIO) {
@@ -618,7 +651,7 @@ export class MessagesService {
       const signedUrl = await this.media.getSignedUrl(storagePath, 3600);
       await this.sendQueue.add('send-audio', {
         kind: 'audio', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
-        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        instanceName, telefone, ...this.jobTransport(transport),
         storagePath, signedUrl, durationSeconds: msg.media_duration_seconds ?? undefined,
       });
     } else {
@@ -630,7 +663,7 @@ export class MessagesService {
         : 'document';
       await this.sendQueue.add('send-media', {
         kind: 'media', messageId: msg.id, leadId: msg.lead_id, tenantId: msg.tenant_id,
-        instanceName, telefone, uazBaseUrl: this.baseUrl, uazToken: token,
+        instanceName, telefone, ...this.jobTransport(transport),
         storagePath, signedUrl, mimetype: msg.media_mimetype ?? 'application/octet-stream',
         mediaType, caption: msg.content ?? undefined, filename: msg.media_filename ?? undefined,
       });
@@ -648,7 +681,7 @@ export class MessagesService {
   private async resolveSystemSendContext(
     tenantId: string,
     leadInstanceName: string | null,
-  ): Promise<{ token: string; instanceName: string }> {
+  ): Promise<Transport> {
     const liveStatuses = ['open', 'connected', 'connecting'];
     let instance = leadInstanceName
       ? await this.prisma.whatsappInstance.findFirst({ where: { nome: leadInstanceName, tenant_id: tenantId } })
@@ -662,9 +695,7 @@ export class MessagesService {
     if (!instance || !liveStatuses.includes(instance.status)) {
       throw new NotFoundException('Nenhuma instancia WhatsApp conectada para reenvio');
     }
-    const cfg = (instance.config ?? {}) as InstanceConfig;
-    if (!cfg.uazapi_token) throw new NotFoundException('Token UazAPI ausente para a instancia');
-    return { token: cfg.uazapi_token, instanceName: instance.nome };
+    return this.resolveTransport(instance);
   }
 
   async streamMedia(messageId: string, user: AuthUser): Promise<{

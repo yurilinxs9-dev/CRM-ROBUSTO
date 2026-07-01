@@ -227,6 +227,14 @@ model Lead {
   motivo_perda        String?
   position            Float     @default(0)
   instancia_whatsapp  String
+  // Escopo de identidade do lead (fim da colisão "1 cliente em 2 números = 1 lead").
+  // Individual (pool_enabled=false): owner_user_id da instância que recebeu →
+  //   cada número é um lead isolado (só o dono vê/conversa).
+  // Compartilhado (pool_enabled=true): tenant_id (sentinela) → 1 lead por
+  //   telefone+pipeline no tenant, comportamento atual intacto.
+  // É só identidade; responsavel_id (dono atual) é independente — /reassign muda
+  // o dono sem trocar o escopo.
+  lead_scope          String
   foto_url            String?
   mensagens_nao_lidas Int       @default(0)
   pipeline_id         String
@@ -257,9 +265,10 @@ model Lead {
   // e pelo CRM interno para marcar conversas abertas/pendentes/resolvidas.
   atendimento_status ConversationStatus @default(OPEN)
 
-  @@unique([telefone, pipeline_id], name: "telefone_pipeline_id")
+  @@unique([telefone, pipeline_id, lead_scope], name: "telefone_pipeline_scope")
   @@index([responsavel_id, estagio_id])
   @@index([instancia_whatsapp])
+  @@index([lead_scope])
   @@index([pipeline_id, estagio_id, position])
   @@index([tenant_id, pipeline_id, estagio_id, position])
   @@index([ultima_interacao])

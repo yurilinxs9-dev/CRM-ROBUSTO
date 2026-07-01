@@ -64,16 +64,23 @@ export class BroadcastDispatcher {
   }
 
   private async dispatchOne(
-    b: { id: string; tenant_id: string; mode: string; template: string | null; ai_instruction: string | null; model_config_id: string | null; respect_ai_block: boolean },
+    b: { id: string; tenant_id: string; mode: string; template: string | null; ai_instruction: string | null; model_config_id: string | null; respect_ai_block: boolean; stage_id: string | null },
     target: { id: string; lead_id: string },
   ) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: target.lead_id, tenant_id: b.tenant_id },
-      select: { id: true, nome: true, telefone: true, empresa: true, ai_blocked: true },
+      select: { id: true, nome: true, telefone: true, empresa: true, ai_blocked: true, estagio_id: true },
     });
 
     if (!lead || !lead.telefone) {
       await this.prisma.broadcastTarget.update({ where: { id: target.id }, data: { status: 'skipped', error: 'lead inválido/sem telefone' } });
+      return;
+    }
+    // Os alvos são um snapshot do momento da criação. Se o lead saiu da etapa
+    // alvo depois disso (ex.: movido pra "Fechado Perdido"), NÃO envia — o
+    // follow-up por etapa só vale pra quem ainda está nela no disparo.
+    if (b.stage_id && lead.estagio_id !== b.stage_id) {
+      await this.prisma.broadcastTarget.update({ where: { id: target.id }, data: { status: 'skipped', error: 'lead saiu da etapa alvo' } });
       return;
     }
     if (b.respect_ai_block && lead.ai_blocked) {

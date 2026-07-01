@@ -29,6 +29,41 @@ const asObj = (v: unknown): Obj | undefined =>
   typeof v === 'object' && v !== null ? (v as Obj) : undefined;
 
 /**
+ * Normalize a WhatsApp `mediaKey` to a base64 string for E2E decryption.
+ *
+ * Evolution/Baileys may serialize the 32-byte key in several shapes:
+ *   - base64 string                       → returned as-is
+ *   - byte map `{ "0": 234, "1": 31, … }` → bytes → base64  (the iOS/raw-proto case)
+ *   - number[] `[234, 31, …]`             → bytes → base64
+ *   - Node Buffer JSON `{ type:'Buffer', data:[…] }` → bytes → base64
+ *
+ * Without this, an object-shaped key fails `asStr()`, decryption is skipped, and the
+ * still-encrypted `.enc` buffer is rejected by the magic-byte check → media lost.
+ */
+const asMediaKey = (v: unknown): string | undefined => {
+  if (typeof v === 'string') return v.length > 0 ? v : undefined;
+  let bytes: number[] | undefined;
+  if (Array.isArray(v)) {
+    bytes = v as number[];
+  } else if (v && typeof v === 'object') {
+    const o = v as Obj;
+    if (Array.isArray(o.data)) {
+      bytes = o.data as number[]; // { type: 'Buffer', data: [...] }
+    } else {
+      const keys = Object.keys(o);
+      if (keys.length > 0 && keys.every((k) => /^\d+$/.test(k))) {
+        bytes = keys
+          .sort((a, b) => Number(a) - Number(b))
+          .map((k) => o[k] as number);
+      }
+    }
+  }
+  if (!bytes || bytes.length === 0) return undefined;
+  if (!bytes.every((n) => typeof n === 'number' && n >= 0 && n <= 255)) return undefined;
+  return Buffer.from(bytes).toString('base64');
+};
+
+/**
  * Extract normalized message data from an Evolution/Baileys `messageContent` object.
  * Covers all WhatsApp message types. Returns TEXT with null content as fallback
  * so nothing is ever silently dropped.
@@ -58,7 +93,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         size_bytes: asNum(img.fileLength),
         width: asNum(img.width),
         height: asNum(img.height),
-        mediaKey: asStr(img.mediaKey),
+        mediaKey: asMediaKey(img.mediaKey),
       },
     };
   }
@@ -76,7 +111,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         size_bytes: asNum(vid.fileLength),
         width: asNum(vid.width),
         height: asNum(vid.height),
-        mediaKey: asStr(vid.mediaKey),
+        mediaKey: asMediaKey(vid.mediaKey),
       },
     };
   }
@@ -92,7 +127,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         mimetype: asStr(aud.mimetype) ?? 'audio/ogg',
         duration_seconds: asNum(aud.seconds),
         size_bytes: asNum(aud.fileLength),
-        mediaKey: asStr(aud.mediaKey),
+        mediaKey: asMediaKey(aud.mediaKey),
       },
     };
   }
@@ -109,7 +144,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         mimetype: asStr(inner.mimetype) ?? 'application/octet-stream',
         filename: asStr(inner.fileName) ?? asStr(inner.title),
         size_bytes: asNum(inner.fileLength),
-        mediaKey: asStr(inner.mediaKey),
+        mediaKey: asMediaKey(inner.mediaKey),
       },
     };
   }
@@ -124,7 +159,7 @@ export function extractFromEvolution(messageContent: Obj | undefined): Extracted
         url: asStr(sticker.url) ?? asStr(sticker.directPath),
         mimetype: asStr(sticker.mimetype) ?? 'image/webp',
         size_bytes: asNum(sticker.fileLength),
-        mediaKey: asStr(sticker.mediaKey),
+        mediaKey: asMediaKey(sticker.mediaKey),
       },
     };
   }
@@ -295,7 +330,7 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
     asNum(message.seconds);
   const width = asNum(contentObj?.width);
   const height = asNum(contentObj?.height);
-  const mediaKey = asStr(contentObj?.mediaKey) ?? asStr(message.mediaKey);
+  const mediaKey = asMediaKey(contentObj?.mediaKey) ?? asMediaKey(message.mediaKey);
 
   switch (messageType) {
     case 'text':

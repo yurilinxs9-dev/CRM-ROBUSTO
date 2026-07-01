@@ -204,6 +204,77 @@ export class PlatformAdminService {
     return { ok: true };
   }
 
+  /**
+   * Exclusão TOTAL de um cliente (tenant): apaga todos os dados vinculados e o
+   * próprio tenant. Irreversível.
+   *
+   * O banco tem ciclo de FK não-cascateável (Tenant.owner_id → User Restrict e
+   * User.tenant_id → Tenant Restrict, ambos NOT NULL). Quebramos repontando
+   * temporariamente owner_id para o admin que executa a ação (FK só exige que o
+   * User exista — não precisa ser do mesmo tenant), aí os usuários do tenant
+   * podem ser removidos. Tudo numa transação para ser atômico.
+   */
+  async deleteTenant(admin: AuthUser, tenantId: string) {
+    const t = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        id: true,
+        nome: true,
+        users: { select: { id: true, is_platform_admin: true } },
+        _count: { select: { users: true, leads: true, messages: true, instances: true } },
+      },
+    });
+    if (!t) throw new NotFoundException('Tenant não encontrado');
+    if (t.users.some((u) => u.is_platform_admin)) {
+      throw new ConflictException('Cliente contém um admin de plataforma — não pode ser excluído.');
+    }
+
+    const where = { tenant_id: tenantId };
+    await this.prisma.$transaction([
+      // Filhos primeiro (ordem FK-safe). Tabelas com onDelete: Cascade a partir
+      // destas são removidas junto (WebhookDelivery, BroadcastTarget, QueuePointer).
+      this.prisma.leadTag.deleteMany({ where }),
+      this.prisma.leadActivity.deleteMany({ where }),
+      this.prisma.message.deleteMany({ where }),
+      this.prisma.task.deleteMany({ where }),
+      this.prisma.notification.deleteMany({ where }),
+      this.prisma.lead.deleteMany({ where }),
+      this.prisma.instanceLog.deleteMany({ where }),
+      this.prisma.instanceHidden.deleteMany({ where }),
+      this.prisma.userInstance.deleteMany({ where }),
+      this.prisma.whatsappInstance.deleteMany({ where }),
+      this.prisma.stage.deleteMany({ where }),
+      this.prisma.pipeline.deleteMany({ where }),
+      this.prisma.tag.deleteMany({ where }),
+      this.prisma.quickReply.deleteMany({ where }),
+      this.prisma.pushSubscription.deleteMany({ where }),
+      this.prisma.outboundWebhook.deleteMany({ where }),
+      this.prisma.apiKey.deleteMany({ where }),
+      this.prisma.webhookLog.deleteMany({ where }),
+      this.prisma.broadcast.deleteMany({ where }),
+      this.prisma.assignmentLog.deleteMany({ where }),
+      this.prisma.apiRequestLog.deleteMany({ where }),
+      this.prisma.aiUsageLog.deleteMany({ where }),
+      // Quebra o ciclo: owner_id passa a apontar pro admin executor.
+      this.prisma.tenant.update({ where: { id: tenantId }, data: { owner_id: admin.id } }),
+      // Usuários antes dos setores (User.sector_id é Restrict).
+      this.prisma.user.deleteMany({ where }),
+      this.prisma.sector.deleteMany({ where }),
+      this.prisma.tenant.delete({ where: { id: tenantId } }),
+    ]);
+
+    await this.prisma.adminAuditLog.create({
+      data: {
+        admin_user_id: admin.id,
+        action: 'tenant_delete',
+        target_tenant_id: tenantId,
+        detail: { nome: t.nome, counts: t._count },
+      },
+    });
+    this.logger.warn(`TENANT DELETE admin=${admin.email} → tenant=${t.nome} (${tenantId})`);
+    return { ok: true };
+  }
+
   async setTenantSuspended(admin: AuthUser, tenantId: string, suspended: boolean) {
     const t = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, nome: true } });
     if (!t) throw new NotFoundException('Tenant não encontrado');

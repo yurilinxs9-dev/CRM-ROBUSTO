@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, BadGatewayException, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -46,7 +46,23 @@ export interface UazApiStatusResponse {
 interface InstanceConfig {
   uazapi_token?: string;
   uazapi_id?: string;
+  provider?: 'uazapi' | 'evolution';
+  evolution_token?: string;
+  evolution_base_url?: string;
   [key: string]: unknown;
+}
+
+interface EvoCreateResponse {
+  instance?: { instanceName?: string; status?: string };
+  hash?: string | { apikey?: string };
+  qrcode?: { base64?: string; code?: string };
+}
+
+interface EvoConnectResponse {
+  base64?: string;
+  code?: string;
+  qrcode?: { base64?: string; code?: string };
+  instance?: { state?: string };
 }
 
 @Injectable()
@@ -56,6 +72,9 @@ export class InstancesService implements OnModuleInit {
   private readonly adminToken: string;
   private readonly webhookUrl: string;
   private readonly publicUrl: string;
+  private readonly evoBaseUrl: string;
+  private readonly evoApiKey: string;
+  private readonly evoWebhookUrl: string;
 
   constructor(
     private http: HttpService,
@@ -66,6 +85,9 @@ export class InstancesService implements OnModuleInit {
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
     this.publicUrl = this.config.get<string>('WEBHOOK_PUBLIC_URL', 'http://crm-backend:3001');
     this.webhookUrl = `${this.publicUrl}/api/webhook/uazapi`;
+    this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
+    this.evoApiKey = this.config.get<string>('EVOLUTION_API_KEY', '');
+    this.evoWebhookUrl = `${this.publicUrl}/api/webhook/evolution`;
   }
 
   /**
@@ -369,7 +391,137 @@ export class InstancesService implements OnModuleInit {
     return { instanceName: nomeTrim, status };
   }
 
+  /** Headers do servidor Evolution (admin/global). */
+  private evoHeaders(apikey?: string): Record<string, string> {
+    return { 'Content-Type': 'application/json', apikey: apikey ?? this.evoApiKey };
+  }
+
+  private evoEvents(): string[] {
+    return [
+      'MESSAGES_UPSERT',
+      'MESSAGES_UPDATE',
+      'CONNECTION_UPDATE',
+      'CONTACTS_UPSERT',
+      // CHATS_UPDATE: leitura no celular zera unreadCount → sincroniza badge no CRM.
+      'CHATS_UPDATE',
+    ];
+  }
+
+  /**
+   * Cria uma instância no Evolution API (Baileys), registra o webhook apontando
+   * pra /api/webhook/evolution e persiste provider+token no config. Retorna o
+   * QR base64 pra parear. Espelha create() do UazAPI mas no gateway Evolution.
+   */
+  async createEvolution(nome: string, user: AuthUser) {
+    if (!this.evoBaseUrl) throw new BadRequestException('EVOLUTION_BASE_URL não configurado');
+
+    const { data } = await firstValueFrom(
+      this.http.post<EvoCreateResponse>(
+        `${this.evoBaseUrl}/instance/create`,
+        {
+          instanceName: nome,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+          webhook: {
+            url: this.evoWebhookUrl,
+            byEvents: false,
+            base64: false,
+            events: this.evoEvents(),
+          },
+        },
+        { headers: this.evoHeaders() },
+      ),
+    );
+
+    const evolution_token =
+      typeof data.hash === 'string' ? data.hash : data.hash?.apikey;
+    if (!evolution_token) {
+      throw new BadGatewayException('Evolution não retornou apikey da instância (hash)');
+    }
+    const qrBase64 = data.qrcode?.base64 ?? null;
+
+    // Best-effort: garante webhook setado mesmo em versões que ignoram o campo
+    // webhook no create. Idempotente.
+    await firstValueFrom(
+      this.http.post(
+        `${this.evoBaseUrl}/webhook/set/${nome}`,
+        {
+          webhook: {
+            enabled: true,
+            url: this.evoWebhookUrl,
+            webhookByEvents: false,
+            webhookBase64: false,
+            events: this.evoEvents(),
+          },
+        },
+        { headers: this.evoHeaders(evolution_token) },
+      ),
+    ).catch((err: unknown) =>
+      this.logger.warn(`Falha ao setar webhook Evolution para ${nome}: ${String(err)}`),
+    );
+
+    const config = { provider: 'evolution' as const, evolution_token };
+    const existing = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+    });
+    if (existing) {
+      await this.prisma.whatsappInstance.update({
+        where: { id: existing.id },
+        data: { status: 'connecting', config },
+      });
+    } else {
+      await this.prisma.whatsappInstance.create({
+        data: {
+          nome,
+          status: 'connecting',
+          config,
+          owner_user_id: user.id,
+          tenant_id: user.tenantId,
+        },
+      });
+    }
+
+    return { instanceName: nome, status: 'connecting', base64: qrBase64 };
+  }
+
+  /** Busca/renova o QR de uma instância Evolution. */
+  async getQrCodeEvolution(nome: string, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+    });
+    if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+    const cfg = (instance.config ?? {}) as InstanceConfig;
+    const apikey = cfg.evolution_token;
+    if (!apikey) throw new NotFoundException(`Token Evolution ausente para instancia ${nome}`);
+    const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+
+    const { data } = await firstValueFrom(
+      this.http.get<EvoConnectResponse>(`${baseUrl}/instance/connect/${nome}`, {
+        headers: this.evoHeaders(apikey),
+      }),
+    );
+
+    const qr = data.base64 ?? data.qrcode?.base64 ?? null;
+    if (!qr) {
+      // Sem QR → provavelmente já conectado.
+      await this.prisma.whatsappInstance.update({
+        where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
+        data: { status: 'open', ultimo_check: new Date() },
+      });
+      return { base64: null, alreadyConnected: true };
+    }
+    return { base64: qr, alreadyConnected: false };
+  }
+
   async getQrCode(nome: string, user: AuthUser) {
+    // Despacha por provider: Evolution usa o fluxo próprio (connect).
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+      select: { config: true },
+    });
+    if ((inst?.config as InstanceConfig | null)?.provider === 'evolution') {
+      return this.getQrCodeEvolution(nome, user);
+    }
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.post<UazApiConnectResponse & { connected?: boolean }>(
@@ -405,6 +557,31 @@ export class InstancesService implements OnModuleInit {
   }
 
   async checkStatus(nome: string, user: AuthUser) {
+    const inst = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+      select: { config: true },
+    });
+    const cfg = (inst?.config ?? {}) as InstanceConfig;
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      if (!apikey) throw new NotFoundException(`Token Evolution ausente para instancia ${nome}`);
+      const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+      const { data } = await firstValueFrom(
+        this.http.get<{ instance?: { state?: string } }>(
+          `${baseUrl}/instance/connectionState/${nome}`,
+          { headers: this.evoHeaders(apikey) },
+        ),
+      );
+      const stateMap: Record<string, string> = {
+        open: 'open', connecting: 'connecting', close: 'close',
+      };
+      const status = stateMap[data.instance?.state ?? ''] ?? 'disconnected';
+      await this.prisma.whatsappInstance.update({
+        where: { tenant_id_nome: { tenant_id: user.tenantId, nome } },
+        data: { status, ultimo_check: new Date() },
+      });
+      return data;
+    }
     const token = await this.loadInstanceTokenScoped(nome, user.tenantId);
     const { data } = await firstValueFrom(
       this.http.get<UazApiStatusResponse>(`${this.baseUrl}/instance/status`, {
@@ -471,6 +648,60 @@ export class InstancesService implements OnModuleInit {
   }
 
   /**
+   * Versão Evolution do fetchProfile (nome + foto). Sem isso, leads de
+   * instâncias Evolution ficavam sem foto e, quando não havia pushName, sem
+   * nome — o syncProfile antigo só sabia falar UazAPI.
+   *  - foto: POST /chat/fetchProfilePictureUrl/{inst} { number } → profilePictureUrl
+   *  - nome: POST /chat/findContacts/{inst} { where: { id: jid } } → pushName
+   */
+  async fetchProfileEvolution(
+    baseUrl: string,
+    apikey: string,
+    instanceName: string,
+    number: string,
+  ): Promise<{ name?: string; imageUrl?: string }> {
+    if (!apikey || !number) return {};
+    const jid = `${number}@s.whatsapp.net`;
+    const headers = this.evoHeaders(apikey);
+    let imageUrl: string | undefined;
+    let name: string | undefined;
+
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post<Record<string, unknown>>(
+          `${baseUrl}/chat/fetchProfilePictureUrl/${instanceName}`,
+          { number },
+          { headers, timeout: 15000 },
+        ),
+      );
+      const url = (data?.profilePictureUrl as string | undefined) ?? (data?.url as string | undefined);
+      if (url && url.trim()) imageUrl = url.trim();
+    } catch (err) {
+      this.logger.warn(`fetchProfilePictureUrl Evolution falhou ${number}: ${String(err)}`);
+    }
+
+    try {
+      const { data } = await firstValueFrom(
+        this.http.post<Array<Record<string, unknown>>>(
+          `${baseUrl}/chat/findContacts/${instanceName}`,
+          { where: { id: jid } },
+          { headers, timeout: 15000 },
+        ),
+      );
+      const c = Array.isArray(data) ? data[0] : undefined;
+      const n =
+        (c?.pushName as string | undefined) ??
+        (c?.name as string | undefined) ??
+        (c?.verifiedName as string | undefined);
+      if (n && n.trim()) name = n.trim();
+    } catch (err) {
+      this.logger.warn(`findContacts Evolution falhou ${number}: ${String(err)}`);
+    }
+
+    return { name, imageUrl };
+  }
+
+  /**
    * Marca msgs como lidas no WhatsApp do remetente (check azul no celular
    * nativo) + reseta contador de não lidas no UazAPI. Best-effort: erros
    * só logam, não derrubam o fluxo de leitura local.
@@ -519,6 +750,39 @@ export class InstancesService implements OnModuleInit {
     });
   }
 
+  /**
+   * Manda read-receipt (check azul + zera não-lidas no celular) pro WhatsApp via
+   * Evolution. Sem isso, ler/responder no CRM não desmarca a conversa no app
+   * oficial — o operador via "não lida" no celular mesmo já tendo respondido.
+   *
+   * Evolution v2: POST /chat/markMessageAsRead/{instance} com
+   * { readMessages: [{ remoteJid, fromMe, id }] }. As msgs são as INCOMING do
+   * cliente (fromMe=false), remoteJid = numero@s.whatsapp.net.
+   */
+  async markChatReadEvolution(
+    baseUrl: string,
+    apikey: string,
+    instanceName: string,
+    number: string,
+    messageIds: string[],
+  ): Promise<void> {
+    if (!apikey || !number || messageIds.length === 0) return;
+    const remoteJid = `${number}@s.whatsapp.net`;
+    const readMessages = messageIds.map((id) => ({ remoteJid, fromMe: false, id }));
+    await firstValueFrom(
+      this.http.post(
+        `${baseUrl}/chat/markMessageAsRead/${instanceName}`,
+        { readMessages },
+        { headers: this.evoHeaders(apikey), timeout: 10000 },
+      ),
+    ).catch((err: unknown) => {
+      this.logger.warn(
+        `markMessageAsRead Evolution falhou inst=${instanceName} number=${number}: ${String(err)}`,
+      );
+      return null;
+    });
+  }
+
   async delete(nome: string, user: AuthUser) {
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome, tenant_id: user.tenantId },
@@ -544,17 +808,34 @@ export class InstancesService implements OnModuleInit {
     }
 
     const cfg = (instance.config ?? {}) as InstanceConfig;
-    const token = cfg.uazapi_token;
 
-    if (token && !cfg.imported) {
-      await firstValueFrom(
-        this.http.delete(`${this.baseUrl}/instance`, {
-          headers: { ...this.adminHeaders(), ...this.headers(token) },
-        }),
-      ).catch((err: unknown) => {
-        this.logger.warn(`Falha ao deletar instancia UazAPI ${nome}: ${String(err)}`);
-        return null;
-      });
+    if (cfg.provider === 'evolution') {
+      const apikey = cfg.evolution_token;
+      const baseUrl = cfg.evolution_base_url || this.evoBaseUrl;
+      if (apikey && baseUrl) {
+        // Logout (encerra sessão) + delete no servidor Evolution.
+        await firstValueFrom(
+          this.http.delete(`${baseUrl}/instance/logout/${nome}`, { headers: this.evoHeaders(apikey) }),
+        ).catch(() => null);
+        await firstValueFrom(
+          this.http.delete(`${baseUrl}/instance/delete/${nome}`, { headers: this.evoHeaders(apikey) }),
+        ).catch((err: unknown) => {
+          this.logger.warn(`Falha ao deletar instancia Evolution ${nome}: ${String(err)}`);
+          return null;
+        });
+      }
+    } else {
+      const token = cfg.uazapi_token;
+      if (token && !cfg.imported) {
+        await firstValueFrom(
+          this.http.delete(`${this.baseUrl}/instance`, {
+            headers: { ...this.adminHeaders(), ...this.headers(token) },
+          }),
+        ).catch((err: unknown) => {
+          this.logger.warn(`Falha ao deletar instancia UazAPI ${nome}: ${String(err)}`);
+          return null;
+        });
+      }
     }
 
     await this.prisma.whatsappInstance.delete({ where: { id: instance.id } }).catch((err: unknown) => {

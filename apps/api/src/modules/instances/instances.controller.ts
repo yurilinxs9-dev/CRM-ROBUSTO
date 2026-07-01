@@ -35,6 +35,19 @@ export class InstancesController {
     return this.instancesService.importByToken(nome, uazapiToken, req.user as AuthUser);
   }
 
+  // Cria instância no gateway Evolution API (alternativa ao UazAPI). Retorna QR.
+  @Post('evolution')
+  @Roles(UserRole.OPERADOR)
+  createEvolution(@Body('nome') nome: string, @Req() req: Record<string, unknown>) {
+    return this.instancesService.createEvolution(nome, req.user as AuthUser);
+  }
+
+  @Get(':nome/qr-evolution')
+  @Roles(UserRole.OPERADOR)
+  getQrCodeEvolution(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
+    return this.instancesService.getQrCodeEvolution(nome, req.user as AuthUser);
+  }
+
   @Get(':nome/qr')
   @Roles(UserRole.OPERADOR)
   getQrCode(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
