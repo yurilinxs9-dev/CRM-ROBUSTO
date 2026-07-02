@@ -923,6 +923,38 @@ export class WebhookProcessor extends WorkerHost {
 
   // ── Evolution API handlers ──────────────────────────────────────────────────
 
+  /**
+   * Resolve o telefone REAL do contato a partir da `key` Evolution/Baileys.
+   *
+   * WhatsApp vem migrando chats pra JIDs anônimos `@lid` (Linked ID). Extrair
+   * dígitos de um `@lid` produz um "telefone" de 14-15 dígitos que não existe →
+   * lead fantasma, duplicado do contato real (ocorreu na Cajuru: 252333791383591).
+   * Pra @lid, o número verdadeiro vem nos campos PN que o Baileys/Evolution
+   * anexa à key: `remoteJidAlt` (PN do chat) ou `senderPn` (PN de quem enviou —
+   * só confiável quando !fromMe, senão é o nosso próprio número). Sem PN
+   * resolvível, retorna null e o caller descarta com warn em vez de criar lead
+   * com número inválido.
+   */
+  private resolveEvolutionPhone(key: Obj | undefined, isFromMe: boolean): string | null {
+    const remoteJid = key?.remoteJid as string | undefined;
+    if (!remoteJid) return null;
+    const pnDigits = (jid: unknown): string | null => {
+      if (typeof jid !== 'string' || !jid.includes('@s.whatsapp.net')) return null;
+      const digits = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+      return digits.length >= 8 && digits.length <= 13 ? digits : null;
+    };
+    if (!remoteJid.endsWith('@lid')) {
+      const digits = remoteJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+      return digits || null;
+    }
+    return (
+      pnDigits(key?.remoteJidAlt) ??
+      (!isFromMe ? pnDigits(key?.senderPn) : null) ??
+      pnDigits(key?.participantAlt) ??
+      null
+    );
+  }
+
   private async handleMessageUpsert(data: Obj) {
     const rawData = data?.data as Obj | undefined;
     // Evolution v2.3.x: data.data = { key, message, pushName, ... } (key e
@@ -948,9 +980,15 @@ export class WebhookProcessor extends WorkerHost {
       throw new Error(`Evolution instancia desconhecida: ${instanceName}`);
     }
 
-    const phone = remoteJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
     const messageId = key?.id as string | undefined;
     const isFromMe = !!(key?.fromMe as boolean);
+    const phone = this.resolveEvolutionPhone(key, isFromMe);
+    if (!phone) {
+      this.logger.warn(
+        `Evolution message sem telefone resolvível — remoteJid=${remoteJid} (LID sem PN?) instance=${instanceName}`,
+      );
+      return;
+    }
     const messageContent = msg?.message as Obj | undefined;
     const pushName = msg?.pushName as string | undefined;
 
