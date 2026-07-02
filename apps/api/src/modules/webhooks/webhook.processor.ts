@@ -1044,7 +1044,7 @@ export class WebhookProcessor extends WorkerHost {
       // todas; emitMessageStatusUpdate dispara por linha encontrada.
       const matches = await this.prisma.message.findMany({
         where: { whatsapp_message_id: messageId },
-        select: { id: true, lead_id: true, tenant_id: true },
+        select: { id: true, lead_id: true, tenant_id: true, direction: true },
       });
       if (matches.length === 0) continue;
 
@@ -1054,6 +1054,37 @@ export class WebhookProcessor extends WorkerHost {
       });
       for (const m of matches) {
         this.gateway.emitMessageStatusUpdate(m.lead_id, m.id, mappedStatus);
+      }
+
+      // READ em msg INCOMING = operador leu a conversa no celular (app oficial
+      // manda um ack por mensagem lida, `fromMe:false`). O `chats.update` do
+      // Evolution NÃO carrega unreadCount (payload vem só com remoteJid), então
+      // este é o único sinal confiável pra zerar o badge do CRM quando a leitura
+      // acontece fora dele. Recalcula o contador em vez de zerar cego: se ainda
+      // restam INCOMING não-lidas (ack parcial), o badge reflete o resto.
+      if (mappedStatus !== 'READ') continue;
+      const incomingLeads = new Map<string, string | null>();
+      for (const m of matches) {
+        if (m.direction === 'INCOMING') incomingLeads.set(m.lead_id, m.tenant_id);
+      }
+      for (const [leadId, tenantId] of incomingLeads) {
+        const remaining = await this.prisma.message.count({
+          where: { lead_id: leadId, direction: 'INCOMING', status: { not: 'READ' } },
+        });
+        await this.prisma.lead.updateMany({
+          where: { id: leadId, mensagens_nao_lidas: { not: remaining } },
+          data: { mensagens_nao_lidas: remaining },
+        });
+        if (remaining === 0) {
+          this.gateway.emitLeadUnreadReset(leadId, tenantId ?? undefined);
+        } else {
+          this.gateway.emitLeadUpdated(
+            leadId,
+            { mensagens_nao_lidas: remaining },
+            tenantId ?? undefined,
+          );
+        }
+        if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
       }
     }
   }
