@@ -58,6 +58,20 @@ function niceCeil(v: number): number {
   return n * pow;
 }
 
+/** Duração humana: 45s · 12min · 3h 20min · 2d 5h. */
+function formatDuration(secs: number): string {
+  if (secs < 60) return `${Math.max(secs, 0)}s`;
+  if (secs < 3600) return `${Math.round(secs / 60)}min`;
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.round((secs % 3600) / 60);
+    return m > 0 ? `${h}h ${m}min` : `${h}h`;
+  }
+  const d = Math.floor(secs / 86400);
+  const h = Math.round((secs % 86400) / 3600);
+  return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
+
 function initials(name: string): string {
   return name
     .split(' ')
@@ -157,6 +171,21 @@ interface UserPerformanceData {
 interface PerformanceData {
   period: { from: string; to: string };
   users: UserPerformanceData[];
+}
+
+interface FirstResponseUser {
+  id: string;
+  nome: string;
+  answered: number;
+  median_seconds: number;
+  avg_seconds: number;
+}
+
+interface FirstResponseData {
+  period: { from: string; to: string };
+  total_conversations: number;
+  unanswered: number;
+  users: FirstResponseUser[];
 }
 
 interface Pipeline {
@@ -588,6 +617,102 @@ function TimeInStageSection({ data, isLoading }: { data: TimeInStageResponse | u
 }
 
 // ---------------------------------------------------------------------------
+// FirstResponseSection — tempo de 1ª resposta por atendente
+// Barra = mediana (menos sensível a outliers que a média; a média aparece ao
+// lado). Ordenado do mais rápido pro mais lento.
+// ---------------------------------------------------------------------------
+
+function FirstResponseSection({
+  data,
+  isLoading,
+}: {
+  data: FirstResponseData | undefined;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <SectionCard title="Tempo de 1ª Resposta por Atendente" icon={Clock}>
+        <div className="space-y-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      </SectionCard>
+    );
+  }
+
+  const users = data?.users ?? [];
+
+  if (users.length === 0) {
+    return (
+      <SectionCard title="Tempo de 1ª Resposta por Atendente" icon={Clock}>
+        <p className="text-sm text-center py-10" style={{ color: 'var(--text-muted)' }}>
+          Nenhuma conversa iniciada e respondida no período.
+        </p>
+      </SectionCard>
+    );
+  }
+
+  const maxMedian = Math.max(1, ...users.map((u) => u.median_seconds));
+
+  return (
+    <SectionCard title="Tempo de 1ª Resposta por Atendente" icon={Clock}>
+      <div className="space-y-3">
+        {users.map((u) => {
+          const widthPct = Math.max((u.median_seconds / maxMedian) * 100, 4);
+          return (
+            <div key={u.id} className="flex items-center gap-3">
+              <div className="flex items-center gap-2 w-40 shrink-0 min-w-0">
+                <div
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0"
+                  style={{ background: 'var(--primary-subtle)', color: 'var(--primary)' }}
+                >
+                  {initials(u.nome) || '?'}
+                </div>
+                <span
+                  className="text-xs font-medium truncate"
+                  style={{ color: 'var(--text-secondary)' }}
+                  title={u.nome}
+                >
+                  {u.nome}
+                </span>
+              </div>
+              <div
+                className="flex-1 h-7 rounded-lg overflow-hidden relative"
+                style={{ background: 'var(--bg-surface-3)' }}
+              >
+                <div
+                  className="h-full rounded-lg transition-all duration-500 flex items-center px-3"
+                  style={{ width: `${widthPct}%`, background: 'var(--primary)' }}
+                >
+                  <span
+                    className="text-xs font-semibold text-white whitespace-nowrap"
+                    style={{ fontFeatureSettings: '"tnum"' }}
+                  >
+                    {formatDuration(u.median_seconds)}
+                  </span>
+                </div>
+              </div>
+              <div
+                className="w-36 text-xs text-right shrink-0"
+                style={{ color: 'var(--text-muted)', fontFeatureSettings: '"tnum"' }}
+              >
+                média {formatDuration(u.avg_seconds)} · {numberFmt.format(u.answered)} conv.
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+        Mediana da 1ª resposta humana por conversa iniciada no período ·{' '}
+        {numberFmt.format(data?.total_conversations ?? 0)} conversas novas ·{' '}
+        {numberFmt.format(data?.unanswered ?? 0)} sem resposta
+      </p>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PerformanceTable
 // ---------------------------------------------------------------------------
 
@@ -840,6 +965,14 @@ function AnalyticsPageInner() {
     enabled: !!pipelineId,
   });
 
+  const { data: firstResponse, isLoading: firstResponseLoading } = useQuery<FirstResponseData>({
+    queryKey: ['analytics-first-response', from, to],
+    queryFn: async () => {
+      const res = await api.get('/api/analytics/first-response', { params: { from, to } });
+      return res.data as FirstResponseData;
+    },
+  });
+
   const { data: performance, isLoading: performanceLoading } = useQuery<PerformanceData>({
     queryKey: ['analytics-performance', from, to, pipelineId],
     queryFn: async () => {
@@ -1042,6 +1175,9 @@ function AnalyticsPageInner() {
         <FunnelSection data={funnel} isLoading={funnelLoading} />
         <ConversionSection data={conversion} isLoading={conversionLoading} />
       </div>
+
+      {/* First response por atendente */}
+      <FirstResponseSection data={firstResponse} isLoading={firstResponseLoading} />
 
       {/* Time in stage */}
       <TimeInStageSection data={timeInStage} isLoading={timeLoading} />

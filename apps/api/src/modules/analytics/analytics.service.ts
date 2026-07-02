@@ -245,6 +245,110 @@ export class AnalyticsService {
   }
 
   // -------------------------------------------------------------------------
+  // A3) First response — tempo de primeira resposta por atendente
+  // -------------------------------------------------------------------------
+
+  /**
+   * Por lead criado na janela (conversa nova): mede da primeira msg recebida
+   * até a primeira resposta HUMANA (sender_type='user'; nota interna não
+   * conta; broadcasts/IA system/ai não zeram o cronômetro). Atribuição: quem
+   * respondeu via CRM (sent_by_user_id) > responsável do lead — a maioria dos
+   * tenants responde pelo celular (echo fromMe chega sem sent_by_user_id).
+   * Ancorar em Lead.created_at (indexado) em vez de varrer todo o histórico
+   * de Message derrubou a query de 8s pra subsegundo no maior tenant.
+   */
+  async getFirstResponse(user: AuthUser, query: unknown) {
+    const { from: rawFrom, to: rawTo } = dateRangeSchema.parse(query);
+    const { from, to } = defaultRange(rawFrom, rawTo);
+    const tenantId = user.tenantId;
+
+    const cacheKey = `analytics:first-response:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to })}`;
+    const cached = await this.cache.get<unknown>(cacheKey);
+    if (cached) return cached;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        lead_id: string;
+        responsavel_id: string | null;
+        first_incoming: Date;
+        first_response: Date | null;
+        responder_id: string | null;
+      }>
+    >`
+      SELECT l.id AS lead_id, l.responsavel_id, fin.first_incoming,
+             r.created_at AS first_response, r.sent_by_user_id AS responder_id
+      FROM "Lead" l
+      JOIN LATERAL (
+        SELECT MIN(m.created_at) AS first_incoming
+        FROM "Message" m
+        WHERE m.lead_id = l.id AND m.direction = 'INCOMING'
+      ) fin ON fin.first_incoming IS NOT NULL
+      LEFT JOIN LATERAL (
+        SELECT m2.created_at, m2.sent_by_user_id
+        FROM "Message" m2
+        WHERE m2.lead_id = l.id
+          AND m2.direction = 'OUTGOING'
+          AND m2.is_internal_note = false
+          AND m2.sender_type = 'user'
+          AND m2.created_at > fin.first_incoming
+        ORDER BY m2.created_at
+        LIMIT 1
+      ) r ON true
+      WHERE l.tenant_id = ${tenantId}
+        AND l.created_at >= ${from} AND l.created_at <= ${to}
+    `;
+
+    // Agrega: quem respondeu no CRM > responsável do lead > sem identificação.
+    const byUser = new Map<string, number[]>();
+    let unanswered = 0;
+    for (const row of rows) {
+      if (!row.first_response) {
+        unanswered += 1;
+        continue;
+      }
+      const secs = (row.first_response.getTime() - row.first_incoming.getTime()) / 1000;
+      const uid = row.responder_id ?? row.responsavel_id ?? 'unknown';
+      const list = byUser.get(uid);
+      if (list) list.push(secs);
+      else byUser.set(uid, [secs]);
+    }
+
+    const userIds = [...byUser.keys()].filter((id) => id !== 'unknown');
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, nome: true },
+        })
+      : [];
+    const nameMap = new Map(users.map((u) => [u.id, u.nome]));
+
+    let usersData = [...byUser.entries()]
+      .map(([id, secsList]) => ({
+        id,
+        nome: id === 'unknown' ? 'Sem identificação' : (nameMap.get(id) ?? 'Desconhecido'),
+        answered: secsList.length,
+        median_seconds: Math.round(calcMedian(secsList)),
+        avg_seconds: Math.round(secsList.reduce((a, b) => a + b, 0) / secsList.length),
+      }))
+      .sort((a, b) => a.median_seconds - b.median_seconds);
+
+    // OPERADOR só vê a própria linha (mesmo escopo do performance).
+    if (user.role === UserRole.OPERADOR) {
+      usersData = usersData.filter((u) => u.id === user.id);
+    }
+
+    const result = {
+      period: { from: from.toISOString(), to: to.toISOString() },
+      total_conversations: rows.length,
+      unanswered,
+      users: usersData,
+    };
+
+    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
   // B) Funnel
   // -------------------------------------------------------------------------
 

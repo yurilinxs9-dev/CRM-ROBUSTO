@@ -18,6 +18,11 @@ export class AnalyticsController {
     return this.analyticsService.getTimeseries(req.user as AuthUser, query);
   }
 
+  @Get('first-response')
+  getFirstResponse(@Req() req: Record<string, unknown>, @Query() query: Record<string, string>) {
+    return this.analyticsService.getFirstResponse(req.user as AuthUser, query);
+  }
+
   @Get('funnel')
   getFunnel(@Req() req: Record<string, unknown>, @Query() query: Record<string, string>) {
     return this.analyticsService.getFunnel(req.user as AuthUser, query);
