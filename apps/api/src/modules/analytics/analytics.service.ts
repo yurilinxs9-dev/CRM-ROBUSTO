@@ -32,9 +32,27 @@ const performanceSchema = dateRangeSchema.extend({
 
 const ANALYTICS_TTL = 60; // seconds
 
+// Datas chegam como 'yyyy-MM-dd' do date-picker. Interpretar em UTC cortava o
+// dia brasileiro no meio (leads de hoje sumiam do "Até hoje"): o fim do período
+// virava 00:00Z = 21:00 BRT do dia anterior. Ancora o range no fuso do usuário
+// (BRT, sem DST desde 2019): from = 00:00-03:00, to = 23:59:59.999-03:00.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TZ_OFFSET = '-03:00';
+
 function defaultRange(from?: string, to?: string): { from: Date; to: Date } {
-  const toDate = to ? new Date(to) : new Date();
-  const fromDate = from ? new Date(from) : new Date(toDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+  const toDate =
+    to && dateOnly.test(to)
+      ? new Date(`${to}T23:59:59.999${TZ_OFFSET}`)
+      : to
+        ? new Date(to)
+        : new Date();
+  const fromDate =
+    from && dateOnly.test(from)
+      ? new Date(`${from}T00:00:00.000${TZ_OFFSET}`)
+      : from
+        ? new Date(from)
+        : new Date(toDate.getTime() - 30 * DAY_MS);
   return { from: fromDate, to: toDate };
 }
 
@@ -82,65 +100,146 @@ export class AnalyticsService {
 
     const baseWhere: Prisma.LeadWhereInput = { tenant_id: tenantId, ...operadorFilter };
 
-    const [
-      totalLeads,
-      newLeads,
-      wonLeads,
-      lostLeads,
-      totalValueAgg,
-      wonValueAgg,
-    ] = await Promise.all([
-      // total leads (all time for tenant/user scope)
-      this.prisma.lead.count({ where: baseWhere }),
+    // Janela anterior de mesmo tamanho, imediatamente antes de `from` — base
+    // dos deltas (%) nos KPI cards.
+    const windowMs = to.getTime() - from.getTime();
+    const prevFrom = new Date(from.getTime() - windowMs);
+    const prevTo = new Date(from.getTime() - 1);
 
-      // new leads created in period
-      this.prisma.lead.count({
-        where: { ...baseWhere, created_at: { gte: from, lte: to } },
-      }),
-
-      // won leads (currently in a won stage)
-      this.prisma.lead.count({
-        where: { ...baseWhere, estagio: { is_won: true } },
-      }),
-
-      // lost leads (currently in a lost stage)
-      this.prisma.lead.count({
-        where: { ...baseWhere, estagio: { is_lost: true } },
-      }),
-
-      // sum of valor_estimado for all leads
-      this.prisma.lead.aggregate({
-        where: baseWhere,
-        _sum: { valor_estimado: true },
-      }),
-
-      // sum of valor_estimado for won leads
-      this.prisma.lead.aggregate({
-        where: { ...baseWhere, estagio: { is_won: true } },
-        _sum: { valor_estimado: true },
-      }),
+    const [snapshot, current, previous] = await Promise.all([
+      this.overviewSnapshot(baseWhere),
+      this.overviewWindow(baseWhere, from, to),
+      this.overviewWindow(baseWhere, prevFrom, prevTo),
     ]);
-
-    const openLeads = totalLeads - wonLeads - lostLeads;
-    const totalValue = toNumber(totalValueAgg._sum.valor_estimado);
-    const wonValue = toNumber(wonValueAgg._sum.valor_estimado);
-    const avgTicket = wonLeads > 0 ? wonValue / wonLeads : 0;
-    const conversionRate =
-      wonLeads + lostLeads > 0 ? wonLeads / (wonLeads + lostLeads) : 0;
 
     const result = {
       period: { from: from.toISOString(), to: to.toISOString() },
+      ...snapshot,
+      ...current,
+      previous,
+    };
+
+    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    return result;
+  }
+
+  /** Métricas independentes de período (estado atual do funil). */
+  private async overviewSnapshot(baseWhere: Prisma.LeadWhereInput) {
+    const [totalLeads, wonAllTime, lostAllTime, totalValueAgg] = await Promise.all([
+      this.prisma.lead.count({ where: baseWhere }),
+      this.prisma.lead.count({ where: { ...baseWhere, estagio: { is_won: true } } }),
+      this.prisma.lead.count({ where: { ...baseWhere, estagio: { is_lost: true } } }),
+      this.prisma.lead.aggregate({ where: baseWhere, _sum: { valor_estimado: true } }),
+    ]);
+    return {
       total_leads: totalLeads,
+      open_leads: Math.max(totalLeads - wonAllTime - lostAllTime, 0),
+      total_value: Number(toNumber(totalValueAgg._sum.valor_estimado).toFixed(2)),
+    };
+  }
+
+  /**
+   * Métricas de UMA janela de tempo. Ganho/perda no período = lead que ENTROU
+   * na etapa won/lost dentro da janela (via estagio_entered_at, 100% populado).
+   * Antes, won/lost/conversão eram all-time e trocar 7d↔30d não mudava nada.
+   */
+  private async overviewWindow(baseWhere: Prisma.LeadWhereInput, from: Date, to: Date) {
+    const enteredInWindow = { estagio_entered_at: { gte: from, lte: to } };
+    const [newLeads, wonLeads, lostLeads, wonValueAgg] = await Promise.all([
+      this.prisma.lead.count({
+        where: { ...baseWhere, created_at: { gte: from, lte: to } },
+      }),
+      this.prisma.lead.count({
+        where: { ...baseWhere, estagio: { is_won: true }, ...enteredInWindow },
+      }),
+      this.prisma.lead.count({
+        where: { ...baseWhere, estagio: { is_lost: true }, ...enteredInWindow },
+      }),
+      this.prisma.lead.aggregate({
+        where: { ...baseWhere, estagio: { is_won: true }, ...enteredInWindow },
+        _sum: { valor_estimado: true },
+      }),
+    ]);
+    const wonValue = toNumber(wonValueAgg._sum.valor_estimado);
+    return {
       new_leads: newLeads,
       won_leads: wonLeads,
       lost_leads: lostLeads,
-      open_leads: Math.max(openLeads, 0),
-      total_value: Number(totalValue.toFixed(2)),
       won_value: Number(wonValue.toFixed(2)),
-      avg_ticket: Number(avgTicket.toFixed(2)),
-      conversion_rate: Number(conversionRate.toFixed(4)),
+      avg_ticket: Number((wonLeads > 0 ? wonValue / wonLeads : 0).toFixed(2)),
+      conversion_rate: Number(
+        (wonLeads + lostLeads > 0 ? wonLeads / (wonLeads + lostLeads) : 0).toFixed(4),
+      ),
     };
+  }
 
+  // -------------------------------------------------------------------------
+  // A2) Timeseries — evolução diária (novos × ganhos) pro gráfico
+  // -------------------------------------------------------------------------
+
+  async getTimeseries(user: AuthUser, query: unknown) {
+    const { from: rawFrom, to: rawTo } = dateRangeSchema.parse(query);
+    const { from, to } = defaultRange(rawFrom, rawTo);
+    const tenantId = user.tenantId;
+
+    const cacheKey = `analytics:timeseries:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to })}`;
+    const cached = await this.cache.get<unknown>(cacheKey);
+    if (cached) return cached;
+
+    const isOperador = user.role === UserRole.OPERADOR;
+    const respFilter = isOperador
+      ? Prisma.sql`AND l.responsavel_id = ${user.id}`
+      : Prisma.empty;
+
+    // Bucket por dia BRASILEIRO: timestamps são UTC-naive no banco; converte
+    // pra America/Sao_Paulo antes do date_trunc senão leads da noite caem no
+    // dia seguinte.
+    const [newRows, wonRows] = await Promise.all([
+      this.prisma.$queryRaw<{ day: string; n: number }[]>`
+        SELECT to_char(date_trunc('day', l.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS day,
+               COUNT(*)::int AS n
+        FROM "Lead" l
+        WHERE l.tenant_id = ${tenantId}
+          AND l.created_at >= ${from} AND l.created_at <= ${to}
+          ${respFilter}
+        GROUP BY 1
+      `,
+      this.prisma.$queryRaw<{ day: string; n: number }[]>`
+        SELECT to_char(date_trunc('day', l.estagio_entered_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS day,
+               COUNT(*)::int AS n
+        FROM "Lead" l
+        JOIN "Stage" s ON s.id = l.estagio_id
+        WHERE l.tenant_id = ${tenantId}
+          AND s.is_won = true
+          AND l.estagio_entered_at >= ${from} AND l.estagio_entered_at <= ${to}
+          ${respFilter}
+        GROUP BY 1
+      `,
+    ]);
+
+    const newMap = new Map(newRows.map((r) => [r.day, Number(r.n)]));
+    const wonMap = new Map(wonRows.map((r) => [r.day, Number(r.n)]));
+
+    // Preenche dias sem evento com 0 — gráfico precisa do eixo contínuo.
+    // Itera em dias BRT: começa no from (já ancorado 00:00-03:00) e formata
+    // cada dia no fuso -03:00.
+    const days: Array<{ day: string; new_leads: number; won_leads: number }> = [];
+    const brtFmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    for (let t = from.getTime(); t <= to.getTime(); t += DAY_MS) {
+      const key = brtFmt.format(new Date(t));
+      days.push({
+        day: key,
+        new_leads: newMap.get(key) ?? 0,
+        won_leads: wonMap.get(key) ?? 0,
+      });
+    }
+
+    const result = { period: { from: from.toISOString(), to: to.toISOString() }, days };
     await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
@@ -457,7 +556,8 @@ export class AnalyticsService {
           _count: { id: true },
         }),
 
-        // won leads
+        // won leads no período (entrou na etapa won dentro da janela — antes
+        // era all-time e o filtro 7d/30d não mexia na tabela)
         this.prisma.lead.groupBy({
           by: ['responsavel_id'],
           orderBy: { responsavel_id: 'asc' },
@@ -465,12 +565,13 @@ export class AnalyticsService {
             responsavel_id: { in: userIds },
             tenant_id: tenantId,
             estagio: { is_won: true },
+            estagio_entered_at: { gte: from, lte: to },
             ...pipelineFilter,
           },
           _count: { id: true },
         }),
 
-        // lost leads
+        // lost leads no período
         this.prisma.lead.groupBy({
           by: ['responsavel_id'],
           orderBy: { responsavel_id: 'asc' },
@@ -478,12 +579,13 @@ export class AnalyticsService {
             responsavel_id: { in: userIds },
             tenant_id: tenantId,
             estagio: { is_lost: true },
+            estagio_entered_at: { gte: from, lte: to },
             ...pipelineFilter,
           },
           _count: { id: true },
         }),
 
-        // won value per user
+        // won value no período
         this.prisma.lead.groupBy({
           by: ['responsavel_id'],
           orderBy: { responsavel_id: 'asc' },
@@ -491,6 +593,7 @@ export class AnalyticsService {
             responsavel_id: { in: userIds },
             tenant_id: tenantId,
             estagio: { is_won: true },
+            estagio_entered_at: { gte: from, lte: to },
             ...pipelineFilter,
           },
           _sum: { valor_estimado: true },

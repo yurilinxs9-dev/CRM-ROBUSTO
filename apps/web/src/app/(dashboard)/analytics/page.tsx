@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useCallback, useEffect, useRef, Suspense } from 'react';
+import { useMemo, useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSocket } from '@/lib/socket';
@@ -43,6 +43,21 @@ function formatPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+/** Delta % vs período anterior; null quando não há base de comparação. */
+function trendPct(cur: number | undefined, prev: number | undefined): number | null {
+  if (cur === undefined || prev === undefined || prev === 0) return null;
+  return Math.round(((cur - prev) / prev) * 100);
+}
+
+/** Teto "bonito" pro eixo Y (1/2/5 × 10^n). */
+function niceCeil(v: number): number {
+  if (v <= 4) return 4;
+  const pow = 10 ** Math.floor(Math.log10(v));
+  const f = v / pow;
+  const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return n * pow;
+}
+
 function initials(name: string): string {
   return name
     .split(' ')
@@ -56,17 +71,32 @@ function initials(name: string): string {
 // Types matching backend response shapes
 // ---------------------------------------------------------------------------
 
-interface OverviewData {
-  period: { from: string; to: string };
-  total_leads: number;
+interface OverviewWindow {
   new_leads: number;
   won_leads: number;
   lost_leads: number;
-  open_leads: number;
-  total_value: number;
   won_value: number;
   avg_ticket: number;
   conversion_rate: number;
+}
+
+interface OverviewData extends OverviewWindow {
+  period: { from: string; to: string };
+  total_leads: number;
+  open_leads: number;
+  total_value: number;
+  previous: OverviewWindow;
+}
+
+interface TimeseriesDay {
+  day: string;
+  new_leads: number;
+  won_leads: number;
+}
+
+interface TimeseriesData {
+  period: { from: string; to: string };
+  days: TimeseriesDay[];
 }
 
 interface FunnelStageData {
@@ -167,13 +197,193 @@ function SectionCard({
 }
 
 // ---------------------------------------------------------------------------
+// DailyEvolutionSection — barras (novos/dia) + linha (ganhos/dia)
+// Par de cores validado p/ daltonismo sobre #151d27 (ΔE deutan 95.6):
+// azul #3b82f6 (novos) × verde #00a859 (ganhos); marcas distintas (barra vs
+// linha) reforçam a identidade além da cor.
+// ---------------------------------------------------------------------------
+
+const SERIES_NOVOS = '#3b82f6';
+const SERIES_GANHOS = '#00a859';
+
+function DailyEvolutionSection({
+  data,
+  isLoading,
+}: {
+  data: TimeseriesData | undefined;
+  isLoading: boolean;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  if (isLoading) {
+    return (
+      <SectionCard title="Evolução Diária" icon={TrendingUp}>
+        <Skeleton className="h-56 w-full" />
+      </SectionCard>
+    );
+  }
+
+  const days = data?.days ?? [];
+  const hasData = days.some((d) => d.new_leads > 0 || d.won_leads > 0);
+
+  if (days.length === 0 || !hasData) {
+    return (
+      <SectionCard title="Evolução Diária" icon={TrendingUp}>
+        <p className="text-sm text-center py-10" style={{ color: 'var(--text-muted)' }}>
+          Sem leads novos ou ganhos no período selecionado.
+        </p>
+      </SectionCard>
+    );
+  }
+
+  const yMax = niceCeil(Math.max(...days.map((d) => Math.max(d.new_leads, d.won_leads))));
+  const n = days.length;
+  // Rótulos do eixo X: ~8 ticks, sempre incluindo o primeiro dia.
+  const tickEvery = Math.max(1, Math.ceil(n / 8));
+  const linePoints = days
+    .map((d, i) => `${((i + 0.5) / n) * 100},${100 - (d.won_leads / yMax) * 100}`)
+    .join(' ');
+  const hovered = hover !== null ? days[hover] : null;
+
+  const fmtDay = (day: string, long = false) =>
+    format(new Date(`${day}T12:00:00`), long ? 'dd/MM/yyyy' : 'dd/MM');
+
+  return (
+    <SectionCard title="Evolução Diária" icon={TrendingUp}>
+      {/* Legenda */}
+      <div className="flex items-center gap-4 mb-4">
+        {[
+          { label: 'Novos leads', color: SERIES_NOVOS },
+          { label: 'Ganhos', color: SERIES_GANHOS },
+        ].map((s) => (
+          <span key={s.label} className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} />
+            {s.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        {/* Eixo Y */}
+        <div
+          className="flex flex-col justify-between text-right shrink-0 w-8 text-[10px] py-0"
+          style={{ color: 'var(--text-muted)', fontFeatureSettings: '"tnum"', height: 208 }}
+        >
+          <span>{numberFmt.format(yMax)}</span>
+          <span>{numberFmt.format(yMax / 2)}</span>
+          <span>0</span>
+        </div>
+
+        {/* Área do gráfico */}
+        <div className="relative flex-1" style={{ height: 208 }} onMouseLeave={() => setHover(null)}>
+          {/* Gridlines recessivas */}
+          {[0, 50, 100].map((pct) => (
+            <div
+              key={pct}
+              className="absolute left-0 right-0 border-t"
+              style={{ top: `${pct}%`, borderColor: 'var(--border-default)', opacity: pct === 100 ? 1 : 0.45 }}
+            />
+          ))}
+
+          {/* Barras (novos) */}
+          <div className="absolute inset-0 flex items-end">
+            {days.map((d, i) => (
+              <div
+                key={d.day}
+                className="flex-1 flex items-end justify-center h-full"
+                onMouseEnter={() => setHover(i)}
+              >
+                {d.new_leads > 0 && (
+                  <div
+                    className="w-[60%] max-w-[28px] rounded-t transition-opacity"
+                    style={{
+                      height: `${Math.max((d.new_leads / yMax) * 100, 1.5)}%`,
+                      background: SERIES_NOVOS,
+                      opacity: hover === null || hover === i ? 1 : 0.45,
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Linha (ganhos) */}
+          <svg
+            className="absolute inset-0 w-full h-full pointer-events-none"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+          >
+            <polyline
+              points={linePoints}
+              fill="none"
+              stroke={SERIES_GANHOS}
+              strokeWidth={2}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+
+          {/* Crosshair do dia em hover */}
+          {hover !== null && (
+            <div
+              className="absolute inset-y-0 pointer-events-none border-l border-dashed"
+              style={{ left: `${((hover + 0.5) / n) * 100}%`, borderColor: 'var(--text-muted)', opacity: 0.5 }}
+            />
+          )}
+
+          {/* Tooltip */}
+          {hovered && hover !== null && (
+            <div
+              className="absolute z-10 rounded-lg border px-3 py-2 text-xs pointer-events-none shadow-lg"
+              style={{
+                background: 'var(--bg-surface-3)',
+                borderColor: 'var(--border-default)',
+                top: 4,
+                left: `${((hover + 0.5) / n) * 100}%`,
+                transform: `translateX(${hover < n / 4 ? '8px' : hover > (3 * n) / 4 ? 'calc(-100% - 8px)' : '-50%'})`,
+              }}
+            >
+              <div className="font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                {fmtDay(hovered.day, true)}
+              </div>
+              <div className="flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: SERIES_NOVOS }} />
+                Novos: <strong style={{ fontFeatureSettings: '"tnum"' }}>{numberFmt.format(hovered.new_leads)}</strong>
+              </div>
+              <div className="flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: SERIES_GANHOS }} />
+                Ganhos: <strong style={{ fontFeatureSettings: '"tnum"' }}>{numberFmt.format(hovered.won_leads)}</strong>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Eixo X */}
+      <div className="flex ml-10 mt-1">
+        {days.map((d, i) => (
+          <div
+            key={d.day}
+            className="flex-1 text-center text-[10px] truncate"
+            style={{ color: 'var(--text-muted)', fontFeatureSettings: '"tnum"' }}
+          >
+            {i % tickEvery === 0 ? fmtDay(d.day) : ''}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // FunnelSection — custom Tailwind bars
 // ---------------------------------------------------------------------------
 
 function FunnelSection({ data, isLoading }: { data: FunnelData | undefined; isLoading: boolean }) {
   if (isLoading) {
     return (
-      <SectionCard title="Funil de Etapas" icon={BarChart3}>
+      <SectionCard title="Funil de Etapas (atual)" icon={BarChart3}>
         <div className="space-y-3">
           {[0, 1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-8 w-full" />
@@ -189,7 +399,7 @@ function FunnelSection({ data, isLoading }: { data: FunnelData | undefined; isLo
 
   if (stages.length === 0) {
     return (
-      <SectionCard title="Funil de Etapas" icon={BarChart3}>
+      <SectionCard title="Funil de Etapas (atual)" icon={BarChart3}>
         <p className="text-sm text-center py-10" style={{ color: 'var(--text-muted)' }}>
           Sem dados de funil para este pipeline.
         </p>
@@ -198,7 +408,7 @@ function FunnelSection({ data, isLoading }: { data: FunnelData | undefined; isLo
   }
 
   return (
-    <SectionCard title="Funil de Etapas" icon={BarChart3}>
+    <SectionCard title="Funil de Etapas (atual)" icon={BarChart3}>
       <div className="space-y-3">
         {stages.map((stage) => {
           const widthPct = Math.max((stage.count / max) * 100, 4);
@@ -313,7 +523,7 @@ function ConversionSection({ data, isLoading }: { data: ConversionData | undefin
 function TimeInStageSection({ data, isLoading }: { data: TimeInStageResponse | undefined; isLoading: boolean }) {
   if (isLoading) {
     return (
-      <SectionCard title="Tempo Médio por Etapa" icon={Clock}>
+      <SectionCard title="Tempo Médio por Etapa (atual)" icon={Clock}>
         <div className="space-y-3">
           {[0, 1, 2, 3, 4].map((i) => (
             <Skeleton key={i} className="h-8 w-full" />
@@ -328,7 +538,7 @@ function TimeInStageSection({ data, isLoading }: { data: TimeInStageResponse | u
 
   if (stages.length === 0) {
     return (
-      <SectionCard title="Tempo Médio por Etapa" icon={Clock}>
+      <SectionCard title="Tempo Médio por Etapa (atual)" icon={Clock}>
         <p className="text-sm text-center py-10" style={{ color: 'var(--text-muted)' }}>
           Sem dados de tempo por etapa.
         </p>
@@ -337,7 +547,7 @@ function TimeInStageSection({ data, isLoading }: { data: TimeInStageResponse | u
   }
 
   return (
-    <SectionCard title="Tempo Médio por Etapa" icon={Clock}>
+    <SectionCard title="Tempo Médio por Etapa (atual)" icon={Clock}>
       <div className="space-y-3">
         {stages.map((stage) => {
           const widthPct = Math.max((stage.avg_days / maxDays) * 100, 4);
@@ -591,6 +801,14 @@ function AnalyticsPageInner() {
     enabled: true,
   });
 
+  const { data: timeseries, isLoading: timeseriesLoading } = useQuery<TimeseriesData>({
+    queryKey: ['analytics-timeseries', from, to],
+    queryFn: async () => {
+      const res = await api.get('/api/analytics/timeseries', { params: { from, to } });
+      return res.data as TimeseriesData;
+    },
+  });
+
   const { data: funnel, isLoading: funnelLoading } = useQuery<FunnelData>({
     queryKey: ['analytics-funnel', pipelineId],
     queryFn: async () => {
@@ -778,36 +996,46 @@ function AnalyticsPageInner() {
               icon={Users}
               label="Total de leads"
               value={numberFmt.format(overview?.total_leads ?? 0)}
+              sub={`${numberFmt.format(overview?.open_leads ?? 0)} em aberto`}
             />
             <KpiCard
               icon={TrendingUp}
               label="Novos no período"
               value={numberFmt.format(overview?.new_leads ?? 0)}
+              trend={trendPct(overview?.new_leads, overview?.previous?.new_leads)}
             />
             <KpiCard
               icon={Trophy}
-              label="Ganhos"
+              label="Ganhos no período"
               value={numberFmt.format(overview?.won_leads ?? 0)}
               sub={formatBRL(overview?.won_value ?? 0)}
+              trend={trendPct(overview?.won_leads, overview?.previous?.won_leads)}
             />
             <KpiCard
               icon={Target}
-              label="Perdidos"
+              label="Perdidos no período"
               value={numberFmt.format(overview?.lost_leads ?? 0)}
+              trend={trendPct(overview?.lost_leads, overview?.previous?.lost_leads)}
+              invertTrend
             />
             <KpiCard
               icon={BarChart3}
               label="Taxa de conversão"
               value={formatPct(overview?.conversion_rate ?? 0)}
+              trend={trendPct(overview?.conversion_rate, overview?.previous?.conversion_rate)}
             />
             <KpiCard
               icon={DollarSign}
               label="Ticket médio"
               value={formatBRL(overview?.avg_ticket ?? 0)}
+              trend={trendPct(overview?.avg_ticket, overview?.previous?.avg_ticket)}
             />
           </>
         )}
       </div>
+
+      {/* Evolução diária */}
+      <DailyEvolutionSection data={timeseries} isLoading={timeseriesLoading} />
 
       {/* Funnel + Conversion row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -9,10 +9,12 @@ interface KpiCardProps {
   value: string;
   sub?: string;
   trend?: number | null;
+  /** Métricas onde subir é RUIM (ex.: leads perdidos) — inverte a cor do delta. */
+  invertTrend?: boolean;
   loading?: boolean;
 }
 
-export function KpiCard({ icon: Icon, label, value, sub, trend, loading }: KpiCardProps) {
+export function KpiCard({ icon: Icon, label, value, sub, trend, invertTrend, loading }: KpiCardProps) {
   if (loading) {
     return (
       <div
@@ -24,6 +26,8 @@ export function KpiCard({ icon: Icon, label, value, sub, trend, loading }: KpiCa
 
   const hasTrend = typeof trend === 'number' && Number.isFinite(trend);
   const positive = (trend ?? 0) >= 0;
+  // Ícone segue a DIREÇÃO real; cor segue se a direção é boa ou ruim.
+  const good = invertTrend ? (trend ?? 0) <= 0 : positive;
   const TrendIcon = positive ? TrendingUp : TrendingDown;
 
   return (
@@ -53,7 +57,8 @@ export function KpiCard({ icon: Icon, label, value, sub, trend, loading }: KpiCa
           {hasTrend && (
             <span
               className="inline-flex items-center gap-0.5 text-xs font-medium"
-              style={{ color: positive ? 'var(--success, #22c55e)' : 'var(--destructive, #ef4444)' }}
+              // --destructive é triplet HSL (shadcn), não cor CSS — usar hex direto.
+              style={{ color: good ? 'var(--success, #22c55e)' : '#ef4444' }}
             >
               <TrendIcon size={12} />
               {positive ? '+' : ''}
