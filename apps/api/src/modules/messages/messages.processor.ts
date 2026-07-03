@@ -39,16 +39,33 @@ export class MessagesSendProcessor extends WorkerHost {
     }
   }
 
+  /**
+   * Destinatário Evolution: prioriza o JID @lid capturado do inbound. Contas
+   * migradas pro endereçamento LID cujo USync é rejeitado pelo servidor (caso
+   * diplapel, erro 428) não resolvem número→LID no envio — todo send por
+   * número cru volta ack ERROR e o cliente nunca recebe. Enviar direto pro
+   * @lid dispensa essa resolução. UazAPI segue por número (resolve no server).
+   */
+  private async resolveRecipient(d: { leadId: string; telefone: string; provider?: string }): Promise<string> {
+    if (d.provider !== 'evolution') return d.telefone;
+    const lead = await this.prisma.lead.findUnique({
+      where: { id: d.leadId },
+      select: { whatsapp_lid: true },
+    });
+    return lead?.whatsapp_lid ?? d.telefone;
+  }
+
   private async handleText(job: Job<SendTextJobData>): Promise<void> {
     const d = job.data;
     if (await this.alreadySent(d.messageId)) {
       this.logger.warn(`[handleText] skipping retry — message ${d.messageId} already delivered`);
       return;
     }
+    const recipient = await this.resolveRecipient(d);
     const res = d.provider === 'evolution'
       ? await firstValueFrom(this.http.post<Record<string, unknown>>(
           `${d.evoBaseUrl}/message/sendText/${d.instanceName}`,
-          { number: d.telefone, text: d.content },
+          { number: recipient, text: d.content },
           { headers: { apikey: d.evoApiKey } },
         ))
       : await firstValueFrom(this.http.post<Record<string, unknown>>(
@@ -80,7 +97,7 @@ export class MessagesSendProcessor extends WorkerHost {
       const b64 = await this.fetchAsBase64(freshUrl);
       const res = await firstValueFrom(this.http.post<Record<string, unknown>>(
         `${d.evoBaseUrl}/message/sendWhatsAppAudio/${d.instanceName}`,
-        { number: d.telefone, audio: b64, encoding: true },
+        { number: await this.resolveRecipient(d), audio: b64, encoding: true },
         { headers: { apikey: d.evoApiKey } },
       ));
       const waId = this.extractWhatsappMessageId(res.data);
@@ -154,7 +171,7 @@ export class MessagesSendProcessor extends WorkerHost {
       // Evolution: /message/sendMedia aceita URL no campo `media`. mediatype
       // ∈ image|video|document (áudio sai por handleAudio).
       const evoBody: Record<string, unknown> = {
-        number: d.telefone,
+        number: await this.resolveRecipient(d),
         mediatype: d.mediaType,
         mimetype: d.mimetype,
         media: freshUrl,

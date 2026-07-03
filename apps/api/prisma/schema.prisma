@@ -206,6 +206,11 @@ model Lead {
   id                 String          @id @default(uuid())
   nome               String
   telefone           String
+  // JID @lid do contato (endereçamento Linked ID do WhatsApp), capturado do
+  // inbound Evolution. Envio Evolution prioriza este JID: contas cujo USync é
+  // rejeitado pelo servidor (caso diplapel, erro 428) não resolvem PN→LID no
+  // envio e todo send por número cru volta ack ERROR.
+  whatsapp_lid       String?
   email              String?
   empresa            String?
   cargo              String?

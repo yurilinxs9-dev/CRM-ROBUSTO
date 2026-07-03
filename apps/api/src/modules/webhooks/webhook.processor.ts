@@ -39,6 +39,8 @@ interface SaveMessageInput {
   isFromMe: boolean;
   extracted: ExtractedMessage;
   rawPayload: Obj;
+  /** JID @lid do chat (Evolution) — persistido no lead pra envio LID-safe. */
+  lidJid?: string;
 }
 
 @Processor('webhooks', { concurrency: 3 })
@@ -309,7 +311,7 @@ export class WebhookProcessor extends WorkerHost {
    * client in two phases (skeleton then ready).
    */
   private async saveIncomingMessage(input: SaveMessageInput): Promise<void> {
-    const { tenantId, instance, phone, pushName, isFromMe, extracted, rawPayload } = input;
+    const { tenantId, instance, phone, pushName, isFromMe, extracted, rawPayload, lidJid } = input;
     let { messageId } = input;
 
     if (!phone) {
@@ -371,6 +373,7 @@ export class WebhookProcessor extends WorkerHost {
       create: {
         nome: incomingPushName || phone,
         telefone: phone,
+        whatsapp_lid: lidJid,
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instance.nome,
         lead_scope: leadScope,
@@ -392,6 +395,9 @@ export class WebhookProcessor extends WorkerHost {
         last_customer_message_at: isFromMe ? undefined : new Date(),
         last_agent_message_at: isFromMe ? new Date() : undefined,
         mensagens_nao_lidas: isFromMe ? 0 : { increment: 1 },
+        // Refresca o @lid a cada mensagem (leads antigos ganham o lid na
+        // próxima interação; se o WhatsApp remapear o contato, atualiza).
+        whatsapp_lid: lidJid ?? undefined,
       },
     });
 
@@ -1003,6 +1009,7 @@ export class WebhookProcessor extends WorkerHost {
       isFromMe,
       extracted,
       rawPayload: data,
+      lidJid: remoteJid.endsWith('@lid') ? remoteJid : undefined,
     });
   }
 
