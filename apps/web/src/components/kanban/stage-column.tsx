@@ -148,6 +148,12 @@ interface StageColumnProps {
   selectedLeadIds?: Set<string>;
   onToggleSelect?: (leadId: string) => void;
   onSelectAllInStage?: (stageId: string) => void;
+  /** Total real de leads no estágio (servidor) — pode ser maior que leads.length. */
+  totalCount?: number;
+  /** Há mais leads no servidor além dos carregados. */
+  hasMore?: boolean;
+  onLoadMore?: (stageId: string) => void;
+  loadingMore?: boolean;
 }
 
 function StageColumnImpl({
@@ -171,6 +177,10 @@ function StageColumnImpl({
   selectedLeadIds,
   onToggleSelect,
   onSelectAllInStage,
+  totalCount,
+  hasMore,
+  onLoadMore,
+  loadingMore,
 }: StageColumnProps) {
   const bulkActive = selectedLeadIds !== undefined && selectedLeadIds.size > 0;
   const [isEditing, setIsEditing] = useState(false);
@@ -271,7 +281,7 @@ function StageColumnImpl({
           {stage.is_won && <Trophy className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="Etapa de ganho" />}
           {stage.is_lost && <Ban className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label="Etapa de perda" />}
           <span className="rounded-full bg-background px-1.5 text-[11px] font-semibold text-muted-foreground tabular-nums shrink-0">
-            {leads.length}
+            {totalCount ?? leads.length}
           </span>
           {bulkActive && onSelectAllInStage && leads.length > 0 && (
             <button
@@ -393,6 +403,19 @@ function StageColumnImpl({
               <Inbox className="h-8 w-8 mb-2" />
               <p className="text-xs">Sem leads</p>
             </div>
+          )}
+
+          {hasMore && onLoadMore && (
+            <button
+              type="button"
+              disabled={loadingMore}
+              onClick={() => onLoadMore(stage.id)}
+              className="w-full rounded-md border border-dashed px-2 py-2 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors disabled:opacity-60"
+            >
+              {loadingMore
+                ? 'Carregando…'
+                : `Carregar mais (${leads.length}${totalCount ? ` de ${totalCount}` : ''})`}
+            </button>
           )}
         </div>
       </div>

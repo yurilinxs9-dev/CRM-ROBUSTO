@@ -94,6 +94,8 @@ interface LeadFilters {
   limit?: string;
   offset?: string;
   scope?: string;
+  unread?: string;
+  per_stage?: string;
 }
 
 export interface ExportLeadFilters {
@@ -334,6 +336,10 @@ export class LeadsService {
     if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
     if (filters.instancia) where.instancia_whatsapp = filters.instancia;
     if (filters.temperatura) where.temperatura = filters.temperatura;
+    // Aba "Não lidas" do chat — filtro no servidor pra funcionar com paginação.
+    if (filters.unread === '1' || filters.unread === 'true') {
+      where.mensagens_nao_lidas = { gt: 0 };
+    }
     if (filters.search) {
       const searchCondition = [
         { nome: { contains: filters.search, mode: 'insensitive' } },
@@ -349,54 +355,64 @@ export class LeadsService {
     }
 
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
-    const cached = await this.cache.get<unknown[]>(cacheKey);
+    const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
-    const leads = await this.prisma.lead.findMany({
-      relationLoadStrategy: 'join',
-      where,
-      select: {
-        id: true,
-        nome: true,
-        telefone: true,
-        foto_url: true,
-        temperatura: true,
-        valor_estimado: true,
-        mensagens_nao_lidas: true,
-        ultima_interacao: true,
-        updated_at: true,
-        estagio_id: true,
-        estagio_entered_at: true,
-        last_customer_message_at: true,
-        last_agent_message_at: true,
-        proximo_followup: true,
-        cadence_step_index: true,
-        created_at: true,
-        pipeline_id: true,
-        tags: true,
-        position: true,
-        responsavel: { select: { id: true, nome: true, avatar_url: true } },
-        estagio: { select: { id: true, nome: true, cor: true } },
-        lead_tags: { include: { tag: true } },
-        messages: {
-          orderBy: { created_at: 'desc' },
-          take: 1,
-          select: { content: true, type: true, direction: true, created_at: true },
-        },
-        _count: {
-          select: { tasks: { where: { status: 'PENDENTE' } } },
-        },
+    const leadListSelect = {
+      id: true,
+      nome: true,
+      telefone: true,
+      foto_url: true,
+      temperatura: true,
+      valor_estimado: true,
+      mensagens_nao_lidas: true,
+      ultima_interacao: true,
+      updated_at: true,
+      estagio_id: true,
+      estagio_entered_at: true,
+      last_customer_message_at: true,
+      last_agent_message_at: true,
+      proximo_followup: true,
+      cadence_step_index: true,
+      created_at: true,
+      pipeline_id: true,
+      tags: true,
+      position: true,
+      responsavel: { select: { id: true, nome: true, avatar_url: true } },
+      estagio: { select: { id: true, nome: true, cor: true } },
+      lead_tags: { include: { tag: true } },
+      messages: {
+        orderBy: { created_at: 'desc' },
+        take: 1,
+        select: { content: true, type: true, direction: true, created_at: true },
       },
-      orderBy: [
-        { estagio_id: 'asc' },
-        { ultima_interacao: { sort: 'desc', nulls: 'last' } },
-        { created_at: 'desc' },
-      ],
-      take: filters.limit ? parseInt(filters.limit) : 10000,
-      skip: filters.offset ? parseInt(filters.offset) : 0,
-    });
+      _count: {
+        select: { tasks: { where: { status: 'PENDENTE' } } },
+      },
+    } as const;
 
-    const result = leads.map((lead) => {
+    const recencyOrder = [
+      { ultima_interacao: { sort: 'desc', nulls: 'last' } },
+      { created_at: 'desc' },
+    ] as const;
+
+    const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
+      this.prisma.lead.findMany({
+        relationLoadStrategy: 'join',
+        where: { ...where, ...extraWhere },
+        select: leadListSelect,
+        // Chat/coluna: ordem pura de recência. Lista plena do kanban:
+        // agrupada por estágio (agrupamento final é no cliente).
+        orderBy:
+          filters.scope === 'chat' || filters.estagio_id || filters.per_stage
+            ? [...recencyOrder]
+            : [{ estagio_id: 'asc' }, ...recencyOrder],
+        take,
+        skip,
+      });
+
+    type Row = Awaited<ReturnType<typeof runQuery>>[number];
+    const mapRow = (lead: Row) => {
       const last = lead.messages[0];
       let preview = '';
       if (last) {
@@ -417,7 +433,47 @@ export class LeadsService {
         ultima_interacao: lead.ultima_interacao ?? last?.created_at ?? null,
         pending_tasks_count: _count?.tasks ?? 0,
       };
-    });
+    };
+
+    let result: unknown;
+
+    if (filters.per_stage && filters.pipeline_id) {
+      // F3: janela por coluna do kanban — top-N por estágio + contagem total
+      // por estágio. Board de 2k+ leads deixa de baixar tudo de uma vez.
+      const perStage = Math.min(parseInt(filters.per_stage) || 50, 500);
+      const stages = await this.prisma.stage.findMany({
+        where: { pipeline_id: filters.pipeline_id },
+        select: { id: true },
+      });
+      const [lists, counts] = await Promise.all([
+        Promise.all(stages.map((s) => runQuery({ estagio_id: s.id }, perStage, 0))),
+        this.prisma.lead.groupBy({
+          by: ['estagio_id'],
+          where: where as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
+          _count: { _all: true },
+          _sum: { valor_estimado: true },
+        }),
+      ]);
+      const stage_counts: Record<string, number> = {};
+      const stage_values: Record<string, number> = {};
+      for (const c of counts) {
+        stage_counts[c.estagio_id] = c._count._all;
+        stage_values[c.estagio_id] = Number(c._sum?.valor_estimado ?? 0);
+      }
+      result = { leads: lists.flat().map(mapRow), stage_counts, stage_values };
+    } else {
+      const leads = await runQuery(
+        {},
+        // Chat pagina de verdade (default 60); lista plena mantém cap 10k.
+        filters.limit
+          ? Math.min(parseInt(filters.limit), 10000)
+          : filters.scope === 'chat'
+            ? 60
+            : 10000,
+        filters.offset ? parseInt(filters.offset) : 0,
+      );
+      result = leads.map(mapRow);
+    }
 
     await this.cache.set(cacheKey, result, LEADS_LIST_TTL_SECONDS);
     return result;

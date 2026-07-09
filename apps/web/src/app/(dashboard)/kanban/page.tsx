@@ -87,6 +87,13 @@ interface TenantUser {
   role: string;
 }
 
+/** Resposta do board com janela por coluna (per_stage). */
+interface BoardResponse {
+  leads: Lead[];
+  stage_counts: Record<string, number>;
+  stage_values: Record<string, number>;
+}
+
 const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
 
 export default function KanbanPage() {
@@ -130,7 +137,7 @@ export default function KanbanPage() {
   const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
   const [detailLeadId, setDetailLeadId] = useState<string | null>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
-  const leadsSnapshotRef = useRef<Lead[] | null>(null);
+  const leadsSnapshotRef = useRef<BoardResponse | null>(null);
 
   const toggleLead = useCallback((id: string) => {
     setSelectedLeadIds((prev) => {
@@ -205,19 +212,64 @@ export default function KanbanPage() {
   // --- Leads ---
   const leadsQueryKey = useMemo(() => ['leads', activePipelineId] as const, [activePipelineId]);
 
-  const { data: leads = [], isLoading: leadsLoading } = useQuery<Lead[]>({
+  // Janela por coluna: servidor manda top-50 de cada estágio + contagem/valor
+  // totais por estágio. Board de 2k+ leads deixa de baixar tudo de uma vez.
+  const PER_STAGE = 50;
+
+  const { data: board, isLoading: leadsLoading } = useQuery<BoardResponse>({
     queryKey: leadsQueryKey,
     queryFn: async () => {
-      if (!activePipelineId) return [];
-      const res = await api.get('/api/leads', { params: { pipeline_id: activePipelineId, limit: '10000' } });
+      if (!activePipelineId) return { leads: [], stage_counts: {}, stage_values: {} };
+      const res = await api.get('/api/leads', {
+        params: { pipeline_id: activePipelineId, per_stage: String(PER_STAGE) },
+      });
       return res.data;
     },
     enabled: !!activePipelineId,
     placeholderData: keepPreviousData,
-    // Realtime via WebSocket invalida no evento; poll é só fallback. 12s em vez
-    // de 3s corta load sem perder reatividade (WS move o card na hora).
-    refetchInterval: 12000,
+    // Realtime via WebSocket com DELTA-PATCH direto na cache (sem refetch).
+    // Poll é só rede de segurança se o WS cair — 60s.
+    refetchInterval: 60000,
   });
+
+  const leads = useMemo(() => board?.leads ?? [], [board]);
+  const stageCounts = useMemo(() => board?.stage_counts ?? {}, [board]);
+  const stageValues = useMemo(() => board?.stage_values ?? {}, [board]);
+
+  // "Carregar mais": appenda a próxima página da coluna DIRETO na cache da
+  // query — assim WS delta-patch e optimistic updates continuam operando num
+  // lugar só. Refetch completo (poll/invalidate) volta a coluna pro top-50.
+  const [loadingMoreStage, setLoadingMoreStage] = useState<string | null>(null);
+
+  const loadMoreInStage = useCallback(
+    async (stageId: string) => {
+      if (!activePipelineId || loadingMoreStage) return;
+      setLoadingMoreStage(stageId);
+      try {
+        const current = queryClient.getQueryData<BoardResponse>(leadsQueryKey);
+        const loaded = current?.leads.filter((l) => l.estagio_id === stageId).length ?? 0;
+        const res = await api.get('/api/leads', {
+          params: {
+            pipeline_id: activePipelineId,
+            estagio_id: stageId,
+            limit: String(PER_STAGE),
+            offset: String(loaded),
+          },
+        });
+        const page = res.data as Lead[];
+        queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
+          if (!old) return old;
+          const seen = new Set(old.leads.map((l) => l.id));
+          return { ...old, leads: [...old.leads, ...page.filter((l) => !seen.has(l.id))] };
+        });
+      } catch {
+        toast.error('Erro ao carregar mais leads');
+      } finally {
+        setLoadingMoreStage(null);
+      }
+    },
+    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey],
+  );
 
   const selectAllInStage = useCallback(
     (stageId: string) => {
@@ -287,14 +339,19 @@ export default function KanbanPage() {
   }, [tenantUsers]);
 
   // --- Metrics ---
+  // Agregados vêm do servidor (stage_counts/stage_values) — exatos mesmo com
+  // a janela por coluna carregando só os top-50 de cada estágio.
   const metrics = useMemo(() => {
-    const total = leads.length;
-    const sumValor = leads.reduce((acc, l) => acc + (Number(l.valor_estimado) || 0), 0);
+    const total = Object.values(stageCounts).reduce((a, b) => a + b, 0);
+    const sumValor = Object.values(stageValues).reduce((a, b) => a + b, 0);
     const wonStageIds = new Set(stages.filter((s) => s.is_won).map((s) => s.id));
-    const wonCount = leads.filter((l) => wonStageIds.has(l.estagio_id)).length;
+    let wonCount = 0;
+    for (const [stageId, count] of Object.entries(stageCounts)) {
+      if (wonStageIds.has(stageId)) wonCount += count;
+    }
     const conversion = total > 0 ? (wonCount / total) * 100 : 0;
     return { total, sumValor, conversion };
-  }, [leads, stages]);
+  }, [stageCounts, stageValues, stages]);
 
   // --- Mutations: Pipeline ---
   const createPipelineMutation = useMutation({
@@ -482,43 +539,11 @@ export default function KanbanPage() {
       if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     };
-    const handleNewMessage = (data: { leadId: string; message?: { content?: string } }) => {
-      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
-        if (!old) return old;
-        let matched = false;
-        const updated = old.map((l) => {
-          if (l.id !== data.leadId) return l;
-          matched = true;
-          return {
-            ...l,
-            mensagens_nao_lidas: l.mensagens_nao_lidas + 1,
-            ultima_mensagem_preview: data.message?.content ?? l.ultima_mensagem_preview,
-            ultima_interacao: new Date().toISOString(),
-          };
-        });
-        // If lead isn't in the current pipeline cache (e.g. new lead created
-        // by the webhook), refetch so it appears on the board.
-        if (!matched) {
-          queryClient.invalidateQueries({ queryKey: leadsQueryKey });
-        }
-        return updated;
-      });
-    };
-    const handleUnreadReset = (data: { leadId: string }) => {
-      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
-        if (!old) return old;
-        return old.map((l) =>
-          l.id === data.leadId ? { ...l, mensagens_nao_lidas: 0 } : l,
-        );
-      });
-    };
+    // new-message/unread-reset: delta-patch feito no SocketEventsProvider
+    // global (trata o shape { leads, stage_counts } do board).
     socket.on('lead:stage-changed', handleStageChanged);
-    socket.on('lead:new-message', handleNewMessage);
-    socket.on('lead:unread-reset', handleUnreadReset);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
-      socket.off('lead:new-message', handleNewMessage);
-      socket.off('lead:unread-reset', handleUnreadReset);
     };
   }, [queryClient, leadsQueryKey, currentUserId]);
 
@@ -570,7 +595,8 @@ export default function KanbanPage() {
       }
       if (!targetStageId) return;
 
-      leadsSnapshotRef.current = leads;
+      leadsSnapshotRef.current =
+        queryClient.getQueryData<BoardResponse>(leadsQueryKey) ?? null;
 
       if (targetStageId === lead.estagio_id) {
         // Same-stage reorder: compute fractional position between neighbors.
@@ -606,29 +632,52 @@ export default function KanbanPage() {
         }
 
         // Optimistic update: reorder leads in cache.
-        queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) => {
+        queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
           if (!old) return old;
           const stageSet = new Set(stageLeads.map((l) => l.id));
-          const others = old.filter((l) => !stageSet.has(l.id));
+          const others = old.leads.filter((l) => !stageSet.has(l.id));
           const updated = reorderedForPos.map((l) =>
             l.id === activeId ? { ...l, position: newPosition } : l,
           );
-          return [...others, ...updated];
+          return { ...old, leads: [...others, ...updated] };
         });
 
         stageMutation.mutate({ leadId: activeId, estagioId: targetStageId, position: newPosition });
         return;
       }
 
-      // Cross-stage move
+      // Cross-stage move (+ ajusta contadores das colunas na hora).
       const finalTarget = targetStageId;
-      queryClient.setQueryData<Lead[]>(leadsQueryKey, (old) =>
-        old?.map((l) => (l.id === activeId ? { ...l, estagio_id: finalTarget } : l)),
-      );
+      queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
+        if (!old) return old;
+        const moved = old.leads.find((l) => l.id === activeId);
+        const counts = { ...old.stage_counts };
+        if (moved && moved.estagio_id !== finalTarget) {
+          counts[moved.estagio_id] = Math.max(0, (counts[moved.estagio_id] ?? 1) - 1);
+          counts[finalTarget] = (counts[finalTarget] ?? 0) + 1;
+        }
+        return {
+          ...old,
+          stage_counts: counts,
+          leads: old.leads.map((l) =>
+            l.id === activeId ? { ...l, estagio_id: finalTarget } : l,
+          ),
+        };
+      });
       stageMutation.mutate({ leadId: activeId, estagioId: finalTarget });
     },
     [leads, queryClient, leadsQueryKey, stageMutation, orderedStages, reorderStagesMutation],
   );
+
+  // Quantos leads (sem filtro de aba/busca) já estão carregados por estágio —
+  // base do "Carregar mais" (comparar filtrado com total daria falso positivo).
+  const loadedByStage = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const lead of leads) {
+      map[lead.estagio_id] = (map[lead.estagio_id] ?? 0) + 1;
+    }
+    return map;
+  }, [leads]);
 
   // --- Group ---
   const leadsByStage = useMemo(() => {
@@ -935,6 +984,10 @@ export default function KanbanPage() {
                     key={stage.id}
                     stage={stage}
                     leads={leadsByStage[stage.id] ?? []}
+                    totalCount={stageCounts[stage.id]}
+                    hasMore={(stageCounts[stage.id] ?? 0) > (loadedByStage[stage.id] ?? 0)}
+                    onLoadMore={loadMoreInStage}
+                    loadingMore={loadingMoreStage === stage.id}
                     onClickLead={(leadId) => router.push(`/chat/${leadId}`)}
                     onAddLead={(stageId) => openNewLead(stageId)}
                     onRenameStage={handleRenameStage}

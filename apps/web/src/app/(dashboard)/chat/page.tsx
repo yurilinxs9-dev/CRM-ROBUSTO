@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { MessageSquareOff, Plus, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
@@ -26,6 +31,7 @@ type FilterTab = 'all' | 'unread' | 'mine';
 
 const LEADS_QUERY_KEY = ['chat', 'leads'] as const;
 const LEADS_STALE = 0;
+const PAGE_SIZE = 60;
 const ROW_HEIGHT = 76;
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -53,18 +59,64 @@ export default function ChatPage() {
   }, [pathname]);
 
   // --- Queries ---
-  const { data: leads = [], isLoading } = useQuery<ChatLead[]>({
-    queryKey: LEADS_QUERY_KEY,
-    queryFn: async () => {
-      const res = await api.get('/api/leads', { params: { limit: '10000', scope: 'chat' } });
+  // Paginação servidor: 60 conversas por página, ordenadas por recência.
+  // Filtros de aba/busca vão pro servidor pra paginação funcionar de verdade.
+  const serverFilters = useMemo(
+    () => ({
+      search: debouncedSearch.trim() || undefined,
+      unread: tab === 'unread' ? '1' : undefined,
+      responsavel_id: tab === 'mine' ? currentUser?.id : undefined,
+    }),
+    [debouncedSearch, tab, currentUser?.id],
+  );
+
+  const {
+    data: leadPages,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery<ChatLead[]>({
+    queryKey: [...LEADS_QUERY_KEY, serverFilters],
+    queryFn: async ({ pageParam }) => {
+      const res = await api.get('/api/leads', {
+        params: {
+          scope: 'chat',
+          limit: String(PAGE_SIZE),
+          offset: String(pageParam ?? 0),
+          ...(serverFilters.search ? { search: serverFilters.search } : {}),
+          ...(serverFilters.unread ? { unread: '1' } : {}),
+          ...(serverFilters.responsavel_id
+            ? { responsavel_id: serverFilters.responsavel_id }
+            : {}),
+        },
+      });
       return res.data;
     },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
     staleTime: LEADS_STALE,
-    // Realtime via WebSocket (SocketEventsProvider invalida no evento). O poll
-    // é só rede de segurança se o WS cair — 12s em vez de 3s corta o load de
-    // refetch de 10k leads em 4× sem perder reatividade perceptível.
-    refetchInterval: 12000,
+    // Realtime via WebSocket com DELTA-PATCH direto na cache (sem refetch).
+    // Poll é só rede de segurança se o WS cair — 60s.
+    refetchInterval: 60000,
   });
+
+  // Flatten + dedupe (offset pode repetir lead que subiu na ordenação
+  // entre uma página e outra).
+  const leads = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ChatLead[] = [];
+    for (const page of leadPages?.pages ?? []) {
+      for (const l of page) {
+        if (!seen.has(l.id)) {
+          seen.add(l.id);
+          out.push(l);
+        }
+      }
+    }
+    return out;
+  }, [leadPages]);
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
     queryKey: ['pipelines'],
@@ -160,6 +212,20 @@ export default function ChatPage() {
     estimateSize: () => ROW_HEIGHT,
     overscan: 8,
   });
+
+  // Infinite scroll: chegou perto do fim da lista carregada → busca próxima página.
+  const virtualItems = virtualizer.getVirtualItems();
+  useEffect(() => {
+    const last = virtualItems[virtualItems.length - 1];
+    if (
+      last &&
+      last.index >= filteredLeads.length - 10 &&
+      hasNextPage &&
+      !isFetchingNextPage
+    ) {
+      fetchNextPage();
+    }
+  }, [virtualItems, filteredLeads.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   return (
     <div className="flex h-full flex-col bg-background">

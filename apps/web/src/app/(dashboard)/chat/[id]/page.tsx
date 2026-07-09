@@ -377,17 +377,9 @@ export default function ChatDetailPage() {
       await api.patch(`/api/leads/${leadId}/mark-read`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['leads'] });
-      queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      
-      // Update cache optimistically so the sidebar UI updates instantly without waiting for a re-fetch
-      queryClient.setQueryData<ChatLead[]>(['chat', 'leads'], (old) => {
-        if (!old) return old;
-        return old.map((lead) => 
-          lead.id === leadId ? { ...lead, mensagens_nao_lidas: 0 } : lead
-        );
-      });
+      // Listas (chat/kanban): o backend emite lead:unread-reset e o
+      // SocketEventsProvider faz delta-patch na cache — sem refetch.
     },
   });
 
