@@ -7,7 +7,9 @@ export interface StageRow { id: string; nome: string; cor: string; ordem: number
 
 // Dashboard data changes slowly relative to render frequency — a short TTL
 // makes the first hit pay the cost and everyone else gets sub-10ms responses.
-const DASHBOARD_TTL_SECONDS = 30;
+// 60s > refetchInterval do front (30s): a maioria dos polls acerta o cache
+// em vez de recomputar tudo a cada ciclo.
+const DASHBOARD_TTL_SECONDS = 60;
 
 @Injectable()
 export class DashboardService {
@@ -352,11 +354,13 @@ export class DashboardService {
     const last7days = new Date();
     last7days.setDate(last7days.getDate() - 7);
 
-    return this.prisma.message.groupBy({
-      by: ['created_at'],
-      where: { created_at: { gte: last7days }, tenant_id: user.tenantId },
-      _count: { id: true },
-      orderBy: { created_at: 'asc' },
-    });
+    // date_trunc por DIA. O groupBy anterior agrupava pelo timestamp completo
+    // (created_at é único por mensagem) → devolvia uma linha POR MENSAGEM da
+    // semana — milhares de linhas de payload pra um gráfico de 7 pontos.
+    return this.prisma.$queryRaw<{ day: Date; count: number }[]>`
+      SELECT date_trunc('day', created_at) AS day, COUNT(*)::int AS count
+      FROM "Message"
+      WHERE tenant_id = ${user.tenantId} AND created_at >= ${last7days}
+      GROUP BY 1 ORDER BY 1 ASC`;
   }
 }

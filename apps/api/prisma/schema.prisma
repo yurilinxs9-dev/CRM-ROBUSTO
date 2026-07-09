@@ -334,6 +334,14 @@ model Message {
   @@index([tenant_id])
   @@index([visible_to_user_id])
   @@index([media_archived, created_at])
+  // Dashboard: groupBy mensagens enviadas por atendente (stats/performance).
+  @@index([tenant_id, sent_by_user_id])
+  // Dashboard: volume por dia do tenant.
+  @@index([tenant_id, created_at])
+  // ⚠️ Existe também um índice PARCIAL só no DB (Prisma não suporta):
+  // Message_outgoing_by_user_idx ON (tenant_id, sent_by_user_id)
+  //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL
+  // — é ele que deixa o groupBy do dashboard em ~260ms (era 4.4s).
 }
 
 model LeadActivity {
