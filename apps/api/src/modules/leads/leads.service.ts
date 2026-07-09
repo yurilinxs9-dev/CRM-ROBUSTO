@@ -1092,8 +1092,15 @@ export class LeadsService {
       }
     }
     // Histórico antes do claim só é escondido pra OPERADOR; manager sempre
-    // tem visão completa.
-    const hideHistory = !isManager && !!lead.assumed_at;
+    // tem visão completa. Tenant com share_history_enabled (ex.: Diplapel)
+    // desliga o corte: quem recebe o lead transferido vê a conversa inteira
+    // pra ter contexto e dar sequência.
+    const tenantCfg = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { share_history_enabled: true },
+    });
+    const hideHistory =
+      !isManager && !!lead.assumed_at && !tenantCfg?.share_history_enabled;
     // Dono do lead vê a conversa INTEIRA, mesmo trechos que entraram por outro
     // número (cliente que falou com mais de uma instância). O filtro por
     // instância só vale pra quem acessa via instância própria SEM ser o

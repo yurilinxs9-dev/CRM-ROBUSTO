@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean };
 
 interface Instance {
   id: string;
@@ -76,6 +76,26 @@ export function GeneralTab() {
         checked
           ? 'Distribuição automática (round-robin) ativada.'
           : 'Distribuição automática desativada.',
+      );
+    } catch {
+      toast.error('Erro ao salvar configuração.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleShareHistoryToggle = async (checked: boolean) => {
+    setIsPending(true);
+    try {
+      const { data } = await api.patch<TenantSettings>(
+        '/api/tenants/settings',
+        { share_history_enabled: checked },
+      );
+      setTenant(data);
+      toast.success(
+        checked
+          ? 'Histórico compartilhado na transferência ativado.'
+          : 'Histórico compartilhado na transferência desativado.',
       );
     } catch {
       toast.error('Erro ao salvar configuração.');
@@ -180,6 +200,27 @@ export function GeneralTab() {
           onCheckedChange={handleRoundRobinToggle}
           disabled={isPending || !tenant.pool_enabled}
           aria-label="Distribuição round-robin"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">
+            Compartilhar histórico na transferência
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Quando um lead é transferido (manual ou distribuição automática), o
+            novo atendente vê <strong>toda a conversa anterior</strong> para
+            ter contexto e dar sequência. Desativado, o histórico anterior à
+            transferência fica oculto para o novo atendente (privacidade entre
+            operadores). Gerentes sempre veem tudo.
+          </p>
+        </div>
+        <Switch
+          checked={tenant.share_history_enabled === true}
+          onCheckedChange={handleShareHistoryToggle}
+          disabled={isPending}
+          aria-label="Compartilhar histórico na transferência"
         />
       </div>
 

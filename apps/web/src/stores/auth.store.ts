@@ -17,6 +17,7 @@ export interface Tenant {
   pool_enabled: boolean;
   prefix_enabled?: boolean;
   round_robin_enabled?: boolean;
+  share_history_enabled?: boolean;
 }
 
 interface AuthState {

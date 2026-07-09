@@ -88,6 +88,11 @@ model Tenant {
   // entram no rodízio round-robin por setor. Default false = comportamento atual
   // preservado (lead no pool fica sem dono).
   round_robin_enabled       Boolean @default(false)
+  // Opt-in por tenant: quando true, transferência de lead (claim/reassign/
+  // round-robin de setor) NÃO esconde o histórico anterior — o novo
+  // responsável vê a conversa inteira pra ter contexto. Default false =
+  // privacidade atual preservada (histórico corta em assumed_at).
+  share_history_enabled     Boolean @default(false)
 
   owner              User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users              User[]             @relation("TenantMembers")

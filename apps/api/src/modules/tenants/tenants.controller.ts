@@ -11,6 +11,7 @@ const updateSettingsSchema = z.object({
   pool_enabled: z.boolean().optional(),
   prefix_enabled: z.boolean().optional(),
   round_robin_enabled: z.boolean().optional(),
+  share_history_enabled: z.boolean().optional(),
 });
 
 @Controller('tenants')
