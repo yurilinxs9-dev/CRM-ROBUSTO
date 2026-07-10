@@ -27,6 +27,12 @@ const refreshCookieSameSite =
   process.env.NODE_ENV === 'production' ? ('none' as const) : ('lax' as const);
 const refreshCookieSecure = process.env.NODE_ENV === 'production';
 
+const forgotPasswordSchema = z.object({ email: z.string().email() });
+const resetPasswordSchema = z.object({
+  token: z.string().min(32).max(128),
+  senha: z.string().min(8).max(100),
+});
+
 const registerSchema = z
   .object({
     nome: z.string().min(2).max(100),
@@ -47,7 +53,13 @@ export class AuthController {
   @HttpCode(200)
   async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { email, senha, remember } = loginSchema.parse(body);
-    const { accessToken, refreshToken } = await this.authService.login(email, senha, remember, req.ip);
+    const { accessToken, refreshToken } = await this.authService.login(
+      email,
+      senha,
+      remember,
+      req.ip,
+      req.headers['user-agent'],
+    );
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
@@ -95,7 +107,11 @@ export class AuthController {
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = req.cookies?.refresh_token;
     if (!token) throw new UnauthorizedException('No refresh token');
-    const { accessToken, refreshToken, remember } = await this.authService.refreshToken(token);
+    const { accessToken, refreshToken, remember } = await this.authService.refreshToken(
+      token,
+      req.ip,
+      req.headers['user-agent'],
+    );
 
     res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
@@ -108,11 +124,33 @@ export class AuthController {
     return { accessToken };
   }
 
+  @Public()
   @Post('logout')
   @HttpCode(200)
-  async logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // Revoga a família da sessão no servidor — cookie limpo sozinho não
+    // invalida um refresh token copiado.
+    await this.authService.logout(req.cookies?.refresh_token);
     res.clearCookie('refresh_token', { path: '/api/auth/refresh' });
     return { message: 'Logged out' };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @Post('forgot-password')
+  @HttpCode(200)
+  async forgotPassword(@Body() body: unknown) {
+    const { email } = forgotPasswordSchema.parse(body);
+    return this.authService.forgotPassword(email);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('reset-password')
+  @HttpCode(200)
+  async resetPassword(@Body() body: unknown) {
+    const { token, senha } = resetPasswordSchema.parse(body);
+    return this.authService.resetPassword(token, senha);
   }
 
   @Get('me')

@@ -17,6 +17,7 @@ import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
 import { UserRole } from '@/common/types/roles';
+import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
@@ -300,36 +301,15 @@ export class LeadsService {
       select: { pool_enabled: true },
     });
     const poolEnabled = Boolean(tenant?.pool_enabled);
-    const isManager =
-      user.role === UserRole.GERENTE || user.role === UserRole.SUPER_ADMIN;
-
-    if (poolEnabled) {
-      // COMPARTILHADO: a conversa no pool (sem responsável) é de TODOS; assim que
-      // é transferida a um operador, vira só dele. GERENTE/SUPER_ADMIN supervisionam
-      // tudo (só não bisbilhotam lead privado/assumido de outro responsável).
-      if (isManager) {
-        where.OR = [{ is_private: false }, { responsavel_id: user.id }];
-      } else {
-        // operador/visualizador: pool não-privado + as próprias conversas
-        where.OR = [
-          { responsavel_id: null, is_private: false },
-          { responsavel_id: user.id },
-        ];
-      }
-    } else {
-      // INDIVIDUAL: cada um vê só as próprias conversas. Operador/Visualizador
-      // sempre; no chat, QUALQUER role (anti-leak Cajuru: gestor não vê chat
-      // alheio — supervisão global fica no Kanban/lista).
-      if (
-        user.role === UserRole.OPERADOR ||
-        user.role === UserRole.VISUALIZADOR ||
-        filters.scope === 'chat'
-      ) {
-        where.responsavel_id = user.id;
-      }
-      // Privacidade ao "Assumir": lead is_private só aparece p/ o responsável.
-      where.OR = [{ is_private: false }, { responsavel_id: user.id }];
-    }
+    Object.assign(
+      where,
+      buildVisibilityWhere({
+        userId: user.id,
+        role: user.role as UserRole,
+        poolEnabled,
+        scope: filters.scope,
+      }),
+    );
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
@@ -345,13 +325,7 @@ export class LeadsService {
         { nome: { contains: filters.search, mode: 'insensitive' } },
         { telefone: { contains: filters.search } },
       ];
-      if (where.OR) {
-        // Already has OR (pool visibility) — combine with AND
-        where.AND = [{ OR: where.OR }, { OR: searchCondition }];
-        delete where.OR;
-      } else {
-        where.OR = searchCondition;
-      }
+      mergeSearchCondition(where, searchCondition);
     }
 
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);

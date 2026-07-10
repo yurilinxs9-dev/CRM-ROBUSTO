@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
@@ -34,6 +34,7 @@ import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 
 @Module({
   controllers: [HealthController],
@@ -85,7 +86,15 @@ import { CacheModule } from './common/cache/cache.module';
       },
     }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
+    // Storage Redis: contadores compartilhados entre réplicas (in-memory
+    // fragmentava o limite por processo). Degrada pra memória sem REDIS_URL.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        throttlers: [{ ttl: 60000, limit: 100 }],
+        storage: new RedisThrottlerStorage(config),
+      }),
+    }),
     PrismaModule,
     CacheModule,
     TasksModule,

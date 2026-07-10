@@ -10,6 +10,7 @@ import { MediaPipelineService } from '../media/media-pipeline.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
+import { normalizeAckUpdates, extractAck } from './ack-normalizer';
 import {
   type ExtractedMessage,
   extractFromEvolution,
@@ -1019,32 +1020,12 @@ export class WebhookProcessor extends WorkerHost {
     // Sem normalizar, o objeto flat caía no `!Array.isArray` e TODOS os acks de
     // entrega/leitura eram descartados — outbound Evolution ficava preso em SENT
     // (nunca ✓✓) e ERRO de entrega nunca virava FAILED visível.
-    const raw = data?.data;
-    const updates: Array<Obj> = Array.isArray(raw)
-      ? raw
-      : raw && typeof raw === 'object'
-        ? [raw as Obj]
-        : [];
+    const updates = normalizeAckUpdates(data?.data);
     if (updates.length === 0) return;
     for (const update of updates) {
-      const key = update?.key as Obj | undefined;
-      const messageId =
-        (key?.id as string | undefined) ??
-        (update?.keyId as string | undefined);
-      const updateData = update?.update as Obj | undefined;
-      const status =
-        (updateData?.status as string | undefined) ??
-        (update?.status as string | undefined);
-      if (!messageId || !status) continue;
-
-      const statusMap: Record<string, string> = {
-        DELIVERY_ACK: 'DELIVERED',
-        READ: 'READ',
-        PLAYED: 'READ',
-        ERROR: 'FAILED',
-      };
-      const mappedStatus = statusMap[status];
-      if (!mappedStatus) continue;
+      const ack = extractAck(update);
+      if (!ack) continue;
+      const { messageId, status: mappedStatus } = ack;
 
       // wa_id deixou de ser único globalmente (composto com tenant_id), então
       // a mesma id pode aparecer em múltiplas perspectivas. updateMany cobre

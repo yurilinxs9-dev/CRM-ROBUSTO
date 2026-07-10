@@ -152,10 +152,48 @@ model User {
   tasks              Task[]
   push_subscriptions PushSubscription[]
   instances_hidden   InstanceHidden[]
+  refresh_tokens     RefreshToken[]
+  password_resets    PasswordResetToken[]
 
   @@index([email])
   @@index([tenant_id])
   @@index([sector_id])
+}
+
+// Sessões de refresh token — rotação obrigatória + reuse-detection.
+// Cada login abre uma FAMÍLIA (family_id); cada refresh revoga o token usado e
+// emite um novo na mesma família. Reuso de token já revogado = roubo provável →
+// família inteira é revogada (desloga o atacante E a vítima, que re-loga).
+model RefreshToken {
+  id          String    @id @default(uuid())
+  user_id     String
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  family_id   String
+  token_hash  String    @unique // sha256 do JWT — nunca guardamos o token em claro
+  remember    Boolean   @default(false)
+  expires_at  DateTime
+  revoked_at  DateTime?
+  replaced_by String? // id do token emitido na rotação (auditoria da cadeia)
+  ip          String?
+  user_agent  String?
+  created_at  DateTime  @default(now())
+
+  @@index([user_id])
+  @@index([family_id])
+  @@index([expires_at])
+}
+
+// Token de "esqueci minha senha" — hash sha256, uso único, expira em 1h.
+model PasswordResetToken {
+  id         String    @id @default(uuid())
+  user_id    String
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token_hash String    @unique
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  @@index([user_id])
 }
 
 model Pipeline {

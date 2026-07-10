@@ -70,7 +70,8 @@ backups/
 .codex/
 .gemini/
 .antigravity/
-.github/
+# .github precisa ir pro repo (CI); só os agents locais ficam de fora
+.github/agents/
 
 # ---- Misc ----
 coverage/
