@@ -375,14 +375,39 @@ export default function ChatDetailPage() {
       file: File;
       caption?: string;
     }) => {
-      const fd = new FormData();
-      fd.append('file', file, file.name);
-      fd.append('lead_id', leadId);
-      if (caption) fd.append('caption', caption);
-      const res = await api.post('/api/messages/send-media', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      return res.data;
+      const mimetype = file.type || 'application/octet-stream';
+      // Caminho preferido: PUT direto no Storage (binário não passa pela API).
+      try {
+        const { data: up } = await api.post<{ path: string; url: string }>(
+          '/api/media/upload-url',
+          { lead_id: leadId, filename: file.name, mimetype },
+        );
+        const putRes = await fetch(up.url, {
+          method: 'PUT',
+          headers: { 'Content-Type': mimetype, 'x-upsert': 'true' },
+          body: file,
+        });
+        if (!putRes.ok) throw new Error(`storage PUT ${putRes.status}`);
+        const res = await api.post('/api/messages/send-media-ref', {
+          lead_id: leadId,
+          path: up.path,
+          mimetype,
+          filename: file.name,
+          ...(caption ? { caption } : {}),
+        });
+        return res.data;
+      } catch (directErr) {
+        // Fallback: multipart antigo via API (backend legado ou Storage indisponível).
+        console.warn('[send-media] upload direto falhou, usando multipart', directErr);
+        const fd = new FormData();
+        fd.append('file', file, file.name);
+        fd.append('lead_id', leadId);
+        if (caption) fd.append('caption', caption);
+        const res = await api.post('/api/messages/send-media', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return res.data;
+      }
     },
     onSuccess: () => {
       toast.success('Mídia enviada');

@@ -31,6 +31,24 @@ export class MediaService {
     return path;
   }
 
+  /**
+   * URL assinada de UPLOAD — o browser sobe o arquivo DIRETO pro Storage
+   * (PUT), sem passar o binário pelo corpo HTTP da API.
+   */
+  async createSignedUploadUrl(path: string): Promise<{ path: string; url: string; token: string }> {
+    const { data, error } = await this.supabase.storage
+      .from(this.bucket)
+      .createSignedUploadUrl(path);
+    if (error || !data) throw new Error(`Failed to create upload URL: ${error?.message}`);
+    return { path: data.path, url: data.signedUrl, token: data.token };
+  }
+
+  async download(path: string): Promise<Buffer> {
+    const { data, error } = await this.supabase.storage.from(this.bucket).download(path);
+    if (error || !data) throw new Error(`Storage download failed: ${error?.message}`);
+    return Buffer.from(await data.arrayBuffer());
+  }
+
   async getSignedUrl(path: string, expiresIn = 3600): Promise<string> {
     const { data, error } = await this.supabase.storage
       .from(this.bucket)

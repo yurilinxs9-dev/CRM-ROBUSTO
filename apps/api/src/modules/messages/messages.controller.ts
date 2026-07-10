@@ -53,6 +53,12 @@ export class MessagesController {
     return this.messagesService.sendMedia(file, body, req.user as AuthUser);
   }
 
+  @Post('send-media-ref')
+  @Roles(UserRole.OPERADOR)
+  sendMediaRef(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.messagesService.sendMediaFromStorage(body, req.user as AuthUser);
+  }
+
   @Post('internal-note')
   @Roles(UserRole.OPERADOR)
   createInternalNote(@Body() body: unknown, @Req() req: Record<string, unknown>) {

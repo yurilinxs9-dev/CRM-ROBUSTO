@@ -3,6 +3,9 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from './webhooks.controller';
 import { WebhookProcessor } from './webhook.processor';
+import { InboundMessageService } from './inbound-message.service';
+import { EvolutionEventsHandler } from './evolution-events.handler';
+import { UazapiEventsHandler } from './uazapi-events.handler';
 import { WebhookSecretGuard } from './guards/webhook-secret.guard';
 import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
@@ -36,6 +39,12 @@ import { QueueModule } from '../queue/queue.module';
     QueueModule,
   ],
   controllers: [WebhooksController],
-  providers: [WebhookProcessor, WebhookSecretGuard],
+  providers: [
+    WebhookProcessor,
+    InboundMessageService,
+    EvolutionEventsHandler,
+    UazapiEventsHandler,
+    WebhookSecretGuard,
+  ],
 })
 export class WebhooksModule {}

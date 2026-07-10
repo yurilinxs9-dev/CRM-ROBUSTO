@@ -522,6 +522,49 @@ export class MessagesService {
     return { ...message, media_url: signedUrl };
   }
 
+  /**
+   * F2.4 — envio de mídia já subida DIRETO pro Storage pelo browser
+   * (/media/upload-url + PUT). Baixa o objeto temporário, roda o MESMO
+   * pipeline do sendMedia (ffmpeg/thumbnail/poster) e apaga o temp.
+   */
+  async sendMediaFromStorage(body: unknown, user: AuthUser, opts: SendOptions = {}) {
+    const { lead_id, path, mimetype, filename, caption } = z
+      .object({
+        lead_id: z.string().uuid(),
+        path: z.string().min(1).max(300),
+        mimetype: z.string().min(3).max(120),
+        filename: z.string().min(1).max(200).optional(),
+        caption: z.string().optional(),
+      })
+      .parse(body);
+
+    // Só objetos do staging DESTE lead — impede referenciar path arbitrário
+    // do bucket (ex.: mídia de outro tenant).
+    if (!path.startsWith(`uploads/${lead_id}/`)) {
+      throw new ForbiddenException('Path invalido');
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await this.media.download(path);
+    } catch {
+      throw new NotFoundException('Upload nao encontrado no Storage');
+    }
+
+    const pseudoFile = {
+      buffer,
+      mimetype,
+      originalname: filename ?? path.split('/').pop() ?? 'arquivo',
+    } as Express.Multer.File;
+
+    try {
+      return await this.sendMedia(pseudoFile, { lead_id, caption }, user, opts);
+    } finally {
+      // Temp do staging não é mais necessário (pipeline re-sobe o processado).
+      void this.media.delete(path).catch(() => undefined);
+    }
+  }
+
   async sendMedia(file: Express.Multer.File, body: unknown, user: AuthUser, opts: SendOptions = {}) {
     const { lead_id, caption } = z
       .object({
