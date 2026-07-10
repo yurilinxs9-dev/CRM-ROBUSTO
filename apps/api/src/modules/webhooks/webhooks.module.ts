@@ -6,6 +6,7 @@ import { WebhookProcessor } from './webhook.processor';
 import { InboundMessageService } from './inbound-message.service';
 import { EvolutionEventsHandler } from './evolution-events.handler';
 import { UazapiEventsHandler } from './uazapi-events.handler';
+import { WebhookLogRetentionService } from './webhook-log-retention.service';
 import { WebhookSecretGuard } from './guards/webhook-secret.guard';
 import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
@@ -44,6 +45,7 @@ import { QueueModule } from '../queue/queue.module';
     InboundMessageService,
     EvolutionEventsHandler,
     UazapiEventsHandler,
+    WebhookLogRetentionService,
     WebhookSecretGuard,
   ],
 })
