@@ -35,13 +35,14 @@ const createMemberSchema = z.object({
   email: z.string().email(),
   senha: z.string().min(8).max(100),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
-  // F-01: setor obrigatório no cadastro.
-  sector_id: z.string().uuid({ message: 'Setor é obrigatório' }),
+  // Setor é opcional no cadastro; quando informado, é validado contra o tenant.
+  sector_id: z.string().uuid().nullable().optional(),
 });
 
 const linkMemberSchema = z.object({
   email: z.string().email(),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
+  sector_id: z.string().uuid().nullable().optional(),
 });
 
 const updateMemberSchema = z.object({
@@ -49,7 +50,8 @@ const updateMemberSchema = z.object({
   titulo: z.string().max(50).nullable().optional(),
   especialidade: z.string().max(100).nullable().optional(),
   ativo: z.boolean().optional(),
-  sector_id: z.string().uuid().optional(),
+  // null remove o membro do setor.
+  sector_id: z.string().uuid().nullable().optional(),
 });
 
 @Controller('users')

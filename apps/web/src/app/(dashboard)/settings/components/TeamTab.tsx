@@ -60,6 +60,9 @@ function getInitials(name: string) {
 
 type AddMode = 'create' | 'link';
 
+// Sentinela para "sem setor" (Radix Select não aceita value="").
+const NO_SECTOR = 'none';
+
 export function TeamTab() {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
@@ -71,6 +74,7 @@ export function TeamTab() {
   const [newSectorId, setNewSectorId] = useState('');
   const [linkEmail, setLinkEmail] = useState('');
   const [linkRole, setLinkRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
+  const [linkSectorId, setLinkSectorId] = useState('');
 
   const { data: sectors = [] } = useSectors();
 
@@ -84,7 +88,7 @@ export function TeamTab() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole, sector_id: newSectorId });
+      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole, sector_id: newSectorId || null });
     },
     onSuccess: () => {
       toast.success('Membro adicionado!');
@@ -101,14 +105,14 @@ export function TeamTab() {
 
   const linkMutation = useMutation({
     mutationFn: async () => {
-      await api.post('/api/users/team/link', { email: linkEmail, role: linkRole });
+      await api.post('/api/users/team/link', { email: linkEmail, role: linkRole, sector_id: linkSectorId || null });
     },
     onSuccess: () => {
       toast.success('Usuário vinculado!');
       queryClient.invalidateQueries({ queryKey: ['team'] });
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
-      setLinkEmail(''); setLinkRole('OPERADOR');
+      setLinkEmail(''); setLinkRole('OPERADOR'); setLinkSectorId('');
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -136,7 +140,7 @@ export function TeamTab() {
     updateMutation.mutate({ id: m.id, data: { role } });
   };
 
-  const changeSector = (m: TeamMember, sector_id: string) => {
+  const changeSector = (m: TeamMember, sector_id: string | null) => {
     updateMutation.mutate({ id: m.id, data: { sector_id } });
   };
 
@@ -185,14 +189,15 @@ export function TeamTab() {
                 <div className="flex items-center gap-2 shrink-0">
                   {!isSuperAdmin && (
                     <Select
-                      value={m.sector_id ?? ''}
-                      onValueChange={(v) => changeSector(m, v)}
+                      value={m.sector_id ?? NO_SECTOR}
+                      onValueChange={(v) => changeSector(m, v === NO_SECTOR ? null : v)}
                       disabled={updateMutation.isPending}
                     >
                       <SelectTrigger className="h-7 w-32 text-xs">
                         <SelectValue placeholder="Setor" />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value={NO_SECTOR}>Sem setor</SelectItem>
                         {sectors.map((s) => (
                           <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                         ))}
@@ -242,7 +247,7 @@ export function TeamTab() {
       {/* Add member dialog */}
       <Dialog open={addOpen} onOpenChange={(open) => {
         setAddOpen(open);
-        if (!open) { setAddMode('create'); setLinkEmail(''); setLinkRole('OPERADOR'); }
+        if (!open) { setAddMode('create'); setLinkEmail(''); setLinkRole('OPERADOR'); setLinkSectorId(''); }
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -297,12 +302,16 @@ export function TeamTab() {
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Setor <span className="text-red-500">*</span></Label>
-                <Select value={newSectorId} onValueChange={setNewSectorId}>
+                <Label>Setor <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+                <Select
+                  value={newSectorId || NO_SECTOR}
+                  onValueChange={(v) => setNewSectorId(v === NO_SECTOR ? '' : v)}
+                >
                   <SelectTrigger>
-                    <SelectValue placeholder={sectors.length ? 'Selecione um setor' : 'Crie um setor primeiro (aba Setores)'} />
+                    <SelectValue placeholder="Sem setor" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={NO_SECTOR}>Sem setor</SelectItem>
                     {sectors.map((s) => (
                       <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                     ))}
@@ -330,6 +339,23 @@ export function TeamTab() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-1.5">
+                <Label>Setor <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+                <Select
+                  value={linkSectorId || NO_SECTOR}
+                  onValueChange={(v) => setLinkSectorId(v === NO_SECTOR ? '' : v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Sem setor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_SECTOR}>Sem setor</SelectItem>
+                    {sectors.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           )}
 
@@ -338,7 +364,7 @@ export function TeamTab() {
             {addMode === 'create' ? (
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8 || !newSectorId}
+                disabled={createMutation.isPending || !newNome.trim() || !newEmail.trim() || newSenha.length < 8}
               >
                 {createMutation.isPending ? 'Adicionando...' : 'Adicionar'}
               </Button>

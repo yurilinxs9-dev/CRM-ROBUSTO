@@ -47,7 +47,7 @@ export function SectorsTab() {
   return (
     <div className="space-y-4 max-w-xl">
       <p className="text-sm text-muted-foreground">
-        Cada colaborador pertence a um setor. Setores desativados somem dos formulários
+        Organize a equipe em setores (opcional). Setores desativados somem dos formulários
         mas o histórico dos usuários é preservado.
       </p>
 

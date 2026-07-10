@@ -39,7 +39,7 @@ export class UsersService {
 
   async createTeamMember(
     caller: AuthUser,
-    dto: { nome: string; email: string; senha: string; role: string; sector_id: string },
+    dto: { nome: string; email: string; senha: string; role: string; sector_id?: string | null },
   ) {
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível criar SUPER_ADMIN');
@@ -48,9 +48,10 @@ export class UsersService {
     if (!validRoles.includes(dto.role as UserRole)) {
       throw new BadRequestException('Role inválida');
     }
-    // F-01: setor obrigatório e validado contra o tenant (não dá pra criar
-    // usuário sem setor). Garante que o setor existe, é do tenant e está ativo.
-    const sectorId = await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id);
+    // Setor é opcional; quando informado, valida que existe, é do tenant e está ativo.
+    const sectorId = dto.sector_id
+      ? await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id)
+      : null;
     const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (exists) throw new ConflictException('Email já cadastrado');
 
@@ -63,7 +64,7 @@ export class UsersService {
     return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: TEAM_SELECT });
   }
 
-  async linkTeamMember(caller: AuthUser, dto: { email: string; role: string }) {
+  async linkTeamMember(caller: AuthUser, dto: { email: string; role: string; sector_id?: string | null }) {
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível vincular como SUPER_ADMIN');
     }
@@ -75,9 +76,12 @@ export class UsersService {
     if (target.tenant_id === caller.tenantId) {
       throw new ConflictException('Usuário já faz parte da equipe');
     }
+    const sectorId = dto.sector_id
+      ? await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id)
+      : null;
     return this.prisma.user.update({
       where: { id: target.id },
-      data: { tenant_id: caller.tenantId, role: dto.role as UserRole },
+      data: { tenant_id: caller.tenantId, role: dto.role as UserRole, sector_id: sectorId },
       select: TEAM_SELECT,
     });
   }
@@ -85,7 +89,7 @@ export class UsersService {
   async updateTeamMember(
     caller: AuthUser,
     targetId: string,
-    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string },
+    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string | null },
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
@@ -105,7 +109,10 @@ export class UsersService {
     if (dto.especialidade !== undefined) data.especialidade = dto.especialidade;
     if (dto.ativo !== undefined) data.ativo = dto.ativo;
     if (dto.sector_id !== undefined) {
-      data.sector_id = await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id);
+      // null remove o membro do setor; string valida contra o tenant.
+      data.sector_id = dto.sector_id
+        ? await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id)
+        : null;
     }
 
     return this.prisma.user.update({
