@@ -617,6 +617,104 @@ function TimeInStageSection({ data, isLoading }: { data: TimeInStageResponse | u
 }
 
 // ---------------------------------------------------------------------------
+// ForecastSection — receita prevista por etapa (valor aberto × win-rate)
+// ---------------------------------------------------------------------------
+
+interface ForecastData {
+  global_win_rate: number;
+  closed_sample: number;
+  stages: Array<{
+    id: string;
+    nome: string;
+    cor: string;
+    open_count: number;
+    open_value: number;
+    win_rate: number;
+    win_rate_source: 'stage_history' | 'pipeline_global';
+    forecast_value: number;
+  }>;
+  total_open_value: number;
+  total_forecast_value: number;
+}
+
+function ForecastSection({
+  data,
+  isLoading,
+}: { data: ForecastData | undefined; isLoading: boolean }) {
+  if (isLoading) {
+    return (
+      <SectionCard title="Forecast de Receita" icon={DollarSign}>
+        <div className="h-40 animate-pulse rounded-md" style={{ background: 'var(--bg-surface-3)' }} />
+      </SectionCard>
+    );
+  }
+  if (!data || data.stages.length === 0) {
+    return (
+      <SectionCard title="Forecast de Receita" icon={DollarSign}>
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          Sem leads abertos com valor estimado neste pipeline.
+        </p>
+      </SectionCard>
+    );
+  }
+  const maxForecast = Math.max(...data.stages.map((s) => s.forecast_value), 1);
+  return (
+    <SectionCard title="Forecast de Receita" icon={DollarSign}>
+      <div className="flex items-baseline gap-4 mb-4">
+        <div>
+          <p className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+            {formatBRL(data.total_forecast_value)}
+          </p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            previsto · {formatBRL(data.total_open_value)} em aberto ·{' '}
+            {formatPct(data.global_win_rate)} conversão média ({data.closed_sample} fechados
+            no período)
+          </p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {data.stages.map((s) => (
+          <div key={s.id}>
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span className="flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
+                <span className="inline-block h-2 w-2 rounded-full" style={{ background: s.cor }} />
+                {s.nome} · {s.open_count} leads
+                <span
+                  title={
+                    s.win_rate_source === 'stage_history'
+                      ? 'Win-rate histórica desta etapa'
+                      : 'Sem histórico suficiente — usando taxa global do pipeline'
+                  }
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  ({formatPct(s.win_rate)}{s.win_rate_source === 'pipeline_global' ? '*' : ''})
+                </span>
+              </span>
+              <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+                {formatBRL(s.forecast_value)}
+              </span>
+            </div>
+            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-surface-3)' }}>
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${Math.max((s.forecast_value / maxForecast) * 100, 2)}%`,
+                  background: s.cor,
+                }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)' }}>
+        Previsto = valor estimado em aberto × taxa de ganho. * = etapa sem histórico
+        suficiente (usa taxa global).
+      </p>
+    </SectionCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // FirstResponseSection — tempo de 1ª resposta por atendente
 // Barra = mediana (menos sensível a outliers que a média; a média aparece ao
 // lado). Ordenado do mais rápido pro mais lento.
@@ -965,6 +1063,17 @@ function AnalyticsPageInner() {
     enabled: !!pipelineId,
   });
 
+  const { data: forecast, isLoading: forecastLoading } = useQuery<ForecastData>({
+    queryKey: ['analytics-forecast', pipelineId, from, to],
+    queryFn: async () => {
+      const res = await api.get('/api/analytics/forecast', {
+        params: { pipeline_id: pipelineId, from, to },
+      });
+      return res.data as ForecastData;
+    },
+    enabled: !!pipelineId,
+  });
+
   const { data: firstResponse, isLoading: firstResponseLoading } = useQuery<FirstResponseData>({
     queryKey: ['analytics-first-response', from, to],
     queryFn: async () => {
@@ -1175,6 +1284,9 @@ function AnalyticsPageInner() {
         <FunnelSection data={funnel} isLoading={funnelLoading} />
         <ConversionSection data={conversion} isLoading={conversionLoading} />
       </div>
+
+      {/* Forecast de receita */}
+      <ForecastSection data={forecast} isLoading={forecastLoading} />
 
       {/* First response por atendente */}
       <FirstResponseSection data={firstResponse} isLoading={firstResponseLoading} />

@@ -68,6 +68,15 @@ interface LeadDetail {
   lead_tags?: { tag: Tag }[];
   pipeline_id: string;
   estagio_id: string;
+  dados_custom?: Record<string, unknown> | null;
+}
+
+interface CustomFieldDef {
+  id: string;
+  nome: string;
+  key: string;
+  tipo: 'text' | 'number' | 'date' | 'select' | 'boolean';
+  options: string[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +179,14 @@ export function LeadDetailDrawer({
     enabled: open,
   });
 
+  // Definições de campos customizados do tenant (renderizadas na ficha).
+  const { data: customFieldDefs = [] } = useQuery<CustomFieldDef[]>({
+    queryKey: ['custom-fields'],
+    queryFn: async () => (await api.get('/api/custom-fields')).data,
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // ---- Form state ----
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
@@ -178,6 +195,7 @@ export function LeadDetailDrawer({
   const [valorRaw, setValorRaw] = useState('');
   const [responsavelId, setResponsavelId] = useState('');
   const [tagsInput, setTagsInput] = useState('');
+  const [customValues, setCustomValues] = useState<Record<string, unknown>>({});
   const [dirty, setDirty] = useState(false);
 
   // Populate form when lead loads
@@ -191,6 +209,7 @@ export function LeadDetailDrawer({
     setResponsavelId(lead.responsavel_id);
     const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
     setTagsInput(existingTags.join(', '));
+    setCustomValues(lead.dados_custom ?? {});
     setDirty(false);
   }, [lead]);
 
@@ -274,6 +293,20 @@ export function LeadDetailDrawer({
       else body.email = null;
       if (valorRaw.trim()) body.valor_estimado = valorRaw.replace(',', '.');
       else body.valor_estimado = null;
+      if (customFieldDefs.length > 0) {
+        // Coage number (Input entrega string) e manda só chaves com definição ativa.
+        const dados: Record<string, unknown> = {};
+        for (const def of customFieldDefs) {
+          const raw = customValues[def.key];
+          if (raw === undefined) continue;
+          if (def.tipo === 'number' && typeof raw === 'string') {
+            dados[def.key] = raw.trim() === '' ? null : Number(raw.replace(',', '.'));
+          } else {
+            dados[def.key] = raw === '' ? null : raw;
+          }
+        }
+        if (Object.keys(dados).length > 0) body.dados_custom = dados;
+      }
       const res = await api.patch(`/api/leads/${leadId}`, body);
       return res.data;
     },
@@ -463,6 +496,56 @@ export function LeadDetailDrawer({
                     </p>
                   )}
                 </div>
+
+                {customFieldDefs.map((def) => {
+                  const value = customValues[def.key];
+                  const setValue = (v: unknown) => {
+                    setCustomValues((prev) => ({ ...prev, [def.key]: v }));
+                    mark();
+                  };
+                  return (
+                    <div key={def.id} className="space-y-1.5">
+                      <Label htmlFor={`cf-${def.key}`}>{def.nome}</Label>
+                      {def.tipo === 'select' ? (
+                        <Select
+                          value={typeof value === 'string' ? value : ''}
+                          onValueChange={(v) => setValue(v)}
+                        >
+                          <SelectTrigger id={`cf-${def.key}`}>
+                            <SelectValue placeholder="Selecionar…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(def.options ?? []).map((opt) => (
+                              <SelectItem key={opt} value={opt}>
+                                {opt}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : def.tipo === 'boolean' ? (
+                        <Select
+                          value={value === true ? 'sim' : value === false ? 'nao' : ''}
+                          onValueChange={(v) => setValue(v === 'sim')}
+                        >
+                          <SelectTrigger id={`cf-${def.key}`}>
+                            <SelectValue placeholder="Selecionar…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="sim">Sim</SelectItem>
+                            <SelectItem value="nao">Não</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          id={`cf-${def.key}`}
+                          type={def.tipo === 'date' ? 'date' : def.tipo === 'number' ? 'number' : 'text'}
+                          value={value === null || value === undefined ? '' : String(value)}
+                          onChange={(e) => setValue(e.target.value)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </section>
 
               {/* Atribuicao */}

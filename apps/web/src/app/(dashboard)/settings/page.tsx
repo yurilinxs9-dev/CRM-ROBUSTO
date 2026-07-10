@@ -9,6 +9,8 @@ import { SectorsTab } from './components/SectorsTab';
 import { GeneralTab } from './components/GeneralTab';
 import { WebhooksTab } from './components/WebhooksTab';
 import { ApiKeysTab } from './components/ApiKeysTab';
+import { CustomFieldsTab } from './components/CustomFieldsTab';
+import { DuplicatesTab } from './components/DuplicatesTab';
 
 const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
 
@@ -27,6 +29,8 @@ export default function SettingsPage() {
           {canManageTeam && <TabsTrigger value="team">👥 Equipe</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="sectors">🏷️ Setores</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="general">⚙️ Geral</TabsTrigger>}
+          {canManageTeam && <TabsTrigger value="custom-fields">📋 Campos</TabsTrigger>}
+          {canManageTeam && <TabsTrigger value="duplicates">🧬 Duplicados</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="webhooks">🔗 Webhooks</TabsTrigger>}
           {canManageTeam && <TabsTrigger value="api-keys">🔑 API Keys</TabsTrigger>}
         </TabsList>
@@ -46,6 +50,16 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="general">
             <GeneralTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="custom-fields">
+            <CustomFieldsTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="duplicates">
+            <DuplicatesTab />
           </TabsContent>
         )}
         {canManageTeam && (
