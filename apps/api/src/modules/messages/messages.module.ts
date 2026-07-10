@@ -4,6 +4,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { MessagesController } from './messages.controller';
 import { MessagesService } from './messages.service';
 import { MediaModule } from '../media/media.module';
+import { PushModule } from '../push/push.module';
 import { MessagesSendProcessor } from './messages.processor';
 import { MessagesRecoveryService } from './messages-recovery.service';
 import { MESSAGES_SEND_QUEUE } from './messages.queue';
@@ -12,6 +13,7 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
   imports: [
     HttpModule,
     MediaModule,
+    PushModule,
     BullModule.registerQueue({
       name: MESSAGES_SEND_QUEUE,
       defaultJobOptions: {

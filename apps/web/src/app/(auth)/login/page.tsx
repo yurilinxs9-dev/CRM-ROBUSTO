@@ -67,8 +67,14 @@ export default function LoginPage() {
         setTenant(me.data.tenant);
       } catch { /* não-crítico — pool_enabled fica false por default */ }
       router.push('/dashboard');
-    } catch {
-      setError('Email ou senha inválidos');
+    } catch (err) {
+      // 429 = lockout progressivo — mostra a mensagem do backend com o tempo.
+      const resp = (err as { response?: { status?: number; data?: { message?: string } } }).response;
+      setError(
+        resp?.status === 429 && resp.data?.message
+          ? resp.data.message
+          : 'Email ou senha inválidos',
+      );
     } finally {
       setIsPending(false);
     }
@@ -135,6 +141,12 @@ export default function LoginPage() {
                   />
                   Manter conectado neste dispositivo
                 </Label>
+                <a
+                  href="/forgot-password"
+                  className="text-sm text-primary hover:underline whitespace-nowrap"
+                >
+                  Esqueci minha senha
+                </a>
               </div>
 
               {error && (

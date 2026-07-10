@@ -59,6 +59,34 @@ const MESSAGES_STALE = 10_000;
 const autoSyncCache = new Map<string, number>();
 const AUTO_SYNC_THROTTLE_MS = 120_000;
 
+/** Normaliza pra comparação de menção: minúsculas, sem acento. */
+function normalizeName(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+/**
+ * Resolve @menções digitadas numa nota interna contra a equipe do tenant.
+ * Casa `@primeironome` ou `@nome completo` (case/acento-insensitive).
+ */
+function extractMentionIds(
+  content: string,
+  users: Array<{ id: string; nome: string }>,
+): string[] {
+  const normalized = normalizeName(content);
+  const ids: string[] = [];
+  for (const u of users) {
+    const full = normalizeName(u.nome);
+    const first = full.split(/\s+/)[0];
+    if (normalized.includes(`@${full}`) || normalized.includes(`@${first}`)) {
+      ids.push(u.id);
+    }
+  }
+  return ids;
+}
+
 export default function ChatDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -171,6 +199,16 @@ export default function ChatDetailPage() {
     return groups;
   }, [messages]);
 
+  // Equipe do tenant — resolve @menções digitadas em notas internas.
+  const { data: mentionableUsers } = useQuery({
+    queryKey: ['team-mention-users'],
+    queryFn: async () => {
+      const res = await api.get('/api/users/list');
+      return res.data as Array<{ id: string; nome: string }>;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
   // --- Mutations ---
   const sendTextMutation = useMutation({
     mutationFn: async ({
@@ -186,6 +224,7 @@ export default function ChatDetailPage() {
         const res = await api.post('/api/messages/internal-note', {
           lead_id: leadId,
           content,
+          mentioned_user_ids: extractMentionIds(content, mentionableUsers ?? []),
         });
         return res.data as ChatMessage;
       }

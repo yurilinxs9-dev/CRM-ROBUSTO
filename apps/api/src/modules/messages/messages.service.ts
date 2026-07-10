@@ -17,6 +17,7 @@ import { MessageType, SenderType, Prisma } from '@prisma/client';
 import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
+import { PushService } from '../push/push.service';
 
 /**
  * F-03 — Opções de envio. senderType decide quem enviou (default 'user', o
@@ -36,6 +37,8 @@ const sendTextSchema = z.object({
 const internalNoteSchema = z.object({
   lead_id: z.string().uuid(),
   content: z.string().min(1),
+  // @menções: ids de usuários do MESMO tenant a notificar (sino + push).
+  mentioned_user_ids: z.array(z.string().uuid()).max(20).optional(),
 });
 
 interface InstanceConfig {
@@ -101,6 +104,7 @@ export class MessagesService {
     private mediaPipeline: MediaPipelineService,
     @InjectQueue(MESSAGES_SEND_QUEUE) private readonly sendQueue: Queue<SendMessageJobData>,
     private outboundWebhooks: OutboundWebhooksService,
+    private push: PushService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
@@ -368,13 +372,13 @@ export class MessagesService {
   }
 
   async createInternalNote(data: unknown, user: AuthUser) {
-    const { lead_id, content } = internalNoteSchema.parse(data);
+    const { lead_id, content, mentioned_user_ids } = internalNoteSchema.parse(data);
     if (user.role === UserRole.VISUALIZADOR) {
       throw new ForbiddenException('Visualizador nao pode criar notas');
     }
     const lead = await this.prisma.lead.findFirst({
       where: { id: lead_id, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
+      select: { id: true, nome: true, responsavel_id: true, instancia_whatsapp: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     if (user.role === UserRole.OPERADOR && lead.responsavel_id !== user.id) {
@@ -384,7 +388,21 @@ export class MessagesService {
           : 'Sem acesso a este lead',
       );
     }
-    return this.prisma.message.create({
+
+    // Só usuários ativos do MESMO tenant podem ser mencionados; o autor não
+    // se auto-notifica.
+    const mentionTargets = mentioned_user_ids?.length
+      ? await this.prisma.user.findMany({
+          where: {
+            id: { in: mentioned_user_ids, not: user.id },
+            tenant_id: user.tenantId,
+            ativo: true,
+          },
+          select: { id: true },
+        })
+      : [];
+
+    const message = await this.prisma.message.create({
       data: {
         lead_id,
         instance_name: 'internal',
@@ -399,8 +417,39 @@ export class MessagesService {
         sent_by_user_id: user.id,
         visible_to_user_id: lead.responsavel_id === user.id ? lead.responsavel_id : null,
         tenant_id: user.tenantId,
+        ...(mentionTargets.length
+          ? { metadata: { mentions: mentionTargets.map((t) => t.id) } }
+          : {}),
       },
     });
+
+    if (mentionTargets.length) {
+      const preview = content.length > 120 ? `${content.slice(0, 117)}...` : content;
+      for (const target of mentionTargets) {
+        const notif = await this.prisma.notification.create({
+          data: {
+            user_id: target.id,
+            titulo: `${user.nome} mencionou você`,
+            conteudo: `Nota em ${lead.nome}: "${preview}"`,
+            tipo: 'mention',
+            link: `/chat/${lead_id}`,
+            tenant_id: user.tenantId,
+          },
+        });
+        this.gateway.emitNotification(target.id, notif);
+      }
+      void this.push.sendToUsers(
+        mentionTargets.map((t) => t.id),
+        {
+          title: `${user.nome} mencionou você`,
+          body: `${lead.nome}: ${preview}`,
+          url: `/chat/${lead_id}`,
+          tag: `mention-${message.id}`,
+        },
+      );
+    }
+
+    return message;
   }
 
   async sendAudio(file: Express.Multer.File, body: unknown, user: AuthUser, opts: SendOptions = {}) {
