@@ -364,7 +364,7 @@ function StageColumnImpl({
         {total > 0 && (
           <p className="mt-1 text-xs tabular-nums">
             <span className="text-muted-foreground">Total: </span>
-            <span className="font-semibold text-emerald-500">{formatBRL(String(total))}</span>
+            <span className="font-semibold tnum text-emerald-500">{formatBRL(String(total))}</span>
           </p>
         )}
       </div>

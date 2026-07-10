@@ -8,6 +8,7 @@ import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TaskNotifications } from '@/components/layout/task-notifications';
 import { NotificationPrompt } from '@/components/notification-prompt';
+import { CommandPalette } from '@/components/command-palette';
 import { AnnouncementBanner } from '@/components/layout/announcement-banner';
 import { ImpersonationBanner } from '@/components/layout/impersonation-banner';
 import { connectSocket, disconnectSocket, reconnectSocket } from '@/lib/socket';
@@ -179,6 +180,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <SocketEventsProvider>
         <TaskNotifications />
         <NotificationPrompt />
+        <CommandPalette />
         <div className="flex h-screen overflow-hidden bg-background text-foreground">
           <div className="hidden md:block">
             <Sidebar collapsed={sidebarCollapsed} onToggleCollapse={toggleSidebar} />

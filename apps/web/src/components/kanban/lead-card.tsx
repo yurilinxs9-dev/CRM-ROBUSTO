@@ -188,8 +188,8 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       <Card
         ref={ref}
         className={cn(
-          'group relative p-2 cursor-grab active:cursor-grabbing transition-colors hover:bg-accent/50',
-          isDragging && 'opacity-50 rotate-1 shadow-xl',
+          'group relative p-2 cursor-grab active:cursor-grabbing transition-all duration-150 hover:bg-accent/50 hover:border-line-3',
+          isDragging && 'opacity-60 rotate-2 shadow-elev-3',
           selected && 'ring-2 ring-primary border-primary',
           className,
         )}
@@ -331,7 +331,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
             )}
           </div>
           <div className="flex items-center gap-1.5 min-w-0">
-            {lead.valor_estimado && <span className="font-medium text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>}
+            {lead.valor_estimado && <span className="font-semibold tnum text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>}
             <span className="text-muted-foreground shrink-0">{timeAgo(lead.ultima_interacao, lead.created_at)}</span>
           </div>
         </div>

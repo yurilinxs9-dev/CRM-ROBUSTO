@@ -103,9 +103,42 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
+
+  /* Onda 1 — focus de teclado visível e consistente (verde da marca).
+     :focus-visible não dispara em clique de mouse, só navegação por teclado. */
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--bg-surface-1),
+      0 0 0 4px rgba(0, 168, 89, 0.55);
+    border-radius: calc(var(--radius) - 2px);
+  }
+
+  ::selection {
+    background: rgba(0, 168, 89, 0.35);
+    color: #eafff4;
+  }
+
+  /* Interativos ganham transição padrão — 150ms é o "toque" do app inteiro. */
+  button,
+  a,
+  [role='button'],
+  [role='tab'],
+  [role='menuitem'] {
+    transition:
+      color 150ms ease-out,
+      background-color 150ms ease-out,
+      border-color 150ms ease-out,
+      box-shadow 150ms ease-out,
+      opacity 150ms ease-out;
+  }
 }
 
 @layer utilities {
+  /* Números alinhados em coluna (KPIs, valores, contadores). */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;
@@ -129,6 +162,10 @@
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
 }
 
 @keyframes slide-in-from-right {

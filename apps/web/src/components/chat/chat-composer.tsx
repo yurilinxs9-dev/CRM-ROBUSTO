@@ -612,7 +612,7 @@ export function ChatComposer({
               aria-label="Enviar mensagem"
               onClick={handleSendText}
               disabled={disabled || sending}
-              className="h-10 w-10 flex-shrink-0 rounded-full"
+              className="h-10 w-10 flex-shrink-0 rounded-full shadow-elev-1 active:scale-95 transition-transform"
             >
               <Send size={18} />
             </Button>
@@ -624,7 +624,7 @@ export function ChatComposer({
               variant="default"
               onClick={startRecording}
               disabled={disabled}
-              className="h-10 w-10 flex-shrink-0 rounded-full"
+              className="h-10 w-10 flex-shrink-0 rounded-full shadow-elev-1 active:scale-95 transition-transform"
             >
               <Mic size={18} />
             </Button>

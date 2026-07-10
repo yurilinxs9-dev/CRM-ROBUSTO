@@ -50,6 +50,26 @@ const config: Config = {
           subtle: 'rgba(0,168,89,0.12)',
           border: 'rgba(0,168,89,0.30)',
         },
+        // Escala unificada (Onda 1 da auditoria UI): espelha as CSS vars que
+        // antes só existiam via style inline. Novas telas usam SEMPRE estas
+        // classes (bg-surface-*, text-ink-*, border-line-*) — nunca style={{}}.
+        surface: {
+          0: 'var(--bg-base)',
+          1: 'var(--bg-surface-1)',
+          2: 'var(--bg-surface-2)',
+          3: 'var(--bg-surface-3)',
+          4: 'var(--bg-surface-4)',
+        },
+        ink: {
+          1: 'var(--text-primary)',
+          2: 'var(--text-secondary)',
+          3: 'var(--text-muted)',
+        },
+        line: {
+          1: 'var(--border-subtle)',
+          2: 'var(--border-default)',
+          3: 'var(--border-strong)',
+        },
         temp: {
           cold: '#38bdf8',
           warm: '#fb923c',
@@ -65,6 +85,13 @@ const config: Config = {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
+      },
+      // Elevação pro dark: sombra não funciona em fundo escuro sem uma luz
+      // interna — cada nível combina inset highlight + sombra externa.
+      boxShadow: {
+        'elev-1': 'inset 0 1px 0 rgba(255,255,255,0.03), 0 1px 2px rgba(0,0,0,0.4)',
+        'elev-2': 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 12px rgba(0,0,0,0.45)',
+        'elev-3': 'inset 0 1px 0 rgba(255,255,255,0.05), 0 12px 32px rgba(0,0,0,0.55)',
       },
       fontFamily: {
         sans: ['var(--font-geist-sans)', 'Geist', 'Inter', 'system-ui', 'sans-serif'],

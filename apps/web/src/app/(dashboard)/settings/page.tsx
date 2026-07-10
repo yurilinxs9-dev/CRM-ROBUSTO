@@ -1,5 +1,15 @@
 'use client';
 
+import {
+  User,
+  Users,
+  Tag,
+  Settings2,
+  ListChecks,
+  Copy,
+  Webhook,
+  KeyRound,
+} from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/layout/page-header';
 import { useAuthStore } from '@/stores/auth.store';
@@ -25,14 +35,44 @@ export default function SettingsPage() {
       </div>
       <Tabs defaultValue="profile">
         <TabsList className="mb-6">
-          <TabsTrigger value="profile">👤 Meu Perfil</TabsTrigger>
-          {canManageTeam && <TabsTrigger value="team">👥 Equipe</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="sectors">🏷️ Setores</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="general">⚙️ Geral</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="custom-fields">📋 Campos</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="duplicates">🧬 Duplicados</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="webhooks">🔗 Webhooks</TabsTrigger>}
-          {canManageTeam && <TabsTrigger value="api-keys">🔑 API Keys</TabsTrigger>}
+          <TabsTrigger value="profile" className="gap-1.5">
+            <User size={14} /> Meu Perfil
+          </TabsTrigger>
+          {canManageTeam && (
+            <TabsTrigger value="team" className="gap-1.5">
+              <Users size={14} /> Equipe
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="sectors" className="gap-1.5">
+              <Tag size={14} /> Setores
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="general" className="gap-1.5">
+              <Settings2 size={14} /> Geral
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="custom-fields" className="gap-1.5">
+              <ListChecks size={14} /> Campos
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="duplicates" className="gap-1.5">
+              <Copy size={14} /> Duplicados
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="webhooks" className="gap-1.5">
+              <Webhook size={14} /> Webhooks
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
+            <TabsTrigger value="api-keys" className="gap-1.5">
+              <KeyRound size={14} /> API Keys
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="profile">
           <ProfileTab />
