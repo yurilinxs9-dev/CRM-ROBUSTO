@@ -18,6 +18,7 @@ import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.
 import { AssignmentService } from '../queue/assignment.service';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
+import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
@@ -60,6 +61,8 @@ const updateLeadSchema = z.object({
   valor_estimado: z.string().optional().nullable(),
   responsavel_id: z.string().uuid().optional(),
   tags: z.array(z.string()).optional(),
+  // Campos customizados por tenant — validados contra CustomFieldDef ativas.
+  dados_custom: z.record(z.unknown()).optional(),
 });
 const createLeadSchema = z.object({
   nome: z.string().min(1),
@@ -121,6 +124,7 @@ export class LeadsService {
     private push: PushService,
     private outboundWebhooks: OutboundWebhooksService,
     private assignment: AssignmentService,
+    private customFields: CustomFieldsService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
   ) {}
@@ -572,6 +576,7 @@ export class LeadsService {
         temperatura: true,
         valor_estimado: true,
         tags: true,
+        dados_custom: true,
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
@@ -587,6 +592,18 @@ export class LeadsService {
     if (parsed.valor_estimado !== undefined) updateData.valor_estimado = parsed.valor_estimado ?? null;
     if (parsed.responsavel_id !== undefined) updateData.responsavel_id = parsed.responsavel_id;
     if (parsed.tags !== undefined) updateData.tags = parsed.tags;
+    if (parsed.dados_custom !== undefined) {
+      // Valida contra as definições ativas e MESCLA com o existente (patch
+      // parcial — enviar um campo não apaga os demais).
+      const validated = await this.customFields.validateValues(
+        parsed.dados_custom,
+        user.tenantId,
+      );
+      updateData.dados_custom = {
+        ...((lead.dados_custom as Record<string, unknown> | null) ?? {}),
+        ...validated,
+      };
+    }
 
     // Detect which fields actually changed for the activity log.
     const changedFields: string[] = [];
@@ -1368,5 +1385,154 @@ export class LeadsService {
         }
       }
     }
+  }
+
+  // ── Dedupe/merge ────────────────────────────────────────────────────────
+
+  /**
+   * Grupos de leads possivelmente duplicados no tenant: mesmo telefone
+   * (últimos 8 dígitos, ignora 55/DDD/9 extra) ou mesmo e-mail. GERENTE+.
+   */
+  async findDuplicates(user: AuthUser) {
+    const groups = await this.prisma.$queryRaw<
+      Array<{ chave: string; criterio: string; ids: string[] }>
+    >`
+      SELECT RIGHT(regexp_replace(telefone, '\\D', '', 'g'), 8) AS chave,
+             'telefone' AS criterio,
+             array_agg(id ORDER BY created_at ASC) AS ids
+      FROM "Lead"
+      WHERE tenant_id = ${user.tenantId}
+        AND length(regexp_replace(telefone, '\\D', '', 'g')) >= 8
+      GROUP BY 1
+      HAVING COUNT(*) > 1
+      UNION ALL
+      SELECT lower(email) AS chave,
+             'email' AS criterio,
+             array_agg(id ORDER BY created_at ASC) AS ids
+      FROM "Lead"
+      WHERE tenant_id = ${user.tenantId} AND email IS NOT NULL AND email <> ''
+      GROUP BY 1
+      HAVING COUNT(*) > 1
+      LIMIT 50
+    `;
+    if (groups.length === 0) return { groups: [] };
+
+    const allIds = [...new Set(groups.flatMap((g) => g.ids))];
+    const leads = await this.prisma.lead.findMany({
+      where: { id: { in: allIds }, tenant_id: user.tenantId },
+      select: {
+        id: true,
+        nome: true,
+        telefone: true,
+        email: true,
+        foto_url: true,
+        valor_estimado: true,
+        created_at: true,
+        ultima_interacao: true,
+        responsavel: { select: { id: true, nome: true } },
+        estagio: { select: { id: true, nome: true, cor: true } },
+        _count: { select: { messages: true } },
+      },
+    });
+    const byId = new Map(leads.map((l) => [l.id, l]));
+    return {
+      groups: groups
+        .map((g) => ({
+          criterio: g.criterio,
+          chave: g.chave,
+          leads: g.ids.map((id) => byId.get(id)).filter(Boolean),
+        }))
+        .filter((g) => g.leads.length > 1),
+    };
+  }
+
+  /**
+   * Merge: move mensagens/atividades/tarefas/tags do source pro target,
+   * preenche campos vazios do target com os do source e apaga o source.
+   * Histórico preservado (padrão HubSpot/Pipedrive). GERENTE+.
+   */
+  async mergeLeads(targetId: string, body: unknown, user: AuthUser) {
+    const { source_id } = z.object({ source_id: z.string().uuid() }).parse(body);
+    if (source_id === targetId) {
+      throw new BadRequestException('source e target sao o mesmo lead');
+    }
+    const [target, source] = await Promise.all([
+      this.prisma.lead.findFirst({ where: { id: targetId, tenant_id: user.tenantId } }),
+      this.prisma.lead.findFirst({ where: { id: source_id, tenant_id: user.tenantId } }),
+    ]);
+    if (!target || !source) throw new NotFoundException('Lead nao encontrado');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.message.updateMany({
+        where: { lead_id: source_id },
+        data: { lead_id: targetId },
+      });
+      await tx.leadActivity.updateMany({
+        where: { lead_id: source_id },
+        data: { lead_id: targetId },
+      });
+      await tx.task.updateMany({
+        where: { lead_id: source_id },
+        data: { lead_id: targetId },
+      });
+      // Tags: move só as que o target ainda não tem (evita violar unicidade).
+      const targetTags = await tx.leadTag.findMany({
+        where: { lead_id: targetId },
+        select: { tag_id: true },
+      });
+      const targetTagIds = new Set(targetTags.map((t) => t.tag_id));
+      const sourceTags = await tx.leadTag.findMany({
+        where: { lead_id: source_id },
+        select: { id: true, tag_id: true },
+      });
+      const movable = sourceTags.filter((t) => !targetTagIds.has(t.tag_id)).map((t) => t.id);
+      if (movable.length) {
+        await tx.leadTag.updateMany({
+          where: { id: { in: movable } },
+          data: { lead_id: targetId },
+        });
+      }
+
+      // Campos: target ganha o que estiver vazio; contadores somam.
+      await tx.lead.update({
+        where: { id: targetId },
+        data: {
+          email: target.email ?? source.email,
+          empresa: target.empresa ?? source.empresa,
+          cargo: target.cargo ?? source.cargo,
+          foto_url: target.foto_url ?? source.foto_url,
+          whatsapp_lid: target.whatsapp_lid ?? source.whatsapp_lid,
+          valor_estimado: target.valor_estimado ?? source.valor_estimado,
+          mensagens_nao_lidas:
+            (target.mensagens_nao_lidas ?? 0) + (source.mensagens_nao_lidas ?? 0),
+          ultima_interacao:
+            source.ultima_interacao && target.ultima_interacao
+              ? new Date(
+                  Math.max(
+                    source.ultima_interacao.getTime(),
+                    target.ultima_interacao.getTime(),
+                  ),
+                )
+              : (target.ultima_interacao ?? source.ultima_interacao),
+        },
+      });
+
+      await tx.lead.delete({ where: { id: source_id } });
+
+      await tx.leadActivity.create({
+        data: {
+          lead_id: targetId,
+          user_id: user.id,
+          tipo: 'lead_merged',
+          descricao: `Lead "${source.nome}" (${source.telefone}) mesclado neste`,
+          dados_antes: { source_id, source_nome: source.nome, source_telefone: source.telefone },
+          tenant_id: user.tenantId,
+        },
+      });
+    });
+
+    await this.invalidateLeadsCache(user.tenantId);
+    this.gateway.emitLeadUpdated(targetId, { merged_from: source_id }, user.tenantId);
+    return { id: targetId, merged_source_id: source_id };
   }
 }

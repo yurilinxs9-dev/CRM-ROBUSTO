@@ -42,4 +42,9 @@ export class AnalyticsController {
   getPerformance(@Req() req: Record<string, unknown>, @Query() query: Record<string, string>) {
     return this.analyticsService.getPerformance(req.user as AuthUser, query);
   }
+
+  @Get('forecast')
+  getForecast(@Req() req: Record<string, unknown>, @Query() query: Record<string, string>) {
+    return this.analyticsService.getForecast(req.user as AuthUser, query);
+  }
 }

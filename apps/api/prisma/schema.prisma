@@ -183,6 +183,24 @@ model RefreshToken {
   @@index([expires_at])
 }
 
+// Definição de campo customizado por tenant (padrão HubSpot/Pipedrive):
+// o admin do workspace cria campos (texto/número/data/seleção/booleano) e os
+// valores ficam em Lead.custom_fields (Json { [key]: valor }).
+model CustomFieldDef {
+  id         String   @id @default(uuid())
+  tenant_id  String
+  nome       String // rótulo exibido
+  key        String // slug estável usado como chave no Json do lead
+  tipo       String // 'text' | 'number' | 'date' | 'select' | 'boolean'
+  options    Json? // tipo 'select': array de opções
+  ordem      Int      @default(0)
+  active     Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  @@unique([tenant_id, key])
+  @@index([tenant_id, active])
+}
+
 // Token de "esqueci minha senha" — hash sha256, uso único, expira em 1h.
 model PasswordResetToken {
   id         String    @id @default(uuid())

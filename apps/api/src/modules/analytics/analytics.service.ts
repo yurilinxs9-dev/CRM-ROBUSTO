@@ -762,4 +762,135 @@ export class AnalyticsService {
     await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
+
+  /**
+   * Forecast ponderado do pipeline: pra cada etapa aberta, soma o
+   * valor_estimado dos leads e multiplica pela taxa histórica de ganho a
+   * partir daquela etapa (dos leads já fechados no período, que fração dos
+   * que PASSARAM pela etapa terminou em ganho). Etapa sem histórico usa a
+   * taxa global do pipeline.
+   */
+  async getForecast(user: AuthUser, query: unknown) {
+    const { pipeline_id, from: rawFrom, to: rawTo } = pipelineDateSchema.parse(query);
+    const { from, to } = defaultRange(rawFrom, rawTo);
+    const tenantId = user.tenantId;
+
+    const cacheKey = `analytics:forecast:${tenantId}:${user.role}:${user.id}:${hashFilters({ pipeline_id, from, to })}`;
+    const cached = await this.cache.get<unknown>(cacheKey);
+    if (cached) return cached;
+
+    const pipeline = await this.prisma.pipeline.findFirst({
+      where: { id: pipeline_id, tenant_id: tenantId },
+      include: { stages: { orderBy: { ordem: 'asc' } } },
+    });
+    if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
+
+    const operadorLeadFilter: Prisma.LeadWhereInput =
+      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const openStages = pipeline.stages.filter((s) => !s.is_won && !s.is_lost);
+
+    // Pipeline aberto: contagem + soma de valor por etapa.
+    const openByStage = await this.prisma.lead.groupBy({
+      by: ['estagio_id'],
+      where: {
+        tenant_id: tenantId,
+        pipeline_id,
+        estagio_id: { in: openStages.map((s) => s.id) },
+        ...operadorLeadFilter,
+      },
+      _count: { _all: true },
+      _sum: { valor_estimado: true },
+    });
+    const openMap = new Map(openByStage.map((r) => [r.estagio_id, r]));
+
+    // Histórico: leads fechados (etapa won/lost) no período e por quais
+    // etapas cada um passou (stage_change antes/depois + etapa atual).
+    let historyRows: Array<{ estagio_id: string; total: bigint; won: bigint }> = [];
+    try {
+      historyRows = await this.prisma.$queryRaw<
+        Array<{ estagio_id: string; total: bigint; won: bigint }>
+      >`
+        WITH closed AS (
+          SELECT l.id, s.is_won
+          FROM "Lead" l
+          JOIN "Stage" s ON s.id = l.estagio_id
+          WHERE l.tenant_id = ${tenantId}
+            AND l.pipeline_id = ${pipeline_id}
+            AND (s.is_won OR s.is_lost)
+            AND l.updated_at >= ${from}
+            AND l.updated_at <= ${to}
+        ),
+        passed AS (
+          SELECT c.id AS lead_id, c.is_won, la.dados_depois->>'estagio_id' AS estagio_id
+          FROM closed c
+          JOIN "LeadActivity" la ON la.lead_id = c.id AND la.tipo = 'stage_change'
+          UNION
+          SELECT c.id, c.is_won, la.dados_antes->>'estagio_id'
+          FROM closed c
+          JOIN "LeadActivity" la ON la.lead_id = c.id AND la.tipo = 'stage_change'
+        )
+        SELECT estagio_id,
+               COUNT(DISTINCT lead_id) AS total,
+               COUNT(DISTINCT lead_id) FILTER (WHERE is_won) AS won
+        FROM passed
+        WHERE estagio_id IS NOT NULL
+        GROUP BY estagio_id
+      `;
+    } catch {
+      historyRows = [];
+    }
+    const historyMap = new Map(
+      historyRows.map((r) => [r.estagio_id, { total: Number(r.total), won: Number(r.won) }]),
+    );
+
+    // Taxa global do pipeline como fallback de etapa sem histórico.
+    const [wonCount, closedCount] = await Promise.all([
+      this.prisma.lead.count({
+        where: {
+          tenant_id: tenantId,
+          pipeline_id,
+          estagio: { is_won: true },
+          updated_at: { gte: from, lte: to },
+        },
+      }),
+      this.prisma.lead.count({
+        where: {
+          tenant_id: tenantId,
+          pipeline_id,
+          OR: [{ estagio: { is_won: true } }, { estagio: { is_lost: true } }],
+          updated_at: { gte: from, lte: to },
+        },
+      }),
+    ]);
+    const globalRate = closedCount > 0 ? wonCount / closedCount : 0;
+
+    const stages = openStages.map((stage) => {
+      const open = openMap.get(stage.id);
+      const openValue = Number(open?._sum.valor_estimado ?? 0);
+      const hist = historyMap.get(stage.id);
+      const winRate = hist && hist.total >= 3 ? hist.won / hist.total : globalRate;
+      return {
+        id: stage.id,
+        nome: stage.nome,
+        cor: stage.cor,
+        open_count: open?._count._all ?? 0,
+        open_value: Number(openValue.toFixed(2)),
+        win_rate: Number(winRate.toFixed(4)),
+        win_rate_source: hist && hist.total >= 3 ? 'stage_history' : 'pipeline_global',
+        forecast_value: Number((openValue * winRate).toFixed(2)),
+      };
+    });
+
+    const result = {
+      period: { from: from.toISOString(), to: to.toISOString() },
+      global_win_rate: Number(globalRate.toFixed(4)),
+      closed_sample: closedCount,
+      stages,
+      total_open_value: Number(stages.reduce((a, s) => a + s.open_value, 0).toFixed(2)),
+      total_forecast_value: Number(stages.reduce((a, s) => a + s.forecast_value, 0).toFixed(2)),
+    };
+
+    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    return result;
+  }
 }

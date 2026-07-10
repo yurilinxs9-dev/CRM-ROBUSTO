@@ -50,9 +50,22 @@ export class LeadsController {
     return this.leadsService.exportCsv(req.user as AuthUser, filters, res);
   }
 
+  // Precisa vir ANTES de @Get(':id') — Nest casa rotas na ordem de declaração.
+  @Get('duplicates')
+  @Roles(UserRole.GERENTE)
+  findDuplicates(@Req() req: Record<string, unknown>) {
+    return this.leadsService.findDuplicates(req.user as AuthUser);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.findOne(id, req.user as AuthUser);
+  }
+
+  @Post(':id/merge')
+  @Roles(UserRole.GERENTE)
+  mergeLeads(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.leadsService.mergeLeads(id, body, req.user as AuthUser);
   }
 
   @Post()
