@@ -17,6 +17,25 @@ import {
 
 export type Obj = Record<string, unknown>;
 
+/** Chaves base64 pesadas do payload do provider que nunca são lidas de volta
+ *  (thumbnail já vira media_url via pipeline). Em jul/2026 ~23% das msgs
+ *  carregavam jpegThumbnail (~9.5KB cada) dentro de metadata.raw. */
+const HEAVY_RAW_KEYS = new Set(['jpegThumbnail', 'jpegthumbnail']);
+
+/** Remove recursivamente as HEAVY_RAW_KEYS antes de persistir o raw. */
+export function stripHeavyRawKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripHeavyRawKeys);
+  if (value !== null && typeof value === 'object') {
+    const out: Obj = {};
+    for (const [k, v] of Object.entries(value as Obj)) {
+      if (HEAVY_RAW_KEYS.has(k)) continue;
+      out[k] = stripHeavyRawKeys(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 interface PipelineCtx {
   pipeline: { id: string };
   firstStage: { id: string };
@@ -393,7 +412,9 @@ export class InboundMessageService {
     }
 
     const metadata: Prisma.InputJsonValue = {
-      raw: JSON.parse(JSON.stringify(rawPayload)) as unknown as Prisma.InputJsonValue,
+      raw: stripHeavyRawKeys(
+        JSON.parse(JSON.stringify(rawPayload)),
+      ) as Prisma.InputJsonValue,
       ...(extracted.location ? { location: extracted.location } : {}),
       ...(extracted.contact ? { contact: extracted.contact } : {}),
     };
