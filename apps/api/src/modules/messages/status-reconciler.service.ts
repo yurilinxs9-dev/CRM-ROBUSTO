@@ -88,17 +88,20 @@ export class StatusReconcilerService {
         tenant_id: true,
         type: true,
         metadata: true,
+        instance_name: true,
         lead: { select: { telefone: true, instancia_whatsapp: true } },
       },
     });
     if (candidates.length === 0) return;
 
-    // Agrupa por chat (tenant + telefone); a instância vem do lead.
+    // Agrupa por chat usando a instância QUE ENVIOU (m.instance_name) — o lead
+    // pode ter migrado de instância e o wamid só existe no chat da remetente.
     type Candidate = (typeof candidates)[number];
     const chats = new Map<string, Candidate[]>();
     for (const c of candidates) {
-      if (!c.lead?.telefone || !c.lead.instancia_whatsapp) continue;
-      const key = `${c.tenant_id}|${c.lead.instancia_whatsapp}|${c.lead.telefone}`;
+      const instance = c.instance_name || c.lead?.instancia_whatsapp;
+      if (!c.lead?.telefone || !instance) continue;
+      const key = `${c.tenant_id}|${instance}|${c.lead.telefone}`;
       const arr = chats.get(key);
       if (arr) arr.push(c);
       else chats.set(key, [c]);
