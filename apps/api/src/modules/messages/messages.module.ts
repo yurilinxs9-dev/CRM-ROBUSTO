@@ -7,6 +7,7 @@ import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
 import { MessagesSendProcessor } from './messages.processor';
 import { MessagesRecoveryService } from './messages-recovery.service';
+import { StatusReconcilerService } from './status-reconciler.service';
 import { MESSAGES_SEND_QUEUE } from './messages.queue';
 
 @Module({
@@ -32,7 +33,7 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
     }),
   ],
   controllers: [MessagesController],
-  providers: [MessagesService, MessagesSendProcessor, MessagesRecoveryService],
+  providers: [MessagesService, MessagesSendProcessor, MessagesRecoveryService, StatusReconcilerService],
   exports: [MessagesService],
 })
 export class MessagesModule {}
