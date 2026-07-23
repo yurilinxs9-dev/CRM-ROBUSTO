@@ -31,7 +31,7 @@ function getTokenExp(token: string): number {
 const SIDEBAR_COLLAPSED_KEY = 'crm:sidebar-collapsed';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { accessToken, isAuthenticated, hydrated, updateToken, updateUser, setTenant } = useAuthStore();
+  const { accessToken, isAuthenticated, hydrated, updateToken, updateUser, restoreUser, setTenant, logout } = useAuthStore();
   const router = useRouter();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -71,16 +71,38 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       .get('/api/auth/me')
       .then(({ data }) => {
         if (data?.user) {
-          updateUser({
-            is_platform_admin: data.user.is_platform_admin,
-            nome: data.user.nome,
-            avatar_url: data.user.avatar_url,
-          });
+          const u = data.user;
+          if (!useAuthStore.getState().user) {
+            // Estado zumbi: token válido mas user perdido no store persistido.
+            // updateUser seria no-op (user null) — restaura o perfil completo.
+            restoreUser({
+              id: u.id,
+              nome: u.nome,
+              email: u.email,
+              role: u.role,
+              tenantId: data.tenant?.id ?? '',
+              avatar_url: u.avatar_url,
+              is_platform_admin: u.is_platform_admin,
+            });
+          } else {
+            updateUser({
+              is_platform_admin: u.is_platform_admin,
+              nome: u.nome,
+              avatar_url: u.avatar_url,
+            });
+          }
         }
         if (data?.tenant) setTenant(data.tenant);
       })
-      .catch(() => { /* não-crítico */ });
-  }, [hydrated, isAuthenticated, accessToken, updateUser, setTenant]);
+      .catch((err) => {
+        // Sem user no store E /me rejeitado com 401: sessão irrecuperável —
+        // derruba pro login em vez de deixar a UI meio-logada.
+        if (!useAuthStore.getState().user && err?.response?.status === 401) {
+          logout();
+          router.push('/login');
+        }
+      });
+  }, [hydrated, isAuthenticated, accessToken, updateUser, restoreUser, setTenant, logout, router]);
 
   /**
    * Proactively refresh the access token. Returns the new token or null on failure.

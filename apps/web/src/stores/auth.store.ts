@@ -31,6 +31,7 @@ interface AuthState {
   impersonating: boolean;
   adminBackup: { user: User; token: string; tenant: Tenant | null } | null;
   setAuth: (user: User, token: string) => void;
+  restoreUser: (user: User) => void;
   setTenant: (tenant: Tenant) => void;
   updateToken: (token: string) => void;
   updateUser: (partial: Partial<User>) => void;
@@ -58,6 +59,14 @@ export const useAuthStore = create<AuthState>()(
         localStorage.setItem('accessToken', accessToken);
         set({ user, accessToken, isAuthenticated: true });
       },
+      // Recupera sessão "zumbi": o token legado sobreviveu no localStorage mas o
+      // estado persistido (crm-auth) perdeu o user — sem isso a UI cai no
+      // fallback "Usuário" e esconde as features de admin até relogar.
+      restoreUser: (user) => set((state) => ({
+        user,
+        isAuthenticated: true,
+        accessToken: state.accessToken ?? localStorage.getItem('accessToken'),
+      })),
       setTenant: (tenant) => set({ tenant }),
       updateUser: (partial) => set((state) => ({
         user: state.user ? { ...state.user, ...partial } : null,
