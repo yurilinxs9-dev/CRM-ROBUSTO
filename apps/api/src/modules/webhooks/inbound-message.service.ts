@@ -294,10 +294,21 @@ export class InboundMessageService {
       ownerUser?.role === 'SUPER_ADMIN' || ownerUser?.role === 'GERENTE';
     // Modo Compartilhado para operador: lead entra sem dono (pool).
     const inPool = Boolean(tenant?.pool_enabled) && !ownerIsManager;
-    const responsavelId = inPool ? null : instance.owner_user_id;
+    // Rodízio por instância no modo Individual: instância com setor definido
+    // distribui lead inbound novo em rodízio em vez de auto-atribuir ao dono.
+    // Opt-in duplo (flag do tenant + sector_id na instância); fromMe fica com
+    // o dono (conversa iniciada pelo atendente não entra no rodízio).
+    const soloDistribute =
+      !tenant?.pool_enabled &&
+      tenant?.round_robin_enabled === true &&
+      instance.sector_id != null &&
+      !isFromMe;
+    const responsavelId =
+      inPool || soloDistribute ? null : instance.owner_user_id;
     // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E
-    // está em modo Compartilhado. Caso contrário, comportamento atual intacto.
-    const wantRoundRobin = inPool && tenant?.round_robin_enabled === true;
+    // está em modo Compartilhado — ou, no Individual, na instância com setor.
+    const wantRoundRobin =
+      (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
 
     // Escopo de identidade do lead: SEMPRE tenant_id → 1 lead por telefone+pipeline,
     // tanto no Compartilhado quanto no Individual. Antes o Individual escopava por
