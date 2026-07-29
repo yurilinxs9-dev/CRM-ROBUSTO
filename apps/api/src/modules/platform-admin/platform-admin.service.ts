@@ -23,13 +23,24 @@ export class PlatformAdminService {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * COUNT(*) pleno na Message custa ~5s (233k+ linhas, heap 162MB) e roda a
+   * cada load do painel. Estatística de painel não precisa ser exata —
+   * estimativa do planner (reltuples, atualizada pelo autovacuum) sai em <1ms.
+   */
+  private async estimatedMessageCount(): Promise<number> {
+    const rows = await this.prisma.$queryRaw<{ estimate: number }[]>`
+      SELECT reltuples::bigint::int AS estimate FROM pg_class WHERE relname = 'Message'`;
+    return rows[0]?.estimate ?? 0;
+  }
+
   // ---- Visão geral ----------------------------------------------------------
   async stats() {
     const [tenants, users, leads, messages, instances, activeInstances] = await Promise.all([
       this.prisma.tenant.count(),
       this.prisma.user.count(),
       this.prisma.lead.count(),
-      this.prisma.message.count(),
+      this.estimatedMessageCount(),
       this.prisma.whatsappInstance.count(),
       this.prisma.whatsappInstance.count({ where: { status: { in: ['open', 'connected', 'connecting'] } } }),
     ]);
@@ -132,7 +143,7 @@ export class PlatformAdminService {
 
     const [leads, messages, mediaAgg, msgs24, leads24, whTotal24, whErr24, failedLogins24] = await Promise.all([
       this.prisma.lead.count(),
-      this.prisma.message.count(),
+      this.estimatedMessageCount(),
       this.prisma.message.aggregate({ _sum: { media_size_bytes: true }, where: { media_archived: false } }),
       this.prisma.message.count({ where: { created_at: { gte: since24 } } }),
       this.prisma.lead.count({ where: { created_at: { gte: since24 } } }),

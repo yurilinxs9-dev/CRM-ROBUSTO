@@ -394,10 +394,24 @@ model Message {
   @@index([tenant_id, sent_by_user_id])
   // Dashboard: volume por dia do tenant.
   @@index([tenant_id, created_at])
-  // ⚠️ Existe também um índice PARCIAL só no DB (Prisma não suporta):
+  // Webhook ack/eco: lookup por whatsapp_message_id sozinho (sem tenant) —
+  // a UNIQUE composta (tenant_id, wa_id) não serve → era seq scan de 212ms
+  // na query mais chamada do sistema. 29/07/2026: caiu p/ ~2ms.
+  @@index([whatsapp_message_id])
+  // Dashboard groupBy por atendente: o índice parcial antigo (abaixo) não
+  // casa com o bind param do Prisma (direction = $n) → planner ignorava e
+  // fazia seq scan de 1.4s. Índice pleno resolve (~5ms).
+  @@index([tenant_id, direction, sent_by_user_id])
+  // ⚠️ Índices PARCIAIS só no DB (Prisma não suporta), criados à mão:
   // Message_outgoing_by_user_idx ON (tenant_id, sent_by_user_id)
-  //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL
-  // — é ele que deixa o groupBy do dashboard em ~260ms (era 4.4s).
+  //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL (legado;
+  //   só serve a SQL crua com literal 'OUTGOING')
+  // Message_whatsapp_message_id_idx ON (whatsapp_message_id)
+  //   WHERE whatsapp_message_id IS NOT NULL (versão parcial do @@index acima —
+  //   se o db push criar o pleno, o parcial pode ser dropado)
+  // Message_media_unarchived_created_idx ON (created_at)
+  //   WHERE media_url IS NOT NULL AND media_archived = false
+  //   (varredura do cleanup de mídia 30d: 7.4s → ms)
 }
 
 model LeadActivity {
