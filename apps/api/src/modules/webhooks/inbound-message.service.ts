@@ -96,6 +96,43 @@ export class InboundMessageService {
     );
   }
 
+  /**
+   * F-02: lead recém-distribuído pelo rodízio — avisa o operador sorteado com
+   * notificação DEDICADA (tipo 'distribution', não se mistura com o dedup das
+   * notificações de mensagem) + push + WS, deixando explícito que o lead
+   * chegou da distribuição automática.
+   */
+  private async notifyDistributed(
+    tenantId: string,
+    userId: string,
+    leadId: string,
+    leadNome: string,
+  ) {
+    try {
+      const notif = await this.prisma.notification.create({
+        data: {
+          user_id: userId,
+          tenant_id: tenantId,
+          titulo: '🎯 Novo lead distribuído para você',
+          conteudo: `${leadNome} chegou pela distribuição automática.`,
+          tipo: 'distribution',
+          link: `/chat/${leadId}`,
+          lida: false,
+        },
+      });
+      this.gateway.emitNotification(userId, notif);
+    } catch (err) {
+      this.logger.warn(`Falha notificação de distribuição p/ ${userId}: ${String(err)}`);
+    }
+    void this.push.sendToUsers([userId], {
+      title: '🎯 Novo lead distribuído para você',
+      body: `${leadNome} chegou pela distribuição automática.`,
+      url: `/chat/${leadId}`,
+      tag: `distributed-${leadId}`,
+      data: { leadId, type: 'distribution' },
+    });
+  }
+
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -391,6 +428,14 @@ export class InboundMessageService {
         if (upd.count > 0) {
           lead.responsavel_id = result.userId;
           lead.instancia_whatsapp = instance.nome;
+          // Kanban de todos atualiza o dono em tempo real; sorteado recebe
+          // notificação dedicada dizendo que o lead veio da distribuição.
+          this.gateway.emitLeadUpdated(
+            lead.id,
+            { responsavel_id: result.userId, instancia_whatsapp: instance.nome },
+            tenantId,
+          );
+          await this.notifyDistributed(tenantId, result.userId, lead.id, lead.nome);
         }
       } else {
         // Setor sem agentes ativos → lead em espera; avisa supervisores.
