@@ -912,7 +912,8 @@ model Broadcast {
   template         String? // usado quando mode=template
   ai_instruction   String? // usado quando mode=ai
   model_config_id  String? // modelo de IA (null = default da plataforma)
-  throttle_seconds Int             @default(300) // espaçamento entre envios
+  throttle_seconds Int             @default(900) // espaçamento entre envios (15min)
+  daily_limit      Int             @default(30) // máx de envios por dia (reset meia-noite BRT)
   respect_ai_block Boolean         @default(true) // pula leads com ai_blocked
   status           BroadcastStatus @default(draft)
   created_by       String

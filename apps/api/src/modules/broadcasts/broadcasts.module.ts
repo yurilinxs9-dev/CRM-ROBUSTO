@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BroadcastsController } from './broadcasts.controller';
 import { BroadcastsService } from './broadcasts.service';
 import { BroadcastDispatcher } from './broadcast.dispatcher';
+import { BroadcastSenderService } from './broadcast-sender.service';
 import { MessagesModule } from '../messages/messages.module';
 import { AiModule } from '../ai/ai.module';
 
@@ -13,6 +14,6 @@ import { AiModule } from '../ai/ai.module';
 @Module({
   imports: [MessagesModule, AiModule],
   controllers: [BroadcastsController],
-  providers: [BroadcastsService, BroadcastDispatcher],
+  providers: [BroadcastsService, BroadcastDispatcher, BroadcastSenderService],
 })
 export class BroadcastsModule {}
