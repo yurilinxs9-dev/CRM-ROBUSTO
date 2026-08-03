@@ -27,6 +27,27 @@ export function useAiModels() {
 }
 
 /**
+ * Só os modelos ATIVOS — os que o usuário consegue de fato escolher no
+ * `ModelSelect`, que filtra por `active`.
+ *
+ * Existe separado de `useAiModels` de propósito: telas de administração
+ * precisam enxergar os inativos para reativá-los, mas quem só quer saber "dá
+ * para usar IA aqui?" tem que contar apenas os utilizáveis. Contar inativos
+ * faria o aviso "nenhum modelo configurado" sumir enquanto o seletor aparece
+ * vazio, deixando criar um follow-up em modo IA sem modelo — que só falharia
+ * na hora do disparo.
+ */
+export function useAvailableAiModels() {
+  return useQuery<AiModel[]>({
+    queryKey: ['ai-models', 'active'],
+    queryFn: async () => {
+      const { data } = await api.get<AiModel[]>('/api/ai/models');
+      return data.filter((m) => m.active);
+    },
+  });
+}
+
+/**
  * Seletor de modelo de IA reutilizável (admin/ai, config do agente, follow-up).
  * Mostra só modelos ativos por padrão.
  */
