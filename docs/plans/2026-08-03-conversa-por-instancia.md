@@ -1596,6 +1596,156 @@ git commit -m "feat(db): Message.conversation_id NOT NULL (Fase C)"
 
 ---
 
+### Task 9: Transferência de lead precisa escrever na conversa
+
+**Descoberta no review da Task 4 (Critical C2). Bloqueia o deploy.**
+
+A partir da Task 4, `Lead.responsavel_id` é espelho da conversa ativa. Mas `claim` e
+`reassign` escrevem só no `Lead` — nenhum dos dois toca em `Conversation`. Resultado: a
+próxima mensagem do cliente chama `syncLeadFromActive`, que re-deriva o dono a partir da
+conversa, e **desfaz a transferência sozinho**.
+
+No modo Compartilhado é pior: a conversa nasce com `responsavel_id = null`, então a primeira
+mensagem depois de um `claim` devolve o lead para o pool.
+
+**Decisão de design:** a transferência passa a dona da **conversa ativa** — a de maior
+`last_customer_message_at`. Escrever na conversa da instância do destinatário não resolve:
+se o cliente falou por último no número do vendedor antigo, aquela conversa continua sendo a
+ativa e a reversão acontece de novo. As demais conversas do lead mantêm seus donos, para
+preservar o histórico de quem as atendeu.
+
+**Files:**
+- Modify: `apps/api/src/modules/leads/leads.service.ts` — `claim` (~874-910), `reassign` (~912-967)
+- Modify: `apps/api/src/modules/leads/leads.module.ts` (importar o módulo que exporta `ConversationService`)
+- Test: `apps/api/src/modules/leads/lead-conversation-transfer.spec.ts`
+
+**Interfaces:**
+- Consumes: tabela `Conversation` (Task 2); `resolveActiveConversation` de
+  `webhooks/conversation-routing` (Task 1); `syncLeadFromActive` (Task 3)
+- Produces: `LeadsService.transferActiveConversation(leadId: string, toUserId: string, tenantId: string): Promise<string | null>` — devolve o id da conversa transferida, ou `null` se o lead ainda não tem conversa nenhuma
+
+- [ ] **Step 1: Escrever o teste que falha**
+
+Criar `apps/api/src/modules/leads/lead-conversation-transfer.spec.ts`. Testa a função pura
+de escolha, não o Prisma:
+
+```ts
+import { resolveActiveConversation, type ConversationSnapshot } from '@/modules/webhooks/conversation-routing';
+
+const conv = (id: string, inst: string, dono: string | null, ultima: string | null): ConversationSnapshot => ({
+  id, instancia_whatsapp: inst, responsavel_id: dono,
+  last_customer_message_at: ultima ? new Date(ultima) : null,
+});
+
+describe('transferência de lead — qual conversa muda de dono', () => {
+  it('escolhe a conversa ativa, não a do destinatário', () => {
+    const daVendedora = conv('c1', 'inst-vendedora', 'u-vendedora', '2026-08-03T10:00:00Z');
+    const doAlex = conv('c2', 'inst-alex', 'u-alex', '2026-03-01T10:00:00Z');
+    // Cliente falou por último no número da vendedora. Transferir pro Alex tem
+    // que mexer em c1 — senão a próxima mensagem reverte a transferência.
+    expect(resolveActiveConversation([daVendedora, doAlex])?.id).toBe('c1');
+  });
+
+  it('lead sem conversa nenhuma não tem o que transferir', () => {
+    expect(resolveActiveConversation([])).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+```bash
+cd apps/api && npx jest lead-conversation-transfer -v
+```
+
+Esperado: FAIL, arquivo de teste ainda não existe / import quebrado.
+
+- [ ] **Step 3: Implementar o helper**
+
+Em `apps/api/src/modules/leads/leads.service.ts`:
+
+```ts
+  /**
+   * Passa a conversa ATIVA do lead para outro dono. É o que faz `claim` e
+   * `reassign` grudarem: desde a Task 4 o `Lead.responsavel_id` é espelho da
+   * conversa ativa, então mexer só no Lead é desfeito pela próxima mensagem
+   * do cliente (`syncLeadFromActive` re-deriva a partir da conversa).
+   *
+   * Escrever na conversa da instância do destinatário NÃO resolve: se o cliente
+   * falou por último no número do dono anterior, aquela segue sendo a ativa.
+   *
+   * Devolve o id da conversa transferida, ou null se o lead ainda não tem
+   * conversa (lead manual que nunca trocou mensagem) — nesse caso não há nada
+   * a fazer, e a primeira mensagem inbound cria a conversa já com o dono certo.
+   */
+  private async transferActiveConversation(
+    leadId: string,
+    toUserId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const rows = await this.prisma.conversation.findMany({
+      where: { lead_id: leadId, tenant_id: tenantId },
+      select: {
+        id: true,
+        instancia_whatsapp: true,
+        responsavel_id: true,
+        last_customer_message_at: true,
+      },
+    });
+    const active = resolveActiveConversation(rows);
+    if (!active) return null;
+
+    await this.prisma.conversation.update({
+      where: { id: active.id },
+      data: { responsavel_id: toUserId, assumed_at: new Date() },
+    });
+    return active.id;
+  }
+```
+
+Importar `resolveActiveConversation` de `../webhooks/conversation-routing` (caminho relativo,
+como o resto do arquivo).
+
+- [ ] **Step 4: Chamar no `claim`**
+
+Em `claim`, depois do `updateMany` que garante que o lead estava sem dono e antes do
+`emitLeadUpdated`, inserir:
+
+```ts
+    await this.transferActiveConversation(leadId, user.id, user.tenantId);
+```
+
+- [ ] **Step 5: Chamar no `reassign`**
+
+Em `reassign`, depois do `prisma.lead.update` e antes do `emitLeadUpdated`, inserir:
+
+```ts
+    await this.transferActiveConversation(leadId, novoResponsavelId, user.tenantId);
+```
+
+- [ ] **Step 6: Registrar o `ConversationService` onde for preciso**
+
+Se o `leads.module.ts` ainda não enxerga o módulo de webhooks, importar. O helper acima usa
+só `this.prisma` e a função pura, então pode não ser necessário — verificar e só mexer se o
+`tsc` reclamar.
+
+- [ ] **Step 7: Rodar os testes**
+
+```bash
+cd apps/api && npx jest lead-conversation-transfer -v && npx tsc --noEmit && npx jest
+```
+
+Esperado: os 2 testes novos passando, `tsc` limpo, suíte total maior que o baseline.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add apps/api/src/modules/leads/leads.service.ts apps/api/src/modules/leads/lead-conversation-transfer.spec.ts
+git commit -m "fix(leads): claim e reassign transferem a conversa ativa, não só o lead"
+```
+
+---
+
 ## Ordem de deploy
 
 1. Tasks 1–6 sobem juntas. A Fase A (Task 2) precisa rodar **antes** do código novo entrar no ar — o upsert de conversa depende da tabela existir.
