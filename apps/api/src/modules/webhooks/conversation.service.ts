@@ -61,16 +61,24 @@ export class ConversationService {
       select: { id: true, responsavel_id: true },
     });
 
-    // last_customer_message_at só pode AVANÇAR. `occurredAt` aqui é hora de
-    // PROCESSAMENTO, não do evento — BullMQ reentrega webhook com backoff
-    // (webhooks.module.ts), então uma redelivery tardia de uma mensagem
-    // antiga não pode pular na frente de uma mensagem mais recente já
-    // processada e reeleger essa conversa como ativa. É o mesmo roubo de
-    // lead que o guard `isFromMe` evita, chegando por outra porta.
-    // `updateMany` com `where` condicional faz o avanço ser atômico sem
-    // outra leitura antes (evita race entre ler e decidir se avança).
-    // TODO(follow-up): usar o timestamp real do provider em vez do de
-    // processamento fecharia a janela de vez; não faz parte deste fix.
+    // `updateMany` condicional em vez de update incondicional: só avança
+    // `last_customer_message_at` se o valor armazenado for null ou menor que
+    // `occurredAt`. Isso fecha a race entre DOIS WORKERS CONCORRENTES — se um
+    // deles capturou um `occurredAt` mais tarde e já commitou, o outro (mais
+    // lento) não pisa por cima com um timestamp menor.
+    //
+    // O QUE ISTO NÃO FECHA: `occurredAt` é `new Date()` capturado no momento
+    // do PROCESSAMENTO (inbound-message.service.ts), não o timestamp da
+    // mensagem no provider. Uma redelivery tardia do BullMQ (webhooks.module.ts,
+    // backoff exponencial) de uma mensagem ANTIGA é processada DEPOIS, então
+    // seu `occurredAt` é estritamente maior que qualquer coisa já armazenada
+    // — o predicado `lt` passa igual, e a mensagem velha reelege essa conversa
+    // como ativa mesmo assim. `updateMany` condicional NÃO protege contra
+    // isso; só protege contra a race de dois workers processando timestamps
+    // de captura próximos.
+    // TODO(follow-up): fechar essa janela exige o timestamp REAL do provider
+    // (a mensagem não carrega isso hoje — `ExtractedMessage` não tem esse
+    // campo). Não faz parte deste fix.
     if (!isFromMe) {
       await this.prisma.conversation.updateMany({
         where: {

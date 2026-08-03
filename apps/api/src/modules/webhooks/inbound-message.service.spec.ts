@@ -191,13 +191,20 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
     expect(conversations.blockAi).toHaveBeenCalledWith('conv-b', 'lead-1');
   });
 
-  it('quando o cliente escreve, sincroniza o lead e emite o patch REALMENTE aplicado (I2)', async () => {
+  it('emite o patch RETORNADO por syncLeadFromActive, não os valores de `conversation`/`instance` computados antes (I2)', async () => {
+    // syncLeadFromActive devolve um dono/instância DIVERGENTE do que o
+    // código pré-I2 emitia (`conversation.responsavel_id` = 'B',
+    // `instance.nome` = 'inst-b'): aqui a conversa ativa RE-DERIVADA dentro
+    // da transação é 'C'/'inst-c' — cenário de mensagem concorrente chegando
+    // por uma TERCEIRA instância enquanto esta era processada. Se o emit
+    // ainda usasse os valores pré-sync (implementação antiga), a asserção
+    // abaixo falharia: ela receberia 'B'/'inst-b', não 'C'/'inst-c'.
     const { service, prisma, gateway, conversations } = makeService();
     prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
     conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
     conversations.syncLeadFromActive.mockResolvedValue({
-      responsavel_id: 'B',
-      instancia_whatsapp: 'inst-b',
+      responsavel_id: 'C',
+      instancia_whatsapp: 'inst-c',
     });
     prisma.message.upsert.mockResolvedValue({
       id: 'msg-1',
@@ -210,7 +217,7 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
     expect(conversations.syncLeadFromActive).toHaveBeenCalledWith('lead-1');
     expect(gateway.emitLeadUpdated).toHaveBeenCalledWith(
       'lead-1',
-      { responsavel_id: 'B', instancia_whatsapp: 'inst-b' },
+      { responsavel_id: 'C', instancia_whatsapp: 'inst-c' },
       't1',
     );
   });
