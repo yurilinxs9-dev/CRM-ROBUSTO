@@ -9,9 +9,14 @@ const { PrismaClient } = require('@prisma/client');
 const fs = require('fs');
 const path = require('path');
 const env = fs.readFileSync(path.join(__dirname, '../.env'), 'utf8');
-const url =
+const baseUrl =
   env.match(/^DIRECT_URL=(.+)$/m)?.[1]?.trim() ||
   env.match(/^DATABASE_URL=(.+)$/m)?.[1]?.trim();
+// O pool do Prisma expira em 10s por padrão ao pedir conexão. Os lotes de
+// UPDATE demoram mais que isso, então a chamada seguinte estourava com
+// "Timed out fetching a new connection from the connection pool".
+// Uma conexão só basta — o script é estritamente sequencial.
+const url = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}connection_limit=1&pool_timeout=300`;
 const p = new PrismaClient({ datasources: { db: { url } } });
 const x = (sql) => p.$executeRawUnsafe(sql);
 const q = (sql) => p.$queryRawUnsafe(sql);
@@ -24,6 +29,14 @@ const tenantFilter = TENANT ? `AND l.tenant_id = '${TENANT}'` : '';
 (async () => {
   console.log(DRY ? '=== DRY-RUN (nada é escrito) ===' : '=== APLICANDO ===');
   if (TENANT) console.log('tenant:', TENANT);
+
+  // O pooler do Supabase impõe statement_timeout de 2min. A prévia do item 4
+  // (GROUP BY + count(DISTINCT) sobre ~246k mensagens, sem filtro de tenant)
+  // estoura esse limite e aborta o script ANTES de qualquer escrita. Ampliar
+  // só nesta sessão — não altera a configuração do banco.
+  await x(`SET statement_timeout = '15min'`);
+  const st = await q(`SHOW statement_timeout`);
+  console.log(`statement_timeout desta sessão: ${st[0].statement_timeout}`);
 
   // 1. Quantas conversas serão criadas: um par (lead, instância) por
   //    instance_name distinto nas mensagens do lead.
@@ -128,6 +141,13 @@ const tenantFilter = TENANT ? `AND l.tenant_id = '${TENANT}'` : '';
   console.log(`conversas criadas a partir de leads sem mensagem: ${createdLeads}`);
 
   // 5. Vincula as mensagens, em lotes de 20k para não segurar lock longo.
+  //
+  // O lote SÓ pode conter mensagens que já têm conversa correspondente. Uma
+  // versão anterior sorteava 20k mensagens de toda a base sem essa junção e sem
+  // filtro de tenant: rodando com --tenant, só existem conversas daquele tenant,
+  // então um lote podia vir inteiro de outros tenants, o UPDATE afetava 0 linhas,
+  // o laço lia isso como "acabou" e encerrava declarando sucesso com as mensagens
+  // do tenant alvo ainda sem vincular.
   let total = 0;
   for (;;) {
     const n = await x(`
@@ -137,9 +157,12 @@ const tenantFilter = TENANT ? `AND l.tenant_id = '${TENANT}'` : '';
         AND c.instancia_whatsapp = m.instance_name
         AND m.conversation_id IS NULL
         AND m.id IN (
-          SELECT id FROM "Message"
-          WHERE conversation_id IS NULL AND instance_name IS NOT NULL
-          LIMIT 20000
+          SELECT m2.id FROM "Message" m2
+          JOIN "Conversation" c2
+            ON c2.lead_id = m2.lead_id
+           AND c2.instancia_whatsapp = m2.instance_name
+          WHERE m2.conversation_id IS NULL
+          LIMIT 5000
         )`);
     total += n;
     console.log(`  lote: ${n} mensagens vinculadas (acumulado ${total})`);
