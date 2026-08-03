@@ -76,10 +76,26 @@ export class BroadcastsService {
       _count: { _all: true },
     });
     const todayByBroadcast = new Map(todayCounts.map((c) => [c.broadcast_id, c._count._all]));
+    // Motivo das falhas agrupado: a contagem sozinha não diz nada acionável —
+    // "3 falhas" pode ser instância desconectada ou lead sem telefone, e a
+    // decisão (reconectar vs corrigir cadastro) é oposta.
+    const failureReasons = await this.prisma.broadcastTarget.groupBy({
+      by: ['broadcast_id', 'error'],
+      where: { broadcast_id: { in: rows.map((r) => r.id) }, status: 'failed' },
+      _count: { _all: true },
+    });
+    const failuresByBroadcast = new Map<string, Record<string, number>>();
+    for (const f of failureReasons) {
+      const m = failuresByBroadcast.get(f.broadcast_id) ?? {};
+      const motivo = f.error?.trim() || 'Motivo não registrado';
+      m[motivo] = (m[motivo] ?? 0) + f._count._all;
+      failuresByBroadcast.set(f.broadcast_id, m);
+    }
     return rows.map((r) => ({
       ...r,
       target_counts: byBroadcast.get(r.id) ?? {},
       sent_today: todayByBroadcast.get(r.id) ?? 0,
+      failure_reasons: failuresByBroadcast.get(r.id) ?? {},
     }));
   }
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Plus, Play, Pause, X, Megaphone, Sparkles, FileText, Eye, Trash2, RotateCcw, AlertTriangle, Search, Send } from 'lucide-react';
+import { Plus, Play, Pause, X, Megaphone, Sparkles, FileText, Eye, Trash2, RotateCcw, AlertTriangle, Search, Send, MessageSquare, Clock } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,6 +22,8 @@ interface Broadcast {
   throttle_seconds: number; daily_limit: number; stage_id: string | null;
   _count?: { targets: number }; target_counts?: Record<string, number>;
   sent_today?: number;
+  /** Motivo da falha → quantos alvos. Vem agrupado da API. */
+  failure_reasons?: Record<string, number>;
 }
 interface LeadOption { id: string; nome: string; telefone?: string | null }
 interface Target {
@@ -33,8 +35,8 @@ interface Preview { lead_nome: string; content: string }
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', running: 'Rodando', paused: 'Pausado', done: 'Concluído', canceled: 'Cancelado',
 };
-const STATUS_COLOR: Record<string, string> = {
-  draft: '#6b7280', running: '#22c55e', paused: '#f59e0b', done: '#0ea5e9', canceled: '#ef4444',
+const STATUS_DOT: Record<string, string> = {
+  draft: 'bg-ink-3', running: 'bg-success', paused: 'bg-warning', done: 'bg-info', canceled: 'bg-danger',
 };
 const ALL_STAGES = 'all';
 const MANUAL = 'manual';
@@ -49,6 +51,30 @@ const TEMPLATE_VARS: { tag: string; hint: string }[] = [
   { tag: '{atendente}', hint: 'responsável pelo lead' },
 ];
 
+/**
+ * Previsão de término da fila. A fila anda 1 msg a cada `throttleSeconds` e
+ * para ao bater `dailyLimit` — o resto só sai no dia seguinte. Sem essa conta
+ * "40 na fila" parece coisa de minutos quando na verdade são dias.
+ */
+function estimateFinish(pending: number, throttleSeconds: number, dailyLimit: number, sentToday: number): string | null {
+  if (pending <= 0) return null;
+  const limite = Math.max(1, dailyLimit);
+  const restanteHoje = Math.max(0, limite - sentToday);
+  const hoje = Math.min(pending, restanteHoje);
+  const sobra = pending - hoje;
+  const diasExtras = sobra > 0 ? Math.ceil(sobra / limite) : 0;
+
+  if (diasExtras > 0) {
+    const dias = diasExtras + (hoje > 0 ? 1 : 0);
+    return dias === 1 ? '~1 dia' : `~${dias} dias`;
+  }
+  const minutos = Math.round((hoje * throttleSeconds) / 60);
+  if (minutos < 60) return `~${minutos}min`;
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  return m ? `~${h}h${String(m).padStart(2, '0')}` : `~${h}h`;
+}
+
 function apiError(e: unknown, fallback: string): string {
   const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
   return typeof msg === 'string' ? msg : fallback;
@@ -58,6 +84,9 @@ export default function FollowupPage() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Cancelar/excluir usavam confirm() do navegador — bloqueia a aba e ignora o tema.
+  const [cancelId, setCancelId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [stageId, setStageId] = useState(ALL_STAGES);
   const [mode, setMode] = useState<'template' | 'ai'>('ai');
@@ -203,55 +232,99 @@ export default function FollowupPage() {
           {broadcasts.map((b) => {
             const tc = b.target_counts ?? {};
             const total = b._count?.targets ?? Object.values(tc).reduce((a, n) => a + n, 0);
-            const sent = tc.sent ?? 0;
+            // 'replied' é alvo que JÁ recebeu e respondeu — conta como enviado
+            // na barra, senão o progresso andaria para trás quando o cliente responde.
+            const replied = tc.replied ?? 0;
+            const sent = (tc.sent ?? 0) + replied;
+            const pending = tc.pending ?? 0;
             const failed = tc.failed ?? 0;
+            const dailyLimit = b.daily_limit ?? 30;
+            const sentToday = b.sent_today ?? 0;
             const deletable = b.status === 'draft' || b.status === 'done' || b.status === 'canceled';
+            const eta = b.status === 'running' ? estimateFinish(pending, b.throttle_seconds, dailyLimit, sentToday) : null;
+            const reasons = Object.entries(b.failure_reasons ?? {}).sort((a, c) => c[1] - a[1]);
             return (
-              <div key={b.id} className="rounded-xl border p-4 space-y-3" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-2)' }}>
+              <div key={b.id} className="rounded-xl border border-line-2 bg-surface-2 p-4 space-y-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full shrink-0" style={{ background: STATUS_COLOR[b.status] }} />
-                      <span className="font-medium text-sm truncate" style={{ color: 'var(--text-primary)' }}>{b.name}</span>
-                      <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] shrink-0" style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}>
+                      <span className={`h-2 w-2 rounded-full shrink-0 ${STATUS_DOT[b.status] ?? 'bg-ink-3'}`} />
+                      <span className="font-medium text-sm truncate text-ink-1">{b.name}</span>
+                      <span className="inline-flex items-center gap-1 rounded-full border border-line-2 px-2 py-0.5 text-[10px] shrink-0 text-ink-2">
                         {b.mode === 'ai' ? <><Sparkles className="h-3 w-3" /> IA</> : <><FileText className="h-3 w-3" /> Texto fixo</>}
                       </span>
                     </div>
-                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    <p className="text-xs mt-0.5 text-ink-3">
                       {STATUS_LABEL[b.status] ?? b.status} · 1 msg a cada {Math.round(b.throttle_seconds / 60)}min
-                      {' · '}hoje {b.sent_today ?? 0}/{b.daily_limit ?? 30}
-                      {b.status === 'running' && (b.sent_today ?? 0) >= (b.daily_limit ?? 30) ? ' (limite do dia — retoma amanhã)' : ''}
+                      {' · '}hoje {sentToday}/{dailyLimit}
+                      {b.status === 'running' && sentToday >= dailyLimit ? ' (limite do dia — retoma amanhã)' : ''}
                     </p>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     {(b.status === 'draft' || b.status === 'paused') && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => setConfirmId(b.id)}><Play className="h-4 w-4 text-emerald-500" /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => setConfirmId(b.id)}><Play className="h-4 w-4 text-success" /></Button>
                     )}
                     {b.status === 'running' && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Pausar" onClick={() => action.mutate({ id: b.id, op: 'pause' })}><Pause className="h-4 w-4 text-amber-500" /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Pausar" onClick={() => action.mutate({ id: b.id, op: 'pause' })}><Pause className="h-4 w-4 text-warning" /></Button>
                     )}
                     {failed > 0 && b.status !== 'running' && b.status !== 'canceled' && (
                       <Button size="icon" variant="ghost" className="h-8 w-8" title={`Reenviar ${failed} falha(s)`} onClick={() => {
                         action.mutate({ id: b.id, op: 'retry' }, { onSuccess: () => toast.success(`${failed} alvo(s) de volta na fila`) });
-                      }}><RotateCcw className="h-4 w-4 text-sky-500" /></Button>
+                      }}><RotateCcw className="h-4 w-4 text-info" /></Button>
                     )}
                     {b.status !== 'done' && b.status !== 'canceled' && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Cancelar" onClick={() => { if (confirm('Cancelar follow-up?')) action.mutate({ id: b.id, op: 'cancel' }); }}><X className="h-4 w-4 text-red-500" /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Cancelar" onClick={() => setCancelId(b.id)}><X className="h-4 w-4 text-danger" /></Button>
                     )}
                     {deletable && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Excluir" onClick={() => { if (confirm('Excluir este follow-up? O histórico dos alvos some.')) remove.mutate(b.id); }}><Trash2 className="h-4 w-4" style={{ color: 'var(--text-muted)' }} /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Excluir" onClick={() => setDeleteId(b.id)}><Trash2 className="h-4 w-4 text-ink-3" /></Button>
                     )}
                   </div>
                 </div>
+
                 <div>
-                  <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-surface-3)' }}>
-                    <div className="h-full transition-all" style={{ width: total ? `${(sent / total) * 100}%` : '0%', background: 'var(--primary)' }} />
+                  <div className="h-2 rounded-full overflow-hidden bg-surface-3 flex">
+                    <div className="h-full bg-brand transition-all" style={{ width: total ? `${((sent - replied) / total) * 100}%` : '0%' }} />
+                    <div className="h-full bg-success transition-all" style={{ width: total ? `${(replied / total) * 100}%` : '0%' }} />
                   </div>
-                  <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                    {sent}/{total} enviados{tc.pending ? ` · ${tc.pending} na fila` : ''}{tc.skipped ? ` · ${tc.skipped} pulados` : ''}
-                    {failed ? <span className="text-red-500"> · {failed} falha(s)</span> : ''}
+                  <p className="text-[11px] mt-1 text-ink-3">
+                    {sent}/{total} enviados{pending ? ` · ${pending} na fila` : ''}{tc.skipped ? ` · ${tc.skipped} pulados` : ''}
                   </p>
                 </div>
+
+                {/* Respostas: a única métrica que diz se o disparo virou conversa. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+                    replied > 0 ? 'bg-brand-subtle text-success border border-brand-border' : 'border border-line-2 text-ink-3'
+                  }`}>
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    {replied} {replied === 1 ? 'resposta' : 'respostas'}
+                    {sent > 0 && replied > 0 ? <span className="text-ink-3 font-normal">({Math.round((replied / sent) * 100)}%)</span> : null}
+                  </span>
+                  {eta && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-3" title={`${pending} na fila, 1 a cada ${Math.round(b.throttle_seconds / 60)}min, limite ${dailyLimit}/dia`}>
+                      <Clock className="h-3.5 w-3.5" /> termina em {eta}
+                    </span>
+                  )}
+                </div>
+
+                {/* Falhas COM o motivo: "3 falhas" não diz se é instância caída
+                    ou cadastro sem telefone — e a correção é oposta nos dois casos. */}
+                {failed > 0 && (
+                  <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2">
+                    <p className="text-xs font-medium text-danger">{failed} falha(s)</p>
+                    <ul className="mt-1 space-y-0.5">
+                      {reasons.slice(0, 3).map(([motivo, qtd]) => (
+                        <li key={motivo} className="text-[11px] text-ink-2 flex gap-1.5">
+                          <span className="text-ink-3 shrink-0">{qtd}×</span>
+                          <span className="truncate" title={motivo}>{motivo}</span>
+                        </li>
+                      ))}
+                      {reasons.length > 3 && (
+                        <li className="text-[11px] text-ink-3">+{reasons.length - 3} outro(s) motivo(s)</li>
+                      )}
+                    </ul>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -485,6 +558,50 @@ export default function FollowupPage() {
               }}
             >
               {action.isPending ? 'Iniciando...' : `Confirmar e disparar (${willSend.length})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!cancelId} onOpenChange={(o) => { if (!o) setCancelId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Cancelar follow-up?</DialogTitle></DialogHeader>
+          <p className="text-sm text-ink-2">
+            Os alvos que ainda não receberam ficam de fora. O histórico do que já foi enviado permanece.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCancelId(null)}>Voltar</Button>
+            <Button
+              variant="destructive"
+              disabled={action.isPending}
+              onClick={() => {
+                if (!cancelId) return;
+                action.mutate({ id: cancelId, op: 'cancel' }, { onSuccess: () => setCancelId(null) });
+              }}
+            >
+              {action.isPending ? 'Cancelando...' : 'Cancelar disparo'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteId} onOpenChange={(o) => { if (!o) setDeleteId(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Excluir follow-up?</DialogTitle></DialogHeader>
+          <p className="text-sm text-ink-2">
+            O histórico dos alvos — quem recebeu, quem respondeu, quem falhou — some junto. Não dá pra desfazer.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteId(null)}>Voltar</Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (!deleteId) return;
+                remove.mutate(deleteId, { onSuccess: () => setDeleteId(null) });
+              }}
+            >
+              {remove.isPending ? 'Excluindo...' : 'Excluir'}
             </Button>
           </DialogFooter>
         </DialogContent>

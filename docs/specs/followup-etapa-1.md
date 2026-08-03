@@ -1,6 +1,6 @@
 # Follow-up — Etapa 1: parar de causar dano e enxergar o resultado
 
-**Status:** aprovado, não implementado
+**Status:** implementado (schema, detecção da resposta, janela de horário, painel)
 **Data:** 2026-08-03
 
 ## Problema
