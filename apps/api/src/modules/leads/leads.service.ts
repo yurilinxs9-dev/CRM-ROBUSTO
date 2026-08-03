@@ -680,6 +680,23 @@ export class LeadsService {
     return { pipelineId: pipeline.id, stageId: firstStage.id };
   }
 
+  /**
+   * Lookup exato da unique constraint `telefone_pipeline_scope`
+   * (telefone, pipeline_id, lead_scope). Usado tanto no pre-check de
+   * create() quanto na releitura pos-P2002 — mesma tupla, mesma query.
+   *
+   * Match e SOMENTE no valor exato armazenado. Nao normaliza nem tenta
+   * casar formatos diferentes de telefone: este tenant tem a MESMA pessoa
+   * sob dois formatos (553791048239 e +5537991048239) — fuzzy match
+   * arriscaria mesclar contatos diferentes, uma falha pior que a duplicata
+   * que este fix resolve.
+   */
+  private async findLeadByPhoneInPipeline(telefone: string, pipelineId: string, tenantId: string) {
+    return this.prisma.lead.findFirst({
+      where: { telefone, pipeline_id: pipelineId, lead_scope: tenantId },
+    });
+  }
+
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
 
@@ -690,6 +707,23 @@ export class LeadsService {
     const poolEnabled = Boolean(tenant?.pool_enabled);
 
     const { pipelineId, stageId } = await this.resolvePipelineAndStage(parsed, user.tenantId);
+
+    // Telefone duplicado no mesmo (pipeline_id, lead_scope) — exatamente a
+    // tupla da unique constraint `telefone_pipeline_scope` — estourava
+    // P2002, traduzido pelo exception filter em "Resource already exists":
+    // sem informacao, sem caminho pra frente. Em producao o dono contornou
+    // mudando um digito do telefone, criando um segundo contato com numero
+    // ERRADO pra mesma pessoa. Decisao do product owner: quem digita um
+    // telefone que ja existe quase sempre quer falar com aquela pessoa, nao
+    // criar um segundo registro — devolve o lead existente em vez de falhar.
+    const existingLead = await this.findLeadByPhoneInPipeline(
+      parsed.telefone,
+      pipelineId,
+      user.tenantId,
+    );
+    if (existingLead) {
+      return { ...existingLead, already_existed: true };
+    }
 
     const instanciaWhatsapp =
       parsed.instancia_whatsapp ?? (await this.resolveDefaultInstance(user, poolEnabled));
@@ -705,23 +739,43 @@ export class LeadsService {
       initialPosition = maxPos + 1000;
     }
 
-    const [lead] = await this.prisma.$transaction([
-      this.prisma.lead.create({
-        data: {
-          ...parsed,
-          pipeline_id: pipelineId,
-          estagio_id: stageId,
-          instancia_whatsapp: instanciaWhatsapp,
-          responsavel_id: parsed.responsavel_id || (poolEnabled ? null : user.id),
-          // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
-          // (pool e Individual). Evita duplicar o mesmo contato por dono.
-          lead_scope: user.tenantId,
-          origem: 'MANUAL',
-          tenant_id: user.tenantId,
-          position: initialPosition,
-        },
-      }),
-    ]);
+    let lead;
+    try {
+      [lead] = await this.prisma.$transaction([
+        this.prisma.lead.create({
+          data: {
+            ...parsed,
+            pipeline_id: pipelineId,
+            estagio_id: stageId,
+            instancia_whatsapp: instanciaWhatsapp,
+            responsavel_id: parsed.responsavel_id || (poolEnabled ? null : user.id),
+            // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
+            // (pool e Individual). Evita duplicar o mesmo contato por dono.
+            lead_scope: user.tenantId,
+            origem: 'MANUAL',
+            tenant_id: user.tenantId,
+            position: initialPosition,
+          },
+        }),
+      ]);
+    } catch (err) {
+      // Corrida: duas requests passam pelo pre-check acima ao mesmo tempo e
+      // ambas tentam o insert — sem isso, o fix funciona no teste e ainda
+      // assim estoura P2002 sob uso concorrente. Rele o lead que a request
+      // concorrente ja commitou e devolve como existente, em vez de deixar
+      // a excecao escapar.
+      const code = (err as { code?: string }).code;
+      if (code === 'P2002') {
+        const conflicting = await this.findLeadByPhoneInPipeline(
+          parsed.telefone,
+          pipelineId,
+          user.tenantId,
+        );
+        if (!conflicting) throw err;
+        return { ...conflicting, already_existed: true };
+      }
+      throw err;
+    }
 
     await this.prisma.leadActivity.create({
       data: {
@@ -741,7 +795,7 @@ export class LeadsService {
       leadId: lead.id,
     }).catch(err => this.logger.warn(`dispatch lead.created: ${String(err)}`));
 
-    return lead;
+    return { ...lead, already_existed: false };
   }
 
   async update(id: string, data: unknown, user: AuthUser) {

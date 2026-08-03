@@ -139,12 +139,20 @@ export default function ChatPage() {
         ...data,
         temperatura: 'FRIO',
       });
-      return res.data as ChatLead;
+      return res.data as ChatLead & { already_existed: boolean };
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: LEADS_QUERY_KEY });
       setDialogOpen(false);
-      toast.success('Conversa criada');
+      // Numero ja existia nesse funil: nada foi criado, o backend devolveu a
+      // conversa existente. Navegar continua sendo o ponto (a pessoa quer
+      // falar com esse contato) — so o toast muda pra nao afirmar uma
+      // criacao que nao aconteceu.
+      if (data.already_existed) {
+        toast.info('Esse contato ja existe — abrindo a conversa existente');
+      } else {
+        toast.success('Conversa criada');
+      }
       router.push(`/chat/${data.id}`);
     },
     onError: (e: unknown) => {

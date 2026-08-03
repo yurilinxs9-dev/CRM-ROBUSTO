@@ -35,6 +35,10 @@ function makeMocks() {
       create: jest.fn().mockImplementation(({ data }: any) =>
         Promise.resolve({ id: 'lead-new-1', ...data }),
       ),
+      // Dedupe lookup (telefone+pipeline_id+lead_scope). Default: nenhum
+      // lead existente — testes de duplicata sobrescrevem com
+      // mockResolvedValueOnce.
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     leadActivity: { create: jest.fn().mockResolvedValue({}) },
     // create() usa $transaction em modo ARRAY: [this.prisma.lead.create(...)].
@@ -314,5 +318,139 @@ describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando
     const payload = prisma.lead.create.mock.calls[0][0].data;
     expect(payload.pipeline_id).toBe(DEFAULT_PIPELINE_ID);
     expect(payload.estagio_id).toBe(FIRST_STAGE_OF_DEFAULT_PIPELINE);
+  });
+});
+
+/**
+ * Bug: telefone duplicado no mesmo (pipeline_id, lead_scope) — exatamente a
+ * tupla da unique constraint `telefone_pipeline_scope` — estourava P2002, que
+ * o exception filter traduzia para "Resource already exists". Mensagem nao
+ * dizia nada e nao dava caminho pra frente. Em producao o dono contornou
+ * mudando um digito do telefone, criando um segundo contato com numero
+ * ERRADO para a mesma pessoa.
+ *
+ * Decisao do product owner: quem digita um telefone que ja existe quase
+ * sempre quer falar com aquela pessoa, nao criar um segundo registro. Fix:
+ * devolve o lead existente em vez de falhar, e deixa o front navegar pra ele.
+ *
+ * Match e SOMENTE no valor exato armazenado (parsed.telefone) — o mesmo
+ * string que iria pro insert. Fuzzy match entre formatos de telefone NAO e
+ * feito de proposito: este tenant tem a MESMA pessoa sob dois formatos
+ * distintos (553791048239 e +5537991048239) — mesclar por heuristica arrisca
+ * juntar contatos diferentes, uma falha pior que a que este fix resolve.
+ */
+describe('LeadsService.create — telefone duplicado no mesmo pipeline devolve o lead existente', () => {
+  const EXISTING_LEAD_ID = 'lead-existing-dupe-ULTRA-777';
+  const TELEFONE_DUPLICADO = '+5531955554444';
+
+  it('telefone ja existe no mesmo pipeline e scope: devolve o lead existente com already_existed=true e NUNCA chama lead.create', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: DEFAULT_PIPELINE_ID });
+    prisma.lead.findFirst.mockResolvedValueOnce({
+      id: EXISTING_LEAD_ID,
+      telefone: TELEFONE_DUPLICADO,
+      pipeline_id: DEFAULT_PIPELINE_ID,
+      lead_scope: operador.tenantId,
+      nome: 'Contato Existente',
+    });
+
+    const result = await service.create(
+      { nome: 'Novo Contato', telefone: TELEFONE_DUPLICADO, estagio_id: ESTAGIO_ID, temperatura: 'FRIO' },
+      operador,
+    );
+
+    expect(result.id).toBe(EXISTING_LEAD_ID);
+    expect((result as unknown as { already_existed: boolean }).already_existed).toBe(true);
+    expect(prisma.lead.create).not.toHaveBeenCalled();
+  });
+
+  it('mesmo telefone mas em pipeline DIFERENTE: cria normalmente, already_existed=false', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    // pipeline_id explicito + estagio_id do proprio pipeline (nao-default) —
+    // isola o teste da resolucao de pipeline default.
+    prisma.stage.findFirst.mockResolvedValue({ id: STAGE_IN_NON_DEFAULT_PIPELINE });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+    // Dedupe lookup: nenhum lead com esse telefone NESSE pipeline (o dup
+    // fixture mora em DEFAULT_PIPELINE_ID, nao em NON_DEFAULT_PIPELINE_ID) —
+    // constraint e por-pipeline, colapsar isso bloquearia criacao legitima.
+    prisma.lead.findFirst.mockResolvedValueOnce(null);
+
+    const result = await service.create(
+      {
+        nome: 'Novo Contato',
+        telefone: TELEFONE_DUPLICADO,
+        pipeline_id: NON_DEFAULT_PIPELINE_ID,
+        estagio_id: STAGE_IN_NON_DEFAULT_PIPELINE,
+        temperatura: 'FRIO',
+      },
+      operador,
+    );
+
+    expect(prisma.lead.create).toHaveBeenCalledTimes(1);
+    expect((result as unknown as { already_existed: boolean }).already_existed).toBe(false);
+    // Confirma que a checagem de dedupe foi escopada ao pipeline certo.
+    const dedupeCall = prisma.lead.findFirst.mock.calls[0][0];
+    expect(dedupeCall.where.pipeline_id).toBe(NON_DEFAULT_PIPELINE_ID);
+  });
+
+  it('P2002 na criacao (corrida entre duas requests simultaneas): rele o lead conflitante e devolve, sem lancar excecao', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: DEFAULT_PIPELINE_ID });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+    // 1ª leitura (pre-check): nao ha duplicata ainda — outra request ainda
+    // nao commitou. 2ª leitura (pos-catch do P2002): a request concorrente ja
+    // commitou, e o lead conflitante aparece.
+    prisma.lead.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: EXISTING_LEAD_ID,
+        telefone: TELEFONE_DUPLICADO,
+        pipeline_id: DEFAULT_PIPELINE_ID,
+        lead_scope: operador.tenantId,
+        nome: 'Contato Existente',
+      });
+    const p2002 = Object.assign(new Error('Unique constraint failed on the fields: (`telefone`,`pipeline_id`,`lead_scope`)'), {
+      code: 'P2002',
+    });
+    prisma.lead.create.mockImplementationOnce(() => Promise.reject(p2002));
+
+    const result = await service.create(
+      { nome: 'Novo Contato', telefone: TELEFONE_DUPLICADO, estagio_id: ESTAGIO_ID, temperatura: 'FRIO' },
+      operador,
+    );
+
+    expect(result.id).toBe(EXISTING_LEAD_ID);
+    expect((result as unknown as { already_existed: boolean }).already_existed).toBe(true);
+  });
+
+  it('devolver lead existente NAO grava LeadActivity (nada foi criado)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: DEFAULT_PIPELINE_ID });
+    prisma.lead.findFirst.mockResolvedValueOnce({
+      id: EXISTING_LEAD_ID,
+      telefone: TELEFONE_DUPLICADO,
+      pipeline_id: DEFAULT_PIPELINE_ID,
+      lead_scope: operador.tenantId,
+      nome: 'Contato Existente',
+    });
+
+    await service.create(
+      { nome: 'Novo Contato', telefone: TELEFONE_DUPLICADO, estagio_id: ESTAGIO_ID, temperatura: 'FRIO' },
+      operador,
+    );
+
+    expect(prisma.leadActivity.create).not.toHaveBeenCalled();
   });
 });
