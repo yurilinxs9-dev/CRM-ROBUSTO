@@ -115,6 +115,7 @@ model Tenant {
   outbound_webhooks  OutboundWebhook[]
   api_keys           ApiKey[]
   sectors            Sector[]
+  conversations      Conversation[]
 
   @@index([owner_id])
 }
@@ -154,6 +155,7 @@ model User {
   instances_hidden   InstanceHidden[]
   refresh_tokens     RefreshToken[]
   password_resets    PasswordResetToken[]
+  conversations      Conversation[]        @relation("ConversationResponsavel")
 
   @@index([email])
   @@index([tenant_id])
@@ -293,13 +295,12 @@ model Lead {
   motivo_perda        String?
   position            Float     @default(0)
   instancia_whatsapp  String
-  // Escopo de identidade do lead (fim da colisão "1 cliente em 2 números = 1 lead").
-  // Individual (pool_enabled=false): owner_user_id da instância que recebeu →
-  //   cada número é um lead isolado (só o dono vê/conversa).
-  // Compartilhado (pool_enabled=true): tenant_id (sentinela) → 1 lead por
-  //   telefone+pipeline no tenant, comportamento atual intacto.
-  // É só identidade; responsavel_id (dono atual) é independente — /reassign muda
-  // o dono sem trocar o escopo.
+  // Escopo de identidade do lead. SEMPRE tenant_id, nos dois modos → 1 lead por
+  // telefone+pipeline no tenant, um card por contato no Kanban.
+  // O isolamento entre vendedores NÃO vem daqui: vem de Conversation, que é
+  // única por (lead_id, instancia_whatsapp). Ver docs/specs/conversa-por-instancia.md.
+  // Histórico: o escopo por owner_user_id existiu entre 9cca2c5 (24/06) e
+  // b898c70 (01/07) e foi revertido por duplicar o contato no Kanban.
   lead_scope          String
   foto_url            String?
   mensagens_nao_lidas Int       @default(0)
@@ -314,10 +315,11 @@ model Lead {
   created_at          DateTime  @default(now())
   updated_at          DateTime  @updatedAt
 
-  messages   Message[]
-  activities LeadActivity[]
-  lead_tags  LeadTag[]
-  tasks      Task[]
+  messages      Message[]
+  activities    LeadActivity[]
+  lead_tags     LeadTag[]
+  tasks         Task[]
+  conversations Conversation[]
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
@@ -343,10 +345,41 @@ model Lead {
   @@index([tenant_id, atendimento_status])
 }
 
+/// Fio de mensagens entre um Lead e UM número da empresa. Um contato que fala
+/// com dois vendedores tem duas Conversations e continua com UM card no Kanban.
+/// Dona do estado de atendimento (responsavel_id, status, assumed_at,
+/// ai_blocked); o Lead espelha os da conversa ativa.
+model Conversation {
+  id                       String             @id @default(uuid())
+  lead_id                  String
+  lead                     Lead               @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  instancia_whatsapp       String
+  responsavel_id           String?
+  responsavel              User?              @relation("ConversationResponsavel", fields: [responsavel_id], references: [id])
+  status                   ConversationStatus @default(OPEN)
+  /// Última mensagem DO CLIENTE. É este campo que elege a conversa ativa.
+  last_customer_message_at DateTime?
+  last_message_at          DateTime?
+  assumed_at               DateTime?
+  ai_blocked               Boolean            @default(false)
+  tenant_id                String
+  tenant                   Tenant             @relation(fields: [tenant_id], references: [id])
+  created_at               DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
+
+  messages Message[]
+
+  @@unique([lead_id, instancia_whatsapp], name: "lead_instancia")
+  @@index([tenant_id, responsavel_id])
+  @@index([lead_id, last_customer_message_at])
+}
+
 model Message {
   id                     String           @id @default(uuid())
   lead_id                String
   lead                   Lead             @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  conversation_id        String?
+  conversation           Conversation?    @relation(fields: [conversation_id], references: [id])
   instance_name          String
   whatsapp_message_id    String?
   direction              MessageDirection
@@ -402,6 +435,7 @@ model Message {
   // casa com o bind param do Prisma (direction = $n) → planner ignorava e
   // fazia seq scan de 1.4s. Índice pleno resolve (~5ms).
   @@index([tenant_id, direction, sent_by_user_id])
+  @@index([conversation_id, created_at])
   // ⚠️ Índices PARCIAIS só no DB (Prisma não suporta), criados à mão:
   // Message_outgoing_by_user_idx ON (tenant_id, sent_by_user_id)
   //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL (legado;
