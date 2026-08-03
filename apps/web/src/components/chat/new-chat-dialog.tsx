@@ -16,7 +16,9 @@ import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
@@ -25,6 +27,7 @@ export interface NewChatFormData {
   nome: string;
   telefone: string;
   estagio_id: string;
+  pipeline_id: string;
 }
 
 export interface Stage {
@@ -69,19 +72,41 @@ export function NewChatDialog({
   const [stageId, setStageId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const stages = useMemo<Stage[]>(() => {
-    const all = pipelines.flatMap((p) => p.stages);
-    return [...all].sort((a, b) => a.ordem - b.ordem);
+  // Grouped by pipeline (stable pipeline order = order in the `pipelines` prop),
+  // stages ordered by `ordem` within each group. Pipelines without stages are
+  // skipped — an empty group heading would be pure noise.
+  const groupedStages = useMemo(() => {
+    return pipelines
+      .filter((p) => p.stages.length > 0)
+      .map((p) => ({
+        pipelineId: p.id,
+        pipelineNome: p.nome,
+        stages: [...p.stages].sort((a, b) => a.ordem - b.ordem),
+      }));
   }, [pipelines]);
+
+  const stageToPipelineId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of groupedStages) {
+      for (const s of group.stages) {
+        map.set(s.id, group.pipelineId);
+      }
+    }
+    return map;
+  }, [groupedStages]);
+
+  const hasMultiplePipelines = groupedStages.length > 1;
+  const totalStageCount = groupedStages.reduce((acc, g) => acc + g.stages.length, 0);
+  const firstStageId = groupedStages[0]?.stages[0]?.id ?? '';
 
   useEffect(() => {
     if (open) {
       setNome('');
       setTelefone('');
-      setStageId(stages[0]?.id ?? '');
+      setStageId(firstStageId);
       setError(null);
     }
-  }, [open, stages]);
+  }, [open, firstStageId]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,6 +131,7 @@ export function NewChatDialog({
       nome: nome.trim(),
       telefone: normalized,
       estagio_id: stageId,
+      pipeline_id: stageToPipelineId.get(stageId) ?? '',
     });
   };
 
@@ -154,11 +180,22 @@ export function NewChatDialog({
                 <SelectValue placeholder="Selecione um estágio" />
               </SelectTrigger>
               <SelectContent>
-                {stages.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.nome}
-                  </SelectItem>
-                ))}
+                {hasMultiplePipelines
+                  ? groupedStages.map((group) => (
+                      <SelectGroup key={group.pipelineId}>
+                        <SelectLabel className="text-ink-3">{group.pipelineNome}</SelectLabel>
+                        {group.stages.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.nome}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))
+                  : groupedStages[0]?.stages.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.nome}
+                      </SelectItem>
+                    ))}
               </SelectContent>
             </Select>
           </div>
@@ -178,7 +215,7 @@ export function NewChatDialog({
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={isLoading || stages.length === 0}>
+            <Button type="submit" disabled={isLoading || totalStageCount === 0}>
               {isLoading ? 'Criando...' : 'Criar conversa'}
             </Button>
           </DialogFooter>
