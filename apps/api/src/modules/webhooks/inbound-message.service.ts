@@ -449,11 +449,24 @@ export class InboundMessageService {
     // decide de quem é a mensagem — não o `lead.responsavel_id`, que aponta pro
     // vendedor que atendeu primeiro. Era exatamente daí que vinha o
     // espelhamento (ver docs/specs/conversa-por-instancia.md).
+    //
+    // A ORDEM DO ?? IMPORTA: `responsavelId` (a regra vigente pra ESTA
+    // instância — dono da instância, ou null se pool/round-robin) vem
+    // primeiro; `lead.responsavel_id` (dono histórico do lead, que pode ter
+    // "atendido" por OUTRO número) é só fallback quando `responsavelId` é
+    // null. Invertida, uma conversa NOVA nascida na instância de B nasceria
+    // com o dono A — o próprio espelhamento que este arquivo existe pra
+    // consertar (ver docs/specs/conversa-por-instancia.md:143-145). Não
+    // "simplificar" de volta.
+    // Resíduo conhecido: em soloDistribute, responsavelId é null e o
+    // round-robin não refire pra lead já com dono (guard `lead.responsavel_id
+    // === null` acima) — esse caminho ainda cai no fallback pro dono do lead.
+    // Não é resolvido aqui.
     const conversation = await this.conversations.resolveForInbound({
       tenantId,
       leadId: lead.id,
       instanceName: instance.nome,
-      defaultResponsavelId: lead.responsavel_id ?? responsavelId,
+      defaultResponsavelId: responsavelId ?? lead.responsavel_id,
       isFromMe,
       occurredAt: new Date(),
     });
@@ -620,16 +633,30 @@ export class InboundMessageService {
 
     // Mensagem DO CLIENTE elege a conversa ativa; o card do Kanban segue junto.
     // Envio do vendedor (manual, follow-up ou IA) não move card de propósito.
-    if (!isFromMe) {
-      await this.conversations.syncLeadFromActive(lead.id);
-      this.gateway.emitLeadUpdated(
-        lead.id,
-        {
-          responsavel_id: conversation.responsavel_id,
-          instancia_whatsapp: instance.nome,
-        },
-        tenantId,
-      );
+    // Pula quando o lead já reflete esta conversa (caso comum: 1 conversa só
+    // por lead) — evita transação extra + emit tenant-wide num no-op e
+    // preserva o contrato de <100ms p99 do critical path deste método.
+    const leadJaReflete =
+      lead.responsavel_id === conversation.responsavel_id &&
+      lead.instancia_whatsapp === instance.nome;
+    if (!isFromMe && !leadJaReflete) {
+      // Emite o patch REALMENTE aplicado por syncLeadFromActive, não os
+      // valores computados antes dela rodar: ela deriva a conversa ativa de
+      // novo dentro da transação, então pode divergir do `conversation`
+      // resolvido acima (ex.: mensagem concorrente por outra instância). Se
+      // ela falhar (engole e loga internamente) ou não aplicar nada,
+      // retorna null e a gente não emite um estado que o banco não tem.
+      const patch = await this.conversations.syncLeadFromActive(lead.id);
+      if (patch) {
+        this.gateway.emitLeadUpdated(
+          lead.id,
+          {
+            responsavel_id: patch.responsavel_id,
+            instancia_whatsapp: patch.instancia_whatsapp,
+          },
+          tenantId,
+        );
+      }
     }
 
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
@@ -653,8 +680,8 @@ export class InboundMessageService {
     if (!isFromMe) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;
       const targetSet = new Set<string>();
-      if (lead.responsavel_id) {
-        targetSet.add(lead.responsavel_id);
+      if (conversation.responsavel_id) {
+        targetSet.add(conversation.responsavel_id);
       } else if (tenantId) {
         const poolUsers = await this.prisma.user.findMany({
           where: { tenant_id: tenantId, ativo: true, role: { not: 'VISUALIZADOR' } },
@@ -675,11 +702,14 @@ export class InboundMessageService {
       }
       const targetUserIds = [...targetSet];
       if (targetUserIds.length > 0) {
-        // Nome do dono do lead — usado pra etiquetar no sino do supervisor
-        // ("Equipe · Alex"). Pro próprio dono fica NULL ("Seus leads").
-        const responsavelNome = lead.responsavel_id
+        // Nome do dono DESTA CONVERSA — usado pra etiquetar no sino do
+        // supervisor ("Equipe · Alex"). Pro próprio dono fica NULL ("Seus
+        // leads"). `conversation.responsavel_id`, não `lead.responsavel_id`:
+        // é o dono de quem recebeu ESTA mensagem, que pode ser outro
+        // vendedor que atendeu o mesmo contato por outro número.
+        const responsavelNome = conversation.responsavel_id
           ? (await this.prisma.user.findUnique({
-              where: { id: lead.responsavel_id },
+              where: { id: conversation.responsavel_id },
               select: { nome: true },
             }))?.nome ?? null
           : null;
@@ -696,7 +726,7 @@ export class InboundMessageService {
           lead.id,
           lead.nome,
           preview,
-          lead.responsavel_id ?? null,
+          conversation.responsavel_id ?? null,
           responsavelNome,
         );
       }

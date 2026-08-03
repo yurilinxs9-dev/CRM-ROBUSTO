@@ -6,6 +6,19 @@
 //   node scripts/smoke-conversation-routing.cjs --tenant=<id>
 //
 // Idempotente: limpa antes e depois. Nada com prefixo smoke-conv- sobrevive.
+//
+// O QUE ISSO PROVA — E O QUE NÃO PROVA: este script grava linhas em Message/
+// Conversation/Lead já no formato FINAL esperado (ex.: `msgNova.conversation_id
+// === convAlex.id` compara o valor lido de volta com o literal que a própria
+// linha acima passou pro `create`) e depois confere que o formato bate. Ele
+// NÃO chama `InboundMessageService.saveIncomingMessage` nem
+// `ConversationService.resolveForInbound` — não exercita a lógica de
+// roteamento do webhook, só o "formato dos dados" que ela deve produzir (ver
+// nota no brief, Step 7/8). "SMOKE OK" aqui NÃO é prova de que o bug de
+// espelhamento está corrigido: essas 8 asserções passam igual contra o código
+// com o bug do C1 (defaultResponsavelId invertido) intacto. A prova real da
+// lógica está em `inbound-message.service.spec.ts` (mocks + regressão direta
+// do C1) e na validação ponta a ponta (Step 8 do brief, fora deste arquivo).
 require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 const fs = require('fs');
