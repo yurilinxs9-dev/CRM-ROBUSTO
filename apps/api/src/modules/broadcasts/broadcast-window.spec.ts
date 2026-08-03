@@ -64,4 +64,11 @@ describe('isWithinBroadcastWindow', () => {
     expect(isWithinBroadcastWindow(d, 'America/Sao_Paulo', 9, 18, [1, 2, 3, 4, 5])).toBe(false);
     expect(isWithinBroadcastWindow(d, 'UTC', 9, 22, [1, 2, 3, 4, 5])).toBe(true);
   });
+
+  it('terça 02:00 UTC ainda é segunda 23:00 no fuso — dia da semana vem do mesmo instante formatado', () => {
+    // 2026-08-04T02:00:00Z é terça em UTC, mas segunda 23:00 em BRT.
+    // Com a janela [1] (só segunda) das 22h às 24h, a função correta aceita.
+    // Se o dia da semana viesse de now.getUTCDay() (terça = 2), recusaria.
+    expect(isWithinBroadcastWindow(at('2026-08-04T02:00:00Z'), TZ, 22, 24, [1])).toBe(true);
+  });
 });
