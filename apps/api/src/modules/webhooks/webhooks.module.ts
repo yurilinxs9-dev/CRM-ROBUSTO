@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { WebhooksController } from './webhooks.controller';
 import { WebhookProcessor } from './webhook.processor';
 import { InboundMessageService } from './inbound-message.service';
+import { ConversationService } from './conversation.service';
 import { EvolutionEventsHandler } from './evolution-events.handler';
 import { UazapiEventsHandler } from './uazapi-events.handler';
 import { DataRetentionService } from './data-retention.service';
@@ -43,10 +44,12 @@ import { QueueModule } from '../queue/queue.module';
   providers: [
     WebhookProcessor,
     InboundMessageService,
+    ConversationService,
     EvolutionEventsHandler,
     UazapiEventsHandler,
     DataRetentionService,
     WebhookSecretGuard,
   ],
+  exports: [ConversationService],
 })
 export class WebhooksModule {}
