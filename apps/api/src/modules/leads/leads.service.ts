@@ -1129,12 +1129,16 @@ export class LeadsService {
     // Operador segue restrito a leads onde é responsável OU da própria
     // instância (Individual).
     const isResponsavel = lead.responsavel_id === user.id;
-    let ownedInstances: string[] = [];
+    let ownConversationIds: string[] = [];
     if (!isManager) {
-      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-      const accessible = isResponsavel ||
-        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-      if (!accessible) {
+      ownConversationIds = (
+        await this.prisma.conversation.findMany({
+          where: { lead_id: leadId, responsavel_id: user.id },
+          select: { id: true },
+        })
+      ).map((c) => c.id);
+      // Sem conversa própria e sem ser o responsável do card: nada a ver aqui.
+      if (ownConversationIds.length === 0 && !isResponsavel) {
         return { messages: [], nextCursor: undefined };
       }
     }
@@ -1148,18 +1152,15 @@ export class LeadsService {
     });
     const hideHistory =
       !isManager && !!lead.assumed_at && !tenantCfg?.share_history_enabled;
-    // Dono do lead vê a conversa INTEIRA, mesmo trechos que entraram por outro
-    // número (cliente que falou com mais de uma instância). O filtro por
-    // instância só vale pra quem acessa via instância própria SEM ser o
-    // responsável — aí limita ao que passou pelo número dele.
-    const filterByInstance = !isManager && !isResponsavel && ownedInstances.length > 0;
+    // Não-gerente vê só as conversas dele. Gerente vê o lead inteiro, com as
+    // conversas intercaladas por created_at — comportamento igual ao de hoje.
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(filterByInstance
-          ? { instance_name: { in: ownedInstances } }
-          : {}),
+        ...(isManager || ownConversationIds.length === 0
+          ? {}
+          : { conversation_id: { in: ownConversationIds } }),
         ...(hideHistory
           ? {
               OR: [
