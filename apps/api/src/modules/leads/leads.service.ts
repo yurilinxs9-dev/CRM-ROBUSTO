@@ -881,16 +881,24 @@ export class LeadsService {
    * Escrever na conversa da instância do destinatário NÃO resolve: se o cliente
    * falou por último no número do dono anterior, aquela segue sendo a ativa.
    *
+   * Recebe `tx` porque o chamador roda isto dentro da MESMA transação que
+   * escreve o `Lead` — senão um crash entre as duas escritas deixa
+   * `Lead.responsavel_id` e `Conversation.responsavel_id` divergentes, e a
+   * próxima mensagem do cliente reverte a transferência sozinha de novo (a
+   * mesma classe de bug que esta task existe pra eliminar, só que por uma
+   * janela mais estreita).
+   *
    * Devolve o id da conversa transferida, ou null se o lead ainda não tem
    * conversa (lead manual que nunca trocou mensagem) — nesse caso não há nada
    * a fazer, e a primeira mensagem inbound cria a conversa já com o dono certo.
    */
   private async transferActiveConversation(
+    tx: Prisma.TransactionClient,
     leadId: string,
     toUserId: string,
     tenantId: string,
   ): Promise<string | null> {
-    const rows = await this.prisma.conversation.findMany({
+    const rows = await tx.conversation.findMany({
       where: { lead_id: leadId, tenant_id: tenantId },
       select: {
         id: true,
@@ -902,7 +910,7 @@ export class LeadsService {
     const active = resolveActiveConversation(rows);
     if (!active) return null;
 
-    await this.prisma.conversation.update({
+    await tx.conversation.update({
       where: { id: active.id },
       data: { responsavel_id: toUserId, assumed_at: new Date() },
     });
@@ -920,17 +928,27 @@ export class LeadsService {
     //    o trabalho da equipe pelo Kanban.
     const isManagerClaim =
       (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
-    const result = await this.prisma.lead.updateMany({
-      where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
-      data: {
-        responsavel_id: user.id,
-        assumed_at: new Date(),
-        is_private: isManagerClaim,
-      },
+    // Lead update (guard incluído) e transferência da conversa ativa na MESMA
+    // transação: se o processo cair entre as duas escritas, Lead e
+    // Conversation divergem e a próxima msg do cliente desfaz o claim sozinha
+    // (ver doc de transferActiveConversation). O guard updateMany continua
+    // atômico dentro da transação — quem perder a corrida ainda cai no
+    // count === 0 e recebe ConflictException, a transação só faz rollback do
+    // que já tinha sido escrito (nada, nesse caso).
+    await this.prisma.$transaction(async (tx) => {
+      const result = await tx.lead.updateMany({
+        where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
+        data: {
+          responsavel_id: user.id,
+          assumed_at: new Date(),
+          is_private: isManagerClaim,
+        },
+      });
+      if (result.count === 0) {
+        throw new ConflictException('Lead ja atribuido ou nao encontrado');
+      }
+      await this.transferActiveConversation(tx, leadId, user.id, user.tenantId);
     });
-    if (result.count === 0) {
-      throw new ConflictException('Lead ja atribuido ou nao encontrado');
-    }
     const ownedInstance = await this.findOwnedInstance(user.id, user.tenantId);
     if (ownedInstance) {
       await this.prisma.lead.update({
@@ -938,7 +956,6 @@ export class LeadsService {
         data: { instancia_whatsapp: ownedInstance.nome },
       });
     }
-    await this.transferActiveConversation(leadId, user.id, user.tenantId);
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
@@ -977,19 +994,25 @@ export class LeadsService {
     }
 
     const ownedInstance = await this.findOwnedInstance(novoResponsavelId, user.tenantId);
-    const updated = await this.prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        responsavel_id: novoResponsavelId,
-        // Reseta assumed_at — novo responsável começa do zero, sem histórico
-        // do anterior. Msgs antigas continuam no DB com visible_to_user_id
-        // do dono anterior, então só ele ainda enxerga (privacidade).
-        assumed_at: new Date(),
-        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
-      },
-      select: { id: true, nome: true },
+    // Lead update e transferência da conversa ativa na MESMA transação —
+    // mesmo motivo do claim: um crash entre as duas escritas deixaria
+    // Lead.responsavel_id e Conversation.responsavel_id divergentes.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          responsavel_id: novoResponsavelId,
+          // Reseta assumed_at — novo responsável começa do zero, sem histórico
+          // do anterior. Msgs antigas continuam no DB com visible_to_user_id
+          // do dono anterior, então só ele ainda enxerga (privacidade).
+          assumed_at: new Date(),
+          ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+        },
+        select: { id: true, nome: true },
+      });
+      await this.transferActiveConversation(tx, leadId, novoResponsavelId, user.tenantId);
+      return lead;
     });
-    await this.transferActiveConversation(leadId, novoResponsavelId, user.tenantId);
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
