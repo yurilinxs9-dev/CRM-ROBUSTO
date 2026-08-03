@@ -50,31 +50,49 @@ const q = (sql) => p.$queryRawUnsafe(sql);
     ON "Conversation"("lead_id", "last_customer_message_at")`);
   console.log('índices de Conversation OK');
 
-  // 3. FKs — NOT VALID para não varrer a tabela; validadas depois.
-  //    O banco tem drift pré-existente em FKs de Lead; por isso cada uma vai
-  //    isolada num DO block que ignora "já existe".
+  // 3. FKs, com as mesmas ações ON DELETE/ON UPDATE que o Prisma infere do
+  //    schema (Conversation.lead_id obrigatório+cascade explícito;
+  //    responsavel_id opcional → SET NULL; tenant_id obrigatório → RESTRICT;
+  //    todas ON UPDATE CASCADE, que é o default do Prisma).
+  //    Repara (drop+recria) em vez de "cria se não existir": rodar isto de
+  //    novo numa base onde a constraint já existe com as ações certas é
+  //    inócuo (drop+recreate idêntico); numa base com ações erradas, corrige.
+  //    APENAS estas 4 constraints (as 4 criadas por este script) — nenhuma
+  //    outra tabela/constraint é tocada.
   const fks = [
-    `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_lead_id_fkey"
-       FOREIGN KEY ("lead_id") REFERENCES "Lead"("id") ON DELETE CASCADE`,
-    `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_responsavel_id_fkey"
-       FOREIGN KEY ("responsavel_id") REFERENCES "User"("id")`,
-    `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_tenant_id_fkey"
-       FOREIGN KEY ("tenant_id") REFERENCES "Tenant"("id")`,
+    {
+      name: 'Conversation_lead_id_fkey',
+      sql: `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_lead_id_fkey"
+       FOREIGN KEY ("lead_id") REFERENCES "Lead"("id") ON DELETE CASCADE ON UPDATE CASCADE`,
+    },
+    {
+      name: 'Conversation_responsavel_id_fkey',
+      sql: `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_responsavel_id_fkey"
+       FOREIGN KEY ("responsavel_id") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE`,
+    },
+    {
+      name: 'Conversation_tenant_id_fkey',
+      sql: `ALTER TABLE "Conversation" ADD CONSTRAINT "Conversation_tenant_id_fkey"
+       FOREIGN KEY ("tenant_id") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE`,
+    },
   ];
-  for (const sql of fks) {
-    await x(`DO $$ BEGIN ${sql}; EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+  for (const fk of fks) {
+    await x(`ALTER TABLE "Conversation" DROP CONSTRAINT IF EXISTS "${fk.name}"`);
+    await x(fk.sql);
   }
-  console.log('FKs de Conversation OK');
+  console.log('FKs de Conversation OK (ações ON DELETE/ON UPDATE conferidas)');
 
-  // 4. Message.conversation_id — NULLABLE nesta fase (Fase C aperta pra NOT NULL)
+  // 4. Message.conversation_id — NULLABLE nesta fase (Fase C aperta pra
+  //    NOT NULL; quando isso acontecer, a FK abaixo deve virar
+  //    ON DELETE RESTRICT — ver Task 8 do plano).
   await x(`ALTER TABLE "Message" ADD COLUMN IF NOT EXISTS "conversation_id" text`);
   await x(`CREATE INDEX IF NOT EXISTS "Message_conversation_id_created_at_idx"
     ON "Message"("conversation_id", "created_at")`);
-  await x(`DO $$ BEGIN
-    ALTER TABLE "Message" ADD CONSTRAINT "Message_conversation_id_fkey"
-      FOREIGN KEY ("conversation_id") REFERENCES "Conversation"("id");
-    EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
-  console.log('Message.conversation_id OK');
+  await x(`ALTER TABLE "Message" DROP CONSTRAINT IF EXISTS "Message_conversation_id_fkey"`);
+  await x(`ALTER TABLE "Message" ADD CONSTRAINT "Message_conversation_id_fkey"
+      FOREIGN KEY ("conversation_id") REFERENCES "Conversation"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE`);
+  console.log('Message.conversation_id OK (ação ON DELETE/ON UPDATE conferida)');
 
   // 5. verificação final
   const cols = await q(`SELECT column_name FROM information_schema.columns
@@ -83,6 +101,19 @@ const q = (sql) => p.$queryRawUnsafe(sql);
   const msgCol = await q(`SELECT column_name, is_nullable FROM information_schema.columns
     WHERE table_name = 'Message' AND column_name = 'conversation_id'`);
   console.log('Message.conversation_id:', JSON.stringify(msgCol));
+
+  // 6. verificação das ações das 4 FKs (confdeltype/confupdtype: a=NO ACTION,
+  //    r=RESTRICT, c=CASCADE, n=SET NULL, d=SET DEFAULT)
+  const fkActions = await q(`SELECT conname, confdeltype, confupdtype
+    FROM pg_constraint
+    WHERE conname IN (
+      'Conversation_lead_id_fkey',
+      'Conversation_responsavel_id_fkey',
+      'Conversation_tenant_id_fkey',
+      'Message_conversation_id_fkey'
+    ) ORDER BY conname`);
+  console.log('FK actions:', JSON.stringify(fkActions));
+
   console.log('FASE A OK');
   await p.$disconnect();
 })().catch((e) => {
