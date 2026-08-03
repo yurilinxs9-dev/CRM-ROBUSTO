@@ -111,6 +111,35 @@ describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando
     expect(payload.instancia_whatsapp).toBe(OWN_INSTANCE_NAME);
   });
 
+  it('estagio_id vazio ("") e tratado como ausente, nao como uuid invalido', async () => {
+    // Formulario React controlado inicia campo nao preenchido como '', nunca
+    // como undefined. new-chat-dialog.tsx faz useState('') e manda assim. O
+    // .uuid().optional() aceitava ausente mas rejeitava '' — 400 sem dizer
+    // qual campo era. Em producao deu 8 VALIDATION_ERROR seguidos.
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
+    prisma.stage.findFirst.mockResolvedValue({
+      id: FIRST_STAGE_OF_DEFAULT_PIPELINE,
+      pipeline_id: DEFAULT_PIPELINE_ID,
+    });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+
+    await service.create(
+      { nome: 'Sem Etapa', telefone: '+5531988887777', estagio_id: '', pipeline_id: '', temperatura: 'FRIO' },
+      operador,
+    );
+
+    expect(prisma.lead.create).toHaveBeenCalledTimes(1);
+    const payload = prisma.lead.create.mock.calls[0][0].data;
+    expect(payload.pipeline_id).toBe(DEFAULT_PIPELINE_ID);
+    expect(payload.estagio_id).toBe(FIRST_STAGE_OF_DEFAULT_PIPELINE);
+  });
+
   it('modo Individual sem instancia conectada para o usuario: rejeita com BadRequestException', async () => {
     const { service, prisma } = makeService();
     prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });

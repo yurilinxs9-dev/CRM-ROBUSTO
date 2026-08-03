@@ -66,6 +66,15 @@ const updateLeadSchema = z.object({
   // Campos customizados por tenant — validados contra CustomFieldDef ativas.
   dados_custom: z.record(z.unknown()).optional(),
 });
+/**
+ * Trata string vazia como campo ausente. Formulário React controlado inicia
+ * campo não preenchido como `''`, e um `.optional()` do Zod aceita `undefined`
+ * mas não `''` — o que virava 400 sem indicar o campo.
+ */
+function vazioComoAusente<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+}
+
 const createLeadSchema = z.object({
   nome: z.string().min(1),
   telefone: z.string().min(10),
@@ -77,10 +86,17 @@ const createLeadSchema = z.object({
   // explicito — é o que resolve tenants com mais de um pipeline) e
   // resolveDefaultInstance (instancia propria do criador ou instancia viva
   // do tenant, conforme pool_enabled).
-  pipeline_id: z.string().uuid().optional(),
-  estagio_id: z.string().uuid().optional(),
-  instancia_whatsapp: z.string().optional(),
-  responsavel_id: z.string().uuid().optional(),
+  // `vazioComoAusente` existe porque formulário controlado em React inicia
+  // campo não preenchido como string vazia, não como undefined. O diálogo de
+  // nova conversa manda `estagio_id: ''` quando o usuário não escolhe etapa
+  // (`new-chat-dialog.tsx`, `useState('')`), e `.uuid().optional()` rejeita ''
+  // — aceita ausente, não vazio. O resultado era 400 VALIDATION_ERROR sem
+  // dizer qual campo. Tratar '' como ausente deixa a derivação assumir, que é
+  // o comportamento pretendido.
+  pipeline_id: vazioComoAusente(z.string().uuid()),
+  estagio_id: vazioComoAusente(z.string().uuid()),
+  instancia_whatsapp: vazioComoAusente(z.string()),
+  responsavel_id: vazioComoAusente(z.string().uuid()),
 });
 
 // Mesma definicao de "instancia viva" usada em messages.service.ts (fallback
