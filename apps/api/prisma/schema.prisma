@@ -93,6 +93,11 @@ model Tenant {
   // responsável vê a conversa inteira pra ter contexto. Default false =
   // privacidade atual preservada (histórico corta em assumed_at).
   share_history_enabled     Boolean @default(false)
+  // Janela em que o follow-up pode disparar, no fuso America/Sao_Paulo.
+  // start inclusivo, end exclusivo. days em ISO-8601: 1=segunda ... 7=domingo.
+  broadcast_window_start    Int     @default(9)
+  broadcast_window_end      Int     @default(18)
+  broadcast_window_days     Int[]   @default([1, 2, 3, 4, 5])
 
   owner              User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users              User[]             @relation("TenantMembers")
@@ -932,6 +937,11 @@ enum BroadcastTargetStatus {
   sent
   failed
   skipped // lead com ai_blocked, sem telefone, ou removido
+  /// Cliente respondeu DEPOIS de receber a mensagem do disparo. É a métrica
+  /// que diz se o follow-up gerou conversa. Distinto de `skipped`: um alvo
+  /// que ainda estava na fila quando o cliente escreveu vira `skipped`, não
+  /// `replied` — senão a métrica contaria conversas que o disparo não causou.
+  replied
 }
 
 // Disparo em massa por etapa/segmento com throttle (ex.: 1 msg a cada 5 min).
@@ -968,8 +978,13 @@ model BroadcastTarget {
   lead_id      String
   status       BroadcastTargetStatus @default(pending)
   sent_at      DateTime?
+  replied_at   DateTime?
   error        String?
   created_at   DateTime              @default(now())
 
   @@index([broadcast_id, status])
+  /// Pré-requisito, não otimização: o gancho de resposta roda em TODA mensagem
+  /// recebida (780 em 3h em produção). Sem este índice, cada mensagem faria
+  /// varredura completa de BroadcastTarget.
+  @@index([lead_id, status])
 }
