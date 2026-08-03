@@ -8,6 +8,7 @@ import { MediaPipelineService } from '../media/media-pipeline.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
+import { BroadcastReplyService } from '../broadcasts/broadcast-reply.service';
 import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
 import {
@@ -75,6 +76,7 @@ export class InboundMessageService {
     private outboundWebhooks: OutboundWebhooksService,
     private assignment: AssignmentService,
     private readonly conversations: ConversationService,
+    private readonly broadcastReply: BroadcastReplyService,
   ) {}
   /**
    * F-02: setor sem agentes ativos — lead fica em espera (sem dono). Avisa os
@@ -657,6 +659,15 @@ export class InboundMessageService {
           tenantId,
         );
       }
+    }
+
+    if (!isFromMe) {
+      // Cliente respondeu: sai da fila de qualquer follow-up ativo. Nunca
+      // chamar fora deste guard — mensagem NOSSA não é resposta do cliente,
+      // e trataria um envio automático como se o cliente tivesse escrito.
+      await this.broadcastReply
+        .registerCustomerReply(lead.id)
+        .catch((err) => this.logger.warn(`registerCustomerReply falhou lead=${lead.id}: ${String(err)}`));
     }
 
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.

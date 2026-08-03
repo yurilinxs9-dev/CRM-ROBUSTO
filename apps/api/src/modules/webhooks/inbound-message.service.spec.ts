@@ -61,6 +61,9 @@ function makeMocks() {
     syncLeadFromActive: jest.fn().mockResolvedValue(null),
     blockAi: jest.fn().mockResolvedValue(undefined),
   };
+  const broadcastReply: any = {
+    registerCustomerReply: jest.fn().mockResolvedValue({ replied: 0, skipped: 0 }),
+  };
   return {
     prisma,
     leadsService,
@@ -71,6 +74,7 @@ function makeMocks() {
     outboundWebhooks,
     assignment,
     conversations,
+    broadcastReply,
   };
 }
 
@@ -86,6 +90,7 @@ function makeService() {
     m.outboundWebhooks,
     m.assignment,
     m.conversations,
+    m.broadcastReply,
   ) as InboundMessageService;
   return { service, ...m };
 }
@@ -278,5 +283,35 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
       expect.arrayContaining(['A']),
       expect.anything(),
     );
+  });
+
+  it('mensagem do cliente registra a resposta no follow-up', async () => {
+    const { service, prisma, conversations, broadcastReply } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+
+    await service.saveIncomingMessage(baseInput());
+
+    expect(broadcastReply.registerCustomerReply).toHaveBeenCalledWith('lead-1');
+  });
+
+  it('mensagem do vendedor NÃO registra resposta', async () => {
+    const { service, prisma, conversations, broadcastReply } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA, responsavel_id: 'B' });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+
+    await service.saveIncomingMessage(baseInput({ isFromMe: true }));
+
+    expect(broadcastReply.registerCustomerReply).not.toHaveBeenCalled();
   });
 });

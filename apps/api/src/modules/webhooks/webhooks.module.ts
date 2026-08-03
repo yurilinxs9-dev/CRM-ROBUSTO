@@ -13,6 +13,7 @@ import { LeadsModule } from '../leads/leads.module';
 import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
 import { QueueModule } from '../queue/queue.module';
+import { BroadcastsModule } from '../broadcasts/broadcasts.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { QueueModule } from '../queue/queue.module';
     MediaModule,
     PushModule,
     QueueModule,
+    BroadcastsModule,
   ],
   controllers: [WebhooksController],
   providers: [
