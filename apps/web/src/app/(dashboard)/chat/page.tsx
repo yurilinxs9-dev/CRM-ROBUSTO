@@ -29,6 +29,11 @@ import {
 
 type FilterTab = 'all' | 'unread' | 'mine';
 
+function apiError(e: unknown, fallback: string): string {
+  const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  return typeof msg === 'string' ? msg : fallback;
+}
+
 const LEADS_QUERY_KEY = ['chat', 'leads'] as const;
 const LEADS_STALE = 0;
 const PAGE_SIZE = 60;
@@ -142,8 +147,8 @@ export default function ChatPage() {
       toast.success('Conversa criada');
       router.push(`/chat/${data.id}`);
     },
-    onError: () => {
-      toast.error('Erro ao criar conversa');
+    onError: (e: unknown) => {
+      toast.error(apiError(e, 'Erro ao criar conversa'));
     },
   });
 

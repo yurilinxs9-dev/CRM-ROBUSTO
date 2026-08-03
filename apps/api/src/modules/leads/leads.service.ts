@@ -71,11 +71,20 @@ const createLeadSchema = z.object({
   telefone: z.string().min(10),
   email: z.string().email().optional(),
   empresa: z.string().optional(),
-  pipeline_id: z.string().uuid(),
+  // Opcionais: quando ausentes, LeadsService.create() deriva pipeline_id
+  // (pipeline default do tenant) e instancia_whatsapp (instancia propria do
+  // criador ou instancia viva do tenant, conforme pool_enabled) — ver
+  // resolveDefaultPipeline/resolveDefaultInstance. estagio_id continua
+  // obrigatorio e e validado contra o pipeline resolvido.
+  pipeline_id: z.string().uuid().optional(),
   estagio_id: z.string().uuid(),
-  instancia_whatsapp: z.string(),
+  instancia_whatsapp: z.string().optional(),
   responsavel_id: z.string().uuid().optional(),
 });
+
+// Mesma definicao de "instancia viva" usada em messages.service.ts (fallback
+// de envio/reenvio) — nao inventar outra nocao de "ativa" aqui.
+const LIVE_INSTANCE_STATUSES = ['open', 'connected', 'connecting'];
 const reassignSchema = z.object({
   novoResponsavelId: z.string().uuid(),
 });
@@ -507,8 +516,96 @@ export class LeadsService {
     return { success: true };
   }
 
+  /**
+   * Pipeline default do tenant, para criacao manual de lead sem pipeline_id
+   * explicito (ex.: dialogo "Nova conversa" do chat, que so coleta estagio).
+   * Mesma regra do webhook inbound (ensurePipelineAndStage em
+   * inbound-message.service.ts): primeiro pipeline ativo por created_at asc,
+   * ou cria um "Principal" com os 4 estagios padrao se o tenant nao tiver
+   * nenhum. Duplicado aqui (em vez de importado) para nao tocar no modulo de
+   * webhooks — mesma regra, dois pontos de entrada.
+   */
+  private async resolveDefaultPipeline(tenantId: string) {
+    let pipeline = await this.prisma.pipeline.findFirst({
+      where: { ativo: true, tenant_id: tenantId },
+      orderBy: { created_at: 'asc' },
+    });
+    if (!pipeline) {
+      pipeline = await this.prisma.pipeline.create({
+        data: {
+          nome: 'Principal',
+          descricao: 'Pipeline criado automaticamente',
+          ativo: true,
+          tenant_id: tenantId,
+          stages: {
+            create: [
+              { nome: 'Novo', ordem: 0, cor: '#38bdf8', tenant_id: tenantId },
+              { nome: 'Em Atendimento', ordem: 1, cor: '#fb923c', tenant_id: tenantId },
+              { nome: 'Ganho', ordem: 2, cor: '#22c55e', is_won: true, tenant_id: tenantId },
+              { nome: 'Perdido', ordem: 3, cor: '#ef4444', is_lost: true, tenant_id: tenantId },
+            ],
+          },
+        },
+      });
+    }
+    return pipeline;
+  }
+
+  /**
+   * Instancia WhatsApp default para lead criado manualmente sem
+   * instancia_whatsapp explicito.
+   *  - Individual (pool_enabled=false): a propria instancia do criador
+   *    (findOwnedInstance — mesma logica usada por claim/reassign).
+   *  - Compartilhado (pool_enabled=true): qualquer instancia VIVA do tenant
+   *    (mesma nocao de "viva" do fallback de envio em messages.service.ts).
+   * Sem instancia resolvivel: BadRequestException — nunca grava string vazia
+   * (Lead.instancia_whatsapp e NOT NULL; lead sem instancia e lead que
+   * ninguem consegue mandar mensagem).
+   */
+  private async resolveDefaultInstance(user: AuthUser, poolEnabled: boolean): Promise<string> {
+    if (!poolEnabled) {
+      const owned = await this.findOwnedInstance(user.id, user.tenantId);
+      if (!owned) {
+        throw new BadRequestException(
+          'Voce ainda nao conectou um numero de WhatsApp. Conecte um numero antes de iniciar uma conversa.',
+        );
+      }
+      return owned.nome;
+    }
+    const liveInstance = await this.prisma.whatsappInstance.findFirst({
+      where: { tenant_id: user.tenantId, status: { in: LIVE_INSTANCE_STATUSES } },
+      orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
+    });
+    if (!liveInstance) {
+      throw new BadRequestException(
+        'Nenhum numero de WhatsApp conectado no momento. Conecte um numero antes de iniciar uma conversa.',
+      );
+    }
+    return liveInstance.nome;
+  }
+
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
+
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
+    const poolEnabled = Boolean(tenant?.pool_enabled);
+
+    const pipelineId =
+      parsed.pipeline_id ?? (await this.resolveDefaultPipeline(user.tenantId)).id;
+
+    const stage = await this.prisma.stage.findFirst({
+      where: { id: parsed.estagio_id, pipeline_id: pipelineId, tenant_id: user.tenantId },
+      select: { id: true },
+    });
+    if (!stage) {
+      throw new BadRequestException('Estagio nao pertence ao pipeline selecionado');
+    }
+
+    const instanciaWhatsapp =
+      parsed.instancia_whatsapp ?? (await this.resolveDefaultInstance(user, poolEnabled));
 
     // Compute initial position so new leads append at the bottom of the stage.
     let initialPosition = 1000;
@@ -523,16 +620,13 @@ export class LeadsService {
       }
     }
 
-    const tenant = await this.prisma.tenant.findFirst({
-      where: { id: user.tenantId },
-      select: { pool_enabled: true },
-    });
-
     const [lead] = await this.prisma.$transaction([
       this.prisma.lead.create({
         data: {
           ...parsed,
-          responsavel_id: parsed.responsavel_id || (tenant?.pool_enabled ? null : user.id),
+          pipeline_id: pipelineId,
+          instancia_whatsapp: instanciaWhatsapp,
+          responsavel_id: parsed.responsavel_id || (poolEnabled ? null : user.id),
           // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
           // (pool e Individual). Evita duplicar o mesmo contato por dono.
           lead_scope: user.tenantId,
