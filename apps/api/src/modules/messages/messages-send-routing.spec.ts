@@ -53,9 +53,12 @@ function makeMocks() {
   const sendQueue: any = { add: jest.fn().mockResolvedValue(undefined) };
   const outboundWebhooks: any = { dispatchMessageCreated: jest.fn().mockResolvedValue(undefined) };
   const push: any = {};
+  const conversations: any = {
+    resolveForInbound: jest.fn().mockResolvedValue({ id: 'conv-routing-test', responsavel_id: null }),
+  };
   return {
     prisma, http, config, media, audio, gateway, cache, mediaPipeline,
-    sendQueue, outboundWebhooks, push,
+    sendQueue, outboundWebhooks, push, conversations,
   };
 }
 
@@ -73,6 +76,7 @@ function makeService() {
     m.sendQueue,
     m.outboundWebhooks,
     m.push,
+    m.conversations,
   );
   return { service, ...m };
 }

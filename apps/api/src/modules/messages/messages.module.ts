@@ -9,6 +9,7 @@ import { MessagesSendProcessor } from './messages.processor';
 import { MessagesRecoveryService } from './messages-recovery.service';
 import { StatusReconcilerService } from './status-reconciler.service';
 import { MESSAGES_SEND_QUEUE } from './messages.queue';
+import { ConversationService } from '../webhooks/conversation.service';
 
 @Module({
   imports: [
@@ -33,7 +34,18 @@ import { MESSAGES_SEND_QUEUE } from './messages.queue';
     }),
   ],
   controllers: [MessagesController],
-  providers: [MessagesService, MessagesSendProcessor, MessagesRecoveryService, StatusReconcilerService],
+  providers: [
+    MessagesService,
+    MessagesSendProcessor,
+    MessagesRecoveryService,
+    StatusReconcilerService,
+    // ConversationService (definida em webhooks/) também é provida aqui em
+    // vez de importar WebhooksModule inteiro — ela só depende do
+    // PrismaService (global), então uma segunda instância nesta DI subtree é
+    // inofensiva (stateless) e evita acoplar MessagesModule ao módulo de
+    // webhooks inteiro (filas, guards, LeadsModule, etc.).
+    ConversationService,
+  ],
   exports: [MessagesService],
 })
 export class MessagesModule {}

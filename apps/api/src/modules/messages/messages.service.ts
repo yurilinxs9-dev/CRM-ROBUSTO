@@ -18,6 +18,7 @@ import { UserRole } from '@/common/types/roles';
 import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { PushService } from '../push/push.service';
+import { ConversationService } from '../webhooks/conversation.service';
 
 /**
  * F-03 — Opções de envio. senderType decide quem enviou (default 'user', o
@@ -105,6 +106,7 @@ export class MessagesService {
     @InjectQueue(MESSAGES_SEND_QUEUE) private readonly sendQueue: Queue<SendMessageJobData>,
     private outboundWebhooks: OutboundWebhooksService,
     private push: PushService,
+    private conversations: ConversationService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
@@ -324,11 +326,29 @@ export class MessagesService {
 
     const localId = uuid();
 
+    // isFromMe: true é intencional — o vendedor mandando mensagem NUNCA pode
+    // avançar last_customer_message_at (isso elegeria esta conversa como
+    // ativa e roubaria o lead de quem o cliente está realmente falando).
+    // defaultResponsavelId: user.id — se a conversa ainda não existe nesta
+    // instância, quem está mandando é o dono dela.
+    const conversation = await this.conversations.resolveForInbound({
+      tenantId: user.tenantId,
+      leadId: lead_id,
+      instanceName,
+      defaultResponsavelId: user.id,
+      isFromMe: true,
+      occurredAt: new Date(),
+    });
+
     const message = await this.prisma.message.create({
       data: {
         id: localId,
         lead_id,
-        instance_name: lead.instancia_whatsapp,
+        conversation_id: conversation.id,
+        // `instanceName` — não `lead.instancia_whatsapp` — é a MESMA variável
+        // usada acima pra resolver a conversa: garante que instance_name e
+        // conversation_id nunca podem divergir.
+        instance_name: instanceName,
         whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: 'TEXT',
@@ -408,6 +428,16 @@ export class MessagesService {
         })
       : [];
 
+    // conversation_id fica de fora DE PROPÓSITO: nota interna não é enviada
+    // por nenhuma instância WhatsApp (`instance_name: 'internal'` é um
+    // sentinela, não um valor de `WhatsappInstance.nome`). Chamar
+    // resolveForInbound aqui exigiria inventar uma instância pra ela — o que
+    // criaria uma linha de Conversation com instancia_whatsapp='internal',
+    // quebrando a invariante "uma Conversation por (lead, instância REAL)" e
+    // o próprio unique (lead_id, instancia_whatsapp). Sem uma regra de
+    // negócio definida pra "qual conversa uma nota pertence" (a do autor? a
+    // ativa do lead?), resolver isso aqui seria adivinhar. Ver relatório da
+    // task — reportado como pendência, não como bug corrigido.
     const message = await this.prisma.message.create({
       data: {
         lead_id,
@@ -473,10 +503,22 @@ export class MessagesService {
     await this.media.upload(filename, opusBuffer, 'audio/ogg; codecs=opus');
     const signedUrl = await this.media.getSignedUrl(filename, 60 * 60 * 24 * 7);
 
+    // Ver comentário em sendText: isFromMe true (nunca rouba a conversa
+    // ativa) e instanceName é a mesma variável usada em Message.instance_name.
+    const conversation = await this.conversations.resolveForInbound({
+      tenantId: user.tenantId,
+      leadId: lead_id,
+      instanceName,
+      defaultResponsavelId: user.id,
+      isFromMe: true,
+      occurredAt: new Date(),
+    });
+
     const message = await this.prisma.message.create({
       data: {
         lead_id,
-        instance_name: lead.instancia_whatsapp,
+        conversation_id: conversation.id,
+        instance_name: instanceName,
         whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: MessageType.AUDIO,
@@ -624,10 +666,22 @@ export class MessagesService {
       : '';
     const outboundCaption = prefix && caption ? prefix + caption : (caption ?? undefined);
 
+    // Ver comentário em sendText: isFromMe true (nunca rouba a conversa
+    // ativa) e instanceName é a mesma variável usada em Message.instance_name.
+    const conversation = await this.conversations.resolveForInbound({
+      tenantId: user.tenantId,
+      leadId: lead_id,
+      instanceName,
+      defaultResponsavelId: user.id,
+      isFromMe: true,
+      occurredAt: new Date(),
+    });
+
     const message = await this.prisma.message.create({
       data: {
         lead_id,
-        instance_name: lead.instancia_whatsapp,
+        conversation_id: conversation.id,
+        instance_name: instanceName,
         whatsapp_message_id: null,
         direction: 'OUTGOING',
         type: msgType,
@@ -1017,9 +1071,28 @@ export class MessagesService {
       let messageId = existingRow?.id;
 
       if (!existingRow) {
+        // Backfill de histórico: ao contrário do webhook (que só tem o
+        // instante de PROCESSAMENTO), aqui `ts` é o timestamp REAL do
+        // provider — melhor sinal pra eleger a conversa ativa do que
+        // `occurredAt: new Date()` usado no envio "ao vivo". `isFromMe`
+        // também vem por mensagem (histórico mistura os dois sentidos), não
+        // hardcoded. `defaultResponsavelId: instance.owner_user_id` — se a
+        // conversa desta instância ainda não existe, o dono da instância é o
+        // dono natural dela (mesma regra usada no webhook pra instância sem
+        // pool).
+        const conversation = await this.conversations.resolveForInbound({
+          tenantId: user.tenantId,
+          leadId: lead.id,
+          instanceName: instance.nome,
+          defaultResponsavelId: instance.owner_user_id,
+          isFromMe: fromMe,
+          occurredAt: ts,
+        });
+
         const created = await this.prisma.message.create({
           data: {
             lead_id: lead.id,
+            conversation_id: conversation.id,
             tenant_id: user.tenantId,
             instance_name: instance.nome,
             whatsapp_message_id: wid,
