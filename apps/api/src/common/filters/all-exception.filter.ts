@@ -102,7 +102,12 @@ export class AllExceptionFilter implements ExceptionFilter {
         });
       }
     } else {
-      this.logger.warn(`${req.method} ${req.url} -> ${status} ${code} ${message}`);
+      // `details` carrega os issues do Zod (campo, mensagem, código). Sem isso
+      // o log dizia só "Validation failed" e era impossível descobrir qual
+      // campo o cliente errou — em produção deu 8 falhas seguidas de criação
+      // de lead sem nenhuma pista, nem no log nem na tela.
+      const detalhe = details ? ` ${JSON.stringify(details)}` : '';
+      this.logger.warn(`${req.method} ${req.url} -> ${status} ${code} ${message}${detalhe}`);
     }
 
     res.status(status).json(body);
