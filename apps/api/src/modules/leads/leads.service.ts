@@ -21,6 +21,7 @@ import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 
 // Board é atualizado ao vivo via WebSocket (setQueryData no front); o cache só
 // serve o reload frio. TTL maior corta re-query da lista pesada sem perder
@@ -1130,15 +1131,20 @@ export class LeadsService {
     // instância (Individual).
     const isResponsavel = lead.responsavel_id === user.id;
     let ownConversationIds: string[] = [];
+    let ownedInstances: string[] = [];
     if (!isManager) {
+      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       ownConversationIds = (
         await this.prisma.conversation.findMany({
           where: { lead_id: leadId, responsavel_id: user.id },
           select: { id: true },
         })
       ).map((c) => c.id);
-      // Sem conversa própria e sem ser o responsável do card: nada a ver aqui.
-      if (ownConversationIds.length === 0 && !isResponsavel) {
+      const accessibleByInstance =
+        !!lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp);
+      // Sem conversa própria, sem ser o responsável do card e sem a instância
+      // do lead entre as próprias: nada a ver aqui.
+      if (ownConversationIds.length === 0 && !isResponsavel && !accessibleByInstance) {
         return { messages: [], nextCursor: undefined };
       }
     }
@@ -1152,23 +1158,38 @@ export class LeadsService {
     });
     const hideHistory =
       !isManager && !!lead.assumed_at && !tenantCfg?.share_history_enabled;
-    // Não-gerente vê só as conversas dele. Gerente vê o lead inteiro, com as
-    // conversas intercaladas por created_at — comportamento igual ao de hoje.
+    // Dono do lead vê a conversa INTEIRA (sem filtro por conversa). Quem não é
+    // dono vê só a(s) conversa(s) própria(s) — mais um ramo de TRANSIÇÃO:
+    // mensagens anteriores ao backfill (Task 7) ainda não têm conversation_id,
+    // então sem esse ramo quem tem conversa própria (ou acessa pela instância
+    // que já era sua antes deste modelo) perde todo o histórico até o backfill
+    // rodar. Remover o ramo transitório depois que a Task 8 apertar a coluna
+    // conversation_id para NOT NULL (vira código morto nesse ponto).
+    const conversationScope: Prisma.MessageWhereInput | null =
+      isManager || isResponsavel
+        ? null
+        : {
+            OR: [
+              { conversation_id: { in: ownConversationIds } },
+              { conversation_id: null, instance_name: { in: ownedInstances } },
+            ],
+          };
+    const historyScope: Prisma.MessageWhereInput | null = hideHistory
+      ? {
+          OR: [
+            { created_at: { gte: lead.assumed_at as Date } },
+            { visible_to_user_id: user.id },
+          ],
+        }
+      : null;
+    const scopes = [conversationScope, historyScope].filter(
+      (scope): scope is Prisma.MessageWhereInput => scope !== null,
+    );
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(isManager || ownConversationIds.length === 0
-          ? {}
-          : { conversation_id: { in: ownConversationIds } }),
-        ...(hideHistory
-          ? {
-              OR: [
-                { created_at: { gte: lead.assumed_at as Date } },
-                { visible_to_user_id: user.id },
-              ],
-            }
-          : {}),
+        ...(scopes.length ? { AND: scopes } : {}),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,

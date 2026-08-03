@@ -1090,20 +1090,25 @@ Substitui o par `instance_name` + `visible_to_user_id` por filtro de conversa. S
 
 - [ ] **Step 1: Trocar o gate de acesso**
 
-Substituir o bloco das linhas ~1131-1140. O acesso deixa de depender de `lead.instancia_whatsapp` e passa a depender de existir conversa do usuário naquele lead:
+Substituir o bloco das linhas ~1131-1140. O acesso deixa de depender só de `lead.instancia_whatsapp`, mas **continua aceitando** o caminho antigo (instância própria) além do novo (conversa própria) — enquanto o backfill (Task 7) não roda, quem só tinha acesso pela instância ainda precisa entrar aqui para o ramo transitório do Step 2 ter algo a filtrar:
 
 ```ts
     const isResponsavel = lead.responsavel_id === user.id;
     let ownConversationIds: string[] = [];
+    let ownedInstances: string[] = [];
     if (!isManager) {
+      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       ownConversationIds = (
         await this.prisma.conversation.findMany({
           where: { lead_id: leadId, responsavel_id: user.id },
           select: { id: true },
         })
       ).map((c) => c.id);
-      // Sem conversa própria e sem ser o responsável do card: nada a ver aqui.
-      if (ownConversationIds.length === 0 && !isResponsavel) {
+      const accessibleByInstance =
+        !!lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp);
+      // Sem conversa própria, sem ser o responsável do card e sem a instância
+      // do lead entre as próprias: nada a ver aqui.
+      if (ownConversationIds.length === 0 && !isResponsavel && !accessibleByInstance) {
         return { messages: [], nextCursor: undefined };
       }
     }
@@ -1111,26 +1116,41 @@ Substituir o bloco das linhas ~1131-1140. O acesso deixa de depender de `lead.in
 
 - [ ] **Step 2: Trocar o filtro das mensagens**
 
-Substituir o `filterByInstance` (linha ~1155) e o `where` do `findMany` (linhas ~1156-1171):
+Substituir o `filterByInstance` (linha ~1155) e o `where` do `findMany` (linhas ~1156-1171). **Correção pós-review:** a primeira versão deste plano trocava o filtro por instância por um filtro só de `conversation_id`, mas `Message.conversation_id` fica `NULL` em todo o histórico até o backfill (Task 7) rodar — um AND direto contra isso zera o histórico de quem tem conversa própria mas não é o responsável do card, uma regressão real. A composição abaixo mantém o filtro por conversa e soma um ramo transitório equivalente ao `filterByInstance` de hoje, só para mensagens ainda sem `conversation_id`, combinando os dois grupos de `OR` com `AND` explícito (nunca duas chaves `OR` irmãs no mesmo objeto, que o Prisma resolveria por último-vence):
 
 ```ts
-    // Não-gerente vê só as conversas dele. Gerente vê o lead inteiro, com as
-    // conversas intercaladas por created_at — comportamento igual ao de hoje.
+    // Dono do lead vê a conversa INTEIRA (sem filtro por conversa). Quem não é
+    // dono vê só a(s) conversa(s) própria(s) — mais um ramo de TRANSIÇÃO:
+    // mensagens anteriores ao backfill (Task 7) ainda não têm conversation_id,
+    // então sem esse ramo quem tem conversa própria (ou acessa pela instância
+    // que já era sua antes deste modelo) perde todo o histórico até o backfill
+    // rodar. Remover o ramo transitório depois que a Task 8 apertar a coluna
+    // conversation_id para NOT NULL (vira código morto nesse ponto).
+    const conversationScope: Prisma.MessageWhereInput | null =
+      isManager || isResponsavel
+        ? null
+        : {
+            OR: [
+              { conversation_id: { in: ownConversationIds } },
+              { conversation_id: null, instance_name: { in: ownedInstances } },
+            ],
+          };
+    const historyScope: Prisma.MessageWhereInput | null = hideHistory
+      ? {
+          OR: [
+            { created_at: { gte: lead.assumed_at as Date } },
+            { visible_to_user_id: user.id },
+          ],
+        }
+      : null;
+    const scopes = [conversationScope, historyScope].filter(
+      (scope): scope is Prisma.MessageWhereInput => scope !== null,
+    );
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(isManager || ownConversationIds.length === 0
-          ? {}
-          : { conversation_id: { in: ownConversationIds } }),
-        ...(hideHistory
-          ? {
-              OR: [
-                { created_at: { gte: lead.assumed_at as Date } },
-                { visible_to_user_id: user.id },
-              ],
-            }
-          : {}),
+        ...(scopes.length ? { AND: scopes } : {}),
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
@@ -1138,7 +1158,9 @@ Substituir o `filterByInstance` (linha ~1155) e o `where` do `findMany` (linhas 
     });
 ```
 
-> `visible_to_user_id` permanece no ramo do `hideHistory` de propósito: mensagens anteriores ao backfill ainda não têm `conversation_id`, e é ele que segura essa transição. Só sai na limpeza pós-Fase C.
+Requer `import type { Prisma } from '@prisma/client';` no topo do arquivo (tipagem explícita nos dois escopos + type predicate no `.filter`, sem `any`).
+
+> `visible_to_user_id` permanece no ramo do `hideHistory` de propósito: mensagens anteriores ao backfill ainda não têm `conversation_id`, e é ele que segura essa transição. Só sai na limpeza pós-Fase C. O ramo `conversation_id: null, instance_name: { in: ownedInstances }` do `conversationScope` é a mesma ideia aplicada ao filtro de conversa: sai junto na Task 8 (ver nota lá).
 
 - [ ] **Step 3: Verificar que compila e que a suíte passa**
 
@@ -1545,7 +1567,11 @@ por:
   conversation           Conversation     @relation(fields: [conversation_id], references: [id])
 ```
 
-- [ ] **Step 4: Regenerar o client e verificar que tudo compila**
+- [ ] **Step 4: Remover o ramo transitório de `getMessages`**
+
+Com `conversation_id` `NOT NULL`, o ramo `{ conversation_id: null, instance_name: { in: ownedInstances } }` dentro do `conversationScope` em `apps/api/src/modules/leads/leads.service.ts` (Task 5, Step 2) nunca mais casa — vira código morto. Remover esse ramo do `OR` (voltando `conversationScope` a só `{ conversation_id: { in: ownConversationIds } }` quando aplicável) e, se `ownedInstances`/`getOwnedInstanceNames` deixarem de ser usados em `getMessages` depois disso, remover também essa leitura ali (outros métodos do arquivo ainda usam `getOwnedInstanceNames`, então a função em si continua).
+
+- [ ] **Step 5: Regenerar o client e verificar que tudo compila**
 
 ```bash
 cd apps/api && node ../../node_modules/prisma/build/index.js generate && npx tsc --noEmit && npx jest
@@ -1553,7 +1579,7 @@ cd apps/api && node ../../node_modules/prisma/build/index.js generate && npx tsc
 
 Esperado: sem erros de tipo, todos os specs passando. Se o `tsc` reclamar de algum `create` de `Message` sem `conversation_id`, é um caminho de escrita que ficou de fora — corrigir antes de commitar.
 
-- [ ] **Step 5: Rodar o smoke de regressão de novo, agora com a coluna apertada**
+- [ ] **Step 6: Rodar o smoke de regressão de novo, agora com a coluna apertada**
 
 ```bash
 cd apps/api && node scripts/smoke-conversation-routing.cjs --tenant=<id-de-um-tenant-de-teste>
@@ -1561,10 +1587,10 @@ cd apps/api && node scripts/smoke-conversation-routing.cjs --tenant=<id-de-um-te
 
 Esperado: 8 asserções com `ok:` e a linha final `SMOKE OK`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/scripts/migrate-conversation-c.cjs apps/api/prisma/schema.prisma
+git add apps/api/scripts/migrate-conversation-c.cjs apps/api/prisma/schema.prisma apps/api/src/modules/leads/leads.service.ts
 git commit -m "feat(db): Message.conversation_id NOT NULL (Fase C)"
 ```
 
