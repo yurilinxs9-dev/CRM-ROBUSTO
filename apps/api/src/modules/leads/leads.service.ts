@@ -16,6 +16,7 @@ import { MediaService } from '../media/media.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
+import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
 import { CustomFieldsService } from './custom-fields.service';
@@ -871,6 +872,43 @@ export class LeadsService {
     });
   }
 
+  /**
+   * Passa a conversa ATIVA do lead para outro dono. É o que faz `claim` e
+   * `reassign` grudarem: desde a Task 4 o `Lead.responsavel_id` é espelho da
+   * conversa ativa, então mexer só no Lead é desfeito pela próxima mensagem
+   * do cliente (`syncLeadFromActive` re-deriva a partir da conversa).
+   *
+   * Escrever na conversa da instância do destinatário NÃO resolve: se o cliente
+   * falou por último no número do dono anterior, aquela segue sendo a ativa.
+   *
+   * Devolve o id da conversa transferida, ou null se o lead ainda não tem
+   * conversa (lead manual que nunca trocou mensagem) — nesse caso não há nada
+   * a fazer, e a primeira mensagem inbound cria a conversa já com o dono certo.
+   */
+  private async transferActiveConversation(
+    leadId: string,
+    toUserId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const rows = await this.prisma.conversation.findMany({
+      where: { lead_id: leadId, tenant_id: tenantId },
+      select: {
+        id: true,
+        instancia_whatsapp: true,
+        responsavel_id: true,
+        last_customer_message_at: true,
+      },
+    });
+    const active = resolveActiveConversation(rows);
+    if (!active) return null;
+
+    await this.prisma.conversation.update({
+      where: { id: active.id },
+      data: { responsavel_id: toUserId, assumed_at: new Date() },
+    });
+    return active.id;
+  }
+
   async claim(leadId: string, user: AuthUser) {
     // assumed_at marca o momento da posse — getMessages usa pra esconder
     // o histórico anterior. Sem isso, o novo responsável veria msgs que
@@ -900,6 +938,7 @@ export class LeadsService {
         data: { instancia_whatsapp: ownedInstance.nome },
       });
     }
+    await this.transferActiveConversation(leadId, user.id, user.tenantId);
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
@@ -950,6 +989,7 @@ export class LeadsService {
       },
       select: { id: true, nome: true },
     });
+    await this.transferActiveConversation(leadId, novoResponsavelId, user.tenantId);
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
