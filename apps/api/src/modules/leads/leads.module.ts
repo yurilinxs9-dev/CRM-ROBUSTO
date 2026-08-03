@@ -6,6 +6,7 @@ import { LeadsService } from './leads.service';
 import { CustomFieldsController } from './custom-fields.controller';
 import { CustomFieldsService } from './custom-fields.service';
 import { LeadsSyncProcessor } from './leads-sync.processor';
+import { UnreadSweepService } from './unread-sweep.service';
 import { InstancesModule } from '../instances/instances.module';
 import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
@@ -47,7 +48,7 @@ class LeadsSyncScheduler implements OnModuleInit {
     BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }),
   ],
   controllers: [LeadsController, CustomFieldsController],
-  providers: [LeadsService, CustomFieldsService, LeadsSyncProcessor, LeadsSyncScheduler],
+  providers: [LeadsService, CustomFieldsService, LeadsSyncProcessor, LeadsSyncScheduler, UnreadSweepService],
   exports: [LeadsService, CustomFieldsService],
 })
 export class LeadsModule {}

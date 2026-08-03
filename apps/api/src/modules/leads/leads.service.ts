@@ -706,11 +706,20 @@ export class LeadsService {
       return updatedLead;
     }
 
-    const leadUpdateData: { estagio_id: string; estagio_entered_at: Date; position?: number } = {
+    const leadUpdateData: {
+      estagio_id: string;
+      estagio_entered_at: Date;
+      position?: number;
+      mensagens_nao_lidas?: number;
+    } = {
       estagio_id,
       estagio_entered_at: new Date(),
     };
     if (position !== undefined) leadUpdateData.position = position;
+    // Operador movendo o lead = conversa tratada; leitura no celular não gera
+    // evento na UazAPI, então esta ação é o sinal de "visto" que zera o badge.
+    // Automação (SYSTEM) não zera — mover por SLA não significa que alguém leu.
+    if (user.id !== 'SYSTEM') leadUpdateData.mensagens_nao_lidas = 0;
 
     // Fetch stage names for a readable activity description.
     const [oldStage, newStage] = await Promise.all([
@@ -751,6 +760,10 @@ export class LeadsService {
       );
     } catch (err) {
       this.logger.warn(`emitLeadStageChanged failed for lead ${id}: ${String(err)}`);
+    }
+
+    if (!isSystem && lead.mensagens_nao_lidas > 0) {
+      this.gateway.emitLeadUnreadReset(id, user.tenantId);
     }
 
     {
@@ -800,9 +813,11 @@ export class LeadsService {
     }
     // TODO: enqueue auto-actions for bulk move (skipped to avoid N queue jobs)
     // TODO: skip logging individual LeadActivity records for bulk (expensive)
+    // Bulk move é sempre ação humana — zera o badge junto (mesma regra do
+    // updateStage: mover = conversa tratada).
     const result = await this.prisma.lead.updateMany({
       where,
-      data: { estagio_id, estagio_entered_at: new Date() },
+      data: { estagio_id, estagio_entered_at: new Date(), mensagens_nao_lidas: 0 },
     });
     await this.invalidateLeadsCache(user.tenantId);
     return { updated: result.count };
