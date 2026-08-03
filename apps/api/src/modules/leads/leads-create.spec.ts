@@ -140,6 +140,39 @@ describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando
     expect(payload.estagio_id).toBe(FIRST_STAGE_OF_DEFAULT_PIPELINE);
   });
 
+  it('aceita pipeline_id legado que nao e uuid ("pipeline-default")', async () => {
+    // Producao tem 1 pipeline de 39 com id "pipeline-default", resquicio de
+    // seed antigo, com stages e leads reais apontando pra ele. O Kanban manda
+    // esse id corretamente; era o z.string().uuid() que rejeitava, e o log so
+    // dizia "Validation failed" sem citar o campo.
+    const LEGACY_PIPELINE_ID = 'pipeline-default';
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.stage.findFirst.mockResolvedValue({
+      id: ESTAGIO_ID,
+      pipeline_id: LEGACY_PIPELINE_ID,
+    });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+
+    await service.create(
+      {
+        nome: 'Lead Pipeline Legado',
+        telefone: '+5531977776666',
+        estagio_id: ESTAGIO_ID,
+        pipeline_id: LEGACY_PIPELINE_ID,
+        temperatura: 'FRIO',
+      },
+      operador,
+    );
+
+    expect(prisma.lead.create).toHaveBeenCalledTimes(1);
+    expect(prisma.lead.create.mock.calls[0][0].data.pipeline_id).toBe(LEGACY_PIPELINE_ID);
+  });
+
   it('modo Individual sem instancia conectada para o usuario: rejeita com BadRequestException', async () => {
     const { service, prisma } = makeService();
     prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });

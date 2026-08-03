@@ -93,7 +93,14 @@ const createLeadSchema = z.object({
   // — aceita ausente, não vazio. O resultado era 400 VALIDATION_ERROR sem
   // dizer qual campo. Tratar '' como ausente deixa a derivação assumir, que é
   // o comportamento pretendido.
-  pipeline_id: vazioComoAusente(z.string().uuid()),
+  // NÃO validar como uuid. Existe em produção um pipeline com id
+  // "pipeline-default" (1 de 39, tenant Default Workspace) — resquício de
+  // seed antigo, referenciado por stages e leads reais. O Kanban manda o id
+  // da tela corretamente e era o `.uuid()` que rejeitava, com 400 dizendo
+  // apenas "Validation failed". Formato de id não é regra de negócio: o que
+  // importa é existir e pertencer ao tenant, e isso resolvePipelineAndStage
+  // já verifica.
+  pipeline_id: vazioComoAusente(z.string().min(1)),
   estagio_id: vazioComoAusente(z.string().uuid()),
   instancia_whatsapp: vazioComoAusente(z.string()),
   responsavel_id: vazioComoAusente(z.string().uuid()),
