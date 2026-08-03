@@ -97,21 +97,38 @@ export class ConversationService {
         });
       });
     } catch (err) {
-      this.logger.warn(
-        `sync do lead ${leadId} a partir da conversa ativa falhou: ${String(err)}`,
+      this.logger.error(
+        `sync do lead ${leadId} a partir da conversa ativa falhou — o dono exibido no card pode estar desatualizado até a próxima mensagem do cliente: ${String(err)}`,
       );
     }
   }
 
-  /** Trava da IA por conversa, espelhando no lead para os leitores atuais. */
+  /**
+   * Trava da IA por conversa, espelhando no lead para os leitores atuais.
+   *
+   * As duas escritas vão na MESMA transação: se `Conversation.ai_blocked` e
+   * `Lead.ai_blocked` divergirem, nada mais re-deriva esse estado depois (ao
+   * contrário de `syncLeadFromActive`), então sucesso parcial deixaria a IA
+   * respondendo mesmo após um humano assumir. A falha continua sendo
+   * engolida (mesmo padrão de `inbound-message.service.ts`): um erro ao
+   * travar a IA não pode derrubar a ingestão da mensagem.
+   */
   async blockAi(conversationId: string, leadId: string): Promise<void> {
-    await this.prisma.conversation
-      .update({ where: { id: conversationId }, data: { ai_blocked: true } })
-      .catch((err) =>
-        this.logger.warn(`ai_blocked na conversa ${conversationId}: ${String(err)}`),
+    try {
+      await this.prisma.$transaction([
+        this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { ai_blocked: true },
+        }),
+        this.prisma.lead.update({
+          where: { id: leadId },
+          data: { ai_blocked: true },
+        }),
+      ]);
+    } catch (err) {
+      this.logger.warn(
+        `ai_blocked na conversa ${conversationId} / lead ${leadId}: ${String(err)}`,
       );
-    await this.prisma.lead
-      .update({ where: { id: leadId }, data: { ai_blocked: true } })
-      .catch((err) => this.logger.warn(`ai_blocked no lead ${leadId}: ${String(err)}`));
+    }
   }
 }
