@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { BroadcastSenderService } from './broadcast-sender.service';
+import { isWithinBroadcastWindow } from './broadcast-window';
 
 /**
  * Erros de CONFIGURAÇÃO da IA (sem modelo default, modelo removido/inativo).
@@ -37,8 +38,38 @@ export class BroadcastDispatcher {
   async tick() {
     const now = new Date();
     const running = await this.prisma.broadcast.findMany({ where: { status: 'running' } });
+    if (running.length === 0) return;
+
+    // Uma consulta por tick, não uma por disparo.
+    const tenants = await this.prisma.tenant.findMany({
+      where: { id: { in: [...new Set(running.map((b) => b.tenant_id))] } },
+      select: {
+        id: true,
+        broadcast_window_start: true,
+        broadcast_window_end: true,
+        broadcast_window_days: true,
+      },
+    });
+    const janelaPorTenant = new Map(tenants.map((t) => [t.id, t]));
 
     for (const b of running) {
+      // Fora da janela a fila apenas ESPERA: nada vira falha, nada é perdido,
+      // e o throttle não é consumido — senão o primeiro disparo depois das 9h
+      // ficaria esperando mais 15 minutos à toa.
+      const janela = janelaPorTenant.get(b.tenant_id);
+      if (
+        janela &&
+        !isWithinBroadcastWindow(
+          now,
+          'America/Sao_Paulo',
+          janela.broadcast_window_start,
+          janela.broadcast_window_end,
+          janela.broadcast_window_days,
+        )
+      ) {
+        continue;
+      }
+
       // Throttle: só dispara se passou throttle_seconds desde o último envio.
       if (b.last_dispatch_at) {
         const elapsed = (now.getTime() - b.last_dispatch_at.getTime()) / 1000;
