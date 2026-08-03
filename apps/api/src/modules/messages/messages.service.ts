@@ -172,17 +172,15 @@ export class MessagesService {
     if (lead.is_private && lead.responsavel_id !== user.id) {
       throw new ForbiddenException('Lead privado');
     }
-    // Operador: precisa ser responsavel OU dono da instancia do lead.
+    // Operador: precisa ser responsavel do card OU ter conversa própria
+    // (dele) com este lead — dono de instância sozinho não basta mais, o
+    // Lead.instancia_whatsapp é derivado e pode apontar pra outro vendedor.
     if (user.role === UserRole.OPERADOR) {
-      const ownedInstances = (
-        await this.prisma.whatsappInstance.findMany({
-          where: { owner_user_id: user.id, tenant_id: user.tenantId },
-          select: { nome: true },
-        })
-      ).map((r) => r.nome);
-      const accessible =
-        lead.responsavel_id === user.id ||
-        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      const ownConversation = await this.prisma.conversation.findFirst({
+        where: { lead_id: lead.id, responsavel_id: user.id },
+        select: { id: true },
+      });
+      const accessible = lead.responsavel_id === user.id || !!ownConversation;
       if (!accessible) {
         throw new ForbiddenException(
           lead.responsavel_id === null
@@ -204,8 +202,17 @@ export class MessagesService {
       select: { pool_enabled: true },
     });
     const liveStatuses = ['open', 'connected', 'connecting'];
+    // A instância de envio vem da conversa DESTE atendente com o lead, não do
+    // Lead.instancia_whatsapp — que agora é derivado da conversa ativa e pode
+    // apontar pro número de outro vendedor.
+    const myConversation = await this.prisma.conversation.findFirst({
+      where: { lead_id: lead.id, responsavel_id: user.id },
+      select: { instancia_whatsapp: true },
+    });
+    const preferredInstanceName =
+      myConversation?.instancia_whatsapp ?? lead.instancia_whatsapp;
     const instanceOfLead = await this.prisma.whatsappInstance.findFirst({
-      where: { nome: lead.instancia_whatsapp, tenant_id: user.tenantId },
+      where: { nome: preferredInstanceName, tenant_id: user.tenantId },
     });
 
     let instance: typeof instanceOfLead = null;
@@ -222,12 +229,7 @@ export class MessagesService {
         });
         if (fallback) {
           instance = fallback;
-          if (lead.instancia_whatsapp !== fallback.nome) {
-            await this.prisma.lead
-              .update({ where: { id: lead.id }, data: { instancia_whatsapp: fallback.nome } })
-              .catch(() => undefined);
-            lead.instancia_whatsapp = fallback.nome;
-          }
+          lead.instancia_whatsapp = fallback.nome;
         }
       }
     } else {
@@ -253,14 +255,18 @@ export class MessagesService {
         });
         if (own) {
           instance = own;
-          if (lead.instancia_whatsapp !== own.nome) {
-            await this.prisma.lead
-              .update({ where: { id: lead.id }, data: { instancia_whatsapp: own.nome } })
-              .catch(() => undefined);
-            lead.instancia_whatsapp = own.nome;
-          }
+          lead.instancia_whatsapp = own.nome;
         }
       }
+    }
+
+    // A instância efetivamente escolhida pode não ser nenhuma das duas gravadas
+    // acima (ex.: preferredInstanceName já achou a instância viva de cara, sem
+    // passar pelo auto-swap) — mantém `lead.instancia_whatsapp` em memória
+    // coerente com `instance` pro resto do método (Message.create usa esse
+    // campo). Não é persistido: é só o objeto retornado desta chamada.
+    if (instance) {
+      lead.instancia_whatsapp = instance.nome;
     }
 
     if (!instance) {
