@@ -8,6 +8,7 @@ import { MediaPipelineService } from '../media/media-pipeline.service';
 import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
+import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
 import {
   assertValidMagic,
@@ -73,6 +74,7 @@ export class InboundMessageService {
     private push: PushService,
     private outboundWebhooks: OutboundWebhooksService,
     private assignment: AssignmentService,
+    private readonly conversations: ConversationService,
   ) {}
   /**
    * F-02: setor sem agentes ativos — lead fica em espera (sem dono). Avisa os
@@ -443,6 +445,19 @@ export class InboundMessageService {
       }
     }
 
+    // A conversa é o fio de mensagens deste lead COM ESTE NÚMERO. É ela que
+    // decide de quem é a mensagem — não o `lead.responsavel_id`, que aponta pro
+    // vendedor que atendeu primeiro. Era exatamente daí que vinha o
+    // espelhamento (ver docs/specs/conversa-por-instancia.md).
+    const conversation = await this.conversations.resolveForInbound({
+      tenantId,
+      leadId: lead.id,
+      instanceName: instance.nome,
+      defaultResponsavelId: lead.responsavel_id ?? responsavelId,
+      isFromMe,
+      occurredAt: new Date(),
+    });
+
     // Heal lead names that were corrupted before the fix above shipped.
     // If the stored name is the bare phone OR matches the owner's pushName
     // (i.e. previously corrupted), and we now have a real incoming pushName,
@@ -573,18 +588,17 @@ export class InboundMessageService {
         // retornaram antes deste ponto, então nunca marcam 'user' por engano.
         sender_type: isFromMe ? 'user' : 'system',
         metadata,
-        visible_to_user_id: lead.responsavel_id ?? null,
+        conversation_id: conversation.id,
+        visible_to_user_id: conversation.responsavel_id ?? null,
         tenant_id: tenantId,
       },
       update: {},
     });
 
-    // F-03: humano respondeu pelo celular → trava a IA na conversa.
+    // F-03: humano respondeu pelo celular → trava a IA NESTA conversa.
+    // Travar no lead inteiro bloquearia a IA na conversa do outro vendedor.
     if (isFromMe) {
-      await this.prisma.lead.update({
-        where: { id: lead.id },
-        data: { ai_blocked: true },
-      }).catch((err) => this.logger.warn(`ai_blocked set falhou lead=${lead.id}: ${String(err)}`));
+      await this.conversations.blockAi(conversation.id, lead.id);
     }
     } catch (err) {
       const code = (err as { code?: string }).code;
@@ -602,6 +616,20 @@ export class InboundMessageService {
       } else {
         throw err;
       }
+    }
+
+    // Mensagem DO CLIENTE elege a conversa ativa; o card do Kanban segue junto.
+    // Envio do vendedor (manual, follow-up ou IA) não move card de propósito.
+    if (!isFromMe) {
+      await this.conversations.syncLeadFromActive(lead.id);
+      this.gateway.emitLeadUpdated(
+        lead.id,
+        {
+          responsavel_id: conversation.responsavel_id,
+          instancia_whatsapp: instance.nome,
+        },
+        tenantId,
+      );
     }
 
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
