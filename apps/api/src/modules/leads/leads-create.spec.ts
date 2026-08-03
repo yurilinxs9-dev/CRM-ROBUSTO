@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { LeadsService } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -12,8 +12,16 @@ import type { AuthUser } from '../../common/types/auth-user';
  * 400. Fix: pipeline_id e instancia_whatsapp viram opcionais no schema e sao
  * DERIVADOS no backend (mesma regra do webhook inbound para o pipeline
  * default; mesma nocao de "instancia viva" do messages.service para o modo
- * compartilhado). estagio_id continua obrigatorio, mas agora e validado
- * contra o pipeline resolvido.
+ * compartilhado).
+ *
+ * Bug #2 (tenants com mais de um pipeline): a correcao acima resolvia
+ * pipeline_id ausente SEMPRE para o pipeline default do tenant, mesmo quando
+ * estagio_id apontava para outro pipeline — o Kanban manda so estagio_id
+ * (nunca soube do pipeline_id), entao criar lead numa coluna de um pipeline
+ * nao-default sempre caia em "Estagio nao pertence ao pipeline selecionado".
+ * Fix: Stage e a fonte de verdade do proprio pipeline_id. resolvePipelineAndStage
+ * agora deriva pipeline_id do estagio informado quando pipeline_id esta
+ * ausente (nunca o contrario) — ver precedencia no service.
  */
 
 function makeMocks() {
@@ -72,12 +80,20 @@ const ESTAGIO_ID = '22222222-2222-2222-2222-222222222222';
 const DEFAULT_PIPELINE_ID = '99999999-9999-9999-9999-999999999999';
 const OWN_INSTANCE_NAME = 'inst-alex-personal-007';
 
+// Multi-pipeline fixtures — valores distintos e reconhecíveis, nunca
+// reaproveitados como "o valor certo por coincidência".
+const NON_DEFAULT_PIPELINE_ID = '77777777-7777-7777-7777-777777777777';
+const STAGE_IN_NON_DEFAULT_PIPELINE = '66666666-6666-6666-6666-666666666666';
+const FOREIGN_TENANT_ESTAGIO_ID = '55555555-5555-5555-5555-555555555555';
+const FIRST_STAGE_OF_DEFAULT_PIPELINE = '44444444-4444-4444-4444-444444444444';
+
 describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando ausentes', () => {
-  it('sem pipeline_id e sem instancia_whatsapp: usa pipeline default do tenant e a instancia propria do criador', async () => {
+  it('sem pipeline_id e sem instancia_whatsapp: usa o pipeline do proprio estagio (unico do tenant) e a instancia propria do criador', async () => {
     const { service, prisma } = makeService();
     prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
-    prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
-    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID });
+    // Tenant so tem esse pipeline — stage.findFirst (tenant-scoped, sem
+    // filtro de pipeline) e quem devolve o pipeline_id agora.
+    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: DEFAULT_PIPELINE_ID });
     prisma.whatsappInstance.findFirst.mockResolvedValue({
       id: 'wa-own-1',
       nome: OWN_INSTANCE_NAME,
@@ -144,19 +160,97 @@ describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando
     expect(payload.instancia_whatsapp).toBe('inst-shared-live-42');
   });
 
-  it('estagio_id que nao pertence ao pipeline resolvido e rejeitado', async () => {
+  it('pipeline_id explicito + estagio_id de OUTRO pipeline: rejeitado com BadRequestException (caller autoritativo nao e contornado)', async () => {
     const { service, prisma } = makeService();
     prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
-    prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
-    // Stage nao encontrado para este pipeline_id — simula estagio de outro pipeline.
+    // stage.findFirst filtrado por { id, pipeline_id: DEFAULT_PIPELINE_ID, tenant_id }
+    // nao encontra nada — o estagio de verdade pertence a NON_DEFAULT_PIPELINE_ID.
     prisma.stage.findFirst.mockResolvedValue(null);
 
     await expect(
       service.create(
-        { nome: 'Novo Contato', telefone: '+5531999999999', estagio_id: ESTAGIO_ID },
+        {
+          nome: 'Novo Contato',
+          telefone: '+5531999999999',
+          pipeline_id: DEFAULT_PIPELINE_ID,
+          estagio_id: STAGE_IN_NON_DEFAULT_PIPELINE,
+        },
         operador,
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.lead.create).not.toHaveBeenCalled();
+  });
+
+  it('sem pipeline_id, estagio_id de um pipeline NAO-default: cria no pipeline DO ESTAGIO, nunca no default do tenant (bug multi-pipeline)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    // Estagio pertence a um pipeline que NAO e o default — so a lookup
+    // tenant-scoped do proprio estagio pode revelar isso.
+    prisma.stage.findFirst.mockResolvedValue({
+      id: STAGE_IN_NON_DEFAULT_PIPELINE,
+      pipeline_id: NON_DEFAULT_PIPELINE_ID,
+    });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+
+    await service.create(
+      {
+        nome: 'Novo Contato',
+        telefone: '+5531999999999',
+        estagio_id: STAGE_IN_NON_DEFAULT_PIPELINE,
+        temperatura: 'FRIO',
+      },
+      operador,
+    );
+
+    // Nunca deveria ter tentado resolver o pipeline default — o proprio
+    // estagio ja revela o pipeline.
+    expect(prisma.pipeline.findFirst).not.toHaveBeenCalled();
+    const payload = prisma.lead.create.mock.calls[0][0].data;
+    expect(payload.pipeline_id).toBe(NON_DEFAULT_PIPELINE_ID);
+    expect(payload.pipeline_id).not.toBe(DEFAULT_PIPELINE_ID);
+    expect(payload.estagio_id).toBe(STAGE_IN_NON_DEFAULT_PIPELINE);
+  });
+
+  it('estagio_id de OUTRO tenant: rejeitado com NotFoundException, nunca cai silenciosamente no pipeline default', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    // stage.findFirst e tenant-scoped (id + tenant_id) — um estagio real de
+    // outro tenant nunca aparece nessa query, simulado aqui como null.
+    prisma.stage.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.create(
+        { nome: 'Novo Contato', telefone: '+5531999999999', estagio_id: FOREIGN_TENANT_ESTAGIO_ID },
+        operador,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.lead.create).not.toHaveBeenCalled();
+    // Nao deve ter tentado um fallback silencioso pro pipeline default.
+    expect(prisma.pipeline.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('nem pipeline_id nem estagio_id: usa pipeline default do tenant + seu primeiro estagio (guarda contra regressao)', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
+    prisma.stage.findFirst.mockResolvedValue({ id: FIRST_STAGE_OF_DEFAULT_PIPELINE });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+
+    await service.create(
+      { nome: 'Novo Contato', telefone: '+5531999999999', temperatura: 'FRIO' },
+      operador,
+    );
+
+    const payload = prisma.lead.create.mock.calls[0][0].data;
+    expect(payload.pipeline_id).toBe(DEFAULT_PIPELINE_ID);
+    expect(payload.estagio_id).toBe(FIRST_STAGE_OF_DEFAULT_PIPELINE);
   });
 });

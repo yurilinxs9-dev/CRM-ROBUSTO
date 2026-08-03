@@ -496,6 +496,10 @@ export default function KanbanPage() {
         estagio_id: data.estagio_id,
       };
       if (data.email) body.email = data.email;
+      // Kanban sabe qual pipeline esta na tela — manda explicito. Backend
+      // tambem deriva pipeline_id a partir do estagio quando ausente, mas
+      // isso e cinto-e-suspensorio, nao substitui mandar o que ja se sabe.
+      if (activePipelineId) body.pipeline_id = activePipelineId;
       const res = await api.post('/api/leads', body);
       return res.data;
     },

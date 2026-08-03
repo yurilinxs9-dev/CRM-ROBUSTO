@@ -71,13 +71,14 @@ const createLeadSchema = z.object({
   telefone: z.string().min(10),
   email: z.string().email().optional(),
   empresa: z.string().optional(),
-  // Opcionais: quando ausentes, LeadsService.create() deriva pipeline_id
-  // (pipeline default do tenant) e instancia_whatsapp (instancia propria do
-  // criador ou instancia viva do tenant, conforme pool_enabled) — ver
-  // resolveDefaultPipeline/resolveDefaultInstance. estagio_id continua
-  // obrigatorio e e validado contra o pipeline resolvido.
+  // Opcionais: quando ausentes, LeadsService.create() deriva pipeline_id,
+  // estagio_id e instancia_whatsapp — ver resolvePipelineAndStage (Stage e a
+  // fonte de verdade do proprio pipeline_id quando pipeline_id nao vem
+  // explicito — é o que resolve tenants com mais de um pipeline) e
+  // resolveDefaultInstance (instancia propria do criador ou instancia viva
+  // do tenant, conforme pool_enabled).
   pipeline_id: z.string().uuid().optional(),
-  estagio_id: z.string().uuid(),
+  estagio_id: z.string().uuid().optional(),
   instancia_whatsapp: z.string().optional(),
   responsavel_id: z.string().uuid().optional(),
 });
@@ -584,6 +585,78 @@ export class LeadsService {
     return liveInstance.nome;
   }
 
+  /**
+   * Resolve pipeline_id + estagio_id para criacao manual de lead. O Stage é
+   * a fonte de verdade do proprio pipeline_id quando pipeline_id nao vem
+   * explicito — evita a inconsistencia (bug de tenants com mais de um
+   * pipeline) de resolver sempre o pipeline DEFAULT do tenant enquanto o
+   * estagio escolhido pertence a outro pipeline. O Kanban manda só
+   * estagio_id (nunca soube de pipeline_id); antes desta correcao, criar um
+   * lead numa coluna de um pipeline não-default sempre esbarrava em
+   * "Estagio nao pertence ao pipeline selecionado".
+   *
+   * Precedencia:
+   *  1. pipeline_id explicito → autoritativo. Estagio informado precisa
+   *     pertencer a ele (BadRequestException se nao); sem estagio, usa o
+   *     primeiro estagio (ordem asc) desse pipeline.
+   *  2. Sem pipeline_id, com estagio_id → o proprio estagio (tenant-scoped)
+   *     decide o pipeline. Estagio que nao existe nesse tenant (inclusive
+   *     estagio de OUTRO tenant) → NotFoundException, nunca cai
+   *     silenciosamente no pipeline default (colocaria o lead no funil
+   *     errado, parecendo corrupcao de dados pro usuario).
+   *  3. Nenhum dos dois → pipeline default do tenant + seu primeiro estagio,
+   *     mesma convencao de ensurePipelineAndStage em
+   *     webhooks/inbound-message.service.ts.
+   */
+  private async resolvePipelineAndStage(
+    parsed: { pipeline_id?: string; estagio_id?: string },
+    tenantId: string,
+  ): Promise<{ pipelineId: string; stageId: string }> {
+    if (parsed.pipeline_id) {
+      if (parsed.estagio_id) {
+        const stage = await this.prisma.stage.findFirst({
+          where: { id: parsed.estagio_id, pipeline_id: parsed.pipeline_id, tenant_id: tenantId },
+          select: { id: true },
+        });
+        if (!stage) {
+          throw new BadRequestException('Estagio nao pertence ao pipeline selecionado');
+        }
+        return { pipelineId: parsed.pipeline_id, stageId: stage.id };
+      }
+      const firstStage = await this.prisma.stage.findFirst({
+        where: { pipeline_id: parsed.pipeline_id, tenant_id: tenantId },
+        orderBy: { ordem: 'asc' },
+        select: { id: true },
+      });
+      if (!firstStage) {
+        throw new BadRequestException('Pipeline selecionado nao possui estagios');
+      }
+      return { pipelineId: parsed.pipeline_id, stageId: firstStage.id };
+    }
+
+    if (parsed.estagio_id) {
+      const stage = await this.prisma.stage.findFirst({
+        where: { id: parsed.estagio_id, tenant_id: tenantId },
+        select: { id: true, pipeline_id: true },
+      });
+      if (!stage) {
+        throw new NotFoundException('Estagio nao encontrado');
+      }
+      return { pipelineId: stage.pipeline_id, stageId: stage.id };
+    }
+
+    const pipeline = await this.resolveDefaultPipeline(tenantId);
+    const firstStage = await this.prisma.stage.findFirst({
+      where: { pipeline_id: pipeline.id, tenant_id: tenantId },
+      orderBy: { ordem: 'asc' },
+      select: { id: true },
+    });
+    if (!firstStage) {
+      throw new BadRequestException('Pipeline default nao possui estagios');
+    }
+    return { pipelineId: pipeline.id, stageId: firstStage.id };
+  }
+
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
 
@@ -593,31 +666,20 @@ export class LeadsService {
     });
     const poolEnabled = Boolean(tenant?.pool_enabled);
 
-    const pipelineId =
-      parsed.pipeline_id ?? (await this.resolveDefaultPipeline(user.tenantId)).id;
-
-    const stage = await this.prisma.stage.findFirst({
-      where: { id: parsed.estagio_id, pipeline_id: pipelineId, tenant_id: user.tenantId },
-      select: { id: true },
-    });
-    if (!stage) {
-      throw new BadRequestException('Estagio nao pertence ao pipeline selecionado');
-    }
+    const { pipelineId, stageId } = await this.resolvePipelineAndStage(parsed, user.tenantId);
 
     const instanciaWhatsapp =
       parsed.instancia_whatsapp ?? (await this.resolveDefaultInstance(user, poolEnabled));
 
     // Compute initial position so new leads append at the bottom of the stage.
     let initialPosition = 1000;
-    if (parsed.estagio_id) {
-      const maxResult = await this.prisma.lead.aggregate({
-        where: { estagio_id: parsed.estagio_id, tenant_id: user.tenantId },
-        _max: { position: true },
-      });
-      const maxPos = maxResult._max.position;
-      if (maxPos !== null && maxPos !== undefined) {
-        initialPosition = maxPos + 1000;
-      }
+    const maxResult = await this.prisma.lead.aggregate({
+      where: { estagio_id: stageId, tenant_id: user.tenantId },
+      _max: { position: true },
+    });
+    const maxPos = maxResult._max.position;
+    if (maxPos !== null && maxPos !== undefined) {
+      initialPosition = maxPos + 1000;
     }
 
     const [lead] = await this.prisma.$transaction([
@@ -625,6 +687,7 @@ export class LeadsService {
         data: {
           ...parsed,
           pipeline_id: pipelineId,
+          estagio_id: stageId,
           instancia_whatsapp: instanciaWhatsapp,
           responsavel_id: parsed.responsavel_id || (poolEnabled ? null : user.id),
           // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
