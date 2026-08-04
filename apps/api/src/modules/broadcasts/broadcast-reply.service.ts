@@ -61,7 +61,7 @@ export class BroadcastReplyService {
       ops.push(
         this.prisma.broadcastTarget.updateMany({
           where: { id: { in: pendingIds } },
-          data: { status: 'skipped', error: JA_CONVERSANDO },
+          data: { status: 'skipped', error: JA_CONVERSANDO, error_code: 'cliente_ja_conversando' },
         }),
       );
     }

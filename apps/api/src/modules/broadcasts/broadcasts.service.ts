@@ -4,6 +4,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
 import { buildFollowupContent } from './followup-content';
 import { BroadcastSenderService, startOfDayBrt } from './broadcast-sender.service';
+import { aggregateFailureReasons, type FailureRow } from './broadcast-error';
 import type { AuthUser } from '../../common/types/auth-user';
 
 export interface CreateBroadcastInput {
@@ -82,28 +83,19 @@ export class BroadcastsService {
     // "3 falhas" pode ser instância desconectada ou lead sem telefone, e a
     // decisão (reconectar vs corrigir cadastro) é oposta.
     const failureReasons = await this.prisma.broadcastTarget.groupBy({
-      by: ['broadcast_id', 'error'],
+      by: ['broadcast_id', 'error_code', 'error'],
       where: { broadcast_id: { in: rows.map((r) => r.id) }, status: 'failed' },
       _count: { _all: true },
     });
-    const failuresByBroadcast = new Map<string, Record<string, number>>();
+    const linhasPorBroadcast = new Map<string, FailureRow[]>();
     for (const f of failureReasons) {
-      const m = failuresByBroadcast.get(f.broadcast_id) ?? {};
-      // O `error` é texto livre (String(err).slice(0,500)) e costuma trazer URL,
-      // id e timestamp — cada falha viraria um grupo distinto. Corta e agrupa o
-      // excedente, senão a resposta cresce sem teto e o painel a busca a cada 15s.
-      const motivo = (f.error?.trim() || 'Motivo não registrado').slice(0, 120);
-      m[motivo] = (m[motivo] ?? 0) + f._count._all;
-      failuresByBroadcast.set(f.broadcast_id, m);
+      const linhas = linhasPorBroadcast.get(f.broadcast_id) ?? [];
+      linhas.push({ error_code: f.error_code, error: f.error, _count: f._count._all });
+      linhasPorBroadcast.set(f.broadcast_id, linhas);
     }
-    const TOP_MOTIVOS = 5;
-    for (const [id, motivos] of failuresByBroadcast) {
-      const ordenados = Object.entries(motivos).sort((a, b) => b[1] - a[1]);
-      if (ordenados.length <= TOP_MOTIVOS) continue;
-      const top = ordenados.slice(0, TOP_MOTIVOS);
-      const resto = ordenados.slice(TOP_MOTIVOS).reduce((soma, [, n]) => soma + n, 0);
-      failuresByBroadcast.set(id, { ...Object.fromEntries(top), 'Outros motivos': resto });
-    }
+    const failuresByBroadcast = new Map<string, Record<string, number>>(
+      [...linhasPorBroadcast].map(([id, linhas]) => [id, aggregateFailureReasons(linhas)]),
+    );
     return rows.map((r) => ({
       ...r,
       target_counts: byBroadcast.get(r.id) ?? {},
@@ -375,7 +367,7 @@ export class BroadcastsService {
 
     const reset = await this.prisma.broadcastTarget.updateMany({
       where: { broadcast_id: id, status: 'failed' },
-      data: { status: 'pending', error: null },
+      data: { status: 'pending', error: null, error_code: null },
     });
     if (reset.count === 0) throw new BadRequestException('Nenhum alvo com falha para reenviar');
 

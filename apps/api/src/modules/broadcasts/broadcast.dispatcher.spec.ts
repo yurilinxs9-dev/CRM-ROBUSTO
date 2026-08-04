@@ -63,6 +63,18 @@ describe('BroadcastDispatcher — janela de horário', () => {
     expect(prisma.broadcastTarget.update).not.toHaveBeenCalled();
   });
 
+  it('falha do envio grava o motivo em código, não só o texto cru', async () => {
+    const { d, prisma, sender } = makeDeps('2026-08-03T17:00:00Z');
+    sender.sendToTarget.mockRejectedValue(new Error('Sua instância WhatsApp não está conectada'));
+    await d.tick();
+
+    const falha = (prisma.broadcastTarget.update as jest.Mock).mock.calls.find(
+      ([arg]) => arg.data?.status === 'failed',
+    );
+    expect(falha![0].data.error_code).toBe('instancia_desconectada');
+    expect(falha![0].data.error).toContain('não está conectada');
+  });
+
   it('tenant sem janela conhecida, NÃO despacha', async () => {
     // Falha FECHADA: se a linha do tenant não veio, o guarda que impede
     // mensagem às 3h da manhã simplesmente não existiria — o custo de esperar

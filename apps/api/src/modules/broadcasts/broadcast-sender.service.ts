@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
 import { AiProviderService } from '../ai/ai-provider.service';
 import { buildFollowupContent } from './followup-content';
+import type { BroadcastErrorCode } from './broadcast-error';
 import type { AuthUser } from '../../common/types/auth-user';
 
 export interface DispatchBroadcast {
@@ -63,8 +64,17 @@ export class BroadcastSenderService {
     target: { id: string; lead_id: string },
     opts: { force?: boolean } = {},
   ): Promise<{ outcome: DispatchOutcome; detail?: string }> {
-    const skip = async (error: string): Promise<{ outcome: DispatchOutcome; detail: string }> => {
-      await this.prisma.broadcastTarget.update({ where: { id: target.id }, data: { status: 'skipped', error } });
+    // O código vem junto do texto: o texto explica o caso, o código é o que
+    // soma no painel. Aqui ele é explícito, não inferido — quem pula sabe o
+    // motivo melhor do que qualquer classificador de string.
+    const skip = async (
+      error: string,
+      code: BroadcastErrorCode,
+    ): Promise<{ outcome: DispatchOutcome; detail: string }> => {
+      await this.prisma.broadcastTarget.update({
+        where: { id: target.id },
+        data: { status: 'skipped', error, error_code: code },
+      });
       return { outcome: 'skipped', detail: error };
     };
 
@@ -81,21 +91,21 @@ export class BroadcastSenderService {
       },
     });
 
-    if (!lead || !lead.telefone) return skip('lead inválido/sem telefone');
+    if (!lead || !lead.telefone) return skip('lead inválido/sem telefone', 'sem_telefone');
     // Snapshot da criação: se o lead saiu da etapa alvo, o follow-up daquela
     // etapa não vale mais pra ele (exceto envio manual forçado).
     if (!opts.force && b.stage_id && lead.estagio_id !== b.stage_id) {
-      return skip('lead saiu da etapa alvo');
+      return skip('lead saiu da etapa alvo', 'fora_da_etapa');
     }
     if (!opts.force && b.respect_ai_block && lead.ai_blocked) {
-      return skip('ai_blocked (humano no atendimento)');
+      return skip('ai_blocked (humano no atendimento)', 'atendimento_humano');
     }
 
     const sysUser = await this.getTenantSystemUser(b.tenant_id);
     if (!sysUser) {
       await this.prisma.broadcastTarget.update({
         where: { id: target.id },
-        data: { status: 'failed', error: 'tenant sem admin/gerente ativo' },
+        data: { status: 'failed', error: 'tenant sem admin/gerente ativo', error_code: 'sem_remetente' },
       });
       return { outcome: 'failed', detail: 'tenant sem admin/gerente ativo' };
     }
@@ -107,7 +117,7 @@ export class BroadcastSenderService {
       telefone: lead.telefone,
       responsavel_nome: lead.responsavel?.nome ?? null,
     });
-    if (!content.trim()) return skip('mensagem vazia');
+    if (!content.trim()) return skip('mensagem vazia', 'mensagem_vazia');
 
     // F-03: follow-up é cadência → sender_type 'system' (não bloqueia a IA).
     await this.messages.sendText({ lead_id: lead.id, content }, sysUser, { senderType: 'system' });

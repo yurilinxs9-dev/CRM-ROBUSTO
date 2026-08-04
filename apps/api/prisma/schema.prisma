@@ -980,6 +980,10 @@ model BroadcastTarget {
   sent_at      DateTime?
   replied_at   DateTime?
   error        String?
+  /// Motivo em CÓDIGO (ver broadcast-error.ts). `error` guarda o texto cru da
+  /// exceção, com url e id dentro — duas quedas da mesma instância viram dois
+  /// textos diferentes e não somam. Nulo nos alvos gravados antes de ago/2026.
+  error_code   String?
   created_at   DateTime              @default(now())
 
   @@index([broadcast_id, status])

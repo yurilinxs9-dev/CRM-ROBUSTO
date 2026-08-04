@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { BroadcastSenderService } from './broadcast-sender.service';
 import { isWithinBroadcastWindow } from './broadcast-window';
+import { classifyBroadcastError } from './broadcast-error';
 
 /**
  * Erros de CONFIGURAÇÃO da IA (sem modelo default, modelo removido/inativo).
@@ -107,7 +108,11 @@ export class BroadcastDispatcher {
         }
         await this.prisma.broadcastTarget.update({
           where: { id: target.id },
-          data: { status: 'failed', error: String(err).slice(0, 500) },
+          data: {
+            status: 'failed',
+            error: String(err).slice(0, 500),
+            error_code: classifyBroadcastError(err),
+          },
         });
       }
 
