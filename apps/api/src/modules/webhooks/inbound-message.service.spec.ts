@@ -297,7 +297,7 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
 
     await service.saveIncomingMessage(baseInput());
 
-    expect(broadcastReply.registerCustomerReply).toHaveBeenCalledWith('lead-1');
+    expect(broadcastReply.registerCustomerReply).toHaveBeenCalledWith('lead-1', 't1');
   });
 
   it('mensagem do vendedor NÃO registra resposta', async () => {

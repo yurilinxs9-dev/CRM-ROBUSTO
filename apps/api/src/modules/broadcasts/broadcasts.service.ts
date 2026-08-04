@@ -66,11 +66,13 @@ export class BroadcastsService {
       byBroadcast.set(c.broadcast_id, m);
     }
     // Enviados HOJE (dia BRT) por broadcast — alimenta o "X/30 hoje" do front.
+    // Mesma regra do sentToday(): 'replied' conta, senão o contador ANDARIA
+    // PARA TRÁS durante o dia conforme os clientes respondem.
     const todayCounts = await this.prisma.broadcastTarget.groupBy({
       by: ['broadcast_id'],
       where: {
         broadcast_id: { in: rows.map((r) => r.id) },
-        status: 'sent',
+        status: { in: ['sent', 'replied'] },
         sent_at: { gte: startOfDayBrt() },
       },
       _count: { _all: true },
@@ -87,9 +89,20 @@ export class BroadcastsService {
     const failuresByBroadcast = new Map<string, Record<string, number>>();
     for (const f of failureReasons) {
       const m = failuresByBroadcast.get(f.broadcast_id) ?? {};
-      const motivo = f.error?.trim() || 'Motivo não registrado';
+      // O `error` é texto livre (String(err).slice(0,500)) e costuma trazer URL,
+      // id e timestamp — cada falha viraria um grupo distinto. Corta e agrupa o
+      // excedente, senão a resposta cresce sem teto e o painel a busca a cada 15s.
+      const motivo = (f.error?.trim() || 'Motivo não registrado').slice(0, 120);
       m[motivo] = (m[motivo] ?? 0) + f._count._all;
       failuresByBroadcast.set(f.broadcast_id, m);
+    }
+    const TOP_MOTIVOS = 5;
+    for (const [id, motivos] of failuresByBroadcast) {
+      const ordenados = Object.entries(motivos).sort((a, b) => b[1] - a[1]);
+      if (ordenados.length <= TOP_MOTIVOS) continue;
+      const top = ordenados.slice(0, TOP_MOTIVOS);
+      const resto = ordenados.slice(TOP_MOTIVOS).reduce((soma, [, n]) => soma + n, 0);
+      failuresByBroadcast.set(id, { ...Object.fromEntries(top), 'Outros motivos': resto });
     }
     return rows.map((r) => ({
       ...r,

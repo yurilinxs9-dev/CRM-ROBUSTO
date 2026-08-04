@@ -57,8 +57,13 @@ export class BroadcastDispatcher {
       // e o throttle não é consumido — senão o primeiro disparo depois das 9h
       // ficaria esperando mais 15 minutos à toa.
       const janela = janelaPorTenant.get(b.tenant_id);
+      if (!janela) {
+        // Falha FECHADA: sem a linha do tenant não dá para saber o horário, e
+        // um guarda contra mensagem de madrugada que falha aberto não é guarda.
+        this.logger.warn(`Broadcast ${b.id}: tenant ${b.tenant_id} sem janela — disparo adiado`);
+        continue;
+      }
       if (
-        janela &&
         !isWithinBroadcastWindow(
           now,
           'America/Sao_Paulo',

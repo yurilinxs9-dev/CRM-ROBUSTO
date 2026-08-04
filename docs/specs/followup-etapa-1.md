@@ -1,6 +1,8 @@
 # Follow-up — Etapa 1: parar de causar dano e enxergar o resultado
 
-**Status:** implementado (schema, detecção da resposta, janela de horário, painel)
+**Status:** implementado — schema, detecção da resposta, janela de horário (dispatcher +
+configuração por empresa em Ajustes), painel. Revisado em 2026-08-03; as correções da revisão
+estão registradas em "Correções pós-revisão" no fim deste documento.
 **Data:** 2026-08-03
 
 ## Problema
@@ -141,6 +143,37 @@ tela — em especial o formulário de criação — fica como está; é a Etapa 
    nullable é aditivo e reversível.
 3. **Mudança de comportamento visível.** Disparos existentes passam a parar quando o cliente
    responde e a respeitar horário. É o pedido, mas precisa ser avisado à equipe antes do deploy.
+
+## Correções pós-revisão (2026-08-03)
+
+Uma revisão da Etapa 1 inteira encontrou dois defeitos que iam contra o próprio objetivo do
+trabalho, além de arestas menores. Todos corrigidos com teste:
+
+1. **O limite diário afrouxava na proporção da taxa de resposta.** `sentToday()` contava só
+   `status: 'sent'`; um alvo que recebia e respondia virava `replied` e saía da conta. Com
+   `daily_limit: 30` e 20% de resposta, o disparo mandava ~36. Agora conta `['sent','replied']`,
+   nas duas consultas (`broadcast-sender.service.ts` e o contador do painel).
+2. **A janela não era configurável**, apesar de a decisão da spec dizer que seria — ficava fixa
+   em 9–18 seg-sex, alterável só por SQL. Implementado: campos no `PATCH /tenants/settings`
+   (Zod + validação de `start < end` contra o valor já gravado, recusa de lista de dias vazia),
+   leitura em `/auth/me` e controles em Ajustes → Geral.
+3. **O dispatcher falhava aberto**: tenant ausente no mapa pulava a checagem e disparava 24h.
+   Agora falha fechada, com log.
+4. **A previsão de término ignorava a janela** — às 17h de sexta prometia "~5h" para uma fila
+   que só retomaria segunda. A conta virou `apps/web/src/lib/followup-eta.ts` (função pura,
+   8 testes), diz "pausado até seg às 9h" fora da janela e nomeia o dia quando a fila atravessa
+   o fim de semana.
+5. **`failure_reasons` tinha cardinalidade ilimitada** (o `error` é texto livre com URL e id).
+   Motivo cortado em 120 caracteres, top 5 por disparo e o resto somado em "Outros motivos".
+6. **O gancho de resposta rodava dentro do caminho crítico** de `<100ms p99` da mensagem
+   recebida. Movido para depois do emit de WebSocket e sem `await`.
+7. Menores: os dois `updateMany` da resposta agora vão em `$transaction`; a consulta é escopada
+   por tenant; o diálogo de alvos rotula `replied` como "respondeu" e não oferece "enviar agora"
+   para quem já respondeu; o spec do dispatcher trocou o spy em `global.Date` por fake timers
+   (o spy quebrava `Date.now`).
+
+Pendente conhecido: janela que atravessa a meia-noite (`end <= start`) não é suportada —
+`isWithinBroadcastWindow` retorna `false` e a API recusa a configuração.
 
 ## Fora de escopo
 

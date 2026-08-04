@@ -24,12 +24,18 @@ export class BroadcastReplyService {
    *
    * Disparos `done` e `canceled` ficam intocados: histórico não muda.
    */
-  async registerCustomerReply(leadId: string): Promise<{ replied: number; skipped: number }> {
+  async registerCustomerReply(leadId: string, tenantId?: string): Promise<{ replied: number; skipped: number }> {
     const targets = await this.prisma.broadcastTarget.findMany({
       where: {
         lead_id: leadId,
         status: { in: ['pending', 'sent'] },
-        broadcast: { status: { in: ['running', 'paused'] } },
+        broadcast: {
+          status: { in: ['running', 'paused'] },
+          // Isolamento explícito: hoje o lead_id já é único por empresa, mas
+          // este é o primeiro acesso a BroadcastTarget vindo de fora do módulo
+          // e a garantia não deve depender disso continuar verdade.
+          ...(tenantId ? { tenant_id: tenantId } : {}),
+        },
       },
       select: { id: true, status: true, broadcast_id: true },
     });
@@ -39,18 +45,27 @@ export class BroadcastReplyService {
     const sentIds = targets.filter((t) => t.status === 'sent').map((t) => t.id);
     const pendingIds = targets.filter((t) => t.status === 'pending').map((t) => t.id);
 
+    // Os dois updates numa transação: se o segundo falhasse sozinho, o alvo já
+    // enviado ficaria 'replied' e o pendente seguiria na fila — o disparo
+    // voltaria a cutucar exatamente quem acabou de responder.
+    const ops = [];
     if (sentIds.length > 0) {
-      await this.prisma.broadcastTarget.updateMany({
-        where: { id: { in: sentIds } },
-        data: { status: 'replied', replied_at: new Date() },
-      });
+      ops.push(
+        this.prisma.broadcastTarget.updateMany({
+          where: { id: { in: sentIds } },
+          data: { status: 'replied', replied_at: new Date() },
+        }),
+      );
     }
     if (pendingIds.length > 0) {
-      await this.prisma.broadcastTarget.updateMany({
-        where: { id: { in: pendingIds } },
-        data: { status: 'skipped', error: JA_CONVERSANDO },
-      });
+      ops.push(
+        this.prisma.broadcastTarget.updateMany({
+          where: { id: { in: pendingIds } },
+          data: { status: 'skipped', error: JA_CONVERSANDO },
+        }),
+      );
     }
+    await this.prisma.$transaction(ops);
 
     this.logger.log(
       `Resposta do lead ${leadId}: ${sentIds.length} alvo(s) respondido(s), ${pendingIds.length} retirado(s) da fila`,

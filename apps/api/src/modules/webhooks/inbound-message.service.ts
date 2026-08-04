@@ -661,20 +661,23 @@ export class InboundMessageService {
       }
     }
 
-    if (!isFromMe) {
-      // Cliente respondeu: sai da fila de qualquer follow-up ativo. Nunca
-      // chamar fora deste guard — mensagem NOSSA não é resposta do cliente,
-      // e trataria um envio automático como se o cliente tivesse escrito.
-      await this.broadcastReply
-        .registerCustomerReply(lead.id)
-        .catch((err) => this.logger.warn(`registerCustomerReply falhou lead=${lead.id}: ${String(err)}`));
-    }
-
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // For media messages the client renders a placeholder (skeleton/loading)
     // until the `message:media-ready` event arrives.
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
     this.gateway.emitNewMessage(lead.id, message, tenantId);
+
+    if (!isFromMe) {
+      // Cliente respondeu: sai da fila de qualquer follow-up ativo. Nunca
+      // chamar fora deste guard — mensagem NOSSA não é resposta do cliente,
+      // e trataria um envio automático como se o cliente tivesse escrito.
+      // Sem await e DEPOIS do emit: nada aqui depende do resultado, e um
+      // round-trip a mais antes da entrega em tempo real queimaria o contrato
+      // de <100ms p99 deste método em TODA mensagem recebida.
+      void this.broadcastReply
+        .registerCustomerReply(lead.id, tenantId ?? undefined)
+        .catch((err) => this.logger.warn(`registerCustomerReply falhou lead=${lead.id}: ${String(err)}`));
+    }
 
     if (tenantId) {
       this.outboundWebhooks.dispatchMessageCreated({

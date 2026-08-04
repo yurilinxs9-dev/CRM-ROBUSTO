@@ -9,7 +9,17 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
+
+const DIAS = [
+  { iso: 1, label: 'Seg' },
+  { iso: 2, label: 'Ter' },
+  { iso: 3, label: 'Qua' },
+  { iso: 4, label: 'Qui' },
+  { iso: 5, label: 'Sex' },
+  { iso: 6, label: 'Sáb' },
+  { iso: 7, label: 'Dom' },
+];
 
 interface Instance {
   id: string;
@@ -102,6 +112,30 @@ export function GeneralTab() {
     } finally {
       setIsPending(false);
     }
+  };
+
+  const saveWindow = async (patch: Partial<Pick<TenantSettings, 'broadcast_window_start' | 'broadcast_window_end' | 'broadcast_window_days'>>) => {
+    setIsPending(true);
+    try {
+      const { data } = await api.patch<TenantSettings>('/api/tenants/settings', patch);
+      setTenant(data);
+      toast.success('Janela de disparo salva.');
+    } catch (e) {
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(typeof msg === 'string' ? msg : 'Erro ao salvar a janela.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const toggleDia = (iso: number) => {
+    const atuais = tenant.broadcast_window_days ?? [1, 2, 3, 4, 5];
+    const novos = atuais.includes(iso) ? atuais.filter((d) => d !== iso) : [...atuais, iso].sort((a, b) => a - b);
+    if (novos.length === 0) {
+      toast.error('Escolha ao menos um dia. Para parar um disparo, use Pausar no follow-up.');
+      return;
+    }
+    void saveWindow({ broadcast_window_days: novos });
   };
 
   const handlePrefixToggle = async (checked: boolean) => {
@@ -242,6 +276,73 @@ export function GeneralTab() {
           disabled={isPending || !tenant.pool_enabled}
           aria-label="Assinatura do operador"
         />
+      </div>
+
+      <div className="rounded-lg border border-line-2 px-4 py-4 space-y-3">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">Janela de disparo do follow-up</Label>
+          <p className="text-xs text-ink-3">
+            Horário em que o follow-up automático pode enviar (horário de Brasília). Fora desta
+            janela a fila espera — nenhuma mensagem é perdida, e o cliente não recebe oferta de
+            madrugada.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1">
+            <Label className="text-xs text-ink-2" htmlFor="janela-inicio">Começa às</Label>
+            <select
+              id="janela-inicio"
+              className="rounded-md border border-line-2 bg-surface-2 px-2 py-1.5 text-sm text-ink-1"
+              value={tenant.broadcast_window_start ?? 9}
+              disabled={isPending}
+              onChange={(e) => void saveWindow({ broadcast_window_start: Number(e.target.value) })}
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-ink-2" htmlFor="janela-fim">Para às</Label>
+            <select
+              id="janela-fim"
+              className="rounded-md border border-line-2 bg-surface-2 px-2 py-1.5 text-sm text-ink-1"
+              value={tenant.broadcast_window_end ?? 18}
+              disabled={isPending}
+              onChange={(e) => void saveWindow({ broadcast_window_end: Number(e.target.value) })}
+            >
+              {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs text-ink-2">Dias</Label>
+          <div className="flex flex-wrap gap-1.5">
+            {DIAS.map((d) => {
+              const ativo = (tenant.broadcast_window_days ?? [1, 2, 3, 4, 5]).includes(d.iso);
+              return (
+                <button
+                  key={d.iso}
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => toggleDia(d.iso)}
+                  aria-pressed={ativo}
+                  className={`rounded-md border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+                    ativo
+                      ? 'border-brand-border bg-brand-subtle text-ink-1'
+                      : 'border-line-2 text-ink-3 hover:text-ink-2'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

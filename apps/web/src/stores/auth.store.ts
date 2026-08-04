@@ -18,6 +18,11 @@ export interface Tenant {
   prefix_enabled?: boolean;
   round_robin_enabled?: boolean;
   share_history_enabled?: boolean;
+  /** Janela de disparo do follow-up: hora local BRT, fim exclusivo. */
+  broadcast_window_start?: number;
+  broadcast_window_end?: number;
+  /** ISO: 1=segunda ... 7=domingo. */
+  broadcast_window_days?: number[];
 }
 
 interface AuthState {

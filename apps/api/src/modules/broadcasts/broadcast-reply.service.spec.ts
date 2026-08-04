@@ -8,6 +8,7 @@ function makePrisma(targets: Array<{ id: string; status: string; broadcast_id: s
       findMany: jest.fn().mockResolvedValue(targets),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    $transaction: jest.fn((ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
   };
 }
 
@@ -50,6 +51,21 @@ describe('BroadcastReplyService.registerCustomerReply', () => {
     expect(r).toEqual({ replied: 1, skipped: 1 });
   });
 
+  it('aplica os dois grupos numa transação só', async () => {
+    // Sem transação, uma falha no segundo update deixaria o alvo enviado como
+    // 'replied' e o pendente ainda na fila — o disparo voltaria a cutucar
+    // justamente o cliente que acabou de responder.
+    const prisma = makePrisma([
+      { id: 't1', status: 'sent', broadcast_id: 'b1' },
+      { id: 't2', status: 'pending', broadcast_id: 'b1' },
+    ]);
+    const svc = new BroadcastReplyService(prisma as never);
+    await svc.registerCustomerReply('lead-1');
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect((prisma.$transaction as Mock).mock.calls[0][0]).toHaveLength(2);
+  });
+
   it('lead sem alvo nenhum não escreve nada', async () => {
     const prisma = makePrisma([]);
     const svc = new BroadcastReplyService(prisma as never);
@@ -68,5 +84,17 @@ describe('BroadcastReplyService.registerCustomerReply', () => {
     expect(where.lead_id).toBe('lead-1');
     expect(where.status.in).toEqual(['pending', 'sent']);
     expect(where.broadcast.status.in).toEqual(['running', 'paused']);
+  });
+
+  it('restringe ao tenant quando ele é informado', async () => {
+    // Primeiro caminho a alcançar BroadcastTarget de fora do módulo: o
+    // isolamento entre empresas fica explícito na consulta, não implícito na
+    // unicidade do lead_id.
+    const prisma = makePrisma([]);
+    const svc = new BroadcastReplyService(prisma as never);
+    await svc.registerCustomerReply('lead-1', 'tenant-1');
+
+    const where = (prisma.broadcastTarget.findMany as Mock).mock.calls[0][0].where;
+    expect(where.broadcast.tenant_id).toBe('tenant-1');
   });
 });

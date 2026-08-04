@@ -42,10 +42,15 @@ export class BroadcastSenderService {
     private readonly ai: AiProviderService,
   ) {}
 
-  /** Quantos alvos deste broadcast já foram ENVIADOS hoje (dia BRT). */
+  /**
+   * Quantos alvos deste broadcast já foram ENVIADOS hoje (dia BRT).
+   * `replied` também conta: a mensagem SAIU — o cliente ter respondido depois
+   * não devolve cota. Sem isso o limite diário afrouxaria na proporção da taxa
+   * de resposta, e ele é uma das duas travas que protegem o número.
+   */
   async sentToday(broadcastId: string): Promise<number> {
     return this.prisma.broadcastTarget.count({
-      where: { broadcast_id: broadcastId, status: 'sent', sent_at: { gte: startOfDayBrt() } },
+      where: { broadcast_id: broadcastId, status: { in: ['sent', 'replied'] }, sent_at: { gte: startOfDayBrt() } },
     });
   }
 

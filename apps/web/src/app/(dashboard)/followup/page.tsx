@@ -14,6 +14,8 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/page-header';
 import { ModelSelect, useAvailableAiModels } from '@/components/ai/model-select';
+import { estimateFinish } from '@/lib/followup-eta';
+import { useAuthStore } from '@/stores/auth.store';
 
 interface Stage { id: string; nome: string; cor?: string }
 interface Pipeline { id: string; nome: string; stages: Stage[] }
@@ -51,30 +53,6 @@ const TEMPLATE_VARS: { tag: string; hint: string }[] = [
   { tag: '{atendente}', hint: 'responsável pelo lead' },
 ];
 
-/**
- * Previsão de término da fila. A fila anda 1 msg a cada `throttleSeconds` e
- * para ao bater `dailyLimit` — o resto só sai no dia seguinte. Sem essa conta
- * "40 na fila" parece coisa de minutos quando na verdade são dias.
- */
-function estimateFinish(pending: number, throttleSeconds: number, dailyLimit: number, sentToday: number): string | null {
-  if (pending <= 0) return null;
-  const limite = Math.max(1, dailyLimit);
-  const restanteHoje = Math.max(0, limite - sentToday);
-  const hoje = Math.min(pending, restanteHoje);
-  const sobra = pending - hoje;
-  const diasExtras = sobra > 0 ? Math.ceil(sobra / limite) : 0;
-
-  if (diasExtras > 0) {
-    const dias = diasExtras + (hoje > 0 ? 1 : 0);
-    return dias === 1 ? '~1 dia' : `~${dias} dias`;
-  }
-  const minutos = Math.round((hoje * throttleSeconds) / 60);
-  if (minutos < 60) return `~${minutos}min`;
-  const h = Math.floor(minutos / 60);
-  const m = minutos % 60;
-  return m ? `~${h}h${String(m).padStart(2, '0')}` : `~${h}h`;
-}
-
 function apiError(e: unknown, fallback: string): string {
   const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
   return typeof msg === 'string' ? msg : fallback;
@@ -82,6 +60,12 @@ function apiError(e: unknown, fallback: string): string {
 
 export default function FollowupPage() {
   const qc = useQueryClient();
+  const tenant = useAuthStore((s) => s.tenant);
+  const janela = {
+    start: tenant?.broadcast_window_start ?? 9,
+    end: tenant?.broadcast_window_end ?? 18,
+    days: tenant?.broadcast_window_days ?? [1, 2, 3, 4, 5],
+  };
   const [open, setOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   // Cancelar/excluir usavam confirm() do navegador — bloqueia a aba e ignora o tema.
@@ -241,7 +225,17 @@ export default function FollowupPage() {
             const dailyLimit = b.daily_limit ?? 30;
             const sentToday = b.sent_today ?? 0;
             const deletable = b.status === 'draft' || b.status === 'done' || b.status === 'canceled';
-            const eta = b.status === 'running' ? estimateFinish(pending, b.throttle_seconds, dailyLimit, sentToday) : null;
+            const eta =
+              b.status === 'running'
+                ? estimateFinish({
+                    pending,
+                    throttleSeconds: b.throttle_seconds,
+                    dailyLimit,
+                    sentToday,
+                    janela,
+                    agora: new Date(),
+                  })
+                : null;
             const reasons = Object.entries(b.failure_reasons ?? {}).sort((a, c) => c[1] - a[1]);
             return (
               <div key={b.id} className="rounded-xl border border-line-2 bg-surface-2 p-4 space-y-3">
@@ -301,8 +295,12 @@ export default function FollowupPage() {
                     {sent > 0 && replied > 0 ? <span className="text-ink-3 font-normal">({Math.round((replied / sent) * 100)}%)</span> : null}
                   </span>
                   {eta && (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-3" title={`${pending} na fila, 1 a cada ${Math.round(b.throttle_seconds / 60)}min, limite ${dailyLimit}/dia`}>
-                      <Clock className="h-3.5 w-3.5" /> termina em {eta}
+                    <span
+                      className={`inline-flex items-center gap-1.5 text-[11px] ${eta.paused ? 'text-warning' : 'text-ink-3'}`}
+                      title={`${pending} na fila, 1 a cada ${Math.round(b.throttle_seconds / 60)}min, limite ${dailyLimit}/dia, janela ${janela.start}h–${janela.end}h`}
+                    >
+                      <Clock className="h-3.5 w-3.5" />
+                      {eta.paused ? eta.label : eta.label.startsWith('termina') ? eta.label : `termina em ${eta.label}`}
                     </span>
                   )}
                 </div>
@@ -516,7 +514,9 @@ export default function FollowupPage() {
               <div className="overflow-y-auto -mx-2 px-2 divide-y" style={{ borderColor: 'var(--border-default)' }}>
                 {previewTargets.map((t) => {
                   const skip = t.status !== 'pending' || t.ai_blocked;
-                  const canSendNow = t.status !== 'sent';
+                  // Alvo que já respondeu não está mais na fila: o backend
+                  // recusa o envio manual com 400, então nem oferece o botão.
+                  const canSendNow = t.status !== 'sent' && t.status !== 'replied';
                   return (
                     <div key={t.lead_id} className="flex items-center justify-between gap-2 py-2 text-sm" style={{ opacity: skip ? 0.5 : 1 }}>
                       <div className="min-w-0">
@@ -527,7 +527,12 @@ export default function FollowupPage() {
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <span className="text-[11px] text-right" style={{ color: t.status === 'failed' ? '#ef4444' : 'var(--text-muted)' }} title={t.error ?? undefined}>
-                          {t.status === 'sent' ? 'já enviado' : t.status === 'failed' ? 'falhou' : t.ai_blocked ? 'em atendimento' : t.status === 'pending' ? '' : t.status}
+                          {t.status === 'sent' ? 'já enviado'
+                            : t.status === 'replied' ? 'respondeu'
+                            : t.status === 'failed' ? 'falhou'
+                            : t.status === 'skipped' ? 'pulado'
+                            : t.ai_blocked ? 'em atendimento'
+                            : t.status === 'pending' ? '' : t.status}
                         </span>
                         {canSendNow && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title="Enviar agora (fora da fila)"
