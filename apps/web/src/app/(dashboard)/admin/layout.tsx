@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth.store';
 import { PageHeader } from '@/components/layout/page-header';
-import { visibleAdminTabs, canSeeAdminPath, firstAllowedAdminHref } from '@/lib/admin-tabs';
+import { visibleAdminTabs, canSeeAdminPath, firstAllowedAdminHref, adminTabForPath } from '@/lib/admin-tabs';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const isAdmin = useAuthStore((s) => s.user?.is_platform_admin);
@@ -38,7 +38,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       <PageHeader title="Painel Admin" subtitle="Administração da plataforma" />
       <nav className="flex gap-1 border-b" style={{ borderColor: 'var(--border-default)' }}>
         {tabs.map((t) => {
-          const active = t.href === '/admin' ? pathname === '/admin' : pathname.startsWith(t.href);
+          const active = adminTabForPath(pathname)?.href === t.href;
           return (
             <Link
               key={t.href}

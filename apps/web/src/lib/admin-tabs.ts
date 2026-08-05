@@ -29,9 +29,9 @@ export function visibleAdminTabs(scopes: string[] | undefined): AdminTab[] {
 
 /** Aba correspondente ao caminho atual — a mais específica que casar. */
 export function adminTabForPath(pathname: string): AdminTab | undefined {
-  return ADMIN_TABS.filter((t) => (t.href === '/admin' ? pathname === '/admin' : pathname.startsWith(t.href))).sort(
-    (a, b) => b.href.length - a.href.length,
-  )[0];
+  return ADMIN_TABS.filter((t) =>
+    t.href === '/admin' ? pathname === '/admin' : pathname === t.href || pathname.startsWith(t.href + '/'),
+  ).sort((a, b) => b.href.length - a.href.length)[0];
 }
 
 /**
@@ -40,7 +40,7 @@ export function adminTabForPath(pathname: string): AdminTab | undefined {
  */
 export function canSeeAdminPath(pathname: string, scopes: string[] | undefined): boolean {
   const tab = adminTabForPath(pathname);
-  if (!tab) return !!scopes?.includes('*');
+  if (!tab) return hasScope(scopes, '*');
   return hasScope(scopes, tab.scope);
 }
 

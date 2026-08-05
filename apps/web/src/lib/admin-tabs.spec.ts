@@ -41,6 +41,10 @@ describe('adminTabForPath', () => {
   it('devolve undefined para caminho fora do painel', () => {
     expect(adminTabForPath('/dashboard')).toBeUndefined();
   });
+
+  it('não casa por colisão de prefixo (ex.: /admin/healthcare com a aba health)', () => {
+    expect(adminTabForPath('/admin/healthcare')).toBeUndefined();
+  });
 });
 
 describe('canSeeAdminPath', () => {
@@ -66,6 +70,10 @@ describe('canSeeAdminPath', () => {
     // Aba nova sem escopo declarado não pode vazar por omissão.
     expect(canSeeAdminPath('/admin/qualquer-coisa-nova', RESTRITO)).toBe(false);
     expect(canSeeAdminPath('/admin/qualquer-coisa-nova', MASTER)).toBe(true);
+  });
+
+  it('não vaza escopo por colisão de prefixo (/admin/healthcare vs aba health)', () => {
+    expect(canSeeAdminPath('/admin/healthcare', RESTRITO)).toBe(false);
   });
 });
 
