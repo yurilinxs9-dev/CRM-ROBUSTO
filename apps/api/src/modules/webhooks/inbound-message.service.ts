@@ -11,6 +11,7 @@ import { AssignmentService } from '../queue/assignment.service';
 import { BroadcastReplyService } from '../broadcasts/broadcast-reply.service';
 import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
+import { extractAdReferral } from './ad-referral';
 import {
   assertValidMagic,
   decryptWhatsAppMedia,
@@ -665,7 +666,15 @@ export class InboundMessageService {
     // For media messages the client renders a placeholder (skeleton/loading)
     // until the `message:media-ready` event arrives.
     if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
-    this.gateway.emitNewMessage(lead.id, message, tenantId);
+    // Mesmo contrato do histórico (getHistory): o card do anúncio vai derivado
+    // e o metadata cru não viaja. `message` segue intacto — ele ainda é lido
+    // logo abaixo pelo webhook de saída.
+    const { metadata: rawMetadata, ...messageForEmit } = message;
+    this.gateway.emitNewMessage(
+      lead.id,
+      { ...messageForEmit, ad_referral: extractAdReferral(rawMetadata) },
+      tenantId,
+    );
 
     if (!isFromMe) {
       // Cliente respondeu: sai da fila de qualquer follow-up ativo. Nunca

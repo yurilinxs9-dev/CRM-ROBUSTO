@@ -315,3 +315,60 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
     expect(broadcastReply.registerCustomerReply).not.toHaveBeenCalled();
   });
 });
+
+describe('InboundMessageService.saveIncomingMessage — anúncio de origem em tempo real', () => {
+  /** Formato Evolution — é este objeto que o serviço grava em metadata.raw. */
+  const AD_RAW = {
+    data: {
+      key: { id: 'wa-ad-1' },
+      contextInfo: {
+        externalAdReply: {
+          title: 'Viva uma formatura inesquecível! ✨',
+          sourceApp: 'instagram',
+          sourceId: '120251874055560237',
+        },
+      },
+    },
+  };
+
+  it('DISCRIMINANTE: message:new carrega ad_referral quando a mensagem veio de anúncio', async () => {
+    const { service, prisma, gateway, conversations } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-ad',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+      metadata: { raw: AD_RAW },
+    });
+
+    await service.saveIncomingMessage(baseInput({ rawPayload: AD_RAW }));
+
+    const [leadId, payload] = gateway.emitNewMessage.mock.calls.at(-1);
+    expect(leadId).toBe('lead-1');
+    expect(payload.id).toBe('msg-ad');
+    expect(payload.ad_referral).toMatchObject({
+      title: 'Viva uma formatura inesquecível! ✨',
+      source_app: 'instagram',
+      source_id: '120251874055560237',
+    });
+    expect(payload).not.toHaveProperty('metadata');
+  });
+
+  it('mensagem comum emite ad_referral null', async () => {
+    const { service, prisma, gateway, conversations } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+      metadata: { raw: { data: { conversation: 'oi, voltei' } } },
+    });
+
+    await service.saveIncomingMessage(baseInput());
+
+    const [, payload] = gateway.emitNewMessage.mock.calls.at(-1);
+    expect(payload.ad_referral).toBeNull();
+  });
+});
