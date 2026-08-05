@@ -5,6 +5,7 @@ import { PlatformAdminGuard } from '../platform-admin/platform-admin.guard';
 import type { AuthUser } from '../../common/types/auth-user';
 import { AiConfigService } from './ai-config.service';
 import { createModelSchema, updateAgentSchema, updateModelSchema } from './ai.dto';
+import { PlatformScopes } from '../platform-admin/platform-scopes.decorator';
 
 /**
  * Painel de IA — restrito ao admin de plataforma (PlatformAdminGuard verifica
@@ -13,6 +14,7 @@ import { createModelSchema, updateAgentSchema, updateModelSchema } from './ai.dt
  */
 @Controller('ai')
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
+@PlatformScopes('ai')
 export class AiConfigController {
   constructor(private readonly svc: AiConfigService) {}
 
