@@ -16,6 +16,7 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { AdReferralCard } from './ad-referral-card';
 import { AudioMessage } from './audio-message';
 import { ImagePreviewDialog } from './image-preview-dialog';
 import { MediaImage } from './media-image';
@@ -201,6 +202,8 @@ function MessageBubbleComponent({
             </button>
           )}
         </div>
+
+        {message.ad_referral && <AdReferralCard ad={message.ad_referral} />}
 
         {type === 'AUDIO' && message.media_url && (
           <AudioMessage

@@ -14,6 +14,18 @@ export type MessageType =
   | 'DOCUMENT'
   | string;
 
+/** Anúncio de onde o lead veio (Click to WhatsApp). Derivado no backend. */
+export interface AdReferral {
+  title?: string;
+  body?: string;
+  source_app?: string;
+  source_url?: string;
+  source_id?: string;
+  media_url?: string;
+  ctwa_clid?: string;
+  thumbnail_data_url?: string;
+}
+
 export interface ChatLead {
   id: string;
   nome: string;
@@ -62,6 +74,7 @@ export interface ChatMessage {
   media_thumbnail_url?: string | null;
   media_archived?: boolean;
   created_at: string;
+  ad_referral?: AdReferral | null;
 }
 
 export interface ChatStage {
