@@ -83,10 +83,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               tenantId: data.tenant?.id ?? '',
               avatar_url: u.avatar_url,
               is_platform_admin: u.is_platform_admin,
+              platform_scopes: u.platform_scopes,
             });
           } else {
             updateUser({
               is_platform_admin: u.is_platform_admin,
+              platform_scopes: u.platform_scopes,
               nome: u.nome,
               avatar_url: u.avatar_url,
             });
