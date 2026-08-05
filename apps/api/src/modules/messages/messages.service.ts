@@ -19,6 +19,7 @@ import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { PushService } from '../push/push.service';
 import { ConversationService } from '../webhooks/conversation.service';
+import { extractAdReferral } from '../webhooks/ad-referral';
 
 /**
  * F-03 — Opções de envio. senderType decide quem enviou (default 'user', o
@@ -997,8 +998,18 @@ export class MessagesService {
       }),
     );
 
+    // O card de anúncio (Click to WhatsApp) é derivado do payload cru que já
+    // está em `metadata.raw` — nada é gravado por isso, e conversas antigas
+    // ganham o card sem backfill. Ver docs/specs/anuncio-na-conversa.md.
+    // O `metadata` em si sai da resposta: nenhum consumidor o lê, e ele levava
+    // o payload inteiro do provider até o navegador.
+    const withAd = signed.map(({ metadata, ...rest }) => ({
+      ...rest,
+      ad_referral: extractAdReferral(metadata),
+    }));
+
     return {
-      messages: signed,
+      messages: withAd,
       nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
     };
   }
