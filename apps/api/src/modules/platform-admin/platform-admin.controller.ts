@@ -90,7 +90,7 @@ export class PlatformAdminController {
 
   @Patch('announcements/:id')
   @PlatformScopes('announcements')
-  setActive(@Param('id') id: string, @Body() body: { active: boolean }) {
-    return this.svc.setAnnouncementActive(id, !!body?.active);
+  setActive(@Param('id') id: string, @Body() body: { active: boolean }, @Req() req: Request) {
+    return this.svc.setAnnouncementActive(this.user(req), id, !!body?.active);
   }
 }
