@@ -136,6 +136,9 @@ model User {
   especialidade   String?
   titulo          String?
   is_platform_admin Boolean          @default(false)
+  /// O que o platform admin pode dentro do painel. ["*"] = master (tudo).
+  /// Valores possíveis: "*", "health", "announcements", "ai".
+  platform_scopes   String[]         @default([])
   tenant_id       String
   tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
   // F-01: setor do colaborador. Nullable na migration p/ backfill; depois NOT NULL.

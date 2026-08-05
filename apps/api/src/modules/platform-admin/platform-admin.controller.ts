@@ -14,6 +14,7 @@ import { PlatformAdminService } from './platform-admin.service';
 import { PlatformAdminGuard } from './platform-admin.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
+import { PlatformScopes } from './platform-scopes.decorator';
 
 @Controller('platform-admin')
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
@@ -45,6 +46,7 @@ export class PlatformAdminController {
   }
 
   @Get('health')
+  @PlatformScopes('health')
   health() {
     return this.svc.health();
   }
@@ -75,17 +77,20 @@ export class PlatformAdminController {
   }
 
   @Get('announcements')
+  @PlatformScopes('announcements')
   listAnnouncements() {
     return this.svc.listAnnouncements();
   }
 
   @Post('announcements')
+  @PlatformScopes('announcements')
   createAnnouncement(@Body() body: unknown, @Req() req: Request) {
     return this.svc.createAnnouncement(this.user(req), body);
   }
 
   @Patch('announcements/:id')
-  setActive(@Param('id') id: string, @Body() body: { active: boolean }) {
-    return this.svc.setAnnouncementActive(id, !!body?.active);
+  @PlatformScopes('announcements')
+  setActive(@Param('id') id: string, @Body() body: { active: boolean }, @Req() req: Request) {
+    return this.svc.setAnnouncementActive(this.user(req), id, !!body?.active);
   }
 }

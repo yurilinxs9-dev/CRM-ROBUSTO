@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
@@ -341,8 +341,39 @@ export class PlatformAdminService {
   }
 
   // ---- Anúncios -------------------------------------------------------------
+  /**
+   * Tenant "protegido" é o de qualquer admin de plataforma ativo com escopo
+   * total. Derivar do dado (em vez de fixar um UUID) mantém a proteção válida
+   * se o admin master mudar de tenant.
+   */
+  private async isProtectedTenant(tenantId: string): Promise<boolean> {
+    const masters = await this.prisma.user.count({
+      where: {
+        tenant_id: tenantId,
+        ativo: true,
+        is_platform_admin: true,
+        platform_scopes: { has: '*' },
+      },
+    });
+    return masters > 0;
+  }
+
+  /** Barra admin sem escopo total de agir sobre o tenant do admin master. */
+  async assertTenantAllowed(admin: AuthUser, tenantId: string | null | undefined): Promise<void> {
+    if (!tenantId) return;
+    const caller = await this.prisma.user.findUnique({
+      where: { id: admin.id },
+      select: { platform_scopes: true },
+    });
+    if (caller?.platform_scopes?.includes('*')) return;
+    if (await this.isProtectedTenant(tenantId)) {
+      throw new ForbiddenException('Tenant protegido');
+    }
+  }
+
   async createAnnouncement(admin: AuthUser, body: unknown) {
     const d = announcementSchema.parse(body);
+    await this.assertTenantAllowed(admin, d.target_tenant_id);
     const created = await this.prisma.announcement.create({
       data: {
         title: d.title,
@@ -363,7 +394,13 @@ export class PlatformAdminService {
     return this.prisma.announcement.findMany({ orderBy: { created_at: 'desc' }, take: 100 });
   }
 
-  async setAnnouncementActive(id: string, active: boolean) {
+  async setAnnouncementActive(admin: AuthUser, id: string, active: boolean) {
+    const ann = await this.prisma.announcement.findUnique({
+      where: { id },
+      select: { target_tenant_id: true },
+    });
+    if (!ann) throw new NotFoundException('Aviso não encontrado');
+    await this.assertTenantAllowed(admin, ann.target_tenant_id);
     return this.prisma.announcement.update({ where: { id }, data: { active } });
   }
 

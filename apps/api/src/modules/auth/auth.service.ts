@@ -287,7 +287,7 @@ export class AuthService {
     const [user, tenant] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, nome: true, email: true, role: true, ativo: true, avatar_url: true, titulo: true, especialidade: true, is_platform_admin: true },
+        select: { id: true, nome: true, email: true, role: true, ativo: true, avatar_url: true, titulo: true, especialidade: true, is_platform_admin: true, platform_scopes: true },
       }),
       this.prisma.tenant.findUnique({
         where: { id: tenantId },

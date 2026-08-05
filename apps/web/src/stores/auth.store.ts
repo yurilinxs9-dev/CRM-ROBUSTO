@@ -9,6 +9,8 @@ interface User {
   tenantId: string;
   avatar_url?: string;
   is_platform_admin?: boolean;
+  /** ["*"] = admin master; senão as áreas liberadas do painel. */
+  platform_scopes?: string[];
 }
 
 export interface Tenant {
