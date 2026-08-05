@@ -399,7 +399,8 @@ export class PlatformAdminService {
       where: { id },
       select: { target_tenant_id: true },
     });
-    await this.assertTenantAllowed(admin, ann?.target_tenant_id);
+    if (!ann) throw new NotFoundException('Aviso não encontrado');
+    await this.assertTenantAllowed(admin, ann.target_tenant_id);
     return this.prisma.announcement.update({ where: { id }, data: { active } });
   }
 
