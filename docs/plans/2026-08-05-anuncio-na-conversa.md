@@ -55,7 +55,7 @@ O objeto do anúncio vive em dois caminhos diferentes dentro do `metadata` confo
 
 As mesmas chaves aparecem em duas capitalizações (`sourceUrl` e `sourceURL`, `sourceId` e `sourceID`), e o `thumbnail` chega ora como byte-map (`{"0":255,"1":216,…}`), ora como string base64. O arquivo vizinho `message-extractor.ts:43` já tem um normalizador (`asMediaKey`) escrito exatamente para esse par de formatos — a lógica dele é o modelo a seguir aqui.
 
-- [ ] **Step 1: Escrever o teste que falha**
+- [x] **Step 1: Escrever o teste que falha**
 
 Criar `apps/api/src/modules/webhooks/ad-referral.spec.ts`:
 
@@ -158,7 +158,7 @@ describe('extractAdReferral', () => {
 });
 ```
 
-- [ ] **Step 2: Rodar o teste e confirmar que falha**
+- [x] **Step 2: Rodar o teste e confirmar que falha**
 
 ```bash
 cd apps/api && npx jest ad-referral --verbose
@@ -166,7 +166,7 @@ cd apps/api && npx jest ad-referral --verbose
 
 Esperado: FAIL com `Cannot find module './ad-referral'`.
 
-- [ ] **Step 3: Implementar**
+- [x] **Step 3: Implementar**
 
 Criar `apps/api/src/modules/webhooks/ad-referral.ts`:
 
@@ -337,7 +337,7 @@ export function extractAdReferral(metadata: unknown): AdReferral | null {
 }
 ```
 
-- [ ] **Step 4: Rodar o teste e confirmar que passa**
+- [x] **Step 4: Rodar o teste e confirmar que passa**
 
 ```bash
 cd apps/api && npx jest ad-referral --verbose
@@ -345,7 +345,7 @@ cd apps/api && npx jest ad-referral --verbose
 
 Esperado: PASS, 10 testes.
 
-- [ ] **Step 5: Rodar a suíte inteira e o lint**
+- [x] **Step 5: Rodar a suíte inteira e o lint**
 
 ```bash
 cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --noEmit
@@ -353,7 +353,7 @@ cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --
 
 Esperado: **19 suites, 187 testes**, todos passando; lint e typecheck limpos.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/modules/webhooks/ad-referral.ts apps/api/src/modules/webhooks/ad-referral.spec.ts
@@ -378,7 +378,7 @@ git commit -m "feat(chat): le o anuncio de origem do payload ja salvo"
 
 Os specs existentes de `MessagesService` (`messages-send-routing.spec.ts`, `messages-outbound-conversation.spec.ts`) mostram o padrão: instanciar o serviço com 12 mocks posicionais e exercitar o método de verdade. Copie a montagem de mocks de `messages-send-routing.spec.ts:23-82`.
 
-- [ ] **Step 1: Escrever o teste que falha**
+- [x] **Step 1: Escrever o teste que falha**
 
 Criar `apps/api/src/modules/messages/messages-history-ad.spec.ts`:
 
@@ -537,7 +537,7 @@ describe('MessagesService.getHistory — card de anúncio', () => {
 });
 ```
 
-- [ ] **Step 2: Rodar o teste e confirmar que falha**
+- [x] **Step 2: Rodar o teste e confirmar que falha**
 
 ```bash
 cd apps/api && npx jest messages-history-ad --verbose
@@ -545,7 +545,7 @@ cd apps/api && npx jest messages-history-ad --verbose
 
 Esperado: FAIL — `messages[0].ad_referral` é `undefined` e `messages[0]` ainda tem `metadata`.
 
-- [ ] **Step 3: Implementar**
+- [x] **Step 3: Implementar**
 
 No topo de `apps/api/src/modules/messages/messages.service.ts`, junto dos demais imports de módulo:
 
@@ -572,7 +572,7 @@ Em `getHistory`, substituir o `return` final (hoje logo depois do `const signed 
     };
 ```
 
-- [ ] **Step 4: Rodar o teste e confirmar que passa**
+- [x] **Step 4: Rodar o teste e confirmar que passa**
 
 ```bash
 cd apps/api && npx jest messages-history-ad --verbose
@@ -580,7 +580,7 @@ cd apps/api && npx jest messages-history-ad --verbose
 
 Esperado: PASS, 4 testes.
 
-- [ ] **Step 5: Rodar a suíte inteira, lint e typecheck**
+- [x] **Step 5: Rodar a suíte inteira, lint e typecheck**
 
 ```bash
 cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --noEmit
@@ -588,7 +588,7 @@ cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --
 
 Esperado: **20 suites, 191 testes**, todos passando.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/modules/messages/messages.service.ts apps/api/src/modules/messages/messages-history-ad.spec.ts
@@ -613,7 +613,7 @@ Sem esta tarefa, o card só apareceria depois de recarregar a conversa: a primei
 
 Atenção: a variável `message` continua sendo usada depois da emissão (em `message.id`, na linha 685, para o webhook de saída). Não destruturar por cima dela — montar um objeto separado só para o emit.
 
-- [ ] **Step 1: Escrever o teste que falha**
+- [x] **Step 1: Escrever o teste que falha**
 
 O arquivo já tem tudo o que é preciso: a fábrica `makeService()` (linha 81), o `leadOwnedByA` (linha 102) e o `baseInput()` (linha 111). Acrescentar no fim do arquivo, **depois** do `});` que fecha o `describe` existente:
 
@@ -678,7 +678,7 @@ describe('InboundMessageService.saveIncomingMessage — anúncio de origem em te
 
 O `rawPayload` é exatamente o que o serviço grava em `metadata.raw` (ver `inbound-message.service.ts:500`), então o caminho `raw.data.contextInfo.externalAdReply` da Tarefa 1 casa naturalmente. Repare que o mock de `prisma.message.upsert` precisa devolver `metadata` — os testes já existentes no arquivo não devolvem, porque até agora ninguém lia esse campo.
 
-- [ ] **Step 2: Rodar o teste e confirmar que falha**
+- [x] **Step 2: Rodar o teste e confirmar que falha**
 
 ```bash
 cd apps/api && npx jest inbound-message --verbose
@@ -686,7 +686,7 @@ cd apps/api && npx jest inbound-message --verbose
 
 Esperado: FAIL — `payload.ad_referral` é `undefined`.
 
-- [ ] **Step 3: Implementar**
+- [x] **Step 3: Implementar**
 
 No topo de `apps/api/src/modules/webhooks/inbound-message.service.ts`, junto do import vizinho de `./message-extractor`:
 
@@ -714,7 +714,7 @@ por:
     );
 ```
 
-- [ ] **Step 4: Rodar o teste e confirmar que passa**
+- [x] **Step 4: Rodar o teste e confirmar que passa**
 
 ```bash
 cd apps/api && npx jest inbound-message --verbose
@@ -722,7 +722,7 @@ cd apps/api && npx jest inbound-message --verbose
 
 Esperado: PASS, incluindo os 2 casos novos.
 
-- [ ] **Step 5: Rodar a suíte inteira, lint e typecheck**
+- [x] **Step 5: Rodar a suíte inteira, lint e typecheck**
 
 ```bash
 cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --noEmit
@@ -730,7 +730,7 @@ cd apps/api && npx jest 2>&1 | tail -5 && npx eslint "src/**/*.ts" && npx tsc --
 
 Esperado: 20 suites, **193 testes**, todos passando.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/api/src/modules/webhooks/inbound-message.service.ts apps/api/src/modules/webhooks/inbound-message.service.spec.ts
@@ -758,7 +758,7 @@ O card fica **dentro** da bolha, acima do conteúdo. O vocabulário visual vem d
 
 O `next/image` não serve aqui: a origem é um `data:` URI. Usar `<img>` com o mesmo `// eslint-disable-next-line @next/next/no-img-element` que `message-bubble.tsx:263` já usa para o sticker.
 
-- [ ] **Step 1: Acrescentar o tipo**
+- [x] **Step 1: Acrescentar o tipo**
 
 Em `apps/web/src/components/chat/types.ts`, depois de `MessageType`:
 
@@ -782,7 +782,7 @@ E dentro de `interface ChatMessage`, junto dos demais campos opcionais:
   ad_referral?: AdReferral | null;
 ```
 
-- [ ] **Step 2: Criar o componente**
+- [x] **Step 2: Criar o componente**
 
 Criar `apps/web/src/components/chat/ad-referral-card.tsx`:
 
@@ -861,7 +861,7 @@ export function AdReferralCard({ ad }: AdReferralCardProps) {
 }
 ```
 
-- [ ] **Step 3: Renderizar na bolha**
+- [x] **Step 3: Renderizar na bolha**
 
 Em `apps/web/src/components/chat/message-bubble.tsx`, acrescentar o import junto dos demais componentes de chat (linhas 19-23):
 
@@ -875,7 +875,7 @@ E, dentro de `<div className={bubbleBase}>`, logo **depois** do bloco de ações
         {message.ad_referral && <AdReferralCard ad={message.ad_referral} />}
 ```
 
-- [ ] **Step 4: Verificar tipos e lint**
+- [x] **Step 4: Verificar tipos e lint**
 
 ```bash
 cd apps/web && npx tsc --noEmit && npx eslint src
@@ -885,11 +885,11 @@ Esperado: ambos limpos, sem saída de erro.
 
 O `line-clamp-*` é nativo no Tailwind 3.4 (a versão deste projeto) e já é usado em `components/agenda/task-card.tsx:66` — nenhuma dependência nova é necessária.
 
-- [ ] **Step 5: Conferir na tela**
+- [ ] **Step 5: Conferir na tela** — pendente, depende do usuário
 
 Subir o front (`cd apps/web && npm run dev`), abrir uma conversa de lead vindo de anúncio e confirmar: miniatura carrega, título e texto aparecem, link abre o post em aba nova. Bons candidatos para teste são leads das instâncias `agendamento-vania` e `atendimento-marcelo`, onde a sondagem de produção achou anúncios recentes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/components/chat/types.ts apps/web/src/components/chat/ad-referral-card.tsx apps/web/src/components/chat/message-bubble.tsx
@@ -900,8 +900,8 @@ git commit -m "feat(chat): mostra o card do anuncio de origem na conversa"
 
 ## Verificação final
 
-- [ ] `cd apps/api && npx jest` → 20 suites, 193 testes, todos passando (baseline era 18/177).
-- [ ] `cd apps/api && npx eslint "src/**/*.ts" && npx tsc --noEmit` → limpos.
-- [ ] `cd apps/web && npx tsc --noEmit && npx eslint src` → limpos.
-- [ ] `git log --oneline -4` mostra os quatro commits do plano.
-- [ ] Nenhum arquivo em `apps/api/prisma/` foi tocado, e nenhum script de banco foi executado.
+- [x] `cd apps/api && npx jest` → 20 suites, **192** testes, todos passando (baseline era 18/177; a previsão de 193 estava 1 acima, o total antes da Tarefa 3 era 190, não 191).
+- [x] `cd apps/api && npx eslint "src/**/*.ts" && npx tsc --noEmit` → limpos.
+- [x] `cd apps/web && npx tsc --noEmit && npx eslint src` → limpos.
+- [x] `git log --oneline -4` mostra os quatro commits do plano.
+- [x] Nenhum arquivo em `apps/api/prisma/` foi tocado, e nenhum script de banco foi executado.
