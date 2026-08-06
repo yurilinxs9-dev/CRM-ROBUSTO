@@ -1,0 +1,116 @@
+name: Deploy backend (VPS)
+
+# O frontend a Vercel publica sozinha no push. O backend roda em container no
+# VPS e, até aqui, só subia por alguém rodando `scripts/deploy.sh` na própria
+# máquina — o que criava janelas em que o site estava novo e a API velha.
+#
+# Este workflow fecha isso: reutiliza o MESMO `scripts/deploy.sh` (nada de
+# segunda cópia da lógica para divergir) e o executa a partir do runner.
+#
+# Dispara sozinho quando o CI passa em master, e também sob demanda pelo botão
+# "Run workflow" na aba Actions.
+#
+# ---------------------------------------------------------------------------
+# Configuração — uma vez só, em Settings → Secrets and variables → Actions
+# ---------------------------------------------------------------------------
+# Escolha UM dos dois. Chave é preferível: senha de root trafega em toda
+# conexão e não dá para revogar sem trocar a do servidor.
+#
+#   VPS_SSH_KEY       chave privada SEM passphrase, dedicada ao deploy.
+#                     Gere com:  ssh-keygen -t ed25519 -N "" -f deploy_key
+#                     Depois:    ssh-copy-id -i deploy_key.pub root@187.127.11.117
+#                     Cole o conteúdo de `deploy_key` (o arquivo sem .pub).
+#
+#   VPS_SSH_PASSWORD  senha de root. Só se a chave não for viável.
+#
+# Segredo do GitHub fica cifrado e não aparece em log — é o lugar certo para
+# isso, ao contrário de um arquivo no repositório ou de uma mensagem de chat.
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # No workflow_run só segue se o CI passou. No dispatch manual não há CI
+    # associado, então a condição também aceita a ausência dele.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # deploy.sh compara HEAD com origin/master para recusar deploy de
+          # commit que não está no remoto — precisa do histórico, não do shallow.
+          fetch-depth: 0
+          ref: master
+
+      - name: Conferir se há credencial configurada
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          PASS: ${{ secrets.VPS_SSH_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ] && [ -z "$PASS" ]; then
+            echo "::error::Configure VPS_SSH_KEY (recomendado) ou VPS_SSH_PASSWORD em Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "Credencial presente."
+
+      - name: Preparar SSH
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # Fixa a identidade do host antes de conectar: sem isto restaria
+          # StrictHostKeyChecking=no, que aceita qualquer servidor que responda
+          # no IP.
+          ssh-keyscan -H 187.127.11.117 >> ~/.ssh/known_hosts 2>/dev/null
+          if [ -n "$KEY" ]; then
+            printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+            chmod 600 ~/.ssh/id_deploy
+            cat >> ~/.ssh/config <<'EOF'
+          Host 187.127.11.117
+              User root
+              IdentityFile ~/.ssh/id_deploy
+              IdentitiesOnly yes
+              BatchMode yes
+          EOF
+            chmod 600 ~/.ssh/config
+            echo "SSH_BIN=ssh" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+            # deploy.sh aceita SSH_BIN — o wrapper injeta a senha via SSHPASS,
+            # que nunca aparece na linha de comando nem no log.
+            cat > /tmp/ssh-pass <<'EOF'
+          #!/bin/bash
+          exec sshpass -e ssh -o StrictHostKeyChecking=accept-new "$@"
+          EOF
+            chmod +x /tmp/ssh-pass
+            echo "SSH_BIN=/tmp/ssh-pass" >> "$GITHUB_ENV"
+          fi
+
+      - name: Testar conexão
+        env:
+          SSHPASS: ${{ secrets.VPS_SSH_PASSWORD }}
+        run: |
+          "$SSH_BIN" -o ConnectTimeout=15 root@187.127.11.117 "echo conectado; uptime" \
+            || { echo "::error::Falha ao conectar no VPS. Confira o secret."; exit 1; }
+
+      - name: Deploy
+        env:
+          SSHPASS: ${{ secrets.VPS_SSH_PASSWORD }}
+        run: bash scripts/deploy.sh
+
+      - name: Limpar credenciais do runner
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/config /tmp/ssh-pass
