@@ -11,15 +11,30 @@ import type { AuthUser } from '../../common/types/auth-user';
 export class CustomFieldsController {
   constructor(private customFields: CustomFieldsService) {}
 
+  /** Compatibilidade: só os campos customizados do lead (formato antigo). */
   @Get()
   list(@Req() req: Record<string, unknown>) {
     return this.customFields.list(req.user as AuthUser);
+  }
+
+  /** Schema completo (grupos + campos dos três escopos) usado pela ficha nova. */
+  @Get('schema')
+  schema(@Req() req: Record<string, unknown>) {
+    return this.customFields.schema(req.user as AuthUser);
   }
 
   @Post()
   @Roles(UserRole.GERENTE)
   create(@Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.customFields.create(body, req.user as AuthUser);
+  }
+
+  // Precisa vir ANTES de @Patch(':id') — o Nest casa as rotas na ordem de
+  // declaração, e 'reorder' seria capturado como um :id.
+  @Post('reorder')
+  @Roles(UserRole.GERENTE)
+  reorder(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.customFields.reorder(body, req.user as AuthUser);
   }
 
   @Patch(':id')
@@ -32,5 +47,29 @@ export class CustomFieldsController {
   @Roles(UserRole.GERENTE)
   remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.customFields.deactivate(id, req.user as AuthUser);
+  }
+}
+
+@Controller('custom-field-groups')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class CustomFieldGroupsController {
+  constructor(private customFields: CustomFieldsService) {}
+
+  @Post()
+  @Roles(UserRole.GERENTE)
+  create(@Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.customFields.createGroup(body, req.user as AuthUser);
+  }
+
+  @Patch(':id')
+  @Roles(UserRole.GERENTE)
+  update(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    return this.customFields.updateGroup(id, body, req.user as AuthUser);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.GERENTE)
+  remove(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.customFields.deleteGroup(id, req.user as AuthUser);
   }
 }

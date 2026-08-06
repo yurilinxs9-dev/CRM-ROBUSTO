@@ -3,7 +3,7 @@ import { BullModule, InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
-import { CustomFieldsController } from './custom-fields.controller';
+import { CustomFieldsController, CustomFieldGroupsController } from './custom-fields.controller';
 import { CustomFieldsService } from './custom-fields.service';
 import { LeadsSyncProcessor } from './leads-sync.processor';
 import { UnreadSweepService } from './unread-sweep.service';
@@ -47,7 +47,7 @@ class LeadsSyncScheduler implements OnModuleInit {
     BullModule.registerQueue({ name: LEADS_SYNC_QUEUE }),
     BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }),
   ],
-  controllers: [LeadsController, CustomFieldsController],
+  controllers: [LeadsController, CustomFieldsController, CustomFieldGroupsController],
   providers: [LeadsService, CustomFieldsService, LeadsSyncProcessor, LeadsSyncScheduler, UnreadSweepService],
   exports: [LeadsService, CustomFieldsService],
 })

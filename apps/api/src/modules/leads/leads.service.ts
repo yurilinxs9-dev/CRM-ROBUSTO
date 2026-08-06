@@ -505,6 +505,12 @@ export class LeadsService {
           take: 20,
           include: { user: { select: { id: true, nome: true } } },
         },
+        // Contatos vinculados (bloco "Contato"/"Empresa" da ficha). Lead antigo
+        // vem com lista vazia — nenhum backfill foi feito, por desenho.
+        lead_contacts: {
+          include: { contact: { include: { company: true } } },
+          orderBy: [{ is_principal: 'desc' }, { created_at: 'asc' }],
+        },
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
