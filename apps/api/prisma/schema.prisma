@@ -137,7 +137,10 @@ model User {
   titulo          String?
   is_platform_admin Boolean          @default(false)
   /// O que o platform admin pode dentro do painel. ["*"] = master (tudo).
-  /// Valores possíveis: "*", "health", "announcements", "ai".
+  /// Valores possíveis: "*", "overview", "tenants", "tenant_actions", "health",
+  /// "logs", "announcements", "ai". Só o master tem "*": é o "*" que dispensa a
+  /// proteção do tenant do master, então o admin restrito recebe a lista
+  /// nomeada inteira em vez do coringa.
   platform_scopes   String[]         @default([])
   tenant_id       String
   tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])

@@ -34,6 +34,62 @@ export class PlatformAdminService {
     return rows[0]?.estimate ?? 0;
   }
 
+  // ---- Proteção do tenant do admin master -----------------------------------
+  /**
+   * Tenant "protegido" é o de qualquer admin de plataforma ativo com escopo
+   * total. Derivar do dado (em vez de fixar um UUID) mantém a proteção válida
+   * se o admin master mudar de tenant.
+   */
+  private async isProtectedTenant(tenantId: string): Promise<boolean> {
+    const masters = await this.prisma.user.count({
+      where: {
+        tenant_id: tenantId,
+        ativo: true,
+        is_platform_admin: true,
+        platform_scopes: { has: '*' },
+      },
+    });
+    return masters > 0;
+  }
+
+  /**
+   * Todos os tenants protegidos de uma vez — para filtrar a listagem sem ir ao
+   * banco uma vez por tenant.
+   */
+  private async protectedTenantIds(): Promise<string[]> {
+    const masters = await this.prisma.user.findMany({
+      where: { ativo: true, is_platform_admin: true, platform_scopes: { has: '*' } },
+      select: { tenant_id: true },
+      distinct: ['tenant_id'],
+    });
+    return masters.map((m) => m.tenant_id);
+  }
+
+  /**
+   * Escopo total ('*') lido do banco, não do JWT — revogar tem efeito imediato,
+   * igual ao PlatformAdminGuard.
+   */
+  private async hasFullScope(admin: AuthUser): Promise<boolean> {
+    const caller = await this.prisma.user.findUnique({
+      where: { id: admin.id },
+      select: { platform_scopes: true },
+    });
+    return !!caller?.platform_scopes?.includes('*');
+  }
+
+  /**
+   * Barra admin sem escopo total de agir sobre o tenant do admin master — nem
+   * sobre o tenant em si, nem sobre os usuários dele. É o que impede o restrito
+   * de banir, excluir ou impersonar o próprio master.
+   */
+  async assertTenantAllowed(admin: AuthUser, tenantId: string | null | undefined): Promise<void> {
+    if (!tenantId) return;
+    if (await this.hasFullScope(admin)) return;
+    if (await this.isProtectedTenant(tenantId)) {
+      throw new ForbiddenException('Tenant protegido');
+    }
+  }
+
   // ---- Visão geral ----------------------------------------------------------
   async stats() {
     const [tenants, users, leads, messages, instances, activeInstances] = await Promise.all([
@@ -48,8 +104,14 @@ export class PlatformAdminService {
   }
 
   // ---- Tenants --------------------------------------------------------------
-  async listTenants() {
-    const [tenants, activeByTenant] = await Promise.all([
+  /**
+   * O admin restrito não deve nem saber que o tenant do master existe: em vez
+   * de 403 na abertura, ele some da listagem. Os ids protegidos saem numa
+   * consulta só (nada de checar tenant a tenant — seria N+1).
+   */
+  async listTenants(admin: AuthUser) {
+    const full = await this.hasFullScope(admin);
+    const [tenants, activeByTenant, protectedIds] = await Promise.all([
       this.prisma.tenant.findMany({
         orderBy: { created_at: 'desc' },
         select: {
@@ -66,9 +128,11 @@ export class PlatformAdminService {
         where: { status: { in: ['open', 'connected', 'connecting'] } },
         _count: { id: true },
       }),
+      full ? Promise.resolve<string[]>([]) : this.protectedTenantIds(),
     ]);
     const activeMap = new Map(activeByTenant.map((a) => [a.tenant_id, a._count.id]));
-    return tenants.map((t) => ({
+    const hidden = new Set(protectedIds);
+    return tenants.filter((t) => !hidden.has(t.id)).map((t) => ({
       id: t.id,
       nome: t.nome,
       pool_enabled: t.pool_enabled,
@@ -81,7 +145,8 @@ export class PlatformAdminService {
     }));
   }
 
-  async getTenant(id: string) {
+  async getTenant(admin: AuthUser, id: string) {
+    await this.assertTenantAllowed(admin, id);
     const tenant = await this.prisma.tenant.findUnique({
       where: { id },
       select: {
@@ -186,6 +251,7 @@ export class PlatformAdminService {
   async setUserBanned(admin: AuthUser, userId: string, banned: boolean) {
     const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true, tenant_id: true, email: true } });
     if (!u) throw new NotFoundException('Usuário não encontrado');
+    await this.assertTenantAllowed(admin, u.tenant_id);
     await this.prisma.user.update({ where: { id: userId }, data: { ativo: !banned } });
     await this.prisma.adminAuditLog.create({
       data: { admin_user_id: admin.id, action: banned ? 'user_ban' : 'user_unban', target_tenant_id: u.tenant_id, target_user_id: userId, detail: { email: u.email } },
@@ -199,6 +265,7 @@ export class PlatformAdminService {
       select: { id: true, tenant_id: true, email: true, owned_tenants: { select: { id: true } } },
     });
     if (!u) throw new NotFoundException('Usuário não encontrado');
+    await this.assertTenantAllowed(admin, u.tenant_id);
     if (u.owned_tenants.length > 0) {
       throw new ConflictException('Usuário é owner de um workspace — não pode ser excluído. Bana em vez disso.');
     }
@@ -226,6 +293,7 @@ export class PlatformAdminService {
    * podem ser removidos. Tudo numa transação para ser atômico.
    */
   async deleteTenant(admin: AuthUser, tenantId: string) {
+    await this.assertTenantAllowed(admin, tenantId);
     const t = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       select: {
@@ -287,6 +355,7 @@ export class PlatformAdminService {
   }
 
   async setTenantSuspended(admin: AuthUser, tenantId: string, suspended: boolean) {
+    await this.assertTenantAllowed(admin, tenantId);
     const t = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, nome: true } });
     if (!t) throw new NotFoundException('Tenant não encontrado');
     const res = await this.prisma.user.updateMany({ where: { tenant_id: tenantId }, data: { ativo: !suspended } });
@@ -303,6 +372,7 @@ export class PlatformAdminService {
       select: { id: true, nome: true, email: true, role: true, tenant_id: true, ativo: true },
     });
     if (!target) throw new NotFoundException('Usuário alvo não encontrado');
+    await this.assertTenantAllowed(admin, target.tenant_id);
 
     const payload = {
       sub: target.id,
@@ -341,36 +411,6 @@ export class PlatformAdminService {
   }
 
   // ---- Anúncios -------------------------------------------------------------
-  /**
-   * Tenant "protegido" é o de qualquer admin de plataforma ativo com escopo
-   * total. Derivar do dado (em vez de fixar um UUID) mantém a proteção válida
-   * se o admin master mudar de tenant.
-   */
-  private async isProtectedTenant(tenantId: string): Promise<boolean> {
-    const masters = await this.prisma.user.count({
-      where: {
-        tenant_id: tenantId,
-        ativo: true,
-        is_platform_admin: true,
-        platform_scopes: { has: '*' },
-      },
-    });
-    return masters > 0;
-  }
-
-  /** Barra admin sem escopo total de agir sobre o tenant do admin master. */
-  async assertTenantAllowed(admin: AuthUser, tenantId: string | null | undefined): Promise<void> {
-    if (!tenantId) return;
-    const caller = await this.prisma.user.findUnique({
-      where: { id: admin.id },
-      select: { platform_scopes: true },
-    });
-    if (caller?.platform_scopes?.includes('*')) return;
-    if (await this.isProtectedTenant(tenantId)) {
-      throw new ForbiddenException('Tenant protegido');
-    }
-  }
-
   async createAnnouncement(admin: AuthUser, body: unknown) {
     const d = announcementSchema.parse(body);
     await this.assertTenantAllowed(admin, d.target_tenant_id);
@@ -390,8 +430,24 @@ export class PlatformAdminService {
     return created;
   }
 
-  listAnnouncements() {
-    return this.prisma.announcement.findMany({ orderBy: { created_at: 'desc' }, take: 100 });
+  /**
+   * O admin restrito não pode nem SABER que o tenant do master existe, e um
+   * aviso direcionado carrega o uuid dele em `target_tenant_id`. Filtramos no
+   * banco, não em memória, para o `take: 100` não encolher.
+   *
+   * `notIn` sozinho descartaria os avisos globais: em SQL, `col NOT IN (...)` é
+   * NULL quando a coluna é NULL, e NULL não passa no WHERE. Daí o OR explícito.
+   */
+  async listAnnouncements(admin: AuthUser) {
+    const full = await this.hasFullScope(admin);
+    const hidden = full ? [] : await this.protectedTenantIds();
+    return this.prisma.announcement.findMany({
+      where: hidden.length
+        ? { OR: [{ target_tenant_id: null }, { target_tenant_id: { notIn: hidden } }] }
+        : {},
+      orderBy: { created_at: 'desc' },
+      take: 100,
+    });
   }
 
   async setAnnouncementActive(admin: AuthUser, id: string, active: boolean) {

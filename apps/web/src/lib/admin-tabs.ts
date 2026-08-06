@@ -3,7 +3,15 @@
  * Lógica pura, fora do componente, porque o runner de teste do web só cobre
  * `src/lib` — e é aqui que mora a decisão de quem vê o quê.
  */
-export type PlatformScope = 'health' | 'announcements' | 'ai' | '*';
+export type PlatformScope =
+  | 'overview'
+  | 'tenants'
+  | 'tenant_actions'
+  | 'health'
+  | 'logs'
+  | 'announcements'
+  | 'ai'
+  | '*';
 
 export interface AdminTab {
   href: string;
@@ -11,11 +19,15 @@ export interface AdminTab {
   scope: PlatformScope;
 }
 
+/**
+ * Nenhuma aba usa `tenant_actions`: esse escopo cobre só as AÇÕES dentro da
+ * tela de Clientes (banir, excluir, suspender, impersonar), não uma aba.
+ */
 export const ADMIN_TABS: AdminTab[] = [
-  { href: '/admin', label: 'Visão geral', scope: '*' },
-  { href: '/admin/tenants', label: 'Clientes', scope: '*' },
+  { href: '/admin', label: 'Visão geral', scope: 'overview' },
+  { href: '/admin/tenants', label: 'Clientes', scope: 'tenants' },
   { href: '/admin/health', label: 'Saúde', scope: 'health' },
-  { href: '/admin/logs', label: 'Logs', scope: '*' },
+  { href: '/admin/logs', label: 'Logs', scope: 'logs' },
   { href: '/admin/announcements', label: 'Avisos', scope: 'announcements' },
   { href: '/admin/ai', label: 'IA', scope: 'ai' },
 ];

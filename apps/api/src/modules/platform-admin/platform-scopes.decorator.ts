@@ -1,7 +1,21 @@
 import { SetMetadata } from '@nestjs/common';
 
-/** Áreas do painel de plataforma que podem ser concedidas separadamente. */
-export type PlatformScope = 'health' | 'announcements' | 'ai';
+/**
+ * Áreas do painel de plataforma que podem ser concedidas separadamente.
+ *
+ * O coringa '*' (admin master) fica DE FORA do type de propósito: ele é um
+ * valor possível em `User.platform_scopes`, nunca um argumento válido de
+ * `@PlatformScopes(...)`. Assim ninguém decora uma rota com '*' por engano —
+ * a rota do master é a rota SEM decorator (fail-closed).
+ */
+export type PlatformScope =
+  | 'overview'
+  | 'tenants'
+  | 'tenant_actions'
+  | 'health'
+  | 'logs'
+  | 'announcements'
+  | 'ai';
 
 export const PLATFORM_SCOPE_KEY = 'platform_scope';
 
