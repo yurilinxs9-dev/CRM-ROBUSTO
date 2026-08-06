@@ -489,13 +489,10 @@ export default function KanbanPage() {
 
   const createLeadMutation = useMutation({
     mutationFn: async (data: NewLeadFormData) => {
-      const body: Record<string, string> = {
-        nome: data.nome,
-        telefone: data.telefone,
-        temperatura: data.temperatura,
-        estagio_id: data.estagio_id,
-      };
-      if (data.email) body.email = data.email;
+      // Repassa o que o diálogo montou. Ele é guiado pelo schema do tenant, e
+      // uma lista fixa aqui descartaria em silêncio todo campo personalizado —
+      // que é exatamente o que fazia antes.
+      const body: Record<string, unknown> = { ...data };
       // Kanban sabe qual pipeline esta na tela — manda explicito. Backend
       // tambem deriva pipeline_id a partir do estagio quando ausente, mas
       // isso e cinto-e-suspensorio, nao substitui mandar o que ja se sabe.

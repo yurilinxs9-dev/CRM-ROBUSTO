@@ -205,11 +205,12 @@ export function LeadDetailDrawer({
 
   // Estrutura de campos do tenant: grupos + definições dos três escopos. É ela
   // que decide o que a ficha desenha — nada de campo hardcoded.
-  const { data: schema } = useQuery<FieldSchema>({
+  const { data: schema, isError: schemaError } = useQuery<FieldSchema>({
     queryKey: ['custom-fields-schema'],
     queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
     enabled: open,
     staleTime: 5 * 60 * 1000,
+    retry: false,
   });
 
   // ---- Form state ----
@@ -380,7 +381,16 @@ export function LeadDetailDrawer({
           )}
         </SheetHeader>
 
-        {leadLoading || !schema ? (
+        {schemaError ? (
+          // Sem isto a ficha ficaria em skeleton para sempre quando o backend
+          // está numa versão anterior à do site (rota /schema ainda não existe).
+          <div className="flex-1 px-5 py-6">
+            <p className="rounded-md border border-destructive/40 px-3 py-4 text-sm text-destructive">
+              Não foi possível carregar os campos deste workspace. O servidor da API parece estar
+              numa versão anterior à do site — atualize o backend e recarregue a página.
+            </p>
+          </div>
+        ) : leadLoading || !schema ? (
           <div className="flex-1 space-y-3 px-5 py-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-8 w-full" />

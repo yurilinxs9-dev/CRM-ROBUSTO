@@ -85,6 +85,14 @@ const createLeadSchema = z.object({
   telefone: z.string().min(10),
   email: z.string().email().optional(),
   empresa: z.string().optional(),
+  // `temperatura` faltava aqui e o Kanban sempre mandou (new-lead-dialog.tsx):
+  // o Zod descartava a chave em silêncio e o lead nascia FRIO por default do
+  // banco, qualquer que fosse a escolha do usuário.
+  temperatura: z.enum(['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']).optional(),
+  cargo: z.string().max(80).optional(),
+  valor_estimado: z.string().optional(),
+  // Campos personalizados do tenant, preenchidos já na criação.
+  dados_custom: z.record(z.unknown()).optional(),
   // Opcionais: quando ausentes, LeadsService.create() deriva pipeline_id,
   // estagio_id e instancia_whatsapp — ver resolvePipelineAndStage (Stage e a
   // fonte de verdade do proprio pipeline_id quando pipeline_id nao vem
@@ -711,6 +719,13 @@ export class LeadsService {
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
 
+    // Sai do objeto antes do `...parsed` mais abaixo: o Json precisa passar
+    // pela validação contra as definições do tenant, não ir cru pro banco.
+    const { dados_custom: dadosCustomBrutos, ...camposLead } = parsed;
+    const dadosCustom = dadosCustomBrutos
+      ? await this.customFields.validateValues(dadosCustomBrutos, user.tenantId, 'LEAD')
+      : undefined;
+
     const tenant = await this.prisma.tenant.findFirst({
       where: { id: user.tenantId },
       select: { pool_enabled: true },
@@ -755,7 +770,8 @@ export class LeadsService {
       [lead] = await this.prisma.$transaction([
         this.prisma.lead.create({
           data: {
-            ...parsed,
+            ...camposLead,
+            ...(dadosCustom ? { dados_custom: dadosCustom as Prisma.InputJsonObject } : {}),
             pipeline_id: pipelineId,
             estagio_id: stageId,
             instancia_whatsapp: instanciaWhatsapp,
