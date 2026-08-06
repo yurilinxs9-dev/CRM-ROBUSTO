@@ -21,7 +21,13 @@ import {
 } from '@/components/ui/select';
 import { FieldGroupList } from '@/components/fields/field-group-list';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
-import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
+import {
+  groupFields,
+  flattenFields,
+  initialValues,
+  buildPayload,
+  semNulos,
+} from '@/lib/field-render';
 import type { Stage } from './stage-column';
 
 export interface NewLeadFormData {
@@ -81,7 +87,9 @@ export function NewLeadDialog({
     // essa ausência que este guard detecta.
     if (!native.nome || !native.telefone) return;
     const body: NewLeadFormData = {
-      ...native,
+      // `semNulos` é obrigatório aqui: em criação, campo vazio significa "não
+      // informado", e createLeadSchema recusa null nos opcionais.
+      ...semNulos(native),
       nome: String(native.nome),
       telefone: String(native.telefone),
       estagio_id: stageId,

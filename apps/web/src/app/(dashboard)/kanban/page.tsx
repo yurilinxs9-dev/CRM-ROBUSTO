@@ -505,7 +505,12 @@ export default function KanbanPage() {
       setDialogOpen(false);
       toast.success('Lead criado com sucesso!');
     },
-    onError: () => toast.error('Erro ao criar lead.'),
+    // Mostra a mensagem do backend em vez de "Erro ao criar lead." genérico:
+    // era esse texto que escondia qual campo o Zod tinha rejeitado.
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg ?? 'Erro ao criar lead.');
+    },
   });
 
   const archiveLeadMutation = useMutation({

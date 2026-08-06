@@ -7,6 +7,7 @@ import {
   flattenFields,
   schemaFromLegacy,
   isSynthetic,
+  semNulos,
   type FieldDef,
   type FieldSchema,
 } from './field-render';
@@ -264,5 +265,30 @@ describe('schemaFromLegacy (backend antigo)', () => {
     const out = buildPayload(defs, { nome: 'Adman', plano: 'Ouro', valor_estimado: '1.234,56' });
     expect(out.native).toMatchObject({ nome: 'Adman', valor_estimado: '1234.56' });
     expect(out.custom).toEqual({ plano: 'Ouro' });
+  });
+});
+
+describe('semNulos (criação)', () => {
+  it('DISCRIMINANTE: tira os nulos que o createLeadSchema recusa', () => {
+    // Era este null que derrubava a criação inteira quando "Valor estimado"
+    // ficava em branco: o campo é .optional() sem .nullable() no backend.
+    expect(semNulos({ nome: 'Adman', valor_estimado: null, empresa: null })).toEqual({
+      nome: 'Adman',
+    });
+  });
+
+  it('preserva string vazia, zero e false — não são "ausente"', () => {
+    expect(semNulos({ a: '', b: 0, c: false })).toEqual({ a: '', b: 0, c: false });
+  });
+
+  it('na criação, nenhum nativo opcional em branco vai no payload', () => {
+    const defs = [
+      def({ key: 'nome', native_key: 'nome' }),
+      def({ key: 'email', native_key: 'email' }),
+      def({ key: 'valor', native_key: 'valor_estimado', tipo: 'currency' }),
+      def({ key: 'empresa', native_key: 'empresa' }),
+    ];
+    const { native } = buildPayload(defs, { nome: 'Adman', email: '', valor: '', empresa: '' });
+    expect(semNulos(native)).toEqual({ nome: 'Adman' });
   });
 });

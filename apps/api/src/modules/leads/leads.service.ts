@@ -83,14 +83,17 @@ function vazioComoAusente<T extends z.ZodTypeAny>(schema: T) {
 const createLeadSchema = z.object({
   nome: z.string().min(1),
   telefone: z.string().min(10),
-  email: z.string().email().optional(),
-  empresa: z.string().optional(),
+  // `.nullable()` além de `.optional()`: a ficha manda `null` para campo
+  // opcional em branco, e sem isto o Zod devolvia 400 — o lead inteiro falhava
+  // porque o usuário não preencheu "Valor estimado".
+  email: z.string().email().optional().nullable(),
+  empresa: z.string().optional().nullable(),
   // `temperatura` faltava aqui e o Kanban sempre mandou (new-lead-dialog.tsx):
   // o Zod descartava a chave em silêncio e o lead nascia FRIO por default do
   // banco, qualquer que fosse a escolha do usuário.
   temperatura: z.enum(['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']).optional(),
-  cargo: z.string().max(80).optional(),
-  valor_estimado: z.string().optional(),
+  cargo: z.string().max(80).optional().nullable(),
+  valor_estimado: z.string().optional().nullable(),
   // Campos personalizados do tenant, preenchidos já na criação.
   dados_custom: z.record(z.unknown()).optional(),
   // Opcionais: quando ausentes, LeadsService.create() deriva pipeline_id,

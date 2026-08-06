@@ -195,6 +195,23 @@ export function flattenFields(grupos: GroupWithFields[]): FieldDef[] {
   return grupos.flatMap((g) => g.fields);
 }
 
+/**
+ * Remove as chaves nulas de um payload.
+ *
+ * Em EDIÇÃO, `null` é intencional: significa "apague este valor". Em CRIAÇÃO
+ * não existe valor anterior para apagar, então `null` só quer dizer "não
+ * informado" — e mandá-lo quebra, porque `createLeadSchema` declara os campos
+ * como `.optional()` sem `.nullable()`. Era o 400 por trás de "Erro ao criar
+ * lead" quando qualquer campo opcional ficava em branco.
+ */
+export function semNulos(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Modo de compatibilidade com o backend antigo
 // ---------------------------------------------------------------------------
