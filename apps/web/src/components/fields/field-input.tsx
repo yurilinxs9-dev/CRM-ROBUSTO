@@ -203,6 +203,11 @@ export function FieldRow({ def, value, onChange, disabled }: FieldInputProps) {
       <div className="flex items-center justify-between gap-2">
         <Label htmlFor={`campo-${def.escopo}-${def.key}`} className="truncate">
           {def.nome}
+          {def.obrigatorio && (
+            <span className="ml-0.5 text-destructive" aria-label="obrigatório">
+              *
+            </span>
+          )}
         </Label>
         {def.api_only && (
           <Badge variant="outline" className="shrink-0 text-[10px] font-normal">

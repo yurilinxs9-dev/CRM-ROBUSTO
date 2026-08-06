@@ -48,8 +48,12 @@ export class AllExceptionFilter implements ExceptionFilter {
       status = HttpStatus.BAD_REQUEST;
       errorLabel = 'Bad Request';
       code = 'VALIDATION_ERROR';
-      message = 'Validation failed';
+      // "Validation failed" sozinho não dizia QUAL campo falhou — o cliente
+      // mostrava um erro genérico e não havia como o usuário saber o que
+      // corrigir. Os detalhes já existiam; agora o campo entra na mensagem.
       details = exception.issues.map((i) => ({ path: i.path, message: i.message, code: i.code }));
+      const campos = [...new Set(exception.issues.map((i) => i.path.join('.')).filter(Boolean))];
+      message = campos.length > 0 ? `Campos inválidos: ${campos.join(', ')}` : 'Validation failed';
     } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       const mapped = this.mapPrisma(exception);
       status = mapped.status;

@@ -198,7 +198,16 @@ export class CustomFieldsService {
         orderBy: [{ escopo: 'asc' }, { ordem: 'asc' }, { created_at: 'asc' }],
       }),
     ]);
-    return { groups, fields };
+    // `obrigatorio` é propriedade do CÓDIGO, não configuração do tenant — vem
+    // de NATIVE_FIELDS e é derivado na leitura, sem coluna no banco. Assim a
+    // regra vive num lugar só e não pode divergir por tenant.
+    const comObrigatorio = fields.map((f) => ({
+      ...f,
+      obrigatorio: f.native_key
+        ? (findNative(f.escopo as FieldScope, f.native_key)?.obrigatorio ?? false)
+        : false,
+    }));
+    return { groups, fields: comObrigatorio };
   }
 
   // -------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   schemaFromLegacy,
   isSynthetic,
   semNulos,
+  faltandoObrigatorios,
   type FieldDef,
   type FieldSchema,
 } from './field-render';
@@ -290,5 +291,50 @@ describe('semNulos (criação)', () => {
     ];
     const { native } = buildPayload(defs, { nome: 'Adman', email: '', valor: '', empresa: '' });
     expect(semNulos(native)).toEqual({ nome: 'Adman' });
+  });
+});
+
+describe('faltandoObrigatorios', () => {
+  const defs = [
+    def({ key: 'nome', native_key: 'nome', nome: 'Nome', obrigatorio: true }),
+    def({ key: 'telefone', native_key: 'telefone', nome: 'Telefone/WhatsApp', obrigatorio: true }),
+    def({ key: 'email', native_key: 'email', nome: 'E-mail' }),
+    def({ key: 'plano', nome: 'Plano' }),
+  ];
+
+  it('DISCRIMINANTE: só Nome e Telefone bloqueiam; o resto vazio pode passar', () => {
+    expect(faltandoObrigatorios(defs, { nome: 'Adman', telefone: '5583999', email: '', plano: '' }))
+      .toEqual([]);
+  });
+
+  it('devolve o rótulo da tela, não a chave do banco', () => {
+    // A mensagem precisa dizer "Telefone/WhatsApp", que é o que o usuário vê.
+    expect(faltandoObrigatorios(defs, { nome: '', telefone: '' })).toEqual([
+      'Nome',
+      'Telefone/WhatsApp',
+    ]);
+  });
+
+  it('usa o rótulo renomeado pela empresa', () => {
+    const renomeado = [def({ key: 'nome', native_key: 'nome', nome: 'Cliente', obrigatorio: true })];
+    expect(faltandoObrigatorios(renomeado, { nome: '' })).toEqual(['Cliente']);
+  });
+
+  it('só espaço em branco conta como vazio', () => {
+    expect(faltandoObrigatorios(defs, { nome: '   ', telefone: '5583999' })).toEqual(['Nome']);
+  });
+
+  it('ignora campo oculto ou api_only mesmo se marcado obrigatório', () => {
+    const esquisitos = [
+      def({ key: 'a', nome: 'Oculto', obrigatorio: true, visible: false }),
+      def({ key: 'b', nome: 'SoAPI', obrigatorio: true, api_only: true }),
+    ];
+    expect(faltandoObrigatorios(esquisitos, {})).toEqual([]);
+  });
+
+  it('o schema legado também marca Nome e Telefone como obrigatórios', () => {
+    const s = schemaFromLegacy([]);
+    const obrig = s.fields.filter((f) => f.obrigatorio).map((f) => f.key);
+    expect(obrig).toEqual(['nome', 'telefone']);
   });
 });

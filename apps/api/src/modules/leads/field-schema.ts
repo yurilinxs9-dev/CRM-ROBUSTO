@@ -50,6 +50,12 @@ export interface NativeFieldSpec {
    * de WhatsApp e a dedupe por telefone.
    */
   removable: boolean;
+  /**
+   * Sem este campo a criação do lead não passa. Hoje só `nome` e `telefone`:
+   * são a identidade do lead no WhatsApp e o que a dedupe usa. Todo o resto
+   * pode ficar em branco — o lead é criado do mesmo jeito, no funil escolhido.
+   */
+  obrigatorio: boolean;
   options?: string[];
 }
 
@@ -58,10 +64,10 @@ const TEMPERATURA_OPTIONS = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
 
 export const NATIVE_FIELDS: Record<FieldScope, readonly NativeFieldSpec[]> = {
   LEAD: [
-    { native_key: 'nome', nome: 'Nome', tipo: 'text', ordem: 0, api_only: false, removable: false },
-    { native_key: 'telefone', nome: 'Telefone/WhatsApp', tipo: 'phone', ordem: 1, api_only: false, removable: false },
-    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true },
-    { native_key: 'valor_estimado', nome: 'Valor estimado', tipo: 'currency', ordem: 3, api_only: false, removable: true },
+    { native_key: 'nome', nome: 'Nome', tipo: 'text', ordem: 0, api_only: false, removable: false, obrigatorio: true },
+    { native_key: 'telefone', nome: 'Telefone/WhatsApp', tipo: 'phone', ordem: 1, api_only: false, removable: false, obrigatorio: true },
+    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'valor_estimado', nome: 'Valor estimado', tipo: 'currency', ordem: 3, api_only: false, removable: true, obrigatorio: false },
     {
       native_key: 'temperatura',
       nome: 'Temperatura',
@@ -69,25 +75,26 @@ export const NATIVE_FIELDS: Record<FieldScope, readonly NativeFieldSpec[]> = {
       ordem: 4,
       api_only: false,
       removable: false,
+      obrigatorio: false,
       options: TEMPERATURA_OPTIONS,
     },
-    { native_key: 'empresa', nome: 'Empresa', tipo: 'text', ordem: 5, api_only: false, removable: true },
-    { native_key: 'cargo', nome: 'Cargo', tipo: 'text', ordem: 6, api_only: false, removable: true },
+    { native_key: 'empresa', nome: 'Empresa', tipo: 'text', ordem: 5, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'cargo', nome: 'Cargo', tipo: 'text', ordem: 6, api_only: false, removable: true, obrigatorio: false },
     // Escrito pelo BroadcastDispatcher; editar à mão bagunçaria a cadência.
-    { native_key: 'proximo_followup', nome: 'Próximo follow-up', tipo: 'date', ordem: 7, api_only: true, removable: true },
+    { native_key: 'proximo_followup', nome: 'Próximo follow-up', tipo: 'date', ordem: 7, api_only: true, removable: true, obrigatorio: false },
   ],
   CONTATO: [
-    { native_key: 'nome', nome: 'Nome de contato', tipo: 'text', ordem: 0, api_only: false, removable: false },
-    { native_key: 'telefone', nome: 'Telefone', tipo: 'phone', ordem: 1, api_only: false, removable: true },
-    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true },
-    { native_key: 'cargo', nome: 'Cargo', tipo: 'text', ordem: 3, api_only: false, removable: true },
+    { native_key: 'nome', nome: 'Nome de contato', tipo: 'text', ordem: 0, api_only: false, removable: false, obrigatorio: true },
+    { native_key: 'telefone', nome: 'Telefone', tipo: 'phone', ordem: 1, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'cargo', nome: 'Cargo', tipo: 'text', ordem: 3, api_only: false, removable: true, obrigatorio: false },
   ],
   EMPRESA: [
-    { native_key: 'nome', nome: 'Nome da empresa', tipo: 'text', ordem: 0, api_only: false, removable: false },
-    { native_key: 'telefone', nome: 'Telefone', tipo: 'phone', ordem: 1, api_only: false, removable: true },
-    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true },
-    { native_key: 'site', nome: 'Site', tipo: 'url', ordem: 3, api_only: false, removable: true },
-    { native_key: 'endereco', nome: 'Endereço', tipo: 'textarea', ordem: 4, api_only: false, removable: true },
+    { native_key: 'nome', nome: 'Nome da empresa', tipo: 'text', ordem: 0, api_only: false, removable: false, obrigatorio: true },
+    { native_key: 'telefone', nome: 'Telefone', tipo: 'phone', ordem: 1, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'email', nome: 'E-mail', tipo: 'email', ordem: 2, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'site', nome: 'Site', tipo: 'url', ordem: 3, api_only: false, removable: true, obrigatorio: false },
+    { native_key: 'endereco', nome: 'Endereço', tipo: 'textarea', ordem: 4, api_only: false, removable: true, obrigatorio: false },
   ],
 };
 

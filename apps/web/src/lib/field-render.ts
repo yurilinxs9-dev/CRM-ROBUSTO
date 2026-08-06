@@ -37,6 +37,12 @@ export interface FieldDef {
   native_key: string | null;
   api_only: boolean;
   visible: boolean;
+  /**
+   * Sem preencher, a criação não passa. Derivado no backend a partir de
+   * NATIVE_FIELDS — hoje só Nome e Telefone. Opcional no tipo porque o backend
+   * antigo não manda esta chave.
+   */
+  obrigatorio?: boolean;
 }
 
 export interface FieldGroup {
@@ -204,6 +210,27 @@ export function flattenFields(grupos: GroupWithFields[]): FieldDef[] {
  * como `.optional()` sem `.nullable()`. Era o 400 por trás de "Erro ao criar
  * lead" quando qualquer campo opcional ficava em branco.
  */
+/**
+ * Devolve os RÓTULOS dos campos obrigatórios que ficaram em branco.
+ *
+ * Usa `def.nome`, que é o rótulo que a empresa configurou — a mensagem de erro
+ * fala a língua da tela, não a do banco ("Telefone/WhatsApp", não "telefone").
+ */
+export function faltandoObrigatorios(
+  defs: FieldDef[],
+  values: Record<string, unknown>,
+): string[] {
+  const faltando: string[] = [];
+  for (const def of defs) {
+    if (!def.obrigatorio || !def.visible || !def.active || def.api_only) continue;
+    const v = values[def.key];
+    const vazio =
+      v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+    if (vazio) faltando.push(def.nome);
+  }
+  return faltando;
+}
+
 export function semNulos(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
@@ -245,12 +272,12 @@ const LEGACY_GROUP_ID = '__grupo_legado__';
  * propósito: aquele schema não os aceita e o Zod descartaria a chave em
  * silêncio, dando "salvo com sucesso" e perdendo o que o usuário digitou.
  */
-const LEGACY_NATIVOS: Array<[string, string, FieldType, string[] | null]> = [
-  ['nome', 'Nome', 'text', null],
-  ['telefone', 'Telefone/WhatsApp', 'phone', null],
-  ['email', 'E-mail', 'email', null],
-  ['valor_estimado', 'Valor estimado', 'currency', null],
-  ['temperatura', 'Temperatura', 'select', ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']],
+const LEGACY_NATIVOS: Array<[string, string, FieldType, string[] | null, boolean]> = [
+  ['nome', 'Nome', 'text', null, true],
+  ['telefone', 'Telefone/WhatsApp', 'phone', null, true],
+  ['email', 'E-mail', 'email', null, false],
+  ['valor_estimado', 'Valor estimado', 'currency', null, false],
+  ['temperatura', 'Temperatura', 'select', ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'], false],
 ];
 
 /**
@@ -262,20 +289,23 @@ const LEGACY_NATIVOS: Array<[string, string, FieldType, string[] | null]> = [
  * essas partes no modo legado em vez de oferecer botão que dá 404.
  */
 export function schemaFromLegacy(legacy: LegacyFieldDef[]): FieldSchema {
-  const nativos: FieldDef[] = LEGACY_NATIVOS.map(([nativeKey, nome, tipo, options], i) => ({
-    id: `${SYNTHETIC_PREFIX}${nativeKey}`,
-    nome,
-    key: nativeKey,
-    tipo,
-    options,
-    ordem: i,
-    active: true,
-    escopo: 'LEAD',
-    group_id: LEGACY_GROUP_ID,
-    native_key: nativeKey,
-    api_only: false,
-    visible: true,
-  }));
+  const nativos: FieldDef[] = LEGACY_NATIVOS.map(
+    ([nativeKey, nome, tipo, options, obrigatorio], i) => ({
+      id: `${SYNTHETIC_PREFIX}${nativeKey}`,
+      nome,
+      key: nativeKey,
+      tipo,
+      options,
+      ordem: i,
+      active: true,
+      escopo: 'LEAD' as const,
+      group_id: LEGACY_GROUP_ID,
+      native_key: nativeKey,
+      api_only: false,
+      visible: true,
+      obrigatorio,
+    }),
+  );
 
   const customizados: FieldDef[] = legacy
     .filter((f) => f.active)

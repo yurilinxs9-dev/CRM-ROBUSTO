@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -27,6 +28,7 @@ import {
   initialValues,
   buildPayload,
   semNulos,
+  faltandoObrigatorios,
 } from '@/lib/field-render';
 import type { Stage } from './stage-column';
 
@@ -81,11 +83,22 @@ export function NewLeadDialog({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!stageId) return;
+
+    // Validação ANTES de enviar, dizendo o que falta. Antes o botão ficava
+    // desabilitado quando algo estava em branco — o que escondia justamente o
+    // motivo, e o usuário não tinha como saber o que corrigir.
+    const faltando = faltandoObrigatorios(defs, values);
+    if (!stageId) faltando.push('Etapa');
+    if (faltando.length > 0) {
+      toast.error(
+        faltando.length === 1
+          ? `Preencha ${faltando[0]}`
+          : `Preencha: ${faltando.join(', ')}`,
+      );
+      return;
+    }
+
     const { native, custom } = buildPayload(defs, values);
-    // O backend exige os dois; buildPayload omite nativo obrigatório vazio, e é
-    // essa ausência que este guard detecta.
-    if (!native.nome || !native.telefone) return;
     const body: NewLeadFormData = {
       // `semNulos` é obrigatório aqui: em criação, campo vazio significa "não
       // informado", e createLeadSchema recusa null nos opcionais.
@@ -97,9 +110,6 @@ export function NewLeadDialog({
     if (Object.keys(custom).length > 0) body.dados_custom = custom;
     onSubmit(body);
   };
-
-  const { native: previa } = buildPayload(defs, values);
-  const podeEnviar = !!previa.nome && !!previa.telefone && !!stageId;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -130,7 +140,12 @@ export function NewLeadDialog({
             />
 
             <div className="space-y-1.5">
-              <Label>Estágio</Label>
+              <Label>
+                Etapa
+                <span className="ml-0.5 text-destructive" aria-label="obrigatório">
+                  *
+                </span>
+              </Label>
               <Select value={stageId} onValueChange={setStageId}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione" />
@@ -154,7 +169,7 @@ export function NewLeadDialog({
               >
                 Cancelar
               </Button>
-              <Button type="submit" disabled={isLoading || !podeEnviar}>
+              <Button type="submit" disabled={isLoading}>
                 {isLoading ? 'Criando...' : 'Criar Lead'}
               </Button>
             </DialogFooter>
