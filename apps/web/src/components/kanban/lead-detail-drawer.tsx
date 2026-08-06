@@ -2,7 +2,18 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, User, Tag, DollarSign, Thermometer, Phone, Mail, Save, Activity, Loader2, Undo2, Layers } from 'lucide-react';
+import {
+  X,
+  User,
+  Tag,
+  Save,
+  Activity,
+  Loader2,
+  Undo2,
+  Layers,
+  SlidersHorizontal,
+  ImageIcon,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
@@ -12,11 +23,12 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@/components/ui/sheet';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
   Select,
   SelectTrigger,
@@ -30,6 +42,16 @@ import { api } from '@/lib/api';
 import { useAuthStore, useIsPoolEnabled } from '@/stores/auth.store';
 import { TEMP_LABELS, formatPhone, type Temperatura } from './lead-card';
 import { ActivityTimeline } from './activity-timeline';
+import { FieldGroupList } from '@/components/fields/field-group-list';
+import { FieldEditor } from '@/components/fields/field-editor';
+import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
+import {
+  groupFields,
+  flattenFields,
+  initialValues,
+  buildPayload,
+  type FieldSchema,
+} from '@/lib/field-render';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,7 +76,21 @@ interface Sector {
   active: boolean;
 }
 
-interface LeadDetail {
+interface LeadContactLink {
+  contact_id: string;
+  is_principal: boolean;
+  contact: {
+    id: string;
+    nome: string;
+    company_id?: string | null;
+    company?: { id: string; nome: string } | null;
+  };
+}
+
+// `type` e não `interface`: só alias de objeto recebe index signature implícita,
+// e sem ela o TypeScript recusa passar o lead para readValue/initialValues, que
+// aceitam FieldRecord (Record<string, unknown>).
+type LeadDetail = {
   id: string;
   nome: string;
   telefone: string;
@@ -69,21 +105,12 @@ interface LeadDetail {
   pipeline_id: string;
   estagio_id: string;
   dados_custom?: Record<string, unknown> | null;
-}
-
-interface CustomFieldDef {
-  id: string;
-  nome: string;
-  key: string;
-  tipo: 'text' | 'number' | 'date' | 'select' | 'boolean';
-  options: string[] | null;
-}
+  lead_contacts?: LeadContactLink[];
+};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
 
 const TEMP_BADGE: Record<Temperatura, string> = {
   FRIO: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
@@ -99,6 +126,8 @@ const TEMP_DOT: Record<Temperatura, string> = {
   MUITO_QUENTE: '#ef4444',
 };
 
+const GESTORES = ['GERENTE', 'SUPER_ADMIN'];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -111,12 +140,6 @@ function getInitials(name: string): string {
     .map((w) => w[0])
     .join('')
     .toUpperCase();
-}
-
-function formatBRLDisplay(raw: string): string {
-  const n = parseFloat(raw.replace(',', '.'));
-  if (Number.isNaN(n)) return raw;
-  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +168,7 @@ export function LeadDetailDrawer({
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const isPoolEnabled = useIsPoolEnabled();
+  const podeConfigurar = !!currentUser?.role && GESTORES.includes(currentUser.role);
 
   // ---- Remote data ----
   const { data: lead, isLoading: leadLoading } = useQuery<LeadDetail>({
@@ -179,47 +203,43 @@ export function LeadDetailDrawer({
     enabled: open,
   });
 
-  // Definições de campos customizados do tenant (renderizadas na ficha).
-  const { data: customFieldDefs = [] } = useQuery<CustomFieldDef[]>({
-    queryKey: ['custom-fields'],
-    queryFn: async () => (await api.get('/api/custom-fields')).data,
+  // Estrutura de campos do tenant: grupos + definições dos três escopos. É ela
+  // que decide o que a ficha desenha — nada de campo hardcoded.
+  const { data: schema, isError: schemaError } = useQuery<FieldSchema>({
+    queryKey: ['custom-fields-schema'],
+    queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
     enabled: open,
     staleTime: 5 * 60 * 1000,
+    retry: false,
   });
 
   // ---- Form state ----
-  const [nome, setNome] = useState('');
-  const [telefone, setTelefone] = useState('');
-  const [email, setEmail] = useState('');
-  const [temperatura, setTemperatura] = useState<Temperatura>('FRIO');
-  const [valorRaw, setValorRaw] = useState('');
+  const [values, setValues] = useState<Record<string, unknown>>({});
   const [responsavelId, setResponsavelId] = useState('');
   const [tagsInput, setTagsInput] = useState('');
-  const [customValues, setCustomValues] = useState<Record<string, unknown>>({});
   const [dirty, setDirty] = useState(false);
 
-  // Populate form when lead loads
+  const leadDefs = schema ? flattenFields(groupFields(schema, 'LEAD')) : [];
+
+  // Popula o formulário quando lead e schema chegam.
   useEffect(() => {
-    if (!lead) return;
-    setNome(lead.nome);
-    setTelefone(lead.telefone);
-    setEmail(lead.email ?? '');
-    setTemperatura(lead.temperatura);
-    setValorRaw(lead.valor_estimado ? String(lead.valor_estimado) : '');
+    if (!lead || !schema) return;
+    setValues(initialValues(flattenFields(groupFields(schema, 'LEAD')), lead));
     setResponsavelId(lead.responsavel_id);
     const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
     setTagsInput(existingTags.join(', '));
-    setCustomValues(lead.dados_custom ?? {});
     setDirty(false);
-  }, [lead]);
+  }, [lead, schema]);
 
-  // Reset dirty state on close
   useEffect(() => {
     if (!open) setDirty(false);
   }, [open]);
 
-  // Mark dirty on any change
   const mark = () => setDirty(true);
+  const alterarCampo = (key: string, v: unknown) => {
+    setValues((p) => ({ ...p, [key]: v }));
+    mark();
+  };
 
   // ---- Pool mutations ----
   const claimMutation = useMutation({
@@ -282,31 +302,15 @@ export function LeadDetailDrawer({
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean);
+      // buildPayload separa o que vai pra coluna do que vai pro Json e resolve
+      // os formatos que o updateLeadSchema exige (ver field-render.spec.ts).
+      const { native, custom } = buildPayload(leadDefs, values);
       const body: Record<string, unknown> = {
-        nome,
-        telefone,
-        temperatura,
+        ...native,
         responsavel_id: responsavelId,
         tags,
       };
-      if (email.trim()) body.email = email.trim();
-      else body.email = null;
-      if (valorRaw.trim()) body.valor_estimado = valorRaw.replace(',', '.');
-      else body.valor_estimado = null;
-      if (customFieldDefs.length > 0) {
-        // Coage number (Input entrega string) e manda só chaves com definição ativa.
-        const dados: Record<string, unknown> = {};
-        for (const def of customFieldDefs) {
-          const raw = customValues[def.key];
-          if (raw === undefined) continue;
-          if (def.tipo === 'number' && typeof raw === 'string') {
-            dados[def.key] = raw.trim() === '' ? null : Number(raw.replace(',', '.'));
-          } else {
-            dados[def.key] = raw === '' ? null : raw;
-          }
-        }
-        if (Object.keys(dados).length > 0) body.dados_custom = dados;
-      }
+      if (Object.keys(custom).length > 0) body.dados_custom = custom;
       const res = await api.patch(`/api/leads/${leadId}`, body);
       return res.data;
     },
@@ -317,8 +321,9 @@ export function LeadDetailDrawer({
       setDirty(false);
       toast.success('Lead atualizado.');
     },
-    onError: () => {
-      toast.error('Erro ao atualizar lead.');
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(msg ?? 'Erro ao atualizar lead.');
     },
   });
 
@@ -359,9 +364,6 @@ export function LeadDetailDrawer({
           ) : (
             <div className="flex items-center gap-3">
               <Avatar className="h-10 w-10 shrink-0">
-                {lead.foto_url ? (
-                  <AvatarFallback className="text-sm font-semibold">{getInitials(lead.nome)}</AvatarFallback>
-                ) : null}
                 <AvatarFallback className="text-sm font-semibold">{getInitials(lead.nome)}</AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
@@ -379,178 +381,61 @@ export function LeadDetailDrawer({
           )}
         </SheetHeader>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-          {leadLoading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-8 w-full" />
-              ))}
-            </div>
-          ) : (
-            <>
-              {/* Informacoes de contato */}
-              <section className="space-y-3">
-                <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide flex items-center gap-1.5">
-                  <User className="h-3.5 w-3.5" />
-                  Contato
-                </p>
-                <div className="space-y-1.5">
-                  <Label htmlFor="drawer-nome">Nome</Label>
-                  <Input
-                    id="drawer-nome"
-                    value={nome}
-                    onChange={(e) => { setNome(e.target.value); mark(); }}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="drawer-telefone">
-                    <Phone className="inline h-3 w-3 mr-1" />
-                    Telefone
-                  </Label>
-                  <Input
-                    id="drawer-telefone"
-                    value={telefone}
-                    onChange={(e) => { setTelefone(e.target.value); mark(); }}
-                    placeholder="+55 31 99999-9999"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="drawer-email">
-                    <Mail className="inline h-3 w-3 mr-1" />
-                    Email
-                    <span className="text-muted-foreground ml-1">(opcional)</span>
-                  </Label>
-                  <Input
-                    id="drawer-email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => { setEmail(e.target.value); mark(); }}
-                    placeholder="email@exemplo.com"
-                  />
-                </div>
-              </section>
+        {schemaError ? (
+          // Sem isto a ficha ficaria em skeleton para sempre quando o backend
+          // está numa versão anterior à do site (rota /schema ainda não existe).
+          <div className="flex-1 px-5 py-6">
+            <p className="rounded-md border border-destructive/40 px-3 py-4 text-sm text-destructive">
+              Não foi possível carregar os campos deste workspace. O servidor da API parece estar
+              numa versão anterior à do site — atualize o backend e recarregue a página.
+            </p>
+          </div>
+        ) : leadLoading || !schema ? (
+          <div className="flex-1 space-y-3 px-5 py-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
+          </div>
+        ) : (
+          <Tabs defaultValue="principal" className="flex min-h-0 flex-1 flex-col">
+            <TabsList className="mx-5 mt-3 shrink-0 self-start">
+              <TabsTrigger value="principal" className="text-xs">Principal</TabsTrigger>
+              <TabsTrigger value="estatisticas" className="gap-1 text-xs">
+                <Activity className="h-3 w-3" /> Estatísticas
+              </TabsTrigger>
+              <TabsTrigger value="midia" className="gap-1 text-xs">
+                <ImageIcon className="h-3 w-3" /> Mídia
+              </TabsTrigger>
+              {podeConfigurar && (
+                <TabsTrigger value="config" className="gap-1 text-xs">
+                  <SlidersHorizontal className="h-3 w-3" /> Configurações
+                </TabsTrigger>
+              )}
+            </TabsList>
 
-              {/* Qualificacao */}
-              <section className="space-y-3">
-                <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide flex items-center gap-1.5">
-                  <Thermometer className="h-3.5 w-3.5" />
-                  Qualificacao
-                </p>
-                <div className="space-y-1.5">
-                  <Label>Temperatura</Label>
-                  <Select
-                    value={temperatura}
-                    onValueChange={(v) => { setTemperatura(v as Temperatura); mark(); }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue>
-                        <span className="flex items-center gap-2">
-                          <span
-                            className="inline-block h-2.5 w-2.5 rounded-full"
-                            style={{ backgroundColor: TEMP_DOT[temperatura] }}
-                          />
-                          {TEMP_LABELS[temperatura]}
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TEMP_OPTIONS.map((t) => (
-                        <SelectItem key={t} value={t}>
-                          <span className="flex items-center gap-2">
-                            <span
-                              className="inline-block h-2.5 w-2.5 rounded-full"
-                              style={{ backgroundColor: TEMP_DOT[t] }}
-                            />
-                            {TEMP_LABELS[t]}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="drawer-valor">
-                    <DollarSign className="inline h-3 w-3 mr-1" />
-                    Valor estimado (R$)
-                  </Label>
-                  <div className="relative">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
-                      R$
-                    </span>
-                    <Input
-                      id="drawer-valor"
-                      className="pl-8"
-                      value={valorRaw}
-                      onChange={(e) => {
-                        const v = e.target.value.replace(/[^0-9.,]/g, '');
-                        setValorRaw(v);
-                        mark();
-                      }}
-                      placeholder="0,00"
-                    />
-                  </div>
-                  {valorRaw && !Number.isNaN(parseFloat(valorRaw.replace(',', '.'))) && (
-                    <p className="text-xs text-muted-foreground">
-                      {formatBRLDisplay(valorRaw)}
-                    </p>
-                  )}
-                </div>
+            {/* ---------------- Principal ---------------- */}
+            <TabsContent
+              value="principal"
+              className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4"
+            >
+              <FieldGroupList
+                schema={schema}
+                escopo="LEAD"
+                values={values}
+                onChange={alterarCampo}
+              />
 
-                {customFieldDefs.map((def) => {
-                  const value = customValues[def.key];
-                  const setValue = (v: unknown) => {
-                    setCustomValues((prev) => ({ ...prev, [def.key]: v }));
-                    mark();
-                  };
-                  return (
-                    <div key={def.id} className="space-y-1.5">
-                      <Label htmlFor={`cf-${def.key}`}>{def.nome}</Label>
-                      {def.tipo === 'select' ? (
-                        <Select
-                          value={typeof value === 'string' ? value : ''}
-                          onValueChange={(v) => setValue(v)}
-                        >
-                          <SelectTrigger id={`cf-${def.key}`}>
-                            <SelectValue placeholder="Selecionar…" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {(def.options ?? []).map((opt) => (
-                              <SelectItem key={opt} value={opt}>
-                                {opt}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : def.tipo === 'boolean' ? (
-                        <Select
-                          value={value === true ? 'sim' : value === false ? 'nao' : ''}
-                          onValueChange={(v) => setValue(v === 'sim')}
-                        >
-                          <SelectTrigger id={`cf-${def.key}`}>
-                            <SelectValue placeholder="Selecionar…" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="sim">Sim</SelectItem>
-                            <SelectItem value="nao">Não</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <Input
-                          id={`cf-${def.key}`}
-                          type={def.tipo === 'date' ? 'date' : def.tipo === 'number' ? 'number' : 'text'}
-                          value={value === null || value === undefined ? '' : String(value)}
-                          onChange={(e) => setValue(e.target.value)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </section>
+              {leadId && (
+                <LeadContactsBlock
+                  leadId={leadId}
+                  vinculos={lead?.lead_contacts ?? []}
+                  schema={schema}
+                />
+              )}
 
               {/* Atribuicao */}
               <section className="space-y-3">
-                <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide flex items-center gap-1.5">
+                <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <User className="h-3.5 w-3.5" />
                   Atribuicao
                 </p>
@@ -567,7 +452,7 @@ export function LeadDetailDrawer({
                           : <span className="mr-1">✋</span>}
                         {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
                       </Button>
-                      {(currentUser?.role === 'GERENTE' || currentUser?.role === 'SUPER_ADMIN') && (
+                      {podeConfigurar && (
                         <div className="space-y-1.5">
                           <Label>Atribuir para</Label>
                           <Select
@@ -585,14 +470,12 @@ export function LeadDetailDrawer({
                           </Select>
                         </div>
                       )}
-                      {(currentUser?.role === 'GERENTE' || currentUser?.role === 'SUPER_ADMIN') && sectorSelect}
+                      {podeConfigurar && sectorSelect}
                     </div>
                   ) : (
                     (() => {
                       const canReassign =
-                        currentUser?.id === lead.responsavel.id ||
-                        currentUser?.role === 'GERENTE' ||
-                        currentUser?.role === 'SUPER_ADMIN';
+                        currentUser?.id === lead.responsavel.id || podeConfigurar;
                       return (
                         <div className="space-y-2">
                           <div className="flex items-center gap-2">
@@ -653,9 +536,7 @@ export function LeadDetailDrawer({
                       </SelectTrigger>
                       <SelectContent>
                         {users.map((u) => (
-                          <SelectItem key={u.id} value={u.id}>
-                            {u.nome}
-                          </SelectItem>
+                          <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -688,22 +569,35 @@ export function LeadDetailDrawer({
                   )}
                 </div>
               </section>
+            </TabsContent>
 
-              {/* Atividades */}
-              {leadId && (
-                <section className="space-y-3">
-                  <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide flex items-center gap-1.5">
-                    <Activity className="h-3.5 w-3.5" />
-                    Atividades
-                  </p>
-                  <div className="max-h-72 overflow-y-auto pr-1">
-                    <ActivityTimeline leadId={leadId} />
-                  </div>
-                </section>
-              )}
-            </>
-          )}
-        </div>
+            {/* ---------------- Estatísticas ---------------- */}
+            <TabsContent
+              value="estatisticas"
+              className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+            >
+              {leadId && <ActivityTimeline leadId={leadId} />}
+            </TabsContent>
+
+            {/* ---------------- Mídia ---------------- */}
+            <TabsContent value="midia" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {/* Não existe endpoint de listagem de mídias da conversa; inventar
+                  um aqui geraria chamada quebrada. Fica explícito até a rota
+                  existir. */}
+              <p className="rounded-md border border-dashed px-3 py-8 text-center text-xs text-muted-foreground">
+                A galeria de mídias da conversa ainda não está disponível. As imagens, áudios e
+                documentos continuam acessíveis dentro do chat.
+              </p>
+            </TabsContent>
+
+            {/* ---------------- Configurações ---------------- */}
+            {podeConfigurar && (
+              <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <FieldEditor />
+              </TabsContent>
+            )}
+          </Tabs>
+        )}
 
         {/* Footer actions */}
         {!leadLoading && lead && (

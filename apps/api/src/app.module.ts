@@ -9,6 +9,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { LeadsModule } from './modules/leads/leads.module';
+import { ContactsModule } from './modules/contacts/contacts.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { InstancesModule } from './modules/instances/instances.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
@@ -100,6 +101,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     TasksModule,
     AuthModule,
     LeadsModule,
+    ContactsModule,
     MessagesModule,
     InstancesModule,
     PipelinesModule,

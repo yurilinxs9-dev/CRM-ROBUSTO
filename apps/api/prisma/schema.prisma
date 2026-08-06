@@ -99,64 +99,67 @@ model Tenant {
   broadcast_window_end      Int     @default(18)
   broadcast_window_days     Int[]   @default([1, 2, 3, 4, 5])
 
-  owner              User               @relation("TenantOwner", fields: [owner_id], references: [id])
-  users              User[]             @relation("TenantMembers")
-  pipelines          Pipeline[]
-  stages             Stage[]
-  leads              Lead[]
-  messages           Message[]
-  lead_activities    LeadActivity[]
-  instances          WhatsappInstance[]
-  user_instances     UserInstance[]
-  instance_logs      InstanceLog[]
-  tags               Tag[]
-  lead_tags          LeadTag[]
-  quick_replies      QuickReply[]
-  notifications      Notification[]
-  tasks              Task[]
-  webhook_logs       WebhookLog[]
-  push_subscriptions PushSubscription[]
-  instances_hidden   InstanceHidden[]
-  outbound_webhooks  OutboundWebhook[]
-  api_keys           ApiKey[]
-  sectors            Sector[]
-  conversations      Conversation[]
+  owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
+  users               User[]             @relation("TenantMembers")
+  pipelines           Pipeline[]
+  stages              Stage[]
+  leads               Lead[]
+  messages            Message[]
+  lead_activities     LeadActivity[]
+  instances           WhatsappInstance[]
+  user_instances      UserInstance[]
+  instance_logs       InstanceLog[]
+  tags                Tag[]
+  lead_tags           LeadTag[]
+  quick_replies       QuickReply[]
+  notifications       Notification[]
+  tasks               Task[]
+  webhook_logs        WebhookLog[]
+  push_subscriptions  PushSubscription[]
+  instances_hidden    InstanceHidden[]
+  outbound_webhooks   OutboundWebhook[]
+  api_keys            ApiKey[]
+  sectors             Sector[]
+  conversations       Conversation[]
+  contacts            Contact[]
+  companies           Company[]
+  custom_field_groups CustomFieldGroup[]
 
   @@index([owner_id])
 }
 
 model User {
-  id              String             @id @default(uuid())
-  nome            String
-  email           String             @unique
-  senha_hash      String
-  role            UserRole           @default(OPERADOR)
-  avatar_url      String?
-  ativo           Boolean            @default(true)
-  especialidade   String?
-  titulo          String?
-  is_platform_admin Boolean          @default(false)
+  id                String             @id @default(uuid())
+  nome              String
+  email             String             @unique
+  senha_hash        String
+  role              UserRole           @default(OPERADOR)
+  avatar_url        String?
+  ativo             Boolean            @default(true)
+  especialidade     String?
+  titulo            String?
+  is_platform_admin Boolean            @default(false)
   /// O que o platform admin pode dentro do painel. ["*"] = master (tudo).
   /// Valores possíveis: "*", "overview", "tenants", "tenant_actions", "health",
   /// "logs", "announcements", "ai". Só o master tem "*": é o "*" que dispensa a
   /// proteção do tenant do master, então o admin restrito recebe a lista
   /// nomeada inteira em vez do coringa.
-  platform_scopes   String[]         @default([])
-  tenant_id       String
-  tenant          Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
+  platform_scopes   String[]           @default([])
+  tenant_id         String
+  tenant            Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
   // F-01: setor do colaborador. Nullable na migration p/ backfill; depois NOT NULL.
   // App exige via Zod. SetNull no delete do setor preservaria histórico, mas como
   // será NOT NULL usamos Restrict (setor só some via soft delete active=false).
-  sector_id       String?
-  sector          Sector?            @relation(fields: [sector_id], references: [id], onDelete: Restrict)
-  owned_tenants   Tenant[]           @relation("TenantOwner")
-  owned_instances WhatsappInstance[] @relation("OwnedInstances")
-  created_at      DateTime           @default(now())
-  updated_at      DateTime           @updatedAt
+  sector_id         String?
+  sector            Sector?            @relation(fields: [sector_id], references: [id], onDelete: Restrict)
+  owned_tenants     Tenant[]           @relation("TenantOwner")
+  owned_instances   WhatsappInstance[] @relation("OwnedInstances")
+  created_at        DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
 
   leads              Lead[]
-  sent_messages      Message[]          @relation("SentBy")
-  visible_messages   Message[]          @relation("VisibleTo")
+  sent_messages      Message[]            @relation("SentBy")
+  visible_messages   Message[]            @relation("VisibleTo")
   activities         LeadActivity[]
   quick_replies      QuickReply[]
   notifications      Notification[]
@@ -166,7 +169,7 @@ model User {
   instances_hidden   InstanceHidden[]
   refresh_tokens     RefreshToken[]
   password_resets    PasswordResetToken[]
-  conversations      Conversation[]        @relation("ConversationResponsavel")
+  conversations      Conversation[]       @relation("ConversationResponsavel")
 
   @@index([email])
   @@index([tenant_id])
@@ -196,22 +199,65 @@ model RefreshToken {
   @@index([expires_at])
 }
 
+/// Escopo de um campo. Lead, Contato e Empresa têm listas independentes —
+/// é o que reproduz os três blocos do editor de campos do Kommo.
+enum FieldScope {
+  LEAD
+  CONTATO
+  EMPRESA
+}
+
+/// Aba/seção do painel do lead ("Principal", "Estatísticas", ...). Cada tenant
+/// cria as suas; o grupo `is_system` é criado no bootstrap e não pode ser
+/// apagado, pra nunca existir campo órfão sem lugar na tela.
+model CustomFieldGroup {
+  id         String     @id @default(uuid())
+  tenant_id  String
+  escopo     FieldScope
+  nome       String
+  ordem      Int        @default(0)
+  is_system  Boolean    @default(false)
+  created_at DateTime   @default(now())
+
+  tenant Tenant           @relation(fields: [tenant_id], references: [id])
+  fields CustomFieldDef[]
+
+  @@unique([tenant_id, escopo, nome])
+  @@index([tenant_id, escopo, ordem])
+}
+
 // Definição de campo customizado por tenant (padrão HubSpot/Pipedrive):
 // o admin do workspace cria campos (texto/número/data/seleção/booleano) e os
 // valores ficam em Lead.custom_fields (Json { [key]: valor }).
+//
+// Campos NATIVOS também vivem aqui, com `native_key` preenchida: a linha guarda
+// rótulo, ordem e grupo, mas o valor é lido/gravado na COLUNA real do registro
+// (Lead.nome, Contact.email, ...), nunca no Json. É o que põe nativo e
+// customizado na mesma lista ordenável, como no Kommo.
 model CustomFieldDef {
-  id         String   @id @default(uuid())
+  id         String     @id @default(uuid())
   tenant_id  String
   nome       String // rótulo exibido
   key        String // slug estável usado como chave no Json do lead
-  tipo       String // 'text' | 'number' | 'date' | 'select' | 'boolean'
-  options    Json? // tipo 'select': array de opções
-  ordem      Int      @default(0)
-  active     Boolean  @default(true)
-  created_at DateTime @default(now())
+  tipo       String // ver FIELD_TYPES em modules/leads/field-schema.ts
+  options    Json? // tipos 'select'/'multiselect': array de opções
+  ordem      Int        @default(0)
+  active     Boolean    @default(true)
+  created_at DateTime   @default(now())
+  escopo     FieldScope @default(LEAD)
+  group_id   String?
+  /// Preenchida só em campo nativo — nome da coluna real no registro.
+  native_key String?
+  /// Visível na ficha, mas não editável pela UI (badge "Apenas API").
+  api_only   Boolean    @default(false)
+  /// Ocultar sem desativar: o valor continua gravado e volta se reexibir.
+  visible    Boolean    @default(true)
 
-  @@unique([tenant_id, key])
+  group CustomFieldGroup? @relation(fields: [group_id], references: [id], onDelete: SetNull)
+
+  @@unique([tenant_id, escopo, key])
   @@index([tenant_id, active])
+  @@index([tenant_id, escopo, ordem])
 }
 
 // Token de "esqueci minha senha" — hash sha256, uso único, expira em 1h.
@@ -331,6 +377,9 @@ model Lead {
   lead_tags     LeadTag[]
   tasks         Task[]
   conversations Conversation[]
+  // Relação virtual: NÃO gera coluna nem DDL em "Lead". A FK vive em
+  // LeadContact, tabela nova. Ver "Interpretação" no plano da feature.
+  lead_contacts LeadContact[]
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
@@ -338,7 +387,7 @@ model Lead {
   // F-03: trava da IA na conversa. Setado TRUE quando uma mensagem 'user'
   // (humano) é enviada. A IA checa este flag antes de responder. Só humano/admin
   // reseta para FALSE. Mensagens 'ai'/'system' não alteram.
-  ai_blocked Boolean   @default(false)
+  ai_blocked Boolean @default(false)
 
   // Status de atendimento (ortogonal ao funil/stage) — usado pela API pública
   // e pelo CRM interno para marcar conversas abertas/pendentes/resolvidas.
@@ -426,6 +475,16 @@ model Message {
   tenant_id              String
   tenant                 Tenant           @relation(fields: [tenant_id], references: [id])
   created_at             DateTime         @default(now())
+  // ⚠️ Índices PARCIAIS só no DB (Prisma não suporta), criados à mão:
+  // Message_outgoing_by_user_idx ON (tenant_id, sent_by_user_id)
+  //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL (legado;
+  //   só serve a SQL crua com literal 'OUTGOING')
+  // Message_whatsapp_message_id_idx ON (whatsapp_message_id)
+  //   WHERE whatsapp_message_id IS NOT NULL (versão parcial do @@index acima —
+  //   se o db push criar o pleno, o parcial pode ser dropado)
+  // Message_media_unarchived_created_idx ON (created_at)
+  //   WHERE media_url IS NOT NULL AND media_archived = false
+  //   (varredura do cleanup de mídia 30d: 7.4s → ms)
 
   @@unique([tenant_id, whatsapp_message_id], name: "tenant_id_whatsapp_message_id")
   @@index([lead_id, created_at])
@@ -447,16 +506,6 @@ model Message {
   // fazia seq scan de 1.4s. Índice pleno resolve (~5ms).
   @@index([tenant_id, direction, sent_by_user_id])
   @@index([conversation_id, created_at])
-  // ⚠️ Índices PARCIAIS só no DB (Prisma não suporta), criados à mão:
-  // Message_outgoing_by_user_idx ON (tenant_id, sent_by_user_id)
-  //   WHERE direction = 'OUTGOING' AND sent_by_user_id IS NOT NULL (legado;
-  //   só serve a SQL crua com literal 'OUTGOING')
-  // Message_whatsapp_message_id_idx ON (whatsapp_message_id)
-  //   WHERE whatsapp_message_id IS NOT NULL (versão parcial do @@index acima —
-  //   se o db push criar o pleno, o parcial pode ser dropado)
-  // Message_media_unarchived_created_idx ON (created_at)
-  //   WHERE media_url IS NOT NULL AND media_archived = false
-  //   (varredura do cleanup de mídia 30d: 7.4s → ms)
 }
 
 model LeadActivity {
@@ -604,21 +653,21 @@ model WebhookLog {
 }
 
 model Notification {
-  id         String   @id @default(uuid())
-  user_id    String
-  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  titulo     String
-  conteudo   String
-  tipo       String
-  lida       Boolean  @default(false)
-  link       String?
+  id               String   @id @default(uuid())
+  user_id          String
+  user             User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  titulo           String
+  conteudo         String
+  tipo             String
+  lida             Boolean  @default(false)
+  link             String?
   // Dono do lead que originou a notificação. NULL = lead do próprio
   // destinatário ("Seus leads"); preenchido = supervisão de lead de operador
   // (agrupa "Equipe · {nome}" no sino).
   responsavel_nome String?
-  tenant_id  String
-  tenant     Tenant   @relation(fields: [tenant_id], references: [id])
-  created_at DateTime @default(now())
+  tenant_id        String
+  tenant           Tenant   @relation(fields: [tenant_id], references: [id])
+  created_at       DateTime @default(now())
 
   @@index([user_id, lida, created_at])
   @@index([tenant_id])
@@ -774,15 +823,15 @@ enum AnnouncementLevel {
 // plataforma e exibidos pra todos os usuários (banner/popup). target_tenant_id
 // null = todos os tenants; preenchido = só aquele tenant.
 model Announcement {
-  id              String            @id @default(uuid())
-  title           String
-  body            String
-  level           AnnouncementLevel @default(INFO)
-  active          Boolean           @default(true)
+  id               String            @id @default(uuid())
+  title            String
+  body             String
+  level            AnnouncementLevel @default(INFO)
+  active           Boolean           @default(true)
   target_tenant_id String?
-  created_by      String
-  created_at      DateTime          @default(now())
-  expires_at      DateTime?
+  created_by       String
+  created_at       DateTime          @default(now())
+  expires_at       DateTime?
 
   @@index([active, created_at])
   @@index([target_tenant_id])
@@ -790,14 +839,14 @@ model Announcement {
 
 // Auditoria das ações do admin de plataforma (impersonação, broadcast, etc).
 model AdminAuditLog {
-  id              String   @id @default(uuid())
-  admin_user_id   String
-  action          String
+  id               String   @id @default(uuid())
+  admin_user_id    String
+  action           String
   target_tenant_id String?
-  target_user_id  String?
-  detail          Json?
-  ip              String?
-  created_at      DateTime @default(now())
+  target_user_id   String?
+  detail           Json?
+  ip               String?
+  created_at       DateTime @default(now())
 
   @@index([admin_user_id, created_at])
   @@index([created_at])
@@ -927,7 +976,7 @@ model AiUsageLog {
 // ── FOLLOW-UP / BROADCAST POR IA ─────────────────────────────────────────────
 enum BroadcastMode {
   template // texto fixo (com placeholder {{nome}})
-  ai       // IA gera a mensagem personalizada por lead a partir de ai_instruction
+  ai // IA gera a mensagem personalizada por lead a partir de ai_instruction
 }
 
 enum BroadcastStatus {
@@ -997,4 +1046,66 @@ model BroadcastTarget {
   /// recebida (780 em 3h em produção). Sem este índice, cada mensagem faria
   /// varredura completa de BroadcastTarget.
   @@index([lead_id, status])
+}
+
+/// Pessoa de contato — entidade PRÓPRIA, adicionada sem tocar em Lead.
+///
+/// O Lead continua sendo a identidade do WhatsApp (telefone + pipeline) e dono
+/// da dedupe; Contact é enriquecimento opcional, ligado por LeadContact. Leads
+/// criados antes desta feature simplesmente não têm contato vinculado e seguem
+/// funcionando igual. Ver docs/plans/2026-08-05-campos-personalizados-kommo.md.
+model Contact {
+  id           String   @id @default(uuid())
+  tenant_id    String
+  nome         String
+  telefone     String?
+  email        String?
+  cargo        String?
+  company_id   String?
+  dados_custom Json?    @default("{}")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  tenant        Tenant        @relation(fields: [tenant_id], references: [id])
+  company       Company?      @relation(fields: [company_id], references: [id], onDelete: SetNull)
+  lead_contacts LeadContact[]
+
+  @@index([tenant_id])
+  @@index([tenant_id, telefone])
+  @@index([company_id])
+}
+
+/// Empresa do contato. Também puramente aditiva — não substitui Lead.empresa,
+/// que continua guardando o dado legado dos leads já existentes.
+model Company {
+  id           String   @id @default(uuid())
+  tenant_id    String
+  nome         String
+  telefone     String?
+  email        String?
+  site         String?
+  endereco     String?
+  dados_custom Json?    @default("{}")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenant_id], references: [id])
+  contacts Contact[]
+
+  @@index([tenant_id])
+}
+
+/// Vínculo N:N entre Lead e Contact. Tabela NOVA: a FK aponta para o Lead, o
+/// que não exige nenhum ALTER TABLE "Lead" — condição do plano.
+model LeadContact {
+  lead_id      String
+  contact_id   String
+  is_principal Boolean  @default(false)
+  created_at   DateTime @default(now())
+
+  lead    Lead    @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contact_id], references: [id], onDelete: Cascade)
+
+  @@id([lead_id, contact_id])
+  @@index([contact_id])
 }
