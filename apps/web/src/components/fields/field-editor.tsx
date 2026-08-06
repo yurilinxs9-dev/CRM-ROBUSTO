@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   DndContext,
@@ -45,12 +45,13 @@ import {
 import { cn } from '@/lib/cn';
 import {
   groupFields,
+  isSynthetic,
   type FieldDef,
-  type FieldSchema,
   type FieldScope,
   type FieldType,
   type GroupWithFields,
 } from '@/lib/field-render';
+import { useFieldSchema, type ModoSchema } from './use-field-schema';
 
 const TIPO_LABELS: Record<FieldType, string> = {
   text: 'Texto',
@@ -83,44 +84,39 @@ function erroDe(err: unknown, fallback: string): string {
 // Linha arrastável
 // ---------------------------------------------------------------------------
 
-function SortableFieldRow({
+/**
+ * Conteúdo visual da linha. Separado do wrapper arrastável porque no modo
+ * legado não há `DndContext` na árvore, e `useSortable` fora dele quebra —
+ * hook não pode ser chamado condicionalmente.
+ */
+function FieldRowContent({
   def,
+  legado,
+  arrastar,
   onEditar,
   onAlternarVisivel,
   onRemover,
 }: {
   def: FieldDef;
+  legado?: boolean;
+  arrastar?: React.ReactNode;
   onEditar: () => void;
   onAlternarVisivel: () => void;
   onRemover: () => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: def.id,
-  });
   const nativo = !!def.native_key;
+  // Nativo do modo legado é montado no cliente: não existe linha no banco para
+  // renomear ou esconder, então essas ações somem em vez de dar 404.
+  const sintetico = isSynthetic(def);
 
   return (
     <div
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.5 : 1,
-      }}
       className={cn(
         'flex items-center gap-2 rounded-md border bg-card px-3 py-2',
         !def.visible && 'opacity-60',
       )}
     >
-      <button
-        type="button"
-        className="cursor-grab text-muted-foreground hover:text-foreground"
-        {...attributes}
-        {...listeners}
-        aria-label={`Reordenar ${def.nome}`}
-      >
-        <GripVertical size={16} />
-      </button>
+      {arrastar}
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -143,24 +139,30 @@ function SortableFieldRow({
         {TIPO_LABELS[def.tipo] ?? def.tipo}
       </Badge>
 
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 shrink-0"
-        onClick={onEditar}
-        title="Renomear"
-      >
-        <Pencil size={13} />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 shrink-0"
-        onClick={onAlternarVisivel}
-        title={def.visible ? 'Esconder da ficha' : 'Mostrar na ficha'}
-      >
-        {def.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-      </Button>
+      {!sintetico && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          onClick={onEditar}
+          title="Renomear"
+        >
+          <Pencil size={13} />
+        </Button>
+      )}
+      {/* `visible` só existe no backend novo: no legado o PATCH descartaria a
+          chave em silêncio e o botão não faria nada. */}
+      {!legado && !sintetico && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          onClick={onAlternarVisivel}
+          title={def.visible ? 'Esconder da ficha' : 'Mostrar na ficha'}
+        >
+          {def.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+        </Button>
+      )}
       {/* Campo nativo não é removível — só pode ser escondido. */}
       {!nativo && (
         <Button
@@ -177,6 +179,47 @@ function SortableFieldRow({
   );
 }
 
+/** Wrapper arrastável — só usado quando há DndContext (modo completo). */
+function SortableFieldRow(props: {
+  def: FieldDef;
+  legado?: boolean;
+  onEditar: () => void;
+  onAlternarVisivel: () => void;
+  onRemover: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.def.id,
+  });
+
+  if (props.legado) return <FieldRowContent {...props} />;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+      }}
+    >
+      <FieldRowContent
+        {...props}
+        arrastar={
+          <button
+            type="button"
+            className="cursor-grab text-muted-foreground hover:text-foreground"
+            {...attributes}
+            {...listeners}
+            aria-label={`Reordenar ${props.def.nome}`}
+          >
+            <GripVertical size={16} />
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Bloco de um escopo
 // ---------------------------------------------------------------------------
@@ -184,6 +227,7 @@ function SortableFieldRow({
 function BlocoEscopo({
   escopo,
   grupos,
+  legado,
   onReordenar,
   onNovoCampo,
   onNovoGrupo,
@@ -193,6 +237,7 @@ function BlocoEscopo({
 }: {
   escopo: FieldScope;
   grupos: GroupWithFields[];
+  legado: boolean;
   onReordenar: (grupoId: string, ids: string[]) => void;
   onNovoCampo: (escopo: FieldScope, grupoId: string) => void;
   onNovoGrupo: (escopo: FieldScope) => void;
@@ -223,58 +268,76 @@ function BlocoEscopo({
     <section className="space-y-3">
       <h4 className="text-sm font-semibold">{ESCOPO_TITULOS[escopo]}</h4>
 
-      {/* Abas de grupo — só o escopo do lead costuma ter mais de uma. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {grupos.map((g) => (
-          <button
-            key={g.id}
-            type="button"
-            onClick={() => setGrupoAtivo(g.id)}
-            className={cn(
-              'rounded-md border px-2.5 py-1 text-xs transition-colors',
-              g.id === ativo.id
-                ? 'border-primary bg-primary/10 text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
+      {/* Abas de grupo — o backend antigo não tem grupos, então some no legado. */}
+      {!legado && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {grupos.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => setGrupoAtivo(g.id)}
+              className={cn(
+                'rounded-md border px-2.5 py-1 text-xs transition-colors',
+                g.id === ativo.id
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {g.nome}
+            </button>
+          ))}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={() => onNovoGrupo(escopo)}
+            title="Nova aba"
           >
-            {g.nome}
-          </button>
-        ))}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => onNovoGrupo(escopo)}
-          title="Nova aba"
-        >
-          <Plus size={13} />
-        </Button>
-      </div>
+            <Plus size={13} />
+          </Button>
+        </div>
+      )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext
-          items={ativo.fields.map((f) => f.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className="space-y-1.5">
-            {ativo.fields.length === 0 ? (
-              <p className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-                Nenhum campo nesta aba ainda.
-              </p>
-            ) : (
-              ativo.fields.map((def) => (
-                <SortableFieldRow
-                  key={def.id}
-                  def={def}
-                  onEditar={() => onEditar(def)}
-                  onAlternarVisivel={() => onAlternarVisivel(def)}
-                  onRemover={() => onRemover(def)}
-                />
-              ))
-            )}
-          </div>
-        </SortableContext>
-      </DndContext>
+      {legado ? (
+        // Sem DndContext aqui — por isso a linha simples, não a arrastável.
+        <div className="space-y-1.5">
+          {ativo.fields.map((def) => (
+            <FieldRowContent
+              key={def.id}
+              def={def}
+              legado
+              onEditar={() => onEditar(def)}
+              onAlternarVisivel={() => onAlternarVisivel(def)}
+              onRemover={() => onRemover(def)}
+            />
+          ))}
+        </div>
+      ) : (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext
+            items={ativo.fields.map((f) => f.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-1.5">
+              {ativo.fields.length === 0 ? (
+                <p className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+                  Nenhum campo nesta aba ainda.
+                </p>
+              ) : (
+                ativo.fields.map((def) => (
+                  <SortableFieldRow
+                    key={def.id}
+                    def={def}
+                    onEditar={() => onEditar(def)}
+                    onAlternarVisivel={() => onAlternarVisivel(def)}
+                    onRemover={() => onRemover(def)}
+                  />
+                ))
+              )}
+            </div>
+          </SortableContext>
+        </DndContext>
+      )}
 
       <Button variant="outline" size="sm" onClick={() => onNovoCampo(escopo, ativo.id)}>
         <Plus size={13} className="mr-1" /> Adicionar campo
@@ -287,7 +350,7 @@ function BlocoEscopo({
 // Editor
 // ---------------------------------------------------------------------------
 
-export function FieldEditor() {
+export function FieldEditor({ modo = 'completo' }: { modo?: ModoSchema }) {
   const qc = useQueryClient();
   const [novoCampo, setNovoCampo] = useState<{ escopo: FieldScope; grupoId: string } | null>(null);
   const [editando, setEditando] = useState<FieldDef | null>(null);
@@ -295,13 +358,12 @@ export function FieldEditor() {
   const [tipo, setTipo] = useState<FieldType>('text');
   const [opcoesRaw, setOpcoesRaw] = useState('');
 
-  const { data: schema, isLoading } = useQuery<FieldSchema>({
-    queryKey: ['custom-fields-schema'],
-    queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
-  });
+  const legado = modo === 'legado';
+  const { schema, isLoading } = useFieldSchema();
 
   const invalidar = () => {
     void qc.invalidateQueries({ queryKey: ['custom-fields-schema'] });
+    void qc.invalidateQueries({ queryKey: ['custom-fields-legado'] });
     void qc.invalidateQueries({ queryKey: ['custom-fields'] });
   };
 
@@ -310,12 +372,15 @@ export function FieldEditor() {
       const options = TIPOS_COM_OPCOES.includes(tipo)
         ? opcoesRaw.split(',').map((s) => s.trim()).filter(Boolean)
         : undefined;
+      // No modo legado o backend não conhece escopo nem grupo; mandar essas
+      // chaves não quebra (Zod as descarta), mas omitir deixa claro o contrato.
       await api.post('/api/custom-fields', {
         nome: nome.trim(),
         tipo,
         options,
-        escopo: novoCampo?.escopo ?? 'LEAD',
-        group_id: novoCampo?.grupoId,
+        ...(legado
+          ? {}
+          : { escopo: novoCampo?.escopo ?? 'LEAD', group_id: novoCampo?.grupoId }),
       });
     },
     onSuccess: () => {
@@ -406,20 +471,30 @@ export function FieldEditor() {
     setOpcoesRaw((def.options ?? []).join(', '));
   };
 
-  const escopos: FieldScope[] = ['LEAD', 'CONTATO', 'EMPRESA'];
+  // No legado só existe o escopo do lead: contato e empresa dependem de tabelas
+  // e rotas que aquele backend não tem.
+  const escopos: FieldScope[] = legado ? ['LEAD'] : ['LEAD', 'CONTATO', 'EMPRESA'];
 
   return (
     <div className="space-y-8">
       <p className="text-xs text-muted-foreground">
         Estes campos valem para todos os registros da empresa. Renomear preserva os valores já
-        preenchidos; esconder também. Campos com cadeado são nativos do CRM e não podem ser
-        removidos.
+        preenchidos. Campos com cadeado são nativos do CRM e não podem ser removidos.
       </p>
+
+      {legado && (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          O servidor da API ainda está na versão anterior. Você pode criar, renomear e remover
+          campos normalmente. Abas, reordenação e os blocos de contato e empresa aparecem quando o
+          backend for atualizado.
+        </p>
+      )}
 
       {escopos.map((escopo) => (
         <BlocoEscopo
           key={escopo}
           escopo={escopo}
+          legado={legado}
           grupos={groupFields(schema, escopo, { incluirOcultos: true })}
           onReordenar={(grupoId, ids) => reordenar.mutate({ grupoId, ids })}
           onNovoCampo={(esc, grupoId) => {

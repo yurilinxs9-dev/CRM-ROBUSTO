@@ -5,6 +5,8 @@ import {
   initialValue,
   initialValues,
   flattenFields,
+  schemaFromLegacy,
+  isSynthetic,
   type FieldDef,
   type FieldSchema,
 } from './field-render';
@@ -211,6 +213,56 @@ describe('ida e volta', () => {
     const lead = { nome: 'Adman', email: 'a@b.com', dados_custom: { plano: 'Ouro' } };
     const out = buildPayload(defs, initialValues(defs, lead));
     expect(out.native).toEqual({ nome: 'Adman', email: 'a@b.com' });
+    expect(out.custom).toEqual({ plano: 'Ouro' });
+  });
+});
+
+describe('schemaFromLegacy (backend antigo)', () => {
+  const legado = [
+    { id: 'l1', nome: 'Plano', key: 'plano', tipo: 'select' as const, options: ['Ouro'], ordem: 0, active: true },
+    { id: 'l2', nome: 'Removido', key: 'removido', tipo: 'text' as const, options: null, ordem: 1, active: false },
+  ];
+
+  it('monta um grupo único de escopo LEAD', () => {
+    const s = schemaFromLegacy(legado);
+    expect(s.groups).toHaveLength(1);
+    expect(s.groups[0].escopo).toBe('LEAD');
+    expect(s.fields.every((f) => f.escopo === 'LEAD')).toBe(true);
+  });
+
+  it('DISCRIMINANTE: só inclui nativos que o backend antigo sabe salvar', () => {
+    // `empresa` e `cargo` não existem no updateLeadSchema daquela versão — se
+    // aparecessem, o Zod descartaria a chave e o usuário perderia o que digitou
+    // achando que salvou.
+    const nativos = schemaFromLegacy([]).fields.map((f) => f.native_key);
+    expect(nativos).toEqual(['nome', 'telefone', 'email', 'valor_estimado', 'temperatura']);
+    expect(nativos).not.toContain('empresa');
+    expect(nativos).not.toContain('cargo');
+  });
+
+  it('descarta campo inativo e mantém o ativo', () => {
+    const chaves = schemaFromLegacy(legado).fields.filter((f) => !f.native_key).map((f) => f.key);
+    expect(chaves).toEqual(['plano']);
+  });
+
+  it('põe os customizados depois dos nativos', () => {
+    const s = schemaFromLegacy(legado);
+    const plano = s.fields.find((f) => f.key === 'plano')!;
+    const maiorNativo = Math.max(...s.fields.filter((f) => f.native_key).map((f) => f.ordem));
+    expect(plano.ordem).toBeGreaterThan(maiorNativo);
+  });
+
+  it('nativo sintético é identificável (não existe no banco)', () => {
+    const s = schemaFromLegacy(legado);
+    expect(isSynthetic(s.fields.find((f) => f.key === 'nome')!)).toBe(true);
+    expect(isSynthetic(s.fields.find((f) => f.key === 'plano')!)).toBe(false);
+  });
+
+  it('o schema legado atravessa groupFields e buildPayload sem tratamento especial', () => {
+    const s = schemaFromLegacy(legado);
+    const defs = flattenFields(groupFields(s, 'LEAD'));
+    const out = buildPayload(defs, { nome: 'Adman', plano: 'Ouro', valor_estimado: '1.234,56' });
+    expect(out.native).toMatchObject({ nome: 'Adman', valor_estimado: '1234.56' });
     expect(out.custom).toEqual({ plano: 'Ouro' });
   });
 });

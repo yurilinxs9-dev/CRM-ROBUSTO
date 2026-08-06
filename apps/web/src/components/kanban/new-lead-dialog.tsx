@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import {
   Dialog,
   DialogContent,
@@ -20,15 +19,9 @@ import {
   SelectContent,
   SelectItem,
 } from '@/components/ui/select';
-import { api } from '@/lib/api';
 import { FieldGroupList } from '@/components/fields/field-group-list';
-import {
-  groupFields,
-  flattenFields,
-  initialValues,
-  buildPayload,
-  type FieldSchema,
-} from '@/lib/field-render';
+import { useFieldSchema } from '@/components/fields/use-field-schema';
+import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 import type { Stage } from './stage-column';
 
 export interface NewLeadFormData {
@@ -68,13 +61,7 @@ export function NewLeadDialog({
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [stageId, setStageId] = useState<string>('');
 
-  const { data: schema, isError } = useQuery<FieldSchema>({
-    queryKey: ['custom-fields-schema'],
-    queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
-    enabled: open,
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-  });
+  const { schema, isError } = useFieldSchema(open);
 
   const defs = schema ? flattenFields(groupFields(schema, 'LEAD')) : [];
 

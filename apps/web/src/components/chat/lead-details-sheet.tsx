@@ -15,7 +15,8 @@ import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
 import { FieldGroupView } from '@/components/fields/field-group-list';
-import type { FieldSchema, FieldRecord } from '@/lib/field-render';
+import { useFieldSchema } from '@/components/fields/use-field-schema';
+import type { FieldRecord } from '@/lib/field-render';
 import { ChatLead, formatPhone, getInitials } from './types';
 
 interface LeadDetailsSheetProps {
@@ -62,14 +63,11 @@ export function LeadDetailsSheet({ lead, open, onOpenChange }: LeadDetailsSheetP
     enabled: !!lead?.id && open,
   });
 
-  const { data: schema } = useQuery<FieldSchema>({
-    queryKey: ['custom-fields-schema'],
-    queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
-    enabled: open,
-    staleTime: 5 * 60 * 1000,
-  });
+  const { schema, modo } = useFieldSchema(open);
 
-  const vinculos = completo?.lead_contacts ?? [];
+  // No modo legado não existem contatos vinculados — nem a tabela, do ponto de
+  // vista daquele backend.
+  const vinculos = modo === 'completo' ? (completo?.lead_contacts ?? []) : [];
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

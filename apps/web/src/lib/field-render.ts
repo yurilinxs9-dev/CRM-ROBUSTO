@@ -194,3 +194,89 @@ export function initialValues(defs: FieldDef[], record: FieldRecord | null | und
 export function flattenFields(grupos: GroupWithFields[]): FieldDef[] {
   return grupos.flatMap((g) => g.fields);
 }
+
+// ---------------------------------------------------------------------------
+// Modo de compatibilidade com o backend antigo
+// ---------------------------------------------------------------------------
+
+/**
+ * Formato devolvido por `GET /custom-fields` no backend ANTIGO (julho/2026),
+ * que não conhece escopo, grupo nem campo nativo.
+ */
+export interface LegacyFieldDef {
+  id: string;
+  nome: string;
+  key: string;
+  tipo: FieldType;
+  options: string[] | null;
+  ordem: number;
+  active: boolean;
+}
+
+export const SYNTHETIC_PREFIX = '__nativo_';
+
+/** Campo nativo montado no cliente não existe como linha no banco. */
+export function isSynthetic(def: FieldDef): boolean {
+  return def.id.startsWith(SYNTHETIC_PREFIX);
+}
+
+const LEGACY_GROUP_ID = '__grupo_legado__';
+
+/**
+ * Nativos que o backend ANTIGO realmente persiste — a lista é exatamente o
+ * `updateLeadSchema` daquela versão. `empresa` e `cargo` ficam de fora de
+ * propósito: aquele schema não os aceita e o Zod descartaria a chave em
+ * silêncio, dando "salvo com sucesso" e perdendo o que o usuário digitou.
+ */
+const LEGACY_NATIVOS: Array<[string, string, FieldType, string[] | null]> = [
+  ['nome', 'Nome', 'text', null],
+  ['telefone', 'Telefone/WhatsApp', 'phone', null],
+  ['email', 'E-mail', 'email', null],
+  ['valor_estimado', 'Valor estimado', 'currency', null],
+  ['temperatura', 'Temperatura', 'select', ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']],
+];
+
+/**
+ * Monta um `FieldSchema` a partir do que o backend antigo devolve, para a ficha
+ * nova funcionar antes do backend ser atualizado.
+ *
+ * Só existe escopo LEAD e um único grupo: contato, empresa, grupos e
+ * reordenação dependem de rotas que aquele backend não tem, e a UI esconde
+ * essas partes no modo legado em vez de oferecer botão que dá 404.
+ */
+export function schemaFromLegacy(legacy: LegacyFieldDef[]): FieldSchema {
+  const nativos: FieldDef[] = LEGACY_NATIVOS.map(([nativeKey, nome, tipo, options], i) => ({
+    id: `${SYNTHETIC_PREFIX}${nativeKey}`,
+    nome,
+    key: nativeKey,
+    tipo,
+    options,
+    ordem: i,
+    active: true,
+    escopo: 'LEAD',
+    group_id: LEGACY_GROUP_ID,
+    native_key: nativeKey,
+    api_only: false,
+    visible: true,
+  }));
+
+  const customizados: FieldDef[] = legacy
+    .filter((f) => f.active)
+    .map((f) => ({
+      ...f,
+      escopo: 'LEAD' as const,
+      group_id: LEGACY_GROUP_ID,
+      native_key: null,
+      api_only: false,
+      visible: true,
+      // Depois dos nativos, preservando a ordem relativa entre eles.
+      ordem: LEGACY_NATIVOS.length + f.ordem,
+    }));
+
+  return {
+    groups: [
+      { id: LEGACY_GROUP_ID, nome: 'Principal', escopo: 'LEAD', ordem: 0, is_system: true },
+    ],
+    fields: [...nativos, ...customizados],
+  };
+}

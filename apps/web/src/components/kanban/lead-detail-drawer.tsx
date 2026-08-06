@@ -45,13 +45,8 @@ import { ActivityTimeline } from './activity-timeline';
 import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
-import {
-  groupFields,
-  flattenFields,
-  initialValues,
-  buildPayload,
-  type FieldSchema,
-} from '@/lib/field-render';
+import { useFieldSchema } from '@/components/fields/use-field-schema';
+import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -205,13 +200,8 @@ export function LeadDetailDrawer({
 
   // Estrutura de campos do tenant: grupos + definições dos três escopos. É ela
   // que decide o que a ficha desenha — nada de campo hardcoded.
-  const { data: schema, isError: schemaError } = useQuery<FieldSchema>({
-    queryKey: ['custom-fields-schema'],
-    queryFn: async () => (await api.get('/api/custom-fields/schema')).data,
-    enabled: open,
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-  });
+  // Tolera backend antigo: cai para /custom-fields e monta o schema no cliente.
+  const { schema, modo, isError: schemaError } = useFieldSchema(open);
 
   // ---- Form state ----
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -386,8 +376,8 @@ export function LeadDetailDrawer({
           // está numa versão anterior à do site (rota /schema ainda não existe).
           <div className="flex-1 px-5 py-6">
             <p className="rounded-md border border-destructive/40 px-3 py-4 text-sm text-destructive">
-              Não foi possível carregar os campos deste workspace. O servidor da API parece estar
-              numa versão anterior à do site — atualize o backend e recarregue a página.
+              Não foi possível carregar os campos deste workspace — nem pela rota nova, nem pela
+              antiga. Verifique se a API está no ar e recarregue a página.
             </p>
           </div>
         ) : leadLoading || !schema ? (
@@ -425,7 +415,9 @@ export function LeadDetailDrawer({
                 onChange={alterarCampo}
               />
 
-              {leadId && (
+              {/* Contato/empresa dependem de rotas que o backend antigo não
+                  tem — no modo legado o bloco some em vez de dar 404. */}
+              {leadId && modo === 'completo' && (
                 <LeadContactsBlock
                   leadId={leadId}
                   vinculos={lead?.lead_contacts ?? []}
@@ -593,7 +585,7 @@ export function LeadDetailDrawer({
             {/* ---------------- Configurações ---------------- */}
             {podeConfigurar && (
               <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                <FieldEditor />
+                <FieldEditor modo={modo} />
               </TabsContent>
             )}
           </Tabs>
