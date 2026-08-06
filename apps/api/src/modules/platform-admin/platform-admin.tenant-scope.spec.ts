@@ -139,6 +139,73 @@ function matchAnnouncements(where: AnnouncementWhere) {
   );
 }
 
+// ---- Logs -------------------------------------------------------------------
+// Cada lista tem uma linha que denuncia o master (autor master ou tenant
+// protegido), uma linha de campo nulo (que NÃO pode sumir junto) e uma comum.
+const FAKE_AUDIT = [
+  { id: 'audit-do-master', admin_user_id: MASTER_ID, action: 'tenant_delete', target_tenant_id: OUTRO_TENANT },
+  { id: 'audit-alvo-protegido', admin_user_id: RESTRITO_ID, action: 'user_ban', target_tenant_id: MASTER_TENANT },
+  { id: 'audit-sem-alvo', admin_user_id: RESTRITO_ID, action: 'announcement_create', target_tenant_id: null },
+  { id: 'audit-comum', admin_user_id: RESTRITO_ID, action: 'user_ban', target_tenant_id: OUTRO_TENANT },
+  { id: 'login-do-master', admin_user_id: MASTER_ID, action: 'login_success', target_tenant_id: null },
+  { id: 'login-alvo-protegido', admin_user_id: RESTRITO_ID, action: 'login_failed', target_tenant_id: MASTER_TENANT },
+  { id: 'login-comum', admin_user_id: RESTRITO_ID, action: 'login_failed', target_tenant_id: null },
+];
+
+const FAKE_WEBHOOK_ERRORS = [
+  { id: 'wh-do-master', tenant_id: MASTER_TENANT },
+  { id: 'wh-sem-tenant', tenant_id: null },
+  { id: 'wh-comum', tenant_id: OUTRO_TENANT },
+];
+
+const FAKE_API_ERRORS = [
+  { id: 'api-do-master', tenant_id: MASTER_TENANT },
+  { id: 'api-comum', tenant_id: OUTRO_TENANT },
+];
+
+type NullableTenantOr = ({ tenant_id: null } | { tenant_id: { notIn: string[] } })[];
+
+type AuditWhere = {
+  action: { in?: string[]; notIn?: string[] };
+  admin_user_id?: { notIn: string[] };
+  OR?: ({ target_tenant_id: null } | { target_tenant_id: { notIn: string[] } })[];
+};
+
+/**
+ * Avalia o where de verdade — inclusive o OR. Se a implementação trocar o OR
+ * por um `notIn` seco, as linhas de campo nulo somem e o teste pega.
+ */
+function matchAudit(where: AuditWhere) {
+  return FAKE_AUDIT.filter((r) => {
+    if (where.action.in && !where.action.in.includes(r.action)) return false;
+    if (where.action.notIn && where.action.notIn.includes(r.action)) return false;
+    if (where.admin_user_id && where.admin_user_id.notIn.includes(r.admin_user_id)) return false;
+    if (where.OR) {
+      const visible = where.OR.some((cond) =>
+        cond.target_tenant_id === null
+          ? r.target_tenant_id === null
+          : r.target_tenant_id !== null && !cond.target_tenant_id.notIn.includes(r.target_tenant_id),
+      );
+      if (!visible) return false;
+    }
+    return true;
+  });
+}
+
+function matchByTenant<T extends { tenant_id: string | null }>(rows: T[], or?: NullableTenantOr, notIn?: string[]) {
+  return rows.filter((r) => {
+    if (notIn && r.tenant_id !== null && notIn.includes(r.tenant_id)) return false;
+    if (or) {
+      return or.some((cond) =>
+        cond.tenant_id === null
+          ? r.tenant_id === null
+          : r.tenant_id !== null && !cond.tenant_id.notIn.includes(r.tenant_id),
+      );
+    }
+    return true;
+  });
+}
+
 /** Modelos que só participam do cascade de deleteTenant/deleteUser. */
 const CASCADE_MODELS = [
   'leadTag', 'leadActivity', 'task', 'notification', 'instanceLog', 'instanceHidden',
@@ -165,8 +232,15 @@ function makeService() {
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve(matchUsers({ id: where.id })[0] ?? null),
       ),
-      findMany: jest.fn(({ where }: { where: UserWhere }) =>
-        Promise.resolve(matchUsers(where).map((u) => ({ tenant_id: u.tenant_id }))),
+      // Honra o `select` porque protectedTenantIds pede tenant_id e
+      // protectedAdminIds pede id — devolver o campo errado quebraria o filtro.
+      findMany: jest.fn(({ where, select }: { where: UserWhere; select?: { id?: boolean; tenant_id?: boolean } }) =>
+        Promise.resolve(
+          matchUsers(where).map((u) => ({
+            ...(select?.id ? { id: u.id } : {}),
+            ...(select?.tenant_id ? { tenant_id: u.tenant_id } : {}),
+          })),
+        ),
       ),
       count: jest.fn(({ where }: { where: UserWhere }) => Promise.resolve(matchUsers(where).length)),
       update: jest.fn().mockResolvedValue({}),
@@ -188,7 +262,22 @@ function makeService() {
     announcement: {
       findMany: jest.fn(({ where }: { where: AnnouncementWhere }) => Promise.resolve(matchAnnouncements(where))),
     },
-    adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
+    adminAuditLog: {
+      create: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn(({ where }: { where: AuditWhere; take: number }) => Promise.resolve(matchAudit(where))),
+    },
+    webhookLog: {
+      ...cascade.webhookLog,
+      findMany: jest.fn(({ where }: { where: { OR?: NullableTenantOr }; take: number }) =>
+        Promise.resolve(matchByTenant(FAKE_WEBHOOK_ERRORS, where.OR)),
+      ),
+    },
+    apiRequestLog: {
+      ...cascade.apiRequestLog,
+      findMany: jest.fn(({ where }: { where: { OR?: NullableTenantOr; tenant_id?: { notIn: string[] } }; take: number }) =>
+        Promise.resolve(matchByTenant(FAKE_API_ERRORS, where.OR, where.tenant_id?.notIn)),
+      ),
+    },
     $transaction: jest.fn().mockResolvedValue([]),
   };
 
@@ -343,6 +432,59 @@ describe('deleteTenant — tenant protegido', () => {
     const { svc, prisma } = makeService();
     await expect(svc.deleteTenant(RESTRITO, OUTRO_TENANT)).resolves.toEqual({ ok: true });
     expect(prisma.$transaction).toHaveBeenCalled();
+  });
+});
+
+describe('logs — o master não pode aparecer nos logs do restrito', () => {
+  it('auditoria: some a linha feita pelo master e a linha com alvo protegido', async () => {
+    const { svc } = makeService();
+    const { admin_audit } = await svc.logs(RESTRITO);
+    expect(admin_audit.map((r) => r.id)).toEqual(['audit-sem-alvo', 'audit-comum']);
+  });
+
+  it('auditoria: linha sem target_tenant_id continua aparecendo', async () => {
+    const { svc } = makeService();
+    const { admin_audit } = await svc.logs(RESTRITO);
+    expect(admin_audit.map((r) => r.id)).toContain('audit-sem-alvo');
+  });
+
+  it('tentativas de login: some o login do master e o alvo protegido', async () => {
+    const { svc } = makeService();
+    const { login_attempts } = await svc.logs(RESTRITO);
+    expect(login_attempts.map((r) => r.id)).toEqual(['login-comum']);
+  });
+
+  it('erros de webhook: some o tenant protegido, fica o de tenant nulo', async () => {
+    const { svc } = makeService();
+    const { webhook_errors } = await svc.logs(RESTRITO);
+    expect(webhook_errors.map((r) => r.id)).toEqual(['wh-sem-tenant', 'wh-comum']);
+  });
+
+  it('erros de API: some o tenant protegido', async () => {
+    const { svc } = makeService();
+    const { api_errors } = await svc.logs(RESTRITO);
+    expect(api_errors.map((r) => r.id)).toEqual(['api-comum']);
+  });
+
+  it('master recebe tudo', async () => {
+    const { svc } = makeService();
+    const logs = await svc.logs(MASTER);
+    expect(logs.admin_audit.map((r) => r.id)).toEqual([
+      'audit-do-master', 'audit-alvo-protegido', 'audit-sem-alvo', 'audit-comum',
+    ]);
+    expect(logs.login_attempts.map((r) => r.id)).toEqual([
+      'login-do-master', 'login-alvo-protegido', 'login-comum',
+    ]);
+    expect(logs.webhook_errors.map((r) => r.id)).toEqual(['wh-do-master', 'wh-sem-tenant', 'wh-comum']);
+    expect(logs.api_errors.map((r) => r.id)).toEqual(['api-do-master', 'api-comum']);
+  });
+
+  it('filtra no banco — os take continuam 50/50/30/30', async () => {
+    const { svc, prisma } = makeService();
+    await svc.logs(RESTRITO);
+    expect(prisma.adminAuditLog.findMany.mock.calls.map((c) => c[0].take)).toEqual([50, 50]);
+    expect(prisma.webhookLog.findMany.mock.calls[0][0].take).toBe(30);
+    expect(prisma.apiRequestLog.findMany.mock.calls[0][0].take).toBe(30);
   });
 });
 

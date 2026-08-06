@@ -46,6 +46,12 @@ apps/api/src/generated/
 *.log
 logs/
 *.log.*
+# `logs/` é genérico demais: engoliria a rota /admin/logs do painel. Negar a
+# pasta (não os arquivos dentro) é o que faz o git voltar a descer nela.
+!apps/web/src/app/(dashboard)/admin/logs/
+
+# Rascunho dos agentes (relatórios, briefs, diffs de revisão).
+.superpowers/
 
 # ---- OS & editor ----
 .DS_Store

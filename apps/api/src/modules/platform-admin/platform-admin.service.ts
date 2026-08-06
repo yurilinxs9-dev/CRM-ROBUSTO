@@ -66,6 +66,19 @@ export class PlatformAdminService {
   }
 
   /**
+   * Ids dos admins de plataforma com escopo total. Uma linha de auditoria
+   * assinada por um deles denuncia o master ao admin restrito tanto quanto o
+   * uuid do tenant — daí a lista, no mesmo estilo de protectedTenantIds().
+   */
+  private async protectedAdminIds(): Promise<string[]> {
+    const masters = await this.prisma.user.findMany({
+      where: { ativo: true, is_platform_admin: true, platform_scopes: { has: '*' } },
+      select: { id: true },
+    });
+    return masters.map((m) => m.id);
+  }
+
+  /**
    * Escopo total ('*') lido do banco, não do JWT — revogar tem efeito imediato,
    * igual ao PlatformAdminGuard.
    */
@@ -174,24 +187,55 @@ export class PlatformAdminService {
   }
 
   // ---- Logs -----------------------------------------------------------------
-  async logs() {
+  /**
+   * Os logs são a porta dos fundos do painel: uma linha de auditoria assinada
+   * pelo master, ou um erro carimbado com o uuid do tenant dele, entrega o que
+   * listTenants/listAnnouncements escondem. Para quem não tem escopo total,
+   * essas linhas somem.
+   *
+   * Filtro no WHERE, nunca em memória — peneirar depois encolheria os take
+   * (50/50/30/30) e o restrito veria menos log do que tem direito.
+   *
+   * Em SQL `col NOT IN (...)` é NULL quando a coluna é NULL, e NULL não passa
+   * no WHERE: um `notIn` seco em target_tenant_id/tenant_id sumiria com as
+   * linhas sem tenant. Daí o OR explícito, igual ao listAnnouncements.
+   * `admin_user_id` e `ApiRequestLog.tenant_id` são NOT NULL no schema, então
+   * ali o notIn direto basta.
+   */
+  async logs(admin: AuthUser) {
+    const full = await this.hasFullScope(admin);
+    const [hiddenAdmins, hiddenTenants] = full
+      ? [[] as string[], [] as string[]]
+      : await Promise.all([this.protectedAdminIds(), this.protectedTenantIds()]);
+
+    const auditGuard = {
+      ...(hiddenAdmins.length ? { admin_user_id: { notIn: hiddenAdmins } } : {}),
+      ...(hiddenTenants.length
+        ? { OR: [{ target_tenant_id: null }, { target_tenant_id: { notIn: hiddenTenants } }] }
+        : {}),
+    };
+    const webhookGuard = hiddenTenants.length
+      ? { OR: [{ tenant_id: null }, { tenant_id: { notIn: hiddenTenants } }] }
+      : {};
+    const apiGuard = hiddenTenants.length ? { tenant_id: { notIn: hiddenTenants } } : {};
+
     const [adminAudit, loginAttempts, webhookErrors, apiUsage] = await Promise.all([
       this.prisma.adminAuditLog.findMany({
-        where: { action: { notIn: ['login_success', 'login_failed'] } },
+        where: { action: { notIn: ['login_success', 'login_failed'] }, ...auditGuard },
         orderBy: { created_at: 'desc' }, take: 50,
       }),
       this.prisma.adminAuditLog.findMany({
-        where: { action: { in: ['login_success', 'login_failed'] } },
+        where: { action: { in: ['login_success', 'login_failed'] }, ...auditGuard },
         orderBy: { created_at: 'desc' }, take: 50,
       }),
       this.prisma.webhookLog.findMany({
-        where: { error: { not: null } },
+        where: { error: { not: null }, ...webhookGuard },
         orderBy: { created_at: 'desc' },
         take: 30,
         select: { id: true, event: true, error: true, tenant_id: true, created_at: true },
       }),
       this.prisma.apiRequestLog.findMany({
-        where: { status_code: { gte: 400 } },
+        where: { status_code: { gte: 400 }, ...apiGuard },
         orderBy: { created_at: 'desc' },
         take: 30,
         select: { id: true, tenant_id: true, method: true, path: true, status_code: true, created_at: true },

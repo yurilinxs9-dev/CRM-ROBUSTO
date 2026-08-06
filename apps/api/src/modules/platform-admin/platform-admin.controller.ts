@@ -57,8 +57,8 @@ export class PlatformAdminController {
 
   @Get('logs')
   @PlatformScopes('logs')
-  logs() {
-    return this.svc.logs();
+  logs(@Req() req: Request) {
+    return this.svc.logs(this.user(req));
   }
 
   @Get('health')
