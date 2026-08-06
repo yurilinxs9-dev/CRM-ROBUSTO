@@ -61,6 +61,11 @@ const updateLeadSchema = z.object({
   email: z.string().email().optional().nullable(),
   temperatura: z.enum(['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']).optional(),
   valor_estimado: z.string().optional().nullable(),
+  // Colunas antigas do lead, agora editáveis porque aparecem na ficha como
+  // campos nativos (ver NATIVE_FIELDS em field-schema.ts). Sem isto o painel
+  // mandaria o valor e o backend descartaria em silêncio.
+  empresa: z.string().max(120).optional().nullable(),
+  cargo: z.string().max(80).optional().nullable(),
   responsavel_id: z.string().uuid().optional(),
   tags: z.array(z.string()).optional(),
   // Campos customizados por tenant — validados contra CustomFieldDef ativas.
@@ -817,6 +822,8 @@ export class LeadsService {
         email: true,
         temperatura: true,
         valor_estimado: true,
+        empresa: true,
+        cargo: true,
         tags: true,
         dados_custom: true,
       },
@@ -832,6 +839,8 @@ export class LeadsService {
     if (parsed.email !== undefined) updateData.email = parsed.email ?? null;
     if (parsed.temperatura !== undefined) updateData.temperatura = parsed.temperatura;
     if (parsed.valor_estimado !== undefined) updateData.valor_estimado = parsed.valor_estimado ?? null;
+    if (parsed.empresa !== undefined) updateData.empresa = parsed.empresa ?? null;
+    if (parsed.cargo !== undefined) updateData.cargo = parsed.cargo ?? null;
     if (parsed.responsavel_id !== undefined) updateData.responsavel_id = parsed.responsavel_id;
     if (parsed.tags !== undefined) updateData.tags = parsed.tags;
     if (parsed.dados_custom !== undefined) {

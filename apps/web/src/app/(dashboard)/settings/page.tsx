@@ -5,7 +5,6 @@ import {
   Users,
   Tag,
   Settings2,
-  ListChecks,
   Copy,
   Webhook,
   KeyRound,
@@ -19,7 +18,6 @@ import { SectorsTab } from './components/SectorsTab';
 import { GeneralTab } from './components/GeneralTab';
 import { WebhooksTab } from './components/WebhooksTab';
 import { ApiKeysTab } from './components/ApiKeysTab';
-import { CustomFieldsTab } from './components/CustomFieldsTab';
 import { DuplicatesTab } from './components/DuplicatesTab';
 
 const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
@@ -54,11 +52,6 @@ export default function SettingsPage() {
             </TabsTrigger>
           )}
           {canManageTeam && (
-            <TabsTrigger value="custom-fields" className="gap-1.5">
-              <ListChecks size={14} /> Campos
-            </TabsTrigger>
-          )}
-          {canManageTeam && (
             <TabsTrigger value="duplicates" className="gap-1.5">
               <Copy size={14} /> Duplicados
             </TabsTrigger>
@@ -90,11 +83,6 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="general">
             <GeneralTab />
-          </TabsContent>
-        )}
-        {canManageTeam && (
-          <TabsContent value="custom-fields">
-            <CustomFieldsTab />
           </TabsContent>
         )}
         {canManageTeam && (

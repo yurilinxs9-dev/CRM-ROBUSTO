@@ -364,7 +364,22 @@ export function buildPayload(defs: FieldDef[], values: Record<string, unknown>):
 
 Este é o único código de frontend com teste unitário. Cobrir: nativo vs custom, campo invisível fora do payload, `api_only` nunca no payload.
 
-- [ ] Task 6 concluída
+**Descoberta na execução:** `updateLeadSchema` não é uniforme, e `buildPayload`
+teve de virar o lugar onde isso é resolvido:
+- `valor_estimado` é `z.string()` — mandar número dá 400. Sai como `"1234.56"`.
+- `nome` e `telefone` têm `min()` e não aceitam `null`; vazio é **omitido**, não
+  anulado. Mandar `nome: ''` derrubaria o save inteiro, inclusive os campos que
+  estavam válidos.
+- `temperatura` é enum: vazio também é omitido.
+
+**Furo corrigido:** `empresa` e `cargo` estavam em `NATIVE_FIELDS` mas não
+existiam em `updateLeadSchema` — editá-los pelo painel seria descartado em
+silêncio. Adicionados ao schema, ao `updateData` e ao `select` da detecção de
+mudança (senão não entrariam no log de atividade).
+
+**Verificação:** 22 testes.
+
+- [x] Task 6 concluída
 
 ---
 
@@ -377,7 +392,11 @@ Este é o único código de frontend com teste unitário. Cobrir: nativo vs cust
 
 `FieldGroupList` — recebe escopo e registro, renderiza grupos como seções com os campos dentro, respeitando `visible` e `ordem`.
 
-- [ ] Task 7 concluída
+**Adicionado além do previsto:** `FieldGroupView`, versão somente leitura no
+mesmo arquivo, usada pelo painel do chat. Sem ela, o chat continuaria com cinco
+campos fixos ou exigiria uma segunda cópia da lógica de save.
+
+- [x] Task 7 concluída
 
 ---
 
@@ -390,9 +409,12 @@ Este é o único código de frontend com teste unitário. Cobrir: nativo vs cust
 
 Réplica do print: abas de grupo no topo com `+` para criar grupo; lista de campos com handle `⠿` (`@dnd-kit/sortable`, mesmo padrão do Kanban); os três blocos "Campos do lead" / "Campo do contato" / "Campos da empresa"; "Adicionar campo" ao fim de cada bloco.
 
-Renomear grava só `nome` — a `key` **não** muda, então nenhum valor já gravado se perde. Drop dispara `POST /custom-fields/reorder`. Visível só para `GERENTE`/`SUPER_ADMIN`.
+Renomear grava só `nome` — a `key` **não** muda, então nenhum valor já gravado se perde. Drop dispara `POST /custom-fields/reorder` com a lista inteira reindexada (o backend recebe a posição final, não um swap). Visível só para `GERENTE`/`SUPER_ADMIN`.
 
-- [ ] Task 8 concluída
+Campo nativo aparece com cadeado e sem botão de remover — só o de esconder. A
+aba `Campos` de `/settings` e o `CustomFieldsTab.tsx` foram removidos.
+
+- [x] Task 8 concluída
 
 ---
 
@@ -410,18 +432,39 @@ Abas via Radix `Tabs`:
 
 A `lead-details-sheet` do chat hoje não renderiza campo customizado nenhum — passa a usar os mesmos componentes. Preservar o autosave/`mark()` e o botão Desfazer que já existem no drawer do Kanban.
 
-- [ ] Task 9 concluída
+**Executado.** O drawer do Kanban virou editável e guiado pelo schema; o painel
+do chat ficou **somente leitura** de propósito (`FieldGroupView`), compartilhando
+a queryKey `['lead', id]` com o drawer. Duplicar a edição significaria duas
+cópias da lógica de save.
+
+**Detalhe de TypeScript:** `LeadDetail` teve de virar `type` em vez de
+`interface` — só alias de objeto recebe index signature implícita, e sem ela o
+compilador recusa passar o lead para `readValue`/`initialValues`.
+
+**Mídia:** confirmado que não existe endpoint de listagem de mídias da conversa.
+A aba entrega um aviso explícito em vez de uma chamada inventada.
+
+- [x] Task 9 concluída
 
 ---
 
 ## Verificação final
 
-- [ ] `cd apps/api && npx jest --verbose` — ≥ 20 suites, todas verdes
-- [ ] `cd apps/web && npx tsc --noEmit` — limpo
-- [ ] `npm run lint` — limpo, zero `any` em produção
-- [ ] `grep -i 'ALTER TABLE "Lead"' apps/api/prisma/manual-migrations/20260805_kommo_fields.sql` — vazio
-- [ ] `SELECT count(*) FROM "Lead"` idêntico ao de antes da migration
-- [ ] Tenant novo: painel abre com só os nativos, nenhum campo de negócio
-- [ ] Criar campo no tenant A não aparece no tenant B
-- [ ] Renomear campo preenchido não perde valor
-- [ ] Lead antigo (pré-migration) abre normalmente, bloco Contato vazio
+- [x] `cd apps/api && npx jest` — **28 suites / 344 testes**, verdes
+- [x] `cd apps/web && npx jest` — **3 suites / 49 testes**, verdes
+- [x] `tsc --noEmit` limpo nos dois apps
+- [x] `eslint` sem erros; zero `any` em produção
+- [x] `npm run build` no `apps/web` — é o build que a Vercel publica
+- [x] Gate `ALTER TABLE "Lead"` no SQL da migration — **0** (com `sed` removendo comentários)
+- [x] `Lead` em 7587 antes e depois da migration; `Contact`/`Company`/`LeadContact` criadas e vazias
+- [x] Bootstrap rodado contra o banco REAL em transação revertida: 3 grupos, 17
+      nativos, 0 órfãos sem grupo
+- [x] Cadeia lead→contato→empresa validada contra o banco REAL, com o mesmo
+      `include` do `findOne`; cascade apaga o vínculo e **preserva o lead**
+
+### Falta fazer (fora do código)
+
+- [ ] `bash scripts/deploy.sh` — subir o backend no VPS. **A Vercel não faz isso**;
+      ela só publica o `apps/web`.
+- [ ] Conferir na tela, com um tenant real, que a ficha abre com os nativos e que
+      o editor cria e reordena campo.
