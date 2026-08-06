@@ -177,20 +177,45 @@ describe('LeadsService.create — deriva pipeline_id e instancia_whatsapp quando
     expect(prisma.lead.create.mock.calls[0][0].data.pipeline_id).toBe(LEGACY_PIPELINE_ID);
   });
 
-  it('modo Individual sem instancia conectada para o usuario: rejeita com BadRequestException', async () => {
+  /**
+   * Regra invertida de proposito. Antes, criar lead sem numero conectado dava
+   * BadRequestException — e o efeito era que um tenant sem WhatsApp nao
+   * conseguia usar o CRM como CRM: 18 dos 38 tenants em producao estavam nessa
+   * situacao. Existe empresa que quer so o funil, sem chat.
+   *
+   * WhatsApp e requisito para ENVIAR MENSAGEM, nao para cadastrar lead. Essa
+   * verificacao vive em messages.service, que ja resolve instancia com fallback
+   * e recusa o envio com mensagem propria quando nao ha nenhuma.
+   */
+  it('modo Individual sem instancia conectada: CRIA o lead, com instancia vazia', async () => {
     const { service, prisma } = makeService();
     prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
     prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
     prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID });
     prisma.whatsappInstance.findFirst.mockResolvedValue(null);
 
-    await expect(
-      service.create(
-        { nome: 'Novo Contato', telefone: '+5531999999999', estagio_id: ESTAGIO_ID },
-        operador,
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.lead.create).not.toHaveBeenCalled();
+    await service.create(
+      { nome: 'Novo Contato', telefone: '+5531999999999', estagio_id: ESTAGIO_ID },
+      operador,
+    );
+
+    expect(prisma.lead.create).toHaveBeenCalledTimes(1);
+    expect(prisma.lead.create.mock.calls[0][0].data.instancia_whatsapp).toBe('');
+  });
+
+  it('modo Compartilhado sem nenhuma instancia viva: tambem cria', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: true });
+    prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID });
+    prisma.whatsappInstance.findFirst.mockResolvedValue(null);
+
+    await service.create(
+      { nome: 'Novo Contato', telefone: '+5531999999999', estagio_id: ESTAGIO_ID },
+      operador,
+    );
+
+    expect(prisma.lead.create).toHaveBeenCalledTimes(1);
+    expect(prisma.lead.create.mock.calls[0][0].data.instancia_whatsapp).toBe('');
   });
 
   it('modo Compartilhado: resolve uma instancia VIVA do tenant, nao a do usuario', async () => {

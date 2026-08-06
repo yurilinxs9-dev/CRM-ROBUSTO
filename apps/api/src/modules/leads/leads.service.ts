@@ -541,8 +541,15 @@ export class LeadsService {
       user.role === UserRole.VISUALIZADOR
     ) {
       const ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-      const accessible = lead.responsavel_id === user.id ||
-        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
+      // Lead sem instância (tenant que usa só o CRM, sem WhatsApp) não pode ser
+      // barrado pela regra de "dono da instância" — não existe instância para
+      // possuir. Sem isso ele apareceria na lista e daria 403 ao ser aberto,
+      // já que buildVisibilityWhere não filtra por instância.
+      const semInstancia = !lead.instancia_whatsapp;
+      const accessible =
+        lead.responsavel_id === user.id ||
+        (semInstancia && lead.responsavel_id === null) ||
+        (!!lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
       if (!accessible) throw new ForbiddenException();
     }
     return lead;
@@ -608,26 +615,27 @@ export class LeadsService {
    * (Lead.instancia_whatsapp e NOT NULL; lead sem instancia e lead que
    * ninguem consegue mandar mensagem).
    */
+  /**
+   * Instância de WhatsApp para um lead novo, ou string vazia quando o tenant
+   * não tem nenhuma.
+   *
+   * Antes isto LANÇAVA quando não havia número conectado, e o efeito era que
+   * um tenant sem WhatsApp não conseguia criar lead nenhum — nem usar o CRM
+   * como CRM. Em produção isso valia para 18 dos 38 tenants. Ter WhatsApp é
+   * requisito para MANDAR MENSAGEM, não para cadastrar um lead no funil; a
+   * verificação certa é na hora do envio, e `messages.service` já a faz, com
+   * fallback e mensagem clara.
+   */
   private async resolveDefaultInstance(user: AuthUser, poolEnabled: boolean): Promise<string> {
     if (!poolEnabled) {
       const owned = await this.findOwnedInstance(user.id, user.tenantId);
-      if (!owned) {
-        throw new BadRequestException(
-          'Voce ainda nao conectou um numero de WhatsApp. Conecte um numero antes de iniciar uma conversa.',
-        );
-      }
-      return owned.nome;
+      return owned?.nome ?? '';
     }
     const liveInstance = await this.prisma.whatsappInstance.findFirst({
       where: { tenant_id: user.tenantId, status: { in: LIVE_INSTANCE_STATUSES } },
       orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
     });
-    if (!liveInstance) {
-      throw new BadRequestException(
-        'Nenhum numero de WhatsApp conectado no momento. Conecte um numero antes de iniciar uma conversa.',
-      );
-    }
-    return liveInstance.nome;
+    return liveInstance?.nome ?? '';
   }
 
   /**
