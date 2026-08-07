@@ -49,6 +49,8 @@ import {
   TEMP_LABELS,
 } from '@/components/kanban/lead-card';
 import { StageColumn, type Stage } from '@/components/kanban/stage-column';
+import { LeadFilterPanel } from '@/components/kanban/lead-filter-panel';
+import { FILTROS_VAZIOS, toQueryParams, type LeadPanelFilters } from '@/lib/lead-filters';
 import {
   NewLeadDialog,
   type NewLeadFormData,
@@ -210,7 +212,18 @@ export default function KanbanPage() {
   );
 
   // --- Leads ---
-  const leadsQueryKey = useMemo(() => ['leads', activePipelineId] as const, [activePipelineId]);
+  // Filtros do painel lateral. Ao contrário de searchTerm/tempFilter (que
+  // recortam no cliente o que já foi baixado), estes viram query params e o
+  // recorte acontece no banco — é o único jeito de o filtro estar certo num
+  // board que carrega em janela de 50 por coluna.
+  const [panelFilters, setPanelFilters] = useState<LeadPanelFilters>(FILTROS_VAZIOS);
+  const panelParams = useMemo(() => toQueryParams(panelFilters), [panelFilters]);
+
+  // panelParams entra na chave: mudou filtro, é outra consulta ao servidor.
+  const leadsQueryKey = useMemo(
+    () => ['leads', activePipelineId, panelParams] as const,
+    [activePipelineId, panelParams],
+  );
 
   // Janela por coluna: servidor manda top-50 de cada estágio + contagem/valor
   // totais por estágio. Board de 2k+ leads deixa de baixar tudo de uma vez.
@@ -221,7 +234,7 @@ export default function KanbanPage() {
     queryFn: async () => {
       if (!activePipelineId) return { leads: [], stage_counts: {}, stage_values: {} };
       const res = await api.get('/api/leads', {
-        params: { pipeline_id: activePipelineId, per_stage: String(PER_STAGE) },
+        params: { pipeline_id: activePipelineId, per_stage: String(PER_STAGE), ...panelParams },
       });
       return res.data;
     },
@@ -254,6 +267,9 @@ export default function KanbanPage() {
             estagio_id: stageId,
             limit: String(PER_STAGE),
             offset: String(loaded),
+            // Sem isto, "Carregar mais" traria a próxima página SEM filtro e
+            // misturaria na coluna leads que o filtro tinha excluído.
+            ...panelParams,
           },
         });
         const page = res.data as Lead[];
@@ -268,7 +284,7 @@ export default function KanbanPage() {
         setLoadingMoreStage(null);
       }
     },
-    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey],
+    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey, panelParams],
   );
 
   const selectAllInStage = useCallback(
@@ -899,6 +915,7 @@ export default function KanbanPage() {
             className="pl-8 h-9"
           />
         </div>
+        <LeadFilterPanel value={panelFilters} onChange={setPanelFilters} />
         <Select value={tempFilter} onValueChange={(v) => setTempFilter(v as Temperatura | 'ALL')}>
           <SelectTrigger className="h-9 w-40">
             <SelectValue />

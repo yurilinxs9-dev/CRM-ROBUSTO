@@ -16,6 +16,35 @@ export class TagsService {
   }
 
   /**
+   * Catálogo do tenant com quantos leads carregam cada tag — o número ao lado
+   * do nome no painel de filtros.
+   *
+   * A contagem sai de `Lead.tags`, que é jsonb (array de strings), e NÃO de
+   * LeadTag: quem grava é a ficha do lead, e a tabela de junção está vazia na
+   * prática. `jsonb_exists` é a forma-função do operador `?`, que não dá para
+   * usar em $queryRaw — o `?` colidiria com o placeholder de parâmetro.
+   *
+   * `jsonb_typeof = 'array'` é defensivo. Hoje todos os leads têm array, mas a
+   * coluna aceita qualquer Json e um objeto solto derrubaria a query inteira.
+   *
+   * Tag sem lead nenhum aparece com 0 — sumir da lista esconderia justamente a
+   * tag recém-criada que o usuário quer aplicar.
+   */
+  async findAllWithCounts(user: AuthUser) {
+    return this.prisma.$queryRaw<Array<{ id: string; nome: string; cor: string; total: number }>>`
+      SELECT t.id, t.nome, t.cor,
+             (SELECT COUNT(*)::int
+                FROM "Lead" l
+               WHERE l.tenant_id = t.tenant_id
+                 AND jsonb_typeof(l.tags) = 'array'
+                 AND jsonb_exists(l.tags, t.nome)) AS total
+        FROM "Tag" t
+       WHERE t.tenant_id = ${user.tenantId}
+       ORDER BY t.nome ASC
+    `;
+  }
+
+  /**
    * Idempotente de propósito. O seletor de tags do lead cria a tag no mesmo
    * gesto em que o usuário digita um nome novo, e dois atendentes digitando a
    * mesma tag ao mesmo tempo é o caso normal, não a exceção. Com `create` puro

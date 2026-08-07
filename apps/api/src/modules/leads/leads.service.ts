@@ -19,6 +19,7 @@ import { AssignmentService } from '../queue/assignment.service';
 import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
+import { applyPanelFilters } from './lead-filters';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -151,6 +152,15 @@ interface LeadFilters {
   scope?: string;
   unread?: string;
   per_stage?: string;
+  /** Nomes separados por vírgula. Casa lead que tenha QUALQUER uma (OR). */
+  tags?: string;
+  /** Criação do lead, ISO. `to` é inclusivo no dia inteiro (ver parseDiaFinal). */
+  created_from?: string;
+  created_to?: string;
+  valor_min?: string;
+  valor_max?: string;
+  /** 'sem' = nenhuma tarefa pendente · 'atrasada' = pendente com prazo vencido. */
+  tarefa?: string;
 }
 
 export interface ExportLeadFilters {
@@ -382,6 +392,12 @@ export class LeadsService {
       ];
       mergeSearchCondition(where, searchCondition);
     }
+
+    // Filtros do painel lateral. Todos entram DEPOIS do merge da busca, via
+    // pushAnd, porque mergeSearchCondition só sabe combinar dois OR — um
+    // terceiro (o de tags) sobrescreveria os anteriores em silêncio, e filtro
+    // que devolve lead a mais é pior que filtro que não existe.
+    applyPanelFilters(where, filters);
 
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
     const cached = await this.cache.get<unknown>(cacheKey);
