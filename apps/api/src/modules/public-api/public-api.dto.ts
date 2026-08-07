@@ -31,6 +31,10 @@ export const createContactSchema = z.object({
   phone: z.string().min(8).max(30),
   email: z.string().email().optional(),
   tags: z.array(z.string().min(1).max(50)).max(20).optional(),
+  // Chave → valor dos campos personalizados do tenant. As chaves são as de
+  // GET /v1/custom-fields; o valor é validado e convertido contra a definição
+  // do campo (mesma rotina que a ficha do lead usa), não gravado cru.
+  dados_custom: z.record(z.unknown()).optional(),
 });
 
 export const conversationMessagesQuerySchema = z.object({
@@ -42,10 +46,16 @@ export const updateContactSchema = z
     name: z.string().min(1).max(200).optional(),
     email: z.string().email().nullable().optional(),
     tags: z.array(z.string().min(1).max(50)).max(50).optional(),
+    dados_custom: z.record(z.unknown()).optional(),
   })
-  .refine((d) => d.name !== undefined || d.email !== undefined || d.tags !== undefined, {
-    message: 'Nada para atualizar (envie name, email ou tags)',
-  });
+  .refine(
+    (d) =>
+      d.name !== undefined ||
+      d.email !== undefined ||
+      d.tags !== undefined ||
+      d.dados_custom !== undefined,
+    { message: 'Nada para atualizar (envie name, email, tags ou dados_custom)' },
+  );
 
 export const listConversationsQuerySchema = z.object({
   status: z.enum(['open', 'pending', 'resolved', 'OPEN', 'PENDING', 'RESOLVED']).optional(),

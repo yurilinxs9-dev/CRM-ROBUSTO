@@ -4,10 +4,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConversationStatus } from '@prisma/client';
+import { ConversationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
 import { LeadsService } from '../leads/leads.service';
+import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
@@ -55,7 +56,32 @@ export class PublicApiService {
     private readonly messages: MessagesService,
     private readonly leads: LeadsService,
     private readonly gateway: CrmGateway,
+    private readonly customFields: CustomFieldsService,
   ) {}
+
+  /**
+   * Campos personalizados de LEAD do tenant — as chaves que `dados_custom`
+   * aceita, com tipo e opções.
+   *
+   * Existe para a integração poder DESCOBRIR o contrato em vez de adivinhar:
+   * sem isto, quem monta um fluxo no n8n só descobre o nome da chave errando e
+   * lendo a mensagem do 400. Inclui os `api_only`, que são invisíveis na ficha
+   * mas graváveis por aqui — é justamente o caso de uso do badge "Apenas API".
+   */
+  async listCustomFields(tenantId: string) {
+    const defs = await this.prisma.customFieldDef.findMany({
+      where: { tenant_id: tenantId, active: true, escopo: 'LEAD', native_key: null },
+      orderBy: [{ ordem: 'asc' }, { created_at: 'asc' }],
+      select: {
+        key: true,
+        nome: true,
+        tipo: true,
+        options: true,
+        api_only: true,
+      },
+    });
+    return { data: defs };
+  }
 
   // ---- Contatos (Leads) -----------------------------------------------------
 
@@ -113,6 +139,16 @@ export class PublicApiService {
       select: { nome: true },
     });
 
+    // `fromPublicApi: true` libera os campos marcados "Apenas API" — o badge
+    // existe para isto: invisível na ficha, gravável pela integração. Chave
+    // desconhecida ou valor de tipo errado vira 400 com o nome do campo, em vez
+    // de entrar cru no Json e aparecer torto na ficha depois.
+    const dadosCustom = d.dados_custom
+      ? await this.customFields.validateValues(d.dados_custom, tenantId, 'LEAD', {
+          fromPublicApi: true,
+        })
+      : undefined;
+
     const phone = d.phone.replace(/\D/g, '') || d.phone;
     const lead = await this.prisma.lead.create({
       data: {
@@ -120,6 +156,7 @@ export class PublicApiService {
         telefone: phone,
         email: d.email ?? null,
         tags: d.tags ?? [],
+        ...(dadosCustom ? { dados_custom: dadosCustom as Prisma.InputJsonObject } : {}),
         origem: 'MANUAL',
         tenant_id: tenantId,
         pipeline_id: pipeline.id,
@@ -158,6 +195,24 @@ export class PublicApiService {
     if (d.name !== undefined) data.nome = d.name;
     if (d.email !== undefined) data.email = d.email;
     if (d.tags !== undefined) data.tags = d.tags;
+    if (d.dados_custom !== undefined) {
+      // MERGE, não substituição: o PATCH manda só os campos que mudaram, e
+      // trocar o Json inteiro apagaria em silêncio tudo o que não veio no corpo.
+      const atual = await this.prisma.lead.findFirst({
+        where: { id, tenant_id: tenantId },
+        select: { dados_custom: true },
+      });
+      const validados = await this.customFields.validateValues(
+        d.dados_custom,
+        tenantId,
+        'LEAD',
+        { fromPublicApi: true },
+      );
+      data.dados_custom = {
+        ...((atual?.dados_custom as Record<string, unknown> | null) ?? {}),
+        ...validados,
+      } as Prisma.InputJsonObject;
+    }
 
     const updated = await this.prisma.lead.update({ where: { id }, data, select: CONTACT_SELECT });
     this.gateway.emitLeadUpdated(id, data, tenantId);

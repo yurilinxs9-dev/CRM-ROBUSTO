@@ -64,6 +64,13 @@ export class PublicApiController {
     return this.svc.getContact(this.tenantId(req), id);
   }
 
+  // 2.1a — Campos personalizados do tenant (as chaves de `dados_custom`)
+  @Get('custom-fields')
+  @RequireScopes('contacts:read')
+  listCustomFields(@Req() req: ApiRequest) {
+    return this.svc.listCustomFields(this.tenantId(req));
+  }
+
   // 2.1b — Criar contato
   @Post('users')
   @HttpCode(201)

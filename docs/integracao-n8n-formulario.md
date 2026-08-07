@@ -64,7 +64,7 @@ este fluxo bastam:
 | `Code in JavaScript6/7/8` | desnecessários | ✅ somem |
 | Tag por `{"id": 7618}` | `"tags": ["JG - TRAFEGO PAGO"]` — **por nome** | ✅ |
 | `pipeline_id` / `status_id` por ID | **sem equivalente** | ❌ §5 |
-| `custom_fields_values` por `field_id` | **sem equivalente** | ❌ §5 |
+| `custom_fields_values` por `field_id` | `dados_custom` por **chave** | ✅ §5.2 |
 | `Append or update row in sheet1` (`n8n=ok`) | igual, não muda | ✅ |
 | `Wait1` (3s) | ver §6 | ⚠️ |
 
@@ -145,25 +145,55 @@ Se o primeiro funil do tenant já for o "Novo Lead", o comportamento bate com o
 do fluxo atual por coincidência de ordenação — mas passa a depender de ninguém
 reordenar os funis. Vale conferir antes de migrar.
 
-### 5.2 Campos personalizados
+### 5.2 ~~Campos personalizados~~ — resolvido
+
+> Era o bloqueio para migrar. `dados_custom` passou a ser aceito na API pública.
 
 O fluxo Kommo preenche nove campos por `field_id` (481468 nome, 481470 telefone,
 481472 cidade, 481480 modelo/ano, 818566 o que busca, 818568 preocupação, 818570
 urgência, 597026 e-mail, 818634 anúncio).
 
-O CRM tem a estrutura equivalente — `CustomFieldDef` por tenant e
-`Lead.dados_custom` — e o Porto Sul já tem 23 campos definidos. **Mas
-`createContactSchema` não aceita `dados_custom`**, então hoje esses valores não
-têm como entrar pela API pública. Nome, telefone e e-mail entram porque são
-colunas próprias; o resto (cidade, modelo/ano, as três perguntas do formulário,
-anúncio) se perderia na migração.
+Aqui não se usa id numérico: cada campo tem uma **chave** estável (slug), e o
+valor vai num objeto `dados_custom`.
 
-**O que faltaria:** aceitar `dados_custom` no `createContactSchema` e passar pelo
-`customFields.validateValues` (a mesma validação que `leads.service.create` já
-usa), mais um `GET /api/v1/custom-fields` para o n8n descobrir as chaves. É
-trabalho pequeno e contido — mas é trabalho, e precisa ser feito **antes** de
-desligar o Kommo, senão o formulário passa a chegar sem os dados que o vendedor
-usa para atender.
+**Descobrir as chaves:**
+
+```
+GET /api/v1/custom-fields
+Authorization: Bearer <api-key>       (escopo contacts:read)
+```
+
+```json
+{
+  "data": [
+    { "key": "cidade", "nome": "Cidade", "tipo": "text", "options": null, "api_only": false }
+  ]
+}
+```
+
+**Usar no POST:**
+
+```json
+{
+  "name": "...", "phone": "...", "email": "...",
+  "tags": ["JG - TRAFEGO PAGO"],
+  "dados_custom": {
+    "cidade": "{{ $json.City }}",
+    "modelo_ano": "{{ $json['Qual o MODELO e ANO do seu veículo?'] }}"
+  }
+}
+```
+
+O valor é validado e convertido contra a definição do campo — a mesma rotina que
+a ficha do lead usa (`customFields.validateValues`). Chave que não existe, ou
+valor de tipo errado, vira `400` **com o nome do campo**, em vez de entrar cru
+no Json e aparecer torto na ficha uma semana depois.
+
+Campos marcados **"Apenas API"** (`api_only`) são graváveis por aqui e bloqueados
+na UI — é exatamente o caso de uso do badge.
+
+`PATCH /api/v1/users/:id` também aceita `dados_custom`, e **mescla** com o que já
+está gravado: mandar só `{"modelo_ano": "..."}` não apaga `cidade`.
 
 ---
 
@@ -216,5 +246,11 @@ Google Sheets Trigger → Filter (n8n ≠ ok) → Loop
 De 16 nós para ~8. Os três `Code in JavaScript` somem porque a resposta já vem
 estruturada, e o par contato/lead vira uma chamada só.
 
-**Bloqueio para migrar:** §5.2. Sem `dados_custom` na API pública, as respostas
-do formulário não chegam no lead.
+**Antes de migrar, confira duas coisas:**
+
+1. Rode `GET /api/v1/custom-fields` no tenant de destino e confira se as chaves
+   dos nove campos do formulário existem. Se algum não existir, crie em
+   Configurações → Campos personalizados **antes** de ligar o fluxo.
+2. Confira qual é o primeiro funil por `ordem` (§5.1) — é onde o lead vai cair.
+
+Workflow pronto para importar: `docs/n8n/novo-formulario-crm.json`.

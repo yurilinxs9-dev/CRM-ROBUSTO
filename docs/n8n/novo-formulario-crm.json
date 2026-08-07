@@ -1,0 +1,349 @@
+{
+  "name": "NOVO FORMULÁRIO — CRM",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "NOVO FORMULÁRIO → CRM\n\nSubstitui o fluxo do Kommo. Diferenças:\n• contato E lead são a mesma entidade: POST /v1/users cria os dois de uma vez\n• os nós Code sumiram — a resposta já vem estruturada, sem JSON.parse\n• tag vai por NOME, não por id\n• campos personalizados vão em dados_custom, por CHAVE\n\nANTES DE ATIVAR:\n1. Crie a credencial 'CRM API' (Header Auth: Authorization = Bearer SUA_CHAVE)\n2. Ajuste CRM_URL no nó 'trata dados'\n3. Rode GET /api/v1/custom-fields e confira as chaves em 'dados_custom'\n   do nó 'cria lead no CRM' — as deste template são um palpite.",
+        "height": 620,
+        "width": 2300,
+        "color": "#1D2D3A"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [-288, -64],
+      "typeVersion": 1,
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/10HzXgXtwzeNmTVF_8KDyd_86eh1JsuDcxodHpSaj7XA/edit?usp=sharing",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 921836306,
+          "mode": "list",
+          "cachedResultName": "novo forms"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [-224, 304],
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Google Sheets Trigger",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": { "id": "si8O4vabNytbHTVX", "name": "Api Sheets" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.n8n }}",
+              "rightValue": "ok",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [-16, 304],
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Filter"
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [208, 304],
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000001",
+              "name": "CRM_URL",
+              "value": "https://SEU_DOMINIO/api/v1",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000002",
+              "name": "Full name",
+              "value": "={{ $json[\"Full name\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000003",
+              "name": "Phone number",
+              "value": "={{ $json[\"Phone number\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000004",
+              "name": "Email",
+              "value": "={{ $json.Email }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000005",
+              "name": "City",
+              "value": "={{ $json.City }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000006",
+              "name": "Anuncio",
+              "value": "={{ $json.Anuncio }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000007",
+              "name": "modelo_ano",
+              "value": "={{ $json[\"Qual o MODELO e ANO do seu veículo?\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000008",
+              "name": "o_que_busca",
+              "value": "={{ $json[\"O que você busca em uma proteção veicular?\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000009",
+              "name": "preocupacao",
+              "value": "={{ $json[\"qual é a sua maior preocupação quando sai com o carro na rua?\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c1000000-0000-4000-8000-000000000010",
+              "name": "urgencia",
+              "value": "={{ $json[\"qual o seu nível de urgência para ativar essa proteção e andar tranquilo\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [432, 320],
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "trata dados"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('trata dados').item.json.CRM_URL }}/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "phone", "value": "={{ $('trata dados').item.json['Phone number'] }}" }
+          ]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [688, 320],
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "busca por telefone",
+      "credentials": { "httpHeaderAuth": { "id": "CRM_API_KEY", "name": "CRM API" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [912, 320],
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Achou por telefone?"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('trata dados').item.json.CRM_URL }}/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "email", "value": "={{ $('trata dados').item.json.Email }}" }]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1136, 432],
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "busca por email",
+      "credentials": { "httpHeaderAuth": { "id": "CRM_API_KEY", "name": "CRM API" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d1000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1360, 432],
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Achou por email?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('trata dados').item.json.CRM_URL }}/users",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "=form-{{ $('trata dados').item.json['Phone number'] }}"
+            },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\":  \"{{ $('trata dados').item.json['Full name'] }}\",\n  \"phone\": \"{{ $('trata dados').item.json['Phone number'] }}\",\n  \"email\": \"{{ $('trata dados').item.json.Email }}\",\n  \"tags\":  [\"JG - TRAFEGO PAGO\"],\n  \"dados_custom\": {\n    \"cidade\":      \"{{ $('trata dados').item.json.City }}\",\n    \"modelo_ano\":  \"{{ $('trata dados').item.json.modelo_ano }}\",\n    \"o_que_busca\": \"{{ $('trata dados').item.json.o_que_busca }}\",\n    \"preocupacao\": \"{{ $('trata dados').item.json.preocupacao }}\",\n    \"urgencia\":    \"{{ $('trata dados').item.json.urgencia }}\",\n    \"anuncio\":     \"{{ $('trata dados').item.json.Anuncio }}\"\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1584, 544],
+      "id": "a1000000-0000-4000-8000-000000000010",
+      "name": "cria lead no CRM",
+      "credentials": { "httpHeaderAuth": { "id": "CRM_API_KEY", "name": "CRM API" } }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/10HzXgXtwzeNmTVF_8KDyd_86eh1JsuDcxodHpSaj7XA/edit?usp=sharing",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 921836306,
+          "mode": "list",
+          "cachedResultName": "novo forms"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Phone number": "={{ $('trata dados').item.json['Phone number'] }}",
+            "n8n": "ok"
+          },
+          "matchingColumns": ["Phone number"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1856, 320],
+      "id": "a1000000-0000-4000-8000-000000000011",
+      "name": "marca n8n = ok",
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "tcJjJWp05aqkbDHi", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "Google Sheets Trigger": {
+      "main": [[{ "node": "Filter", "type": "main", "index": 0 }]]
+    },
+    "Filter": {
+      "main": [[{ "node": "Loop Over Items", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Items": {
+      "main": [[], [{ "node": "trata dados", "type": "main", "index": 0 }]]
+    },
+    "trata dados": {
+      "main": [[{ "node": "busca por telefone", "type": "main", "index": 0 }]]
+    },
+    "busca por telefone": {
+      "main": [[{ "node": "Achou por telefone?", "type": "main", "index": 0 }]]
+    },
+    "Achou por telefone?": {
+      "main": [
+        [{ "node": "marca n8n = ok", "type": "main", "index": 0 }],
+        [{ "node": "busca por email", "type": "main", "index": 0 }]
+      ]
+    },
+    "busca por email": {
+      "main": [[{ "node": "Achou por email?", "type": "main", "index": 0 }]]
+    },
+    "Achou por email?": {
+      "main": [
+        [{ "node": "marca n8n = ok", "type": "main", "index": 0 }],
+        [{ "node": "cria lead no CRM", "type": "main", "index": 0 }]
+      ]
+    },
+    "cria lead no CRM": {
+      "main": [[{ "node": "marca n8n = ok", "type": "main", "index": 0 }]]
+    },
+    "marca n8n = ok": {
+      "main": [[{ "node": "Loop Over Items", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": { "templateCredsSetupCompleted": false }
+}
