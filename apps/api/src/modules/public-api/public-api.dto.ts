@@ -37,6 +37,17 @@ export const createContactSchema = z.object({
   dados_custom: z.record(z.unknown()).optional(),
 });
 
+export const moveStageSchema = z.object({
+  stage_id: z.string().uuid({ message: 'stage_id deve ser um UUID válido' }),
+});
+
+export const createActivitySchema = z.object({
+  descricao: z.string().min(1).max(500),
+  // Livre de propósito: a timeline do lead já é um mural heterogêneo
+  // ('stage_change', 'lead_created', …) e cada integração tem o seu vocabulário.
+  tipo: z.string().min(1).max(50).optional(),
+});
+
 export const conversationMessagesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
 });

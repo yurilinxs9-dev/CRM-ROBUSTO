@@ -197,6 +197,74 @@ está gravado: mandar só `{"modelo_ano": "..."}` não apaga `cidade`.
 
 ---
 
+## 5.3 Reincidência — a mesma pessoa preenche o formulário duas vezes
+
+**É o caso que mais muda entre os dois sistemas, e o que motivava a busca prévia
+do fluxo original.** Quem vê o anúncio duas vezes preenche duas vezes.
+
+No Kommo: contato e lead são separados, então a segunda submissão **reaproveita o
+contato e cria um lead novo** — duas negociações, mesma pessoa. Era exatamente
+por isso que o fluxo tinha `busca lead` antes de `Cria contato`.
+
+Aqui isso **não é possível**, e não por falta de endpoint:
+
+```
+@@unique([telefone, pipeline_id, lead_scope], name: "telefone_pipeline_scope")
+```
+
+Um lead por telefone, por funil, por tenant. Um `POST /v1/users` repetido volta
+`409 Conflict — "Recurso já existe."`.
+
+Também não é acidente: `leads.service.create` devolve o lead existente com
+`already_existed: true` em vez de falhar, com a decisão registrada no código —
+*"quem digita um telefone que já existe quase sempre quer falar com aquela
+pessoa, não criar um segundo registro"*.
+
+**O desenho equivalente aqui** é manter um card por pessoa e devolvê-lo ao topo
+do funil, com a passagem anotada:
+
+```
+achou o lead
+  → PATCH /v1/users/:id          (dados_custom com as respostas novas + tags)
+  → POST  /v1/users/:id/stage    { "stage_id": "<Novo Lead>" }
+  → POST  /v1/users/:id/activities
+         { "tipo": "form_resubmit",
+           "descricao": "Preencheu o formulário de novo — anúncio X" }
+```
+
+O vendedor vê o card subir de volta para "Novo Lead" com o histórico das duas
+passagens no mesmo lugar, em vez de dois cards para a mesma pessoa.
+
+### Descobrir o `stage_id`
+
+```
+GET /api/v1/pipelines          (escopo contacts:read)
+```
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid", "nome": "Funil principal", "ordem": 0,
+      "stages": [
+        { "id": "uuid", "nome": "Novo", "ordem": 0, "is_won": false, "is_lost": false }
+      ]
+    }
+  ]
+}
+```
+
+Buscar pelo **nome** do estágio e ler o `id` na hora é melhor que colar o UUID no
+nó: id copiado à mão apodrece calado quando alguém reorganiza o funil.
+
+`POST /v1/users/:id/stage` delega para o `updateStage` interno — o mesmo que o
+Kanban usa. Então grava a atividade "Movido de X para Y", reseta o tempo no
+estágio, dispara as auto-ações do destino e emite o WebSocket que faz o card
+andar na tela de quem está com o Kanban aberto. O contador de não-lidas **não**
+é zerado: mover por integração não significa que alguém leu a conversa.
+
+---
+
 ## 6. Reprocessamento e duplicata
 
 O fluxo atual protege contra duplicata de três jeitos: a coluna `n8n` na
@@ -236,10 +304,15 @@ até 2031, independente de você parar de usar.
 Google Sheets Trigger → Filter (n8n ≠ ok) → Loop
   → trata dados (sem token no nó — credencial do n8n)
   → GET /api/v1/users?phone=…
-      ├─ achou  → segue (lead já existe)
-      └─ vazio  → GET /api/v1/users?email=…
-                    ├─ achou  → segue
-                    └─ vazio  → POST /api/v1/users   ← contato + lead numa chamada
+      ├─ achou ──────────────┐
+      └─ vazio → GET /api/v1/users?email=…
+                    ├─ achou ┤
+                    │        │  REINCIDÊNCIA (§5.3)
+                    │        └→ PATCH /users/:id        (respostas novas)
+                    │           POST  /users/:id/stage  (volta pra "Novo Lead")
+                    │           POST  /users/:id/activities (anota a passagem)
+                    │
+                    └─ vazio → POST /api/v1/users   ← contato + lead numa chamada
   → Append or update row (n8n = ok)
 ```
 

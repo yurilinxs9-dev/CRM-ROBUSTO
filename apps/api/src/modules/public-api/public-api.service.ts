@@ -15,6 +15,8 @@ import {
   addTagsSchema,
   conversationMessagesQuerySchema,
   createContactSchema,
+  createActivitySchema,
+  moveStageSchema,
   listContactsQuerySchema,
   listConversationsQuerySchema,
   moveToSectorSchema,
@@ -58,6 +60,113 @@ export class PublicApiService {
     private readonly gateway: CrmGateway,
     private readonly customFields: CustomFieldsService,
   ) {}
+
+  /**
+   * Funis do tenant com seus estágios, na ordem do Kanban.
+   *
+   * Existe para a integração descobrir o `stage_id` que `POST /users/:id/stage`
+   * exige. Sem isto, o id do estágio "Novo Lead" só sairia de alguém abrir o
+   * banco — e um id copiado à mão apodrece calado quando o funil é reorganizado.
+   */
+  async listPipelines(tenantId: string) {
+    const pipelines = await this.prisma.pipeline.findMany({
+      where: { tenant_id: tenantId },
+      orderBy: { ordem: 'asc' },
+      select: {
+        id: true,
+        nome: true,
+        ordem: true,
+        stages: {
+          orderBy: { ordem: 'asc' },
+          select: { id: true, nome: true, ordem: true, is_won: true, is_lost: true },
+        },
+      },
+    });
+    return { data: pipelines };
+  }
+
+  /**
+   * Move o lead de estágio, delegando para `LeadsService.updateStage`.
+   *
+   * Delegar, e não reimplementar, é o ponto: aquele método já reseta
+   * `estagio_entered_at`, grava a atividade "Movido de X para Y", dispara as
+   * auto-ações do estágio de destino, invalida o cache da listagem e emite o
+   * evento de WebSocket que faz o card andar no Kanban de quem está com a tela
+   * aberta. Um `prisma.lead.update` aqui pularia as cinco coisas.
+   *
+   * `id: 'SYSTEM'` é a convenção que o próprio updateStage já entende para ação
+   * não-humana: a atividade fica sem usuário e o contador de não-lidas NÃO é
+   * zerado — mover por integração não significa que alguém leu a conversa.
+   */
+  async moveStage(tenantId: string, leadId: string, body: unknown) {
+    const { stage_id } = moveStageSchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    // Estágio precisa ser do MESMO tenant. Sem esta checagem, um stage_id de
+    // outro workspace moveria o lead para um funil que não é dele.
+    const stage = await this.prisma.stage.findFirst({
+      where: { id: stage_id, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!stage) throw new NotFoundException('Estágio não encontrado.');
+
+    await this.leads.updateStage(leadId, { estagio_id: stage_id }, this.systemUser(tenantId));
+
+    const atualizado = await this.prisma.lead.findFirst({
+      where: { id: leadId },
+      select: CONTACT_SELECT,
+    });
+    return toContactDto(atualizado!);
+  }
+
+  /**
+   * Registra uma anotação na timeline do lead.
+   *
+   * É o que dá sinal ao vendedor quando a integração encosta num lead que já
+   * existia — "preencheu o formulário de novo" —, em vez de a segunda passagem
+   * da pessoa sumir dentro de um update silencioso de campos.
+   */
+  async createActivity(tenantId: string, leadId: string, body: unknown) {
+    const d = createActivitySchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    const activity = await this.prisma.leadActivity.create({
+      data: {
+        lead_id: leadId,
+        // Sem user_id: quem escreveu foi uma integração, não uma pessoa. A
+        // timeline já trata user_id nulo (é o mesmo caso das automações).
+        user_id: null,
+        tipo: d.tipo ?? 'api_note',
+        descricao: d.descricao,
+        tenant_id: tenantId,
+      },
+      select: { id: true, tipo: true, descricao: true, created_at: true },
+    });
+
+    return { ...activity, created_at: activity.created_at.toISOString() };
+  }
+
+  /** AuthUser sintético para as ações de integração (ver moveStage). */
+  private systemUser(tenantId: string): AuthUser {
+    return {
+      id: 'SYSTEM',
+      nome: 'API',
+      email: '',
+      role: 'ADMIN' as AuthUser['role'],
+      ativo: true,
+      tenantId,
+    };
+  }
 
   /**
    * Campos personalizados de LEAD do tenant — as chaves que `dados_custom`
