@@ -81,6 +81,27 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.toTenant(tenantId).emit('lead:stage-changed', { leadId, ...(data as object) });
   }
 
+  /**
+   * Lead novo no funil.
+   *
+   * Faltava: o Kanban só reagia a `lead:stage-changed` e a `lead:new-message`,
+   * então lead que nasce SEM mensagem — criado pela API pública (integração de
+   * formulário) ou manualmente por um colega — não aparecia na tela de quem
+   * estava com o board aberto. Só entrava no poll de 60s ou num F5, e quem
+   * estava olhando concluía que a automação não tinha rodado.
+   *
+   * Manda pipeline e estágio junto para o cliente decidir se aquele board
+   * precisa recarregar, em vez de invalidar a lista a cada lead de qualquer
+   * funil do tenant.
+   */
+  emitLeadCreated(
+    leadId: string,
+    data: { pipeline_id?: string; estagio_id?: string },
+    tenantId?: string,
+  ) {
+    this.toTenant(tenantId).emit('lead:created', { leadId, ...data });
+  }
+
   emitNewMessage(leadId: string, message: unknown, tenantId?: string) {
     this.logger.log(
       `emitNewMessage → lead:${leadId} tenant:${tenantId ?? '-'}`,

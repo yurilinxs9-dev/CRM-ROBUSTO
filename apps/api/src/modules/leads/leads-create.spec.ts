@@ -47,7 +47,7 @@ function makeMocks() {
     $transaction: jest.fn((arg: unknown) => Promise.all(arg as Promise<unknown>[])),
   };
   const cache: any = { delPattern: jest.fn() };
-  const gateway: any = { emitLeadUpdated: jest.fn() };
+  const gateway: any = { emitLeadUpdated: jest.fn(), emitLeadCreated: jest.fn() };
   const outboundWebhooks: any = {
     dispatchLeadEvent: jest.fn().mockReturnValue(Promise.resolve()),
   };

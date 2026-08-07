@@ -288,6 +288,24 @@ export class PublicApiService {
       },
     });
 
+    // Sem isto, o lead criado pela integração não aparece para quem está com o
+    // Kanban aberto: o board só reagia a stage-changed e new-message, e um lead
+    // de formulário nasce sem nenhum dos dois. Ficava esperando o poll de 60s.
+    //
+    // Dentro de try/catch porque o lead JÁ ESTÁ GRAVADO neste ponto: deixar uma
+    // falha de WebSocket derrubar a resposta faria a integração receber erro e
+    // tentar de novo um cadastro que deu certo. Notificação é acessório; o
+    // registro é o que importa.
+    try {
+      this.gateway.emitLeadCreated(
+        lead.id,
+        { pipeline_id: pipeline.id, estagio_id: pipeline.stages[0].id },
+        tenantId,
+      );
+    } catch {
+      // Sem logger neste serviço — o lead está salvo, a tela atualiza no poll.
+    }
+
     return toContactDto(lead);
   }
 

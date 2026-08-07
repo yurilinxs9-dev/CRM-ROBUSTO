@@ -847,6 +847,20 @@ export class LeadsService {
 
     await this.invalidateLeadsCache(user.tenantId);
 
+    // Mesmo motivo do createContact da API pública: lead novo não emitia nada,
+    // então o card só surgia para os OUTROS usuários no poll de 60s. Quem criou
+    // via UI não percebia (a própria tela invalida a query), mas o colega com o
+    // mesmo board aberto ficava sem ver.
+    try {
+      this.gateway.emitLeadCreated(
+        lead.id,
+        { pipeline_id: pipelineId, estagio_id: stageId },
+        user.tenantId,
+      );
+    } catch (err) {
+      this.logger.warn(`emitLeadCreated failed for lead ${lead.id}: ${String(err)}`);
+    }
+
     this.outboundWebhooks.dispatchLeadEvent({
       tenantId: user.tenantId,
       eventType: 'lead.created',

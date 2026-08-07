@@ -46,9 +46,10 @@ function makeService(over: Record<string, unknown> = {}) {
     validateValues: jest.fn().mockImplementation((v: Record<string, unknown>) => Promise.resolve(v)),
   } as unknown as ConstructorParameters<typeof PublicApiService>[4];
 
-  const gateway = { emitLeadUpdated: jest.fn() } as unknown as ConstructorParameters<
-    typeof PublicApiService
-  >[3];
+  const gateway = {
+    emitLeadUpdated: jest.fn(),
+    emitLeadCreated: jest.fn(),
+  } as unknown as ConstructorParameters<typeof PublicApiService>[3];
 
   const svc = new PublicApiService(
     prisma,
@@ -109,6 +110,23 @@ describe('PublicApiService — dados_custom', () => {
     const data = (prisma as unknown as { lead: { update: jest.Mock } }).lead.update.mock
       .calls[0][0].data;
     expect(data.dados_custom).toEqual({ cidade: 'BH', modelo: 'Onix 2022' });
+  });
+
+  /**
+   * O lead criado pela integração nasce sem mensagem e sem mudança de estágio,
+   * que eram os únicos eventos que o Kanban escutava. Sem este emit, o card só
+   * aparecia no poll de 60s — e quem estava olhando a tela concluía que a
+   * automação não tinha rodado.
+   */
+  it('createContact avisa o Kanban por WebSocket', async () => {
+    const { svc, customFields } = makeService();
+    void customFields;
+
+    await svc.createContact(TENANT, { name: 'Fulano', phone: '5531999999999' });
+
+    const gw = (svc as unknown as { gateway: { emitLeadCreated: jest.Mock } }).gateway;
+    expect(gw.emitLeadCreated).toHaveBeenCalledTimes(1);
+    expect(gw.emitLeadCreated.mock.calls[0][2]).toBe(TENANT);
   });
 
   it('listCustomFields devolve so os campos de LEAD ativos e nao-nativos do tenant', async () => {

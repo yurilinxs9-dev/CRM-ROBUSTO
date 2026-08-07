@@ -561,13 +561,28 @@ export default function KanbanPage() {
       if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     };
+    // Lead novo (integração de formulário, criação manual de um colega). Nasce
+    // sem mensagem e sem mudança de estágio, então não era coberto por nenhum
+    // dos outros eventos — o card só aparecia no poll de 60s ou num F5.
+    //
+    // Invalida em vez de inserir o card na cache de propósito: com filtro no
+    // servidor, um lead novo pode NÃO pertencer ao recorte que está na tela, e
+    // enfiá-lo direto mostraria um card que o filtro exclui. O refetch devolve
+    // exatamente o que o filtro atual manda.
+    const handleLeadCreated = (payload: { pipeline_id?: string }) => {
+      // Lead de outro funil não mexe neste board.
+      if (payload?.pipeline_id && payload.pipeline_id !== activePipelineId) return;
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+    };
     // new-message/unread-reset: delta-patch feito no SocketEventsProvider
     // global (trata o shape { leads, stage_counts } do board).
     socket.on('lead:stage-changed', handleStageChanged);
+    socket.on('lead:created', handleLeadCreated);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
+      socket.off('lead:created', handleLeadCreated);
     };
-  }, [queryClient, leadsQueryKey, currentUserId]);
+  }, [queryClient, leadsQueryKey, currentUserId, activePipelineId]);
 
   // --- DnD ---
   const handleDragStart = useCallback(
