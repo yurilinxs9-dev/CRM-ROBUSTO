@@ -7,7 +7,6 @@ import { toast } from 'sonner';
 
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { api } from '@/lib/api';
 
 export interface TagRow {
@@ -41,6 +40,14 @@ function mesmoNome(a: string, b: string) {
  * Por isso um chip pode existir sem estar no catálogo (tag digitada antes desta
  * tela, ou tag excluída depois de aplicada): nesse caso ele aparece com a cor
  * neutra, em vez de sumir da ficha do lead sem aviso.
+ *
+ * A lista é um painel INLINE, não um Popover. O drawer da ficha é um Sheet
+ * (Radix Dialog), que trava o scroll da página com `react-remove-scroll`: esse
+ * lock só libera a roda do mouse dentro da própria árvore do diálogo, e
+ * PopoverContent renderiza em portal, fora dela. O resultado era uma lista que
+ * rolava ao arrastar a barra (não é evento de wheel) mas ficava travada na
+ * roda. Inline, a lista está dentro do Sheet e a roda funciona — de quebra, não
+ * há popover flutuante para ser recortado pelo scroll do drawer.
  */
 export function TagPicker({ value, onChange }: TagPickerProps) {
   const queryClient = useQueryClient();
@@ -54,10 +61,10 @@ export function TagPicker({ value, onChange }: TagPickerProps) {
       const res = await api.get('/api/tags');
       return res.data as TagRow[];
     },
+    enabled: aberto,
   });
 
-  const corDe = (nome: string) =>
-    catalogo.find((t) => mesmoNome(t.nome, nome))?.cor ?? null;
+  const corDe = (nome: string) => catalogo.find((t) => mesmoNome(t.nome, nome))?.cor ?? null;
 
   const termo = busca.trim();
 
@@ -121,11 +128,6 @@ export function TagPicker({ value, onChange }: TagPickerProps) {
     onChange(value.filter((n) => !mesmoNome(n, nome)));
   }
 
-  function confirmarComEnter() {
-    if (!podeCriar || criar.isPending) return;
-    criar.mutate(termo);
-  }
-
   return (
     <div className="space-y-2">
       {/* Chips aplicados */}
@@ -136,11 +138,7 @@ export function TagPicker({ value, onChange }: TagPickerProps) {
             <span
               key={nome}
               className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium"
-              style={
-                cor
-                  ? { borderColor: cor, color: cor, backgroundColor: `${cor}1A` }
-                  : undefined
-              }
+              style={cor ? { borderColor: cor, color: cor, backgroundColor: `${cor}1A` } : undefined}
             >
               {nome}
               <button
@@ -155,140 +153,155 @@ export function TagPicker({ value, onChange }: TagPickerProps) {
           );
         })}
 
-        <Popover open={aberto} onOpenChange={setAberto}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]">
-              <Plus className="h-3 w-3" />
-              Tag
-            </Button>
-          </PopoverTrigger>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-6 gap-1 px-2 text-[11px]"
+          onClick={() => setAberto((v) => !v)}
+          aria-expanded={aberto}
+        >
+          <Plus className="h-3 w-3" />
+          Tag
+        </Button>
+      </div>
 
-          <PopoverContent align="start" className="w-72 p-0">
-            <div className="border-b p-2">
-              <Input
-                autoFocus
-                value={busca}
-                onChange={(e) => setBusca(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    confirmarComEnter();
-                  }
-                }}
-                placeholder="Buscar ou criar tag..."
-                className="h-8 text-xs"
-              />
-            </div>
+      {value.length === 0 && !aberto && (
+        <p className="text-[11px] text-muted-foreground">Nenhuma tag neste lead.</p>
+      )}
 
-            <div className="max-h-64 overflow-y-auto p-1">
-              {isLoading && (
-                <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Carregando...
-                </div>
-              )}
-
-              {!isLoading && filtradas.length === 0 && !podeCriar && (
-                <p className="py-6 text-center text-xs text-muted-foreground">
-                  Nenhuma tag cadastrada.
-                </p>
-              )}
-
-              {filtradas.map((tag) => {
-                const aplicada = value.some((n) => mesmoNome(n, tag.nome));
-                const confirmando = confirmandoExclusao === tag.id;
-
-                if (confirmando) {
-                  return (
-                    <div
-                      key={tag.id}
-                      className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-xs"
-                    >
-                      <span className="truncate text-muted-foreground">
-                        Excluir &quot;{tag.nome}&quot;?
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="destructive"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={excluir.isPending}
-                          onClick={() => excluir.mutate(tag)}
-                        >
-                          {excluir.isPending ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            'Excluir'
-                          )}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={() => setConfirmandoExclusao(null)}
-                        >
-                          Cancelar
-                        </Button>
-                      </span>
-                    </div>
-                  );
+      {aberto && (
+        <div className="rounded-md border bg-card">
+          <div className="border-b p-2">
+            <Input
+              autoFocus
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (podeCriar && !criar.isPending) criar.mutate(termo);
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setAberto(false);
                 }
+              }}
+              placeholder="Buscar ou criar tag..."
+              className="h-8 text-xs"
+            />
+          </div>
 
+          <div className="scrollbar-thin max-h-64 overflow-y-auto overscroll-contain p-1">
+            {isLoading && (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Carregando...
+              </div>
+            )}
+
+            {!isLoading && filtradas.length === 0 && !podeCriar && (
+              <p className="py-6 text-center text-xs text-muted-foreground">
+                Nenhuma tag cadastrada.
+              </p>
+            )}
+
+            {filtradas.map((tag) => {
+              const aplicada = value.some((n) => mesmoNome(n, tag.nome));
+
+              if (confirmandoExclusao === tag.id) {
                 return (
                   <div
                     key={tag.id}
-                    className="group flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-accent"
+                    className="flex items-center justify-between gap-2 rounded px-2 py-1.5 text-xs"
                   >
-                    <button
-                      type="button"
-                      onClick={() => alternar(tag.nome)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: tag.cor }}
-                      />
-                      <span className="truncate text-xs">{tag.nome}</span>
-                      {aplicada && <Check className="ml-auto h-3 w-3 shrink-0 text-primary" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmandoExclusao(tag.id)}
-                      className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                      aria-label={`Excluir tag ${tag.nome}`}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                    <span className="truncate text-muted-foreground">
+                      Excluir &quot;{tag.nome}&quot;?
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        className="h-6 px-2 text-[11px]"
+                        disabled={excluir.isPending}
+                        onClick={() => excluir.mutate(tag)}
+                      >
+                        {excluir.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Excluir'}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => setConfirmandoExclusao(null)}
+                      >
+                        Cancelar
+                      </Button>
+                    </span>
                   </div>
                 );
-              })}
+              }
 
-              {podeCriar && (
-                <button
-                  type="button"
-                  onClick={() => criar.mutate(termo)}
-                  disabled={criar.isPending}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-60"
+              return (
+                <div
+                  key={tag.id}
+                  className="group flex items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-accent"
                 >
-                  {criar.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Plus className="h-3 w-3" />
-                  )}
-                  <span className="truncate">
-                    Criar &quot;<span className="font-medium">{termo}</span>&quot;
-                  </span>
-                </button>
-              )}
-            </div>
-          </PopoverContent>
-        </Popover>
-      </div>
+                  <button
+                    type="button"
+                    onClick={() => alternar(tag.nome)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: tag.cor }}
+                    />
+                    <span className="truncate text-xs">{tag.nome}</span>
+                    {aplicada && <Check className="ml-auto h-3 w-3 shrink-0 text-primary" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmandoExclusao(tag.id)}
+                    className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                    aria-label={`Excluir tag ${tag.nome}`}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
 
-      {value.length === 0 && (
-        <p className="text-[11px] text-muted-foreground">Nenhuma tag neste lead.</p>
+            {podeCriar && (
+              <button
+                type="button"
+                onClick={() => criar.mutate(termo)}
+                disabled={criar.isPending}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-60"
+              >
+                {criar.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Plus className="h-3 w-3" />
+                )}
+                <span className="truncate">
+                  Criar &quot;<span className="font-medium">{termo}</span>&quot;
+                </span>
+              </button>
+            )}
+          </div>
+
+          <div className="border-t p-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 w-full text-[11px]"
+              onClick={() => setAberto(false)}
+            >
+              Fechar
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );
