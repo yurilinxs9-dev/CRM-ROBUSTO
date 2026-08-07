@@ -112,6 +112,7 @@ model Tenant {
   tags                Tag[]
   lead_tags           LeadTag[]
   quick_replies       QuickReply[]
+  lead_views          LeadView[]
   notifications       Notification[]
   tasks               Task[]
   webhook_logs        WebhookLog[]
@@ -162,6 +163,7 @@ model User {
   visible_messages   Message[]            @relation("VisibleTo")
   activities         LeadActivity[]
   quick_replies      QuickReply[]
+  lead_views         LeadView[]
   notifications      Notification[]
   user_instances     UserInstance[]
   tasks              Task[]
@@ -633,6 +635,31 @@ model QuickReply {
 
   @@index([atalho])
   @@index([tenant_id])
+}
+
+// Filtro salvo da lista de leads ("Leads ativos", "Meus leads", …).
+//
+// `filtros` guarda o mesmo objeto que o painel serializa para query string, em
+// vez de uma coluna por critério: os critérios mudam a cada fase do painel, e
+// cada um viraria migration numa base cujo _prisma_migrations já está poluído.
+// O custo é não dar para consultar por dentro do filtro — coisa que ninguém
+// precisa, já que a view é sempre lida inteira.
+//
+// `user_id` null = compartilhada com o tenant; preenchido = só de quem criou.
+// Mesma convenção do QuickReply.
+model LeadView {
+  id         String   @id @default(uuid())
+  nome       String
+  filtros    Json     @default("{}")
+  user_id    String?
+  user       User?    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([tenant_id])
+  @@index([tenant_id, user_id])
 }
 
 model WebhookLog {

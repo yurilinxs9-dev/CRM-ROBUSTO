@@ -18,6 +18,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { WebSocketModule } from './modules/websocket/websocket.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { TagsModule } from './modules/tags/tags.module';
+import { LeadViewsModule } from './modules/lead-views/lead-views.module';
 import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module';
 import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
@@ -110,6 +111,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     WebSocketModule,
     NotificationsModule,
     TagsModule,
+    LeadViewsModule,
     QuickRepliesModule,
     UsersModule,
     MediaModule,

@@ -1,6 +1,7 @@
 import {
   toQueryParams,
   contarFiltrosAtivos,
+  fromSaved,
   FILTROS_VAZIOS,
   type LeadPanelFilters,
 } from './lead-filters';
@@ -89,5 +90,55 @@ describe('contarFiltrosAtivos', () => {
         filtros({ tags: ['A', 'B'], created_from: '2026-08-01', valor_max: '9', tarefa: 'sem' }),
       ),
     ).toBe(5);
+  });
+
+  it('origem conta uma por valor, agendamento conta uma vez', () => {
+    expect(
+      contarFiltrosAtivos(filtros({ origem: ['MANUAL', 'INDICACAO'], followup_from: '2026-08-01' })),
+    ).toBe(3);
+  });
+});
+
+/**
+ * `fromSaved` lê Json solto do banco — gravado por uma versão anterior do
+ * painel, ou por um cliente que mandou o que quis. Uma view antiga, salva antes
+ * de um critério existir, tem que ABRIR normalmente; derrubar a tela por causa
+ * de um campo faltando seria o pior desfecho.
+ */
+describe('fromSaved', () => {
+  it('objeto vazio vira filtro vazio', () => {
+    expect(fromSaved({})).toEqual(FILTROS_VAZIOS);
+  });
+
+  it('null, array ou string viram filtro vazio em vez de quebrar', () => {
+    expect(fromSaved(null)).toEqual(FILTROS_VAZIOS);
+    expect(fromSaved(['a'])).toEqual(FILTROS_VAZIOS);
+    expect(fromSaved('lixo')).toEqual(FILTROS_VAZIOS);
+  });
+
+  it('view antiga, sem os campos novos, abre com eles vazios', () => {
+    expect(fromSaved({ tags: ['QUENTE'], valor_min: '100' })).toEqual(
+      filtros({ tags: ['QUENTE'], valor_min: '100' }),
+    );
+  });
+
+  it('tipo errado em cada campo cai no vazio, nao propaga', () => {
+    expect(fromSaved({ tags: 'nao-e-lista', valor_min: 42, tarefa: 'invalida' })).toEqual(
+      FILTROS_VAZIOS,
+    );
+  });
+
+  it('descarta entradas vazias dentro das listas', () => {
+    expect(fromSaved({ tags: ['A', '', '  ', 'B'] }).tags).toEqual(['A', 'B']);
+  });
+
+  it('ida e volta preserva o filtro', () => {
+    const original = filtros({
+      tags: ['A'],
+      origem: ['MANUAL'],
+      created_from: '2026-08-01',
+      tarefa: 'atrasada',
+    });
+    expect(fromSaved(JSON.parse(JSON.stringify(original)))).toEqual(original);
   });
 });

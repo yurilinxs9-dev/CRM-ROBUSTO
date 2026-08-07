@@ -161,6 +161,10 @@ interface LeadFilters {
   valor_max?: string;
   /** 'sem' = nenhuma tarefa pendente · 'atrasada' = pendente com prazo vencido. */
   tarefa?: string;
+  /** Valores de LeadOrigem separados por vírgula (o "Lead fonte" do painel). */
+  origem?: string;
+  followup_from?: string;
+  followup_to?: string;
 }
 
 export interface ExportLeadFilters {

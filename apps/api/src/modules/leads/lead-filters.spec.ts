@@ -163,4 +163,47 @@ describe('applyPanelFilters', () => {
     applyPanelFilters(where, {});
     expect(where).toEqual({ tenant_id: 't1' });
   });
+
+  it('origem: lista valida vira IN', () => {
+    const where: Record<string, unknown> = {};
+    applyPanelFilters(where, { origem: 'MANUAL,INDICACAO' });
+    expect(where.AND).toEqual([{ origem: { in: ['MANUAL', 'INDICACAO'] } }]);
+  });
+
+  /**
+   * `origem` alimenta um campo de ENUM. String fora do enum faz o Prisma
+   * estourar e a listagem inteira volta 500 — o certo é descartar o valor sem
+   * sentido e seguir com o resto do filtro.
+   */
+  it('origem invalida e descartada, sem derrubar o resto', () => {
+    const where: Record<string, unknown> = {};
+    applyPanelFilters(where, { origem: 'MANUAL,DROP TABLE,INEXISTENTE' });
+    expect(where.AND).toEqual([{ origem: { in: ['MANUAL'] } }]);
+  });
+
+  it('origem so com valores invalidos nao filtra nada', () => {
+    const where: Record<string, unknown> = {};
+    applyPanelFilters(where, { origem: 'INEXISTENTE' });
+    expect(where.AND).toBeUndefined();
+  });
+
+  it('proximo agendamento: intervalo com fim de dia inclusivo', () => {
+    const where: Record<string, unknown> = {};
+    applyPanelFilters(where, { followup_from: '2026-08-01', followup_to: '2026-08-07' });
+
+    const cond = (where.AND as Array<{ proximo_followup: { gte: Date; lte: Date } }>)[0];
+    expect(cond.proximo_followup.gte.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+    expect(cond.proximo_followup.lte.toISOString()).toBe('2026-08-07T23:59:59.999Z');
+  });
+
+  it('varios criterios juntos acumulam, nenhum sobrescreve o outro', () => {
+    const where: Record<string, unknown> = {};
+    applyPanelFilters(where, {
+      tags: 'QUENTE',
+      origem: 'MANUAL',
+      valor_min: '100',
+      tarefa: 'sem',
+    });
+    expect((where.AND as unknown[]).length).toBe(4);
+  });
 });

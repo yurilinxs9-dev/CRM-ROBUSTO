@@ -17,7 +17,25 @@ export interface PanelFilters {
   valor_min?: string;
   valor_max?: string;
   tarefa?: string;
+  /** Um ou mais valores de LeadOrigem, separados por vírgula. */
+  origem?: string;
+  followup_from?: string;
+  followup_to?: string;
 }
+
+/**
+ * Valores aceitos em `origem`. A lista existe para NÃO repassar string crua do
+ * cliente a um campo de enum: valor fora do enum faz o Prisma estourar e a
+ * listagem inteira volta 500, quando o certo é ignorar o filtro sem sentido.
+ */
+const ORIGENS_VALIDAS = new Set([
+  'WHATSAPP_INCOMING',
+  'WHATSAPP_OUTGOING',
+  'MANUAL',
+  'IMPORT',
+  'LANDING_PAGE',
+  'INDICACAO',
+]);
 
 /**
  * Acrescenta uma condição ao `AND` sem pisar no que já está lá.
@@ -107,6 +125,22 @@ export function applyPanelFilters(where: LeadWhereInput, filters: PanelFilters):
     if (max !== null) valor.lte = max;
   }
   if (Object.keys(valor).length > 0) pushAnd(where, { valor_estimado: valor });
+
+  if (filters.origem) {
+    const origens = parseListaDeTags(filters.origem).filter((o) => ORIGENS_VALIDAS.has(o));
+    if (origens.length > 0) pushAnd(where, { origem: { in: origens } });
+  }
+
+  const followup: Record<string, Date> = {};
+  if (filters.followup_from) {
+    const de = parseData(filters.followup_from);
+    if (de) followup.gte = de;
+  }
+  if (filters.followup_to) {
+    const ate = parseDiaFinal(filters.followup_to);
+    if (ate) followup.lte = ate;
+  }
+  if (Object.keys(followup).length > 0) pushAnd(where, { proximo_followup: followup });
 
   // 'sem': nenhuma tarefa PENDENTE — lead que ninguém agendou próximo passo.
   // 'atrasada': tem pendente com prazo já vencido.
