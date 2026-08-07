@@ -24,7 +24,6 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -46,6 +45,7 @@ import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
+import { TagPicker } from './tag-picker';
 import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
 // ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ export function LeadDetailDrawer({
   // ---- Form state ----
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [responsavelId, setResponsavelId] = useState('');
-  const [tagsInput, setTagsInput] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
 
   const leadDefs = schema ? flattenFields(groupFields(schema, 'LEAD')) : [];
@@ -217,7 +217,7 @@ export function LeadDetailDrawer({
     setValues(initialValues(flattenFields(groupFields(schema, 'LEAD')), lead));
     setResponsavelId(lead.responsavel_id);
     const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
-    setTagsInput(existingTags.join(', '));
+    setTags(existingTags);
     setDirty(false);
   }, [lead, schema]);
 
@@ -288,10 +288,6 @@ export function LeadDetailDrawer({
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!leadId) return;
-      const tags = tagsInput
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
       // buildPayload separa o que vai pra coluna do que vai pro Json e resolve
       // os formatos que o updateLeadSchema exige (ver field-render.spec.ts).
       const { native, custom } = buildPayload(leadDefs, values);
@@ -535,30 +531,14 @@ export function LeadDetailDrawer({
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <Label htmlFor="drawer-tags">
+                  <Label>
                     <Tag className="inline h-3 w-3 mr-1" />
                     Tags
-                    <span className="text-muted-foreground ml-1">(separadas por virgula)</span>
                   </Label>
-                  <Input
-                    id="drawer-tags"
-                    value={tagsInput}
-                    onChange={(e) => { setTagsInput(e.target.value); mark(); }}
-                    placeholder="vip, retorno, indicacao"
+                  <TagPicker
+                    value={tags}
+                    onChange={(next) => { setTags(next); mark(); }}
                   />
-                  {tagsInput.trim() && (
-                    <div className="flex flex-wrap gap-1 pt-1">
-                      {tagsInput
-                        .split(',')
-                        .map((t) => t.trim())
-                        .filter(Boolean)
-                        .map((tag) => (
-                          <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0">
-                            {tag}
-                          </Badge>
-                        ))}
-                    </div>
-                  )}
                 </div>
               </section>
             </TabsContent>
