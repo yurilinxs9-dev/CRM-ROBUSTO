@@ -11,7 +11,7 @@ import { AssignmentService } from '../queue/assignment.service';
 import { BroadcastReplyService } from '../broadcasts/broadcast-reply.service';
 import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
-import { extractAdReferral } from './ad-referral';
+import { AD_REFERRAL_KEY, extractAdReferral } from './ad-referral';
 import {
   assertValidMagic,
   decryptWhatsAppMedia,
@@ -498,10 +498,15 @@ export class InboundMessageService {
       );
     }
 
+    const strippedRaw = stripHeavyRawKeys(JSON.parse(JSON.stringify(rawPayload)));
+    // Anúncio (Click to WhatsApp) gravado FORA do `raw`: a poda dos 30 dias
+    // (DataRetentionService) remove só a chave `raw`, então o card sobrevive.
+    // Custa 1–8 KB e só nas mensagens que vieram de anúncio (<1% do total).
+    const adReferral = extractAdReferral({ raw: strippedRaw });
+
     const metadata: Prisma.InputJsonValue = {
-      raw: stripHeavyRawKeys(
-        JSON.parse(JSON.stringify(rawPayload)),
-      ) as Prisma.InputJsonValue,
+      raw: strippedRaw as Prisma.InputJsonValue,
+      ...(adReferral ? { [AD_REFERRAL_KEY]: { ...adReferral } } : {}),
       ...(extracted.location ? { location: extracted.location } : {}),
       ...(extracted.contact ? { contact: extracted.contact } : {}),
     };

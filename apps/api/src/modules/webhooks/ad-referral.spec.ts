@@ -94,3 +94,42 @@ describe('extractAdReferral', () => {
     expect(extractAdReferral(evolutionMeta({}))).toBeNull();
   });
 });
+
+/**
+ * `metadata.ad_referral` é o bloco que o ingest grava fora do `raw`. É o único
+ * que sobrevive a `pruneMessageRawMetadata` (metadata - 'raw', aos 30 dias).
+ */
+describe('extractAdReferral — bloco gravado no ingest', () => {
+  const STORED = {
+    title: 'Sofá sob medida',
+    source_app: 'facebook',
+    source_url: 'https://fb.me/6YjKh7ZqC',
+    thumbnail_data_url: JPEG_DATA_URL,
+  };
+
+  it('DISCRIMINANTE: lê o gravado depois do raw ter sido podado', () => {
+    // Exatamente o formato de uma mensagem com mais de 30 dias.
+    expect(extractAdReferral({ ad_referral: STORED })).toEqual(STORED);
+  });
+
+  it('DISCRIMINANTE: o gravado tem precedência sobre o raw', () => {
+    const r = extractAdReferral({ ...evolutionMeta(AD), ad_referral: STORED });
+    expect(r?.title).toBe('Sofá sob medida');
+  });
+
+  it('cai no raw quando o gravado é invalido ou vazio', () => {
+    for (const invalido of [{}, null, 'lixo', 42, { title: 7 }]) {
+      const r = extractAdReferral({ ...evolutionMeta(AD), ad_referral: invalido });
+      expect(r?.title).toBe('Viva uma formatura inesquecível! ✨');
+    }
+  });
+
+  it('descarta chave estranha que tenha ido parar no bloco gravado', () => {
+    const r = extractAdReferral({ ad_referral: { ...STORED, senha: 'nao-vaza' } });
+    expect(r).toEqual(STORED);
+  });
+
+  it('sem raw e sem gravado, continua null', () => {
+    expect(extractAdReferral({ ad_referral: {} })).toBeNull();
+  });
+});
