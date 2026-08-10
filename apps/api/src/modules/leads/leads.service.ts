@@ -17,6 +17,7 @@ import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
 import { resolveActiveConversation } from '../webhooks/conversation-routing';
+import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
 import { applyPanelFilters } from './lead-filters';
@@ -1585,10 +1586,17 @@ export class LeadsService {
     });
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
+    // É ESTE endpoint que o chat consome (`/api/leads/:id/messages`), não o
+    // `MessagesService.getHistory`. O card do anúncio precisa sair daqui —
+    // senão ele aparece pelo WebSocket na mensagem que chega ao vivo e some no
+    // primeiro refetch. Mesmo contrato dos outros dois caminhos: `ad_referral`
+    // derivado e `metadata` fora da resposta (ninguém o lê, e ele levava o
+    // payload inteiro do provider até o navegador).
     const messages = await Promise.all(
-      sliced.map(async (m) => ({
+      sliced.map(async ({ metadata, ...m }) => ({
         ...m,
         media_url: await this.resolveMediaUrl(m.media_url),
+        ad_referral: extractAdReferral(metadata),
       })),
     );
     return {
