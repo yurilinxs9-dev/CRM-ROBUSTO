@@ -51,6 +51,7 @@ import {
 import { StageColumn, type Stage } from '@/components/kanban/stage-column';
 import { LeadFilterPanel } from '@/components/kanban/lead-filter-panel';
 import { FILTROS_VAZIOS, toQueryParams, type LeadPanelFilters } from '@/lib/lead-filters';
+import { compareLeadsInStage, topPositionFor } from '@/lib/lead-order';
 import {
   NewLeadDialog,
   type NewLeadFormData,
@@ -685,6 +686,10 @@ export default function KanbanPage() {
 
       // Cross-stage move (+ ajusta contadores das colunas na hora).
       const finalTarget = targetStageId;
+      // Card vindo de outra coluna entra no topo do destino, mesma regra do
+      // lead novo. Vai explícito no pedido para o card não piscar na posição
+      // antiga até a resposta chegar; sem posição, o backend decide igual.
+      const topPosition = topPositionFor(leads.filter((l) => l.estagio_id === finalTarget));
       queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
         if (!old) return old;
         const moved = old.leads.find((l) => l.id === activeId);
@@ -697,11 +702,15 @@ export default function KanbanPage() {
           ...old,
           stage_counts: counts,
           leads: old.leads.map((l) =>
-            l.id === activeId ? { ...l, estagio_id: finalTarget } : l,
+            l.id === activeId ? { ...l, estagio_id: finalTarget, position: topPosition } : l,
           ),
         };
       });
-      stageMutation.mutate({ leadId: activeId, estagioId: finalTarget });
+      stageMutation.mutate({
+        leadId: activeId,
+        estagioId: finalTarget,
+        position: topPosition,
+      });
     },
     [leads, queryClient, leadsQueryKey, stageMutation, orderedStages, reorderStagesMutation],
   );
@@ -724,11 +733,7 @@ export default function KanbanPage() {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
     }
     for (const stageId of Object.keys(map)) {
-      map[stageId].sort((a, b) => {
-        const dateA = a.ultima_interacao ? new Date(a.ultima_interacao).getTime() : 0;
-        const dateB = b.ultima_interacao ? new Date(b.ultima_interacao).getTime() : 0;
-        return dateB - dateA;
-      });
+      map[stageId].sort(compareLeadsInStage);
     }
     return map;
   }, [tabFilteredLeads, orderedStages]);

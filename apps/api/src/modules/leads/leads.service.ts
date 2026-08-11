@@ -446,6 +446,13 @@ export class LeadsService {
       { created_at: 'desc' },
     ] as const;
 
+    // Kanban: a ordem é a que o usuário arrastou (`position`), com recência só
+    // como desempate. O chat continua por recência pura — lá "mais recente
+    // primeiro" É a ordem certa, e ordem manual não faz sentido.
+    // Isto também define a JANELA por coluna: com lead novo entrando no topo,
+    // a primeira página traz sempre os mais novos e os fixados pelo usuário.
+    const boardOrder = [{ position: 'asc' }, ...recencyOrder] as const;
+
     const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
       this.prisma.lead.findMany({
         relationLoadStrategy: 'join',
@@ -454,9 +461,11 @@ export class LeadsService {
         // Chat/coluna: ordem pura de recência. Lista plena do kanban:
         // agrupada por estágio (agrupamento final é no cliente).
         orderBy:
-          filters.scope === 'chat' || filters.estagio_id || filters.per_stage
+          filters.scope === 'chat'
             ? [...recencyOrder]
-            : [{ estagio_id: 'asc' }, ...recencyOrder],
+            : filters.estagio_id || filters.per_stage
+              ? [...boardOrder]
+              : [{ estagio_id: 'asc' }, ...boardOrder],
         take,
         skip,
       });
@@ -786,16 +795,8 @@ export class LeadsService {
     const instanciaWhatsapp =
       parsed.instancia_whatsapp ?? (await this.resolveDefaultInstance(user, poolEnabled));
 
-    // Compute initial position so new leads append at the bottom of the stage.
-    let initialPosition = 1000;
-    const maxResult = await this.prisma.lead.aggregate({
-      where: { estagio_id: stageId, tenant_id: user.tenantId },
-      _max: { position: true },
-    });
-    const maxPos = maxResult._max.position;
-    if (maxPos !== null && maxPos !== undefined) {
-      initialPosition = maxPos + 1000;
-    }
+    // Lead novo entra no TOPO da coluna — decisão do cliente (10/08/2026).
+    const initialPosition = await this.topPositionOf(stageId, user.tenantId);
 
     let lead;
     try {
@@ -995,6 +996,21 @@ export class LeadsService {
     return updated;
   }
 
+  /**
+   * Posição que coloca o lead acima de todos os outros do estágio. `position`
+   * é fracionária e cresce para baixo: mover um card grava uma linha só, sem
+   * renumerar a coluna inteira. O passo de 1000 deixa espaço de sobra para
+   * inserções entre vizinhos antes de a precisão do float apertar.
+   */
+  private async topPositionOf(stageId: string, tenantId: string): Promise<number> {
+    const { _min } = await this.prisma.lead.aggregate({
+      where: { estagio_id: stageId, tenant_id: tenantId },
+      _min: { position: true },
+    });
+    const min = _min.position;
+    return min === null || min === undefined ? 1000 : min - 1000;
+  }
+
   async updateStage(id: string, data: unknown, user: AuthUser) {
     const { estagio_id, position } = updateStageSchema.parse(data);
 
@@ -1026,7 +1042,11 @@ export class LeadsService {
       estagio_id,
       estagio_entered_at: new Date(),
     };
-    if (position !== undefined) leadUpdateData.position = position;
+    // Mudou de coluna sem posição explícita (automação, SLA, ação em massa):
+    // entra no topo do destino, mesma regra do lead novo. Sem isto ele levaria
+    // a posição da coluna antiga e cairia num ponto arbitrário da nova.
+    leadUpdateData.position =
+      position !== undefined ? position : await this.topPositionOf(estagio_id, user.tenantId);
     // Operador movendo o lead = conversa tratada; leitura no celular não gera
     // evento na UazAPI, então esta ação é o sinal de "visto" que zera o badge.
     // Automação (SYSTEM) não zera — mover por SLA não significa que alguém leu.
