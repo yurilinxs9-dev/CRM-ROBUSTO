@@ -81,7 +81,7 @@ const TENANT = (process.argv.find((a) => a.startsWith('--tenant=')) || '').split
                       ORDER BY ultima_interacao DESC NULLS LAST, created_at DESC
                     ) AS rn
                FROM "Lead"
-              WHERE estagio_id = $1::uuid
+              WHERE estagio_id = $1
            ) o
           WHERE o.id = l.id`,
         stage.id,

@@ -85,7 +85,7 @@ const BATCH = 500;
           AND jsonb_exists(metadata, 'raw')
           AND NOT jsonb_exists(metadata, 'ad_referral')
           AND metadata::text LIKE '%externalAdReply%'
-          AND id > $1::uuid
+          AND id > $1
           ${tenantId ? 'AND tenant_id = $3' : ''}
         ORDER BY id LIMIT $2`,
       cursor,
@@ -104,7 +104,7 @@ const BATCH = 500;
       }
       if (APPLY) {
         await prisma.$executeRawUnsafe(
-          `UPDATE "Message" SET metadata = jsonb_set(metadata, '{ad_referral}', $2::jsonb, true) WHERE id = $1::uuid`,
+          `UPDATE "Message" SET metadata = jsonb_set(metadata, '{ad_referral}', $2::jsonb, true) WHERE id = $1`,
           row.id,
           JSON.stringify(ad),
         );

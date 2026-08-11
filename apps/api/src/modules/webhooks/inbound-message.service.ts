@@ -372,6 +372,12 @@ export class InboundMessageService {
         nome: incomingPushName || phone,
         telefone: phone,
         whatsapp_lid: lidJid,
+        // Lead novo entra no TOPO da coluna, como os criados pela UI e pela
+        // API. `position` cresce para baixo, então o relógio negativo resolve
+        // isso sem consulta nenhuma — de outro jeito seria um aggregate por
+        // mensagem recebida, inclusive nas 99% que caem no branch update.
+        // Entre si, o mais recente fica acima.
+        position: -Date.now(),
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instance.nome,
         lead_scope: leadScope,
