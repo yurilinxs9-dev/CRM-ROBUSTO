@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSocket } from '@/lib/socket';
+import { leadUpdateFields } from '@/lib/lead-events';
 
 /**
  * Provider global de eventos WS pro dashboard.
@@ -181,8 +182,17 @@ export function SocketEventsProvider({ children }: { children: React.ReactNode }
 
     const onLeadUpdated = (payload: { leadId?: string } & Record<string, unknown>) => {
       if (!payload?.leadId) return;
-      const { leadId, ...fields } = payload;
-      const found = patchLists(leadId, (lead) => ({ ...lead, ...fields }));
+      const fields = leadUpdateFields(payload);
+      // Evento sem campo algum — é o caso da edição pelo formulário, que emite
+      // só `{ leadId, triggeredByUserId }`. Antes isto caía no patch, que
+      // "encontrava" o lead, não mudava nada e concluía que estava atualizado:
+      // a alteração de um usuário só aparecia para o outro no poll de 60s ou
+      // num F5. Sem campos, refetch é a única forma de obter o dado novo.
+      if (Object.keys(fields).length === 0) {
+        scheduleInvalidate();
+        return;
+      }
+      const found = patchLists(payload.leadId, (lead) => ({ ...lead, ...fields }));
       if (!found) scheduleInvalidate();
     };
 
