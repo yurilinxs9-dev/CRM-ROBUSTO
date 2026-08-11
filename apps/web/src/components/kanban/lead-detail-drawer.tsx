@@ -215,7 +215,9 @@ export function LeadDetailDrawer({
   useEffect(() => {
     if (!lead || !schema) return;
     setValues(initialValues(flattenFields(groupFields(schema, 'LEAD')), lead));
-    setResponsavelId(lead.responsavel_id);
+    // Lead no pool vem com responsavel_id null — o estado do Select é string,
+    // e mandar null no PATCH derrubava o save inteiro com "Campos inválidos".
+    setResponsavelId(lead.responsavel_id ?? '');
     const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
     setTags(existingTags);
     setDirty(false);
@@ -293,7 +295,10 @@ export function LeadDetailDrawer({
       const { native, custom } = buildPayload(leadDefs, values);
       const body: Record<string, unknown> = {
         ...native,
-        responsavel_id: responsavelId,
+        // Só vai quando há responsável escolhido: o campo não tem opção
+        // "ninguém" (isso é o botão "Devolver ao Escritório"), então vazio
+        // aqui significa "não mexe", não "remove o dono".
+        ...(responsavelId ? { responsavel_id: responsavelId } : {}),
         tags,
       };
       if (Object.keys(custom).length > 0) body.dados_custom = custom;

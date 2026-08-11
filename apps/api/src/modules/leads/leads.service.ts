@@ -68,7 +68,12 @@ const updateLeadSchema = z.object({
   // mandaria o valor e o backend descartaria em silêncio.
   empresa: z.string().max(120).optional().nullable(),
   cargo: z.string().max(80).optional().nullable(),
-  responsavel_id: z.string().uuid().optional(),
+  // A ficha manda o campo sempre, e ele vem vazio quando o lead está no pool
+  // (sem responsável) — o select não tem opção "ninguém", quem devolve é o
+  // botão "Devolver ao Escritório". Sem este tratamento, salvar QUALQUER coisa
+  // num lead sem dono (uma tag, por exemplo) voltava "Campos inválidos:
+  // responsavel_id". Vazio aqui significa "não mexe no responsável".
+  responsavel_id: vazioComoAusente(z.string().uuid()),
   tags: z.array(z.string()).optional(),
   // Campos customizados por tenant — validados contra CustomFieldDef ativas.
   dados_custom: z.record(z.unknown()).optional(),
@@ -77,9 +82,12 @@ const updateLeadSchema = z.object({
  * Trata string vazia como campo ausente. Formulário React controlado inicia
  * campo não preenchido como `''`, e um `.optional()` do Zod aceita `undefined`
  * mas não `''` — o que virava 400 sem indicar o campo.
+ *
+ * `null` entra na mesma regra: quando a ficha carrega um lead sem responsável,
+ * o estado do select recebe o null que veio do banco e é ele que sobe no PATCH.
  */
 function vazioComoAusente<T extends z.ZodTypeAny>(schema: T) {
-  return z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+  return z.preprocess((v) => (v === '' || v === null ? undefined : v), schema.optional());
 }
 
 const createLeadSchema = z.object({
