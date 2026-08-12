@@ -53,6 +53,48 @@ export function pushAnd(where: LeadWhereInput, condition: unknown): void {
   else where.AND = [condition];
 }
 
+/**
+ * Recorte das abas do board: 'me' = "Meus Leads" · 'others' = "Escritório".
+ *
+ * Existe no servidor porque `stage_counts` sai de um `groupBy` sobre o mesmo
+ * `where` da listagem — enquanto a aba era recortada só no cliente, a coluna
+ * mostrava a contagem do board inteiro com um punhado de cards à vista.
+ */
+export type OwnerScope = 'me' | 'others';
+
+/** Valor cru da query string → escopo válido, ou null (ignora o filtro). */
+export function parseOwnerScope(raw?: string): OwnerScope | null {
+  return raw === 'me' || raw === 'others' ? raw : null;
+}
+
+/**
+ * Condição de "de quem é o lead" para uma das abas.
+ *
+ * 'others' usa OR explícito com null de propósito: `{ not: userId }` sozinho
+ * deixaria de fora o lead SEM responsável, e o Escritório é justamente onde o
+ * lead ainda não assumido precisa aparecer.
+ */
+export function ownerCondition(owner: OwnerScope, userId: string): unknown {
+  return owner === 'me'
+    ? { responsavel_id: userId }
+    : { OR: [{ responsavel_id: null }, { responsavel_id: { not: userId } }] };
+}
+
+/**
+ * Cópia do `where` com uma condição a mais no AND — ao contrário de `pushAnd`,
+ * não mexe no original. É o que permite contar as DUAS abas a partir do mesmo
+ * `where` base: a aba inativa precisa do total dela, não de zero.
+ */
+export function withCondition(where: LeadWhereInput, condition: unknown): LeadWhereInput {
+  const anterior = where.AND;
+  const AND = Array.isArray(anterior)
+    ? [...anterior, condition]
+    : anterior !== undefined && anterior !== null
+      ? [anterior, condition]
+      : [condition];
+  return { ...where, AND };
+}
+
 /** Nomes separados por vírgula → lista limpa, sem vazios nem duplicatas. */
 export function parseListaDeTags(raw: string): string[] {
   const vistos = new Set<string>();

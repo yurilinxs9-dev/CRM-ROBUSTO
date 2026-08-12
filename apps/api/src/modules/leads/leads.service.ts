@@ -20,7 +20,12 @@ import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
-import { applyPanelFilters } from './lead-filters';
+import {
+  applyPanelFilters,
+  ownerCondition,
+  parseOwnerScope,
+  withCondition,
+} from './lead-filters';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -161,6 +166,8 @@ interface LeadFilters {
   scope?: string;
   unread?: string;
   per_stage?: string;
+  /** Aba do board: 'me' = Meus Leads · 'others' = Escritório. Ver parseOwnerScope. */
+  owner?: string;
   /** Nomes separados por vírgula. Casa lead que tenha QUALQUER uma (OR). */
   tags?: string;
   /** Criação do lead, ISO. `to` é inclusivo no dia inteiro (ver parseDiaFinal). */
@@ -412,6 +419,13 @@ export class LeadsService {
     // que devolve lead a mais é pior que filtro que não existe.
     applyPanelFilters(where, filters);
 
+    // Abas "Meus Leads" / "Escritório". Entram por último e SEM mutar `where`:
+    // a contagem que vai no rótulo das abas precisa do recorte de todos os
+    // outros filtros, mas não do recorte da aba — senão a aba em que o usuário
+    // não está mostraria sempre zero.
+    const owner = parseOwnerScope(filters.owner);
+    const whereFinal = owner ? withCondition(where, ownerCondition(owner, user.id)) : where;
+
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
@@ -464,7 +478,7 @@ export class LeadsService {
     const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
       this.prisma.lead.findMany({
         relationLoadStrategy: 'join',
-        where: { ...where, ...extraWhere },
+        where: { ...whereFinal, ...extraWhere },
         select: leadListSelect,
         // Chat/coluna: ordem pura de recência. Lista plena do kanban:
         // agrupada por estágio (agrupamento final é no cliente).
@@ -512,13 +526,22 @@ export class LeadsService {
         where: { pipeline_id: filters.pipeline_id },
         select: { id: true },
       });
-      const [lists, counts] = await Promise.all([
+      const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
         Promise.all(stages.map((s) => runQuery({ estagio_id: s.id }, perStage, 0))),
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
-          where: where as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
+          where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
           _count: { _all: true },
           _sum: { valor_estimado: true },
+        }),
+        // Rótulo das abas: total de cada uma sob os demais filtros. Sai de
+        // `where` (sem a aba), por isso as duas contagens continuam certas
+        // esteja o usuário em qual aba estiver.
+        this.prisma.lead.count({
+          where: withCondition(where, ownerCondition('me', user.id)) as Prisma.LeadWhereInput,
+        }),
+        this.prisma.lead.count({
+          where: withCondition(where, ownerCondition('others', user.id)) as Prisma.LeadWhereInput,
         }),
       ]);
       const stage_counts: Record<string, number> = {};
@@ -527,7 +550,12 @@ export class LeadsService {
         stage_counts[c.estagio_id] = c._count._all;
         stage_values[c.estagio_id] = Number(c._sum?.valor_estimado ?? 0);
       }
-      result = { leads: lists.flat().map(mapRow), stage_counts, stage_values };
+      result = {
+        leads: lists.flat().map(mapRow),
+        stage_counts,
+        stage_values,
+        owner_counts: { me: meuTotal, others: escritorioTotal },
+      };
     } else {
       const leads = await runQuery(
         {},

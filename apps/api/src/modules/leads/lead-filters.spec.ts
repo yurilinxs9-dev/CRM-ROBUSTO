@@ -1,4 +1,12 @@
-import { applyPanelFilters, pushAnd, parseListaDeTags, parseDiaFinal } from './lead-filters';
+import {
+  applyPanelFilters,
+  pushAnd,
+  parseListaDeTags,
+  parseDiaFinal,
+  parseOwnerScope,
+  ownerCondition,
+  withCondition,
+} from './lead-filters';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
 import { UserRole } from '@/common/types/roles';
 
@@ -31,6 +39,55 @@ describe('pushAnd', () => {
     const where: Record<string, unknown> = { AND: { a: 1 } };
     pushAnd(where, { b: 2 });
     expect(where.AND).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+});
+
+describe('abas Meus Leads / Escritorio', () => {
+  const EU = 'user-1';
+
+  it('so aceita os dois escopos conhecidos', () => {
+    expect(parseOwnerScope('me')).toBe('me');
+    expect(parseOwnerScope('others')).toBe('others');
+    expect(parseOwnerScope('todos')).toBeNull();
+    expect(parseOwnerScope(undefined)).toBeNull();
+  });
+
+  it('"meus" e igualdade simples de responsavel', () => {
+    expect(ownerCondition('me', EU)).toEqual({ responsavel_id: EU });
+  });
+
+  it('"escritorio" inclui lead SEM responsavel', () => {
+    // `{ not: EU }` sozinho deixaria o lead do pool de fora — e o pool e
+    // justamente o que o Escritorio existe pra mostrar.
+    expect(ownerCondition('others', EU)).toEqual({
+      OR: [{ responsavel_id: null }, { responsavel_id: { not: EU } }],
+    });
+  });
+
+  it('withCondition nao mexe no where original', () => {
+    // O `where` base e reaproveitado pra contar as DUAS abas; se a primeira
+    // contagem o mutasse, a segunda voltaria com os dois recortes somados.
+    const base: Record<string, unknown> = { AND: [{ a: 1 }] };
+    const derivado = withCondition(base, { b: 2 });
+    expect(base.AND).toEqual([{ a: 1 }]);
+    expect(derivado.AND).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+
+  it('withCondition compoe com AND ausente ou objeto unico', () => {
+    expect(withCondition({}, { b: 2 }).AND).toEqual([{ b: 2 }]);
+    expect(withCondition({ AND: { a: 1 } }, { b: 2 }).AND).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+
+  it('preserva o OR de visibilidade ao recortar a aba', () => {
+    const where: Record<string, unknown> = {};
+    Object.assign(
+      where,
+      buildVisibilityWhere({ userId: EU, role: UserRole.OPERADOR, poolEnabled: true }),
+    );
+    const comAba = withCondition(where, ownerCondition('me', EU));
+    // A visibilidade continua no OR de cima; a aba entrou no AND ao lado dela.
+    expect(comAba.OR).toEqual(where.OR);
+    expect(comAba.AND).toEqual([{ responsavel_id: EU }]);
   });
 });
 
