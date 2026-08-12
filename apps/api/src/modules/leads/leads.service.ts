@@ -1277,7 +1277,10 @@ export class LeadsService {
   private async transferActiveConversation(
     tx: Prisma.TransactionClient,
     leadId: string,
-    toUserId: string,
+    // null = volta pro pool (devolução ao escritório, ou setor sem agente
+    // ativo). Sem passar o null adiante, a conversa continuaria apontando pro
+    // dono anterior e a próxima mensagem do cliente o traria de volta.
+    toUserId: string | null,
     tenantId: string,
   ): Promise<string | null> {
     const rows = await tx.conversation.findMany({
@@ -1294,7 +1297,7 @@ export class LeadsService {
 
     await tx.conversation.update({
       where: { id: active.id },
-      data: { responsavel_id: toUserId, assumed_at: new Date() },
+      data: { responsavel_id: toUserId, assumed_at: toUserId ? new Date() : null },
     });
     return active.id;
   }
@@ -1448,10 +1451,15 @@ export class LeadsService {
     const result = await this.assignment.assignBySector(user.tenantId, sectorId, leadId);
 
     if (!result.userId) {
-      // Sem agentes ativos: lead em espera no pool.
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { responsavel_id: null, assumed_at: null, is_private: false },
+      // Sem agentes ativos: lead em espera no pool. Lead e conversa ativa na
+      // MESMA transação, mesmo motivo do claim/reassign — deixar a conversa
+      // com o dono anterior faz a próxima mensagem do cliente desfazer isto.
+      await this.prisma.$transaction(async (tx) => {
+        await tx.lead.update({
+          where: { id: leadId },
+          data: { responsavel_id: null, assumed_at: null, is_private: false },
+        });
+        await this.transferActiveConversation(tx, leadId, null, user.tenantId);
       });
       await this.prisma.leadActivity.create({
         data: {
@@ -1469,16 +1477,26 @@ export class LeadsService {
       return { id: leadId, sector_id: sectorId, responsavel_id: null, reason: result.reason };
     }
 
-    const ownedInstance = await this.findOwnedInstance(result.userId, user.tenantId);
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        responsavel_id: result.userId,
-        // Novo responsável começa do zero (sem histórico do anterior).
-        assumed_at: new Date(),
-        is_private: false,
-        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
-      },
+    // Depois do guard acima o id é garantido; o const local preserva o
+    // estreitamento dentro do callback da transação.
+    const assignedUserId = result.userId;
+    const ownedInstance = await this.findOwnedInstance(assignedUserId, user.tenantId);
+    // Lead e conversa ativa na MESMA transação. Era exatamente isto que
+    // faltava: a distribuição por setor gravava só o Lead, a Conversation
+    // seguia com o dono anterior, e o `syncLeadFromActive` do inbound
+    // devolvia o lead pro dono antigo na mensagem seguinte do cliente.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          responsavel_id: assignedUserId,
+          // Novo responsável começa do zero (sem histórico do anterior).
+          assumed_at: new Date(),
+          is_private: false,
+          ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+        },
+      });
+      await this.transferActiveConversation(tx, leadId, assignedUserId, user.tenantId);
     });
     await this.prisma.leadActivity.create({
       data: {
@@ -1528,11 +1546,17 @@ export class LeadsService {
       throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem devolver ao escritorio');
     }
 
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
-      // continuam protegidas pelo visible_to_user_id do dono anterior.
-      data: { responsavel_id: null, assumed_at: null, is_private: false },
+    // Lead e conversa ativa na MESMA transação — sem devolver a conversa ao
+    // pool junto, a próxima mensagem do cliente reatribuía o lead ao dono
+    // anterior (mesma classe de bug do claim/reassign).
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lead.update({
+        where: { id: leadId },
+        // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
+        // continuam protegidas pelo visible_to_user_id do dono anterior.
+        data: { responsavel_id: null, assumed_at: null, is_private: false },
+      });
+      await this.transferActiveConversation(tx, leadId, null, user.tenantId);
     });
     await this.prisma.leadActivity.create({
       data: {
