@@ -146,6 +146,8 @@ interface LeadDetailDrawerProps {
   open: boolean;
   onClose: () => void;
   activePipelineId?: string | null;
+  /** Sem handler o botão "Arquivar" some — quem abre a ficha fora do Kanban
+   *  (o chat) não tem o diálogo de confirmação de arquivamento. */
   onArchive?: (leadId: string) => void;
 }
 
@@ -164,6 +166,18 @@ export function LeadDetailDrawer({
   const currentUser = useAuthStore((s) => s.user);
   const isPoolEnabled = useIsPoolEnabled();
   const podeConfigurar = !!currentUser?.role && GESTORES.includes(currentUser.role);
+
+  // Invalidações comuns a toda mutação da ficha. Aberta pelo chat não há
+  // pipeline ativo, e ['leads', undefined] não casaria nenhuma listagem — o
+  // prefixo cobre os dois casos. ['chat','leads'] é a lista lateral do chat,
+  // que mostra responsável e tags e ficava desatualizada após transferir.
+  const invalidarListas = () => {
+    void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+    void queryClient.invalidateQueries({
+      queryKey: activePipelineId ? ['leads', activePipelineId] : ['leads'],
+    });
+    void queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+  };
 
   // ---- Remote data ----
   const { data: lead, isLoading: leadLoading } = useQuery<LeadDetail>({
@@ -238,8 +252,7 @@ export function LeadDetailDrawer({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/claim`); },
     onSuccess: () => {
       toast.success('Lead assumido!');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
     },
     onError: (err: unknown) => {
       const status = (err as { response?: { status?: number } })?.response?.status;
@@ -254,8 +267,7 @@ export function LeadDetailDrawer({
     },
     onSuccess: () => {
       toast.success('Lead transferido.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
     },
     onError: () => toast.error('Erro ao transferir lead.'),
   });
@@ -268,8 +280,7 @@ export function LeadDetailDrawer({
     },
     onSuccess: () => {
       toast.success('Lead transferido para o setor.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
     },
     onError: () => toast.error('Erro ao transferir lead para o setor.'),
@@ -279,8 +290,7 @@ export function LeadDetailDrawer({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/return-to-pool`); },
     onSuccess: () => {
       toast.success('Lead devolvido ao escritorio.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
     },
     onError: () => toast.error('Erro ao devolver lead.'),
@@ -306,8 +316,7 @@ export function LeadDetailDrawer({
       return res.data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
       setDirty(false);
       toast.success('Lead atualizado.');
@@ -579,17 +588,21 @@ export function LeadDetailDrawer({
         {/* Footer actions */}
         {!leadLoading && lead && (
           <div className="px-5 py-4 border-t shrink-0 flex items-center justify-between gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => {
-                onArchive?.(lead.id);
-                onClose();
-              }}
-            >
-              Arquivar
-            </Button>
+            {onArchive ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => {
+                  onArchive(lead.id);
+                  onClose();
+                }}
+              >
+                Arquivar
+              </Button>
+            ) : (
+              <span />
+            )}
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={onClose}>
                 <X className="h-3.5 w-3.5 mr-1" />
