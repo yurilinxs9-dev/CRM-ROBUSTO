@@ -382,6 +382,8 @@ model Lead {
   // Relação virtual: NÃO gera coluna nem DDL em "Lead". A FK vive em
   // LeadContact, tabela nova. Ver "Interpretação" no plano da feature.
   lead_contacts LeadContact[]
+  // Idem: a FK vive em LeadAttribution. Nenhum ALTER em "Lead".
+  attribution   LeadAttribution?
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
@@ -1135,4 +1137,148 @@ model LeadContact {
 
   @@id([lead_id, contact_id])
   @@index([contact_id])
+}
+
+// ---------------------------------------------------------------------------
+// Atribuição de origem (de onde o lead veio)
+//
+// Todo o bloco abaixo é ADITIVO: quatro tabelas novas e um enum novo, sem um
+// único ALTER em tabela existente. As FKs moram nas tabelas novas (mesmo
+// padrão de LeadContact), então "Lead" e "Tenant" não recebem coluna nenhuma.
+// Ver docs/specs/atribuicao-de-origem.md.
+// ---------------------------------------------------------------------------
+
+/// Canal normalizado. É o eixo dos relatórios — os campos crus (utm_*, gclid…)
+/// ficam guardados ao lado para auditoria, mas ninguém agrupa por eles.
+enum AttributionChannel {
+  META_ADS
+  GOOGLE_ADS
+  GOOGLE_ORGANIC
+  SOCIAL_ORGANIC
+  REFERRAL
+  DIRECT
+  INDICACAO
+  UNKNOWN
+}
+
+/// Origem do lead, gravada UMA vez (first-touch) e nunca sobrescrita: o que
+/// interessa é o que trouxe a pessoa, não o último lugar em que ela clicou.
+/// 1:1 com Lead, criada no momento em que o lead nasce.
+model LeadAttribution {
+  id        String @id @default(uuid())
+  lead_id   String @unique
+  lead      Lead   @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  /// Sem FK para Tenant de propósito — evita ALTER/constraint em tabela
+  /// existente. Mesmo compromisso que ApiRequestLog já assume.
+  tenant_id String
+
+  channel AttributionChannel
+  /// Redundante com `channel`, mas materializado porque "pago × orgânico" é a
+  /// pergunta mais frequente do relatório e vira um filtro de índice direto.
+  paid    Boolean
+
+  /// Plataforma legível: google, meta, instagram, facebook, site…
+  source String?
+
+  // --- Identificadores de campanha (numéricos quando vêm do ValueTrack) ---
+  campaign_id String?
+  adgroup_id  String?
+  creative_id String?
+  /// Só preenchido quando a UTM traz nome em texto em vez de ID. Quando vem
+  /// ID, o nome amigável vive em AdCampaignLabel e é editável pelo usuário.
+  campaign_name String?
+
+  // --- Busca paga (ValueTrack) ---
+  keyword    String?
+  match_type String?
+  network    String?
+  device     String?
+
+  // --- Click IDs ---
+  gclid     String?
+  /// Substitutos do gclid em tráfego iOS/EEA com rastreamento restrito. Provam
+  /// que o clique veio do Google Ads, mas não identificam a campanha — daí
+  /// existirem separados, em vez de fingirem ser gclid.
+  wbraid    String?
+  gbraid    String?
+  fbclid    String?
+  ctwa_clid String?
+
+  // --- UTMs cruas, como chegaram ---
+  utm_source   String?
+  utm_medium   String?
+  utm_campaign String?
+  utm_term     String?
+  utm_content  String?
+
+  // --- Meta CTWA (vem pronto no payload do WhatsApp, sem configuração) ---
+  ad_id    String?
+  ad_title String?
+  ad_url   String?
+
+  landing_url String?
+  referrer    String?
+  /// Quando o clique aconteceu. Pode ser bem antes de created_at: o cookie de
+  /// first-touch guarda 90 dias.
+  clicked_at  DateTime?
+
+  created_at DateTime @default(now())
+
+  @@index([tenant_id, channel])
+  @@index([tenant_id, created_at])
+  @@index([tenant_id, source, campaign_id])
+}
+
+/// Clique capturado pelo pixel do site antes de existir lead. O visitante clica
+/// no botão de WhatsApp, o snippet gera um código curto, manda a atribuição
+/// para cá e põe o código no texto pré-preenchido. Quando a mensagem chega, o
+/// inbound acha o código e sabe de onde veio.
+model TrackedClick {
+  id        String @id @default(uuid())
+  tenant_id String
+  /// Código curto que viaja no texto do wa.me. Gerado no navegador.
+  code      String
+
+  /// Payload cru do snippet, validado antes de gravar. Fica em JSON porque a
+  /// classificação em canal só acontece quando o lead nasce — aqui ainda não
+  /// se sabe se vai virar lead.
+  payload    Json
+  clicked_at DateTime  @default(now())
+  /// Marcado quando um lead consome o código. Serve para diagnóstico
+  /// ("quantos cliques viraram conversa") e para não reusar o mesmo código.
+  consumed_at DateTime?
+
+  created_at DateTime @default(now())
+
+  @@unique([tenant_id, code])
+  @@index([created_at])
+}
+
+/// Nome amigável de uma campanha. O ValueTrack só entrega {campaignid}
+/// numérico; em vez de exigir API do Google, o usuário batiza a campanha uma
+/// vez aqui. O ID continua sendo a chave — renomear no Google não quebra nada.
+model AdCampaignLabel {
+  id          String @id @default(uuid())
+  tenant_id   String
+  /// google | meta
+  source      String
+  campaign_id String
+  label       String
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([tenant_id, source, campaign_id])
+  @@index([tenant_id])
+}
+
+/// Token público do site do tenant, usado só pelo pixel de clique. NÃO é
+/// segredo: vive no HTML do cliente. Não dá acesso a leitura nenhuma — o pior
+/// que alguém faz com ele é registrar clique falso.
+model TenantSiteConfig {
+  tenant_id  String @id
+  site_token String @unique
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 }

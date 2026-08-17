@@ -10,6 +10,7 @@ import { MessagesService } from '../messages/messages.service';
 import { LeadsService } from '../leads/leads.service';
 import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
+import { AttributionService } from '../attribution/attribution.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
@@ -59,6 +60,7 @@ export class PublicApiService {
     private readonly leads: LeadsService,
     private readonly gateway: CrmGateway,
     private readonly customFields: CustomFieldsService,
+    private readonly attribution: AttributionService,
   ) {}
 
   /**
@@ -287,6 +289,14 @@ export class PublicApiService {
         tenant_id: tenantId,
       },
     });
+
+    // Origem do lead. Só grava quando a integração mandou `attribution` — quem
+    // não manda nada segue funcionando exatamente como antes. `recordFirstTouch`
+    // engole os próprios erros: o lead já está gravado, e métrica não pode
+    // transformar um cadastro que deu certo em erro para o n8n.
+    if (d.attribution) {
+      await this.attribution.recordFirstTouch(lead.id, tenantId, d.attribution);
+    }
 
     // Sem isto, o lead criado pela integração não aparece para quem está com o
     // Kanban aberto: o board só reagia a stage-changed e new-message, e um lead

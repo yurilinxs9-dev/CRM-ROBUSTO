@@ -64,6 +64,12 @@ function makeMocks() {
   const broadcastReply: any = {
     registerCustomerReply: jest.fn().mockResolvedValue({ replied: 0, skipped: 0 }),
   };
+  const attribution: any = {
+    extractClickCode: jest.fn().mockReturnValue(null),
+    consumeClick: jest.fn().mockResolvedValue(null),
+    fromAdReferral: jest.fn().mockReturnValue({}),
+    recordFirstTouch: jest.fn().mockResolvedValue(undefined),
+  };
   return {
     prisma,
     leadsService,
@@ -75,6 +81,7 @@ function makeMocks() {
     assignment,
     conversations,
     broadcastReply,
+    attribution,
   };
 }
 
@@ -91,6 +98,7 @@ function makeService() {
     m.assignment,
     m.conversations,
     m.broadcastReply,
+    m.attribution,
   ) as InboundMessageService;
   return { service, ...m };
 }

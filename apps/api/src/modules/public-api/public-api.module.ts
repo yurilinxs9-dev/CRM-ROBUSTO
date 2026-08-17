@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MessagesModule } from '../messages/messages.module';
 import { LeadsModule } from '../leads/leads.module';
+import { AttributionModule } from '../attribution/attribution.module';
 import { PublicApiController } from './public-api.controller';
 import { PublicDocsController } from './public-docs.controller';
 import { ApiKeysController } from './api-keys.controller';
@@ -18,7 +19,7 @@ import { AuditInterceptor } from './audit.interceptor';
  * vêm de módulos @Global (PrismaModule / WebSocketModule).
  */
 @Module({
-  imports: [MessagesModule, LeadsModule],
+  imports: [MessagesModule, LeadsModule, AttributionModule],
   controllers: [PublicApiController, PublicDocsController, ApiKeysController],
   providers: [
     PublicApiService,

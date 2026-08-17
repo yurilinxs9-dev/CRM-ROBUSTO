@@ -20,6 +20,7 @@ import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/layout/page-header';
 import { KpiCard } from '@/components/dashboard/kpi-card';
+import { AttributionSection } from '@/components/analytics/attribution-section';
 import {
   Select,
   SelectTrigger,
@@ -1284,6 +1285,9 @@ function AnalyticsPageInner() {
         <FunnelSection data={funnel} isLoading={funnelLoading} />
         <ConversionSection data={conversion} isLoading={conversionLoading} />
       </div>
+
+      {/* Origem dos leads — canais, campanhas e palavras-chave */}
+      <AttributionSection from={from} to={to} />
 
       {/* Forecast de receita */}
       <ForecastSection data={forecast} isLoading={forecastLoading} />

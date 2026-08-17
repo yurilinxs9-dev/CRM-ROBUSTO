@@ -14,6 +14,7 @@ import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
 import { QueueModule } from '../queue/queue.module';
 import { BroadcastsModule } from '../broadcasts/broadcasts.module';
+import { AttributionModule } from '../attribution/attribution.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { BroadcastsModule } from '../broadcasts/broadcasts.module';
     PushModule,
     QueueModule,
     BroadcastsModule,
+    AttributionModule,
   ],
   controllers: [WebhooksController],
   providers: [

@@ -57,6 +57,9 @@ function makeService(over: Record<string, unknown> = {}) {
     {} as ConstructorParameters<typeof PublicApiService>[2],
     gateway,
     customFields,
+    {
+      recordFirstTouch: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ConstructorParameters<typeof PublicApiService>[5],
   );
   return { svc, prisma: prisma as never, customFields: customFields as never };
 }

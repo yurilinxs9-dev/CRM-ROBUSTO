@@ -62,6 +62,9 @@ function makeService(over: Record<string, unknown> = {}) {
     leads,
     { emitLeadUpdated: jest.fn() } as unknown as ConstructorParameters<typeof PublicApiService>[3],
     {} as ConstructorParameters<typeof PublicApiService>[4],
+    {
+      recordFirstTouch: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ConstructorParameters<typeof PublicApiService>[5],
   );
   return { svc, prisma: prisma as never, leads: leads as never };
 }

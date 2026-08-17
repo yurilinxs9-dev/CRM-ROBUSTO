@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { attributionInputSchema } from '../attribution/attribution.types';
 
 export const listContactsQuerySchema = z.object({
   email: z.string().email().optional(),
@@ -35,6 +36,10 @@ export const createContactSchema = z.object({
   // GET /v1/custom-fields; o valor é validado e convertido contra a definição
   // do campo (mesma rotina que a ficha do lead usa), não gravado cru.
   dados_custom: z.record(z.unknown()).optional(),
+  // Origem do lead (utm_*, gclid, referrer…), como o snippet do site capturou.
+  // Opcional: integração que não manda nada continua funcionando igual, o lead
+  // só entra no relatório como não identificado.
+  attribution: attributionInputSchema.optional(),
 });
 
 export const moveStageSchema = z.object({
