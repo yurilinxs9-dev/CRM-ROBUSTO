@@ -324,6 +324,39 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
   });
 });
 
+describe('InboundMessageService.saveIncomingMessage — webhook duplicado não infla o badge', () => {
+  it('wa_id já existente → sai ANTES do upsert do lead: sem increment, sem emit, sem push', async () => {
+    const m = makeService();
+    m.prisma.message.findUnique.mockResolvedValue({ id: 'msg-ja-salva' });
+
+    await m.service.saveIncomingMessage(baseInput());
+
+    expect(m.prisma.lead.upsert).not.toHaveBeenCalled();
+    expect(m.prisma.message.upsert).not.toHaveBeenCalled();
+    expect(m.gateway.emitNewMessage).not.toHaveBeenCalled();
+    expect(m.push.sendToUsers).not.toHaveBeenCalled();
+  });
+
+  it('race create→create da MENSAGEM (P2002): devolve o increment do badge', async () => {
+    const m = makeService();
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    const p2002 = Object.assign(new Error('dup'), { code: 'P2002' });
+    m.prisma.message.upsert.mockRejectedValue(p2002);
+    // dedupe inicial não viu (race), mas o findUnique do catch acha a do irmão
+    m.prisma.message.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'msg-do-irmao', metadata: {} });
+
+    await m.service.saveIncomingMessage(baseInput());
+
+    expect(m.prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { id: 'lead-1', mensagens_nao_lidas: { gt: 0 } },
+      data: { mensagens_nao_lidas: { decrement: 1 } },
+    });
+  });
+});
+
 describe('InboundMessageService.saveIncomingMessage — modo backfill (history sync)', () => {
   const OLD_TS = new Date('2026-08-16T12:00:00.000Z'); // dentro do buraco 15-17/ago
   const setupHappyPath = (m: ReturnType<typeof makeService>) => {

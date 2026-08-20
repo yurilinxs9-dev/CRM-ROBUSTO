@@ -364,6 +364,25 @@ export class InboundMessageService {
       return;
     }
 
+    // DEDUPE ANTES DE QUALQUER EFEITO. O provider re-emite webhooks de
+    // mensagens antigas (ex.: abrir a conversa no WhatsApp Web faz o aparelho
+    // re-sincronizar o chat) — e o incremento de não-lidas morava no upsert
+    // do lead, ANTES do dedupe da mensagem: cada duplicata inflava o badge
+    // (+22 num chat re-aberto) sem criar mensagem nenhuma. Duplicata conhecida
+    // sai aqui, antes de tocar no lead.
+    if (input.messageId) {
+      const dup = await this.prisma.message.findUnique({
+        where: {
+          tenant_id_whatsapp_message_id: {
+            tenant_id: tenantId,
+            whatsapp_message_id: input.messageId,
+          },
+        },
+        select: { id: true },
+      });
+      if (dup) return;
+    }
+
     // CRITICAL: never use `pushName` when isFromMe=true. The Evolution webhook
     // populates pushName from the SENDER, so for outgoing messages it is the
     // owner's own name (e.g. "Yuri Lins"), not the contact's. Writing it as
@@ -732,6 +751,15 @@ export class InboundMessageService {
           },
         });
         if (!existing) throw err;
+        // Perdemos a corrida create→create: o irmão já salvou ESTA mensagem,
+        // mas o nosso incremento de não-lidas no upsert do lead ficou —
+        // devolve, senão cada duplicata concorrente infla o badge.
+        if (!isFromMe && !backfill) {
+          await this.prisma.lead.updateMany({
+            where: { id: lead.id, mensagens_nao_lidas: { gt: 0 } },
+            data: { mensagens_nao_lidas: { decrement: 1 } },
+          });
+        }
         message = existing;
       } else {
         throw err;
