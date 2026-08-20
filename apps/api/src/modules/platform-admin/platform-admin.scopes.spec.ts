@@ -23,6 +23,7 @@ const EXPECTED: Record<string, PlatformScope> = {
   deleteTenant: 'tenant_actions',
   suspendTenant: 'tenant_actions',
   impersonate: 'tenant_actions',
+  startHistorySync: 'tenant_actions',
   listAnnouncements: 'announcements',
   createAnnouncement: 'announcements',
   setActive: 'announcements',

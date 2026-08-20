@@ -204,6 +204,17 @@ describe('extractFromUazapi', () => {
     expect(r.location?.latitude).toBe(-8.05);
   });
 
+  it('converte ReactionMessage em TEXT com marcador (paridade com Evolution)', () => {
+    expect(extractFromUazapi({ messageType: 'ReactionMessage', content: { text: '👍' } })).toEqual({
+      type: 'TEXT',
+      content: '[reaction] 👍',
+    });
+    expect(extractFromUazapi({ messageType: 'ReactionMessage', text: '❤️' })).toEqual({
+      type: 'TEXT',
+      content: '[reaction] ❤️',
+    });
+  });
+
   it('fallback de tipo desconhecido tenta content.text antes de marcar unsupported', () => {
     expect(extractFromUazapi({ messageType: 'WeirdType', content: { text: 'resgatado' } })).toEqual(
       { type: 'TEXT', content: 'resgatado' },

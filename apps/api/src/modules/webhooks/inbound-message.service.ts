@@ -55,6 +55,14 @@ export interface SaveMessageInput {
   rawPayload: Obj;
   /** JID @lid do chat (Evolution) — persistido no lead pra envio LID-safe. */
   lidJid?: string;
+  /**
+   * Presente quando a mensagem vem do history sync (re-injeção de histórico
+   * UazAPI), não de um webhook ao vivo. `timestamp` é o messageTimestamp
+   * ORIGINAL — vira o created_at da Message e o piso de ultima_interacao.
+   * Backfill não notifica (push/in-app/webhook de saída), não incrementa
+   * não-lidas, não trava IA nem roda round-robin: histórico não é evento novo.
+   */
+  backfill?: { timestamp: Date };
 }
 
 /**
@@ -298,8 +306,16 @@ export class InboundMessageService {
    * client in two phases (skeleton then ready).
    */
   async saveIncomingMessage(input: SaveMessageInput): Promise<void> {
-    const { tenantId, instance, phone, pushName, isFromMe, extracted, rawPayload, lidJid } = input;
+    const { tenantId, instance, phone, pushName, isFromMe, extracted, rawPayload, lidJid, backfill } =
+      input;
     let { messageId } = input;
+
+    // Momento em que a mensagem ACONTECEU. Backfill preserva o timestamp
+    // original; ao vivo é agora. `realtime` decide se o front é avisado:
+    // histórico velho entra em silêncio, mas backfill de queda recente
+    // (<1h, ex.: cron recuperando webhook perdido) ainda emite pro chat aberto.
+    const occurredAt = backfill?.timestamp ?? new Date();
+    const realtime = !backfill || Date.now() - occurredAt.getTime() < 3_600_000;
 
     if (!phone) {
       this.logger.warn(`Mensagem sem phone válido — instance=${instance.nome}`);
@@ -379,8 +395,8 @@ export class InboundMessageService {
         estagio_id: ctx.firstStage.id,
         estagio_entered_at: new Date(),
         responsavel_id: responsavelId,
-        ultima_interacao: new Date(),
-        last_customer_message_at: isFromMe ? undefined : new Date(),
+        ultima_interacao: occurredAt,
+        last_customer_message_at: isFromMe ? undefined : occurredAt,
         tenant_id: tenantId,
       },
       // Em update NÃO mexe em responsavel_id nem instancia_whatsapp:
@@ -388,18 +404,35 @@ export class InboundMessageService {
       // do cliente não podem reverter a posse pra o dono da instância.
       // O re-assign automático só acontece se o lead ainda está no pool
       // (responsavel_id IS NULL), tratado abaixo.
-      update: {
-        ultima_interacao: new Date(),
-        last_customer_message_at: isFromMe ? undefined : new Date(),
-        last_agent_message_at: isFromMe ? new Date() : undefined,
-        mensagens_nao_lidas: isFromMe ? 0 : { increment: 1 },
-        // Refresca o @lid a cada mensagem (leads antigos ganham o lid na
-        // próxima interação; se o WhatsApp remapear o contato, atualiza).
-        whatsapp_lid: lidJid ?? undefined,
-      },
+      // Backfill: só o @lid — timestamps entram via updateMany condicional
+      // abaixo (mensagem de dias atrás não pode RETROCEDER ultima_interacao
+      // nem inflar o badge de não-lidas).
+      update: backfill
+        ? { whatsapp_lid: lidJid ?? undefined }
+        : {
+            ultima_interacao: new Date(),
+            last_customer_message_at: isFromMe ? undefined : new Date(),
+            last_agent_message_at: isFromMe ? new Date() : undefined,
+            mensagens_nao_lidas: isFromMe ? 0 : { increment: 1 },
+            // Refresca o @lid a cada mensagem (leads antigos ganham o lid na
+            // próxima interação; se o WhatsApp remapear o contato, atualiza).
+            whatsapp_lid: lidJid ?? undefined,
+          },
     });
 
-    if (isFromMe) {
+    if (backfill) {
+      await this.prisma.lead.updateMany({
+        where: { id: lead.id, ultima_interacao: { lt: occurredAt } },
+        data: {
+          ultima_interacao: occurredAt,
+          ...(isFromMe
+            ? { last_agent_message_at: occurredAt }
+            : { last_customer_message_at: occurredAt }),
+        },
+      });
+    }
+
+    if (isFromMe && !backfill) {
       this.gateway.emitLeadUnreadReset(lead.id, tenantId);
     }
 
@@ -419,7 +452,7 @@ export class InboundMessageService {
     // pool. O lock no ponteiro (dentro de assignBySector) serializa concorrentes.
     // updateMany condicional (responsavel_id IS NULL) evita atribuição dupla se
     // duas mensagens do mesmo lead chegarem juntas.
-    if (lead.responsavel_id === null && wantRoundRobin && !isFromMe) {
+    if (lead.responsavel_id === null && wantRoundRobin && !isFromMe && !backfill) {
       const sectorId = await this.assignment.resolveSectorForInstance(
         tenantId,
         instance.sector_id,
@@ -471,7 +504,7 @@ export class InboundMessageService {
       instanceName: instance.nome,
       defaultResponsavelId: responsavelId ?? lead.responsavel_id,
       isFromMe,
-      occurredAt: new Date(),
+      occurredAt,
     });
 
     // Heal lead names that were corrupted before the fix above shipped.
@@ -523,7 +556,7 @@ export class InboundMessageService {
       if (!id) return true;
       return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
     };
-    if (isFromMe) {
+    if (isFromMe && !backfill) {
       const existingByWaId = await this.prisma.message.findUnique({
         where: {
           tenant_id_whatsapp_message_id: {
@@ -589,6 +622,7 @@ export class InboundMessageService {
         lead_id: lead.id,
         instance_name: instance.nome,
         whatsapp_message_id: messageId,
+        created_at: occurredAt,
         direction: isFromMe ? 'OUTGOING' : 'INCOMING',
         type: extracted.type as MessageType,
         content: extracted.content,
@@ -613,7 +647,8 @@ export class InboundMessageService {
 
     // F-03: humano respondeu pelo celular → trava a IA NESTA conversa.
     // Travar no lead inteiro bloquearia a IA na conversa do outro vendedor.
-    if (isFromMe) {
+    // Backfill não trava: um fromMe de dias atrás não é decisão de agora.
+    if (isFromMe && !backfill) {
       await this.conversations.blockAi(conversation.id, lead.id);
     }
     } catch (err) {
@@ -642,7 +677,7 @@ export class InboundMessageService {
     const leadJaReflete =
       lead.responsavel_id === conversation.responsavel_id &&
       lead.instancia_whatsapp === instance.nome;
-    if (!isFromMe && !leadJaReflete) {
+    if (!isFromMe && !leadJaReflete && !backfill) {
       // Emite o patch REALMENTE aplicado por syncLeadFromActive, não os
       // valores computados antes dela rodar: ela deriva a conversa ativa de
       // novo dentro da transação, então pode divergir do `conversation`
@@ -665,16 +700,20 @@ export class InboundMessageService {
     // Invalidate cache BEFORE emitting WS so client refetch hits a fresh list.
     // For media messages the client renders a placeholder (skeleton/loading)
     // until the `message:media-ready` event arrives.
-    if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
-    // Mesmo contrato do histórico (getHistory): o card do anúncio vai derivado
-    // e o metadata cru não viaja. `message` segue intacto — ele ainda é lido
-    // logo abaixo pelo webhook de saída.
-    const { metadata: rawMetadata, ...messageForEmit } = message;
-    this.gateway.emitNewMessage(
-      lead.id,
-      { ...messageForEmit, ad_referral: extractAdReferral(rawMetadata) },
-      tenantId,
-    );
+    // Backfill de histórico velho entra em silêncio (sem emit por mensagem —
+    // storm de re-render à toa); o front vê tudo no próximo fetch.
+    if (realtime) {
+      if (tenantId) await this.leadsService.invalidateLeadsCache(tenantId);
+      // Mesmo contrato do histórico (getHistory): o card do anúncio vai derivado
+      // e o metadata cru não viaja. `message` segue intacto — ele ainda é lido
+      // logo abaixo pelo webhook de saída.
+      const { metadata: rawMetadata, ...messageForEmit } = message;
+      this.gateway.emitNewMessage(
+        lead.id,
+        { ...messageForEmit, ad_referral: extractAdReferral(rawMetadata) },
+        tenantId,
+      );
+    }
 
     if (!isFromMe) {
       // Cliente respondeu: sai da fila de qualquer follow-up ativo. Nunca
@@ -688,7 +727,7 @@ export class InboundMessageService {
         .catch((err) => this.logger.warn(`registerCustomerReply falhou lead=${lead.id}: ${String(err)}`));
     }
 
-    if (tenantId) {
+    if (tenantId && !backfill) {
       this.outboundWebhooks.dispatchMessageCreated({
         tenantId,
         messageId: message.id,
@@ -700,7 +739,7 @@ export class InboundMessageService {
       }).catch((err) => this.logger.warn(`dispatch message.created: ${String(err)}`));
     }
 
-    if (!isFromMe) {
+    if (!isFromMe && !backfill) {
       const preview = extracted.content?.slice(0, 80) ?? `[${extracted.type}]`;
       const targetSet = new Set<string>();
       if (conversation.responsavel_id) {

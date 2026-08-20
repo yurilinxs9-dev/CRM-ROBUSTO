@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Logger,
   Param,
   Patch,
   Post,
@@ -16,10 +17,12 @@ import { PlatformAdminGuard } from './platform-admin.guard';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
 import { PlatformScopes } from './platform-scopes.decorator';
+import { HistorySyncService } from '../webhooks/history-sync.service';
 
 const bannedSchema = z.object({ banned: z.boolean() });
 const suspendedSchema = z.object({ suspended: z.boolean() });
 const activeSchema = z.object({ active: z.boolean() });
+const historySyncSchema = z.object({ days: z.number().int().min(1).max(60).optional() });
 
 /**
  * TODA rota daqui declara seu escopo. O guard é fail-closed: rota nova sem
@@ -31,7 +34,12 @@ const activeSchema = z.object({ active: z.boolean() });
 @Controller('platform-admin')
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 export class PlatformAdminController {
-  constructor(private readonly svc: PlatformAdminService) {}
+  private readonly logger = new Logger(PlatformAdminController.name);
+
+  constructor(
+    private readonly svc: PlatformAdminService,
+    private readonly historySync: HistorySyncService,
+  ) {}
 
   private user(req: Request): AuthUser {
     return (req as unknown as { user: AuthUser }).user;
@@ -91,6 +99,22 @@ export class PlatformAdminController {
   suspendTenant(@Param('id') id: string, @Body() body: unknown, @Req() req: Request) {
     const { suspended } = suspendedSchema.parse(body);
     return this.svc.setTenantSuspended(this.user(req), id, suspended);
+  }
+
+  // Re-sync de histórico UazAPI de TODAS as instâncias conectadas (todos os
+  // tenants) — repara buracos de webhook em lote. Roda em background.
+  @Post('history-sync')
+  @PlatformScopes('tenant_actions')
+  startHistorySync(@Body() body: unknown) {
+    const { days = 30 } = historySyncSchema.parse(body ?? {});
+    void this.historySync
+      .syncAllUazapi(days * 24 * 3_600_000)
+      .then((r) => {
+        const total = r.reduce((acc, s) => acc + s.messages_enqueued, 0);
+        this.logger.log(`history sync global concluido: ${total} msgs re-injetadas`);
+      })
+      .catch((err) => this.logger.warn(`history sync global falhou: ${String(err)}`));
+    return { started: true, days };
   }
 
   @Post('impersonate/:userId')

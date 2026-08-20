@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import type { AuthUser } from '../../common/types/auth-user';
 import { UserRole } from '../../common/types/roles';
 import { hashTruncated } from '../../common/utils/hash-truncated';
+import { HistorySyncService } from '../webhooks/history-sync.service';
 
 interface UazApiCreateResponse {
   instance: {
@@ -80,6 +81,7 @@ export class InstancesService implements OnModuleInit {
     private http: HttpService,
     private config: ConfigService,
     private prisma: PrismaService,
+    private historySync: HistorySyncService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
@@ -265,6 +267,26 @@ export class InstancesService implements OnModuleInit {
    * F-02: define o setor que atende o número (destino do round-robin). null
    * volta a cair no setor padrão "Sem Setor". Valida que ambos são do tenant.
    */
+  /**
+   * Dispara em background o re-sync de histórico da instância (espelho
+   * WhatsApp Web) — só UazAPI. Retorno imediato; progresso vai pro log.
+   */
+  async startHistorySync(nome: string, days: number, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome, tenant_id: user.tenantId },
+      select: { id: true, config: true },
+    });
+    if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
+    const cfg = (instance.config ?? {}) as Record<string, unknown>;
+    if (typeof cfg.uazapi_token !== 'string' || !cfg.uazapi_token) {
+      throw new BadRequestException('History sync disponivel apenas para instancias UazAPI');
+    }
+    void this.historySync
+      .syncInstance(instance.id, days * 24 * 3_600_000)
+      .catch((err) => this.logger.warn(`history sync manual (${nome}): ${String(err)}`));
+    return { started: true, days };
+  }
+
   async setSector(instanceId: string, sectorId: string | null, user: AuthUser) {
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: { id: instanceId, tenant_id: user.tenantId },

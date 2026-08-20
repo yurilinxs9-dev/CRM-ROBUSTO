@@ -3,6 +3,8 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { InboundMessageService, type Obj } from './inbound-message.service';
 import { extractFromUazapi, extractFromWpp, synthesizeMessageId } from './message-extractor';
+import { messageTs } from './history-sync';
+import { HistorySyncService } from './history-sync.service';
 
 /**
  * Handlers dos eventos UazAPI (messages, message_ack, connection, chats) e do
@@ -17,6 +19,7 @@ export class UazapiEventsHandler {
     private prisma: PrismaService,
     private gateway: CrmGateway,
     private inbound: InboundMessageService,
+    private historySync: HistorySyncService,
   ) {}
   // ── WPPConnect handlers ──────────────────────────────────────────────────────
 
@@ -117,6 +120,12 @@ export class UazapiEventsHandler {
 
     const extracted = extractFromUazapi(message);
 
+    // Job re-injetado pelo history sync: preserva o timestamp original e
+    // suprime efeitos de "mensagem nova" (ver SaveMessageInput.backfill).
+    const ts = messageTs(message);
+    const backfill =
+      payload.backfill === true && ts > 0 ? { timestamp: new Date(ts) } : undefined;
+
     await this.inbound.saveIncomingMessage({
       tenantId: instance.tenant_id,
       instance,
@@ -126,6 +135,7 @@ export class UazapiEventsHandler {
       isFromMe,
       extracted,
       rawPayload: payload,
+      backfill,
     });
   }
 
@@ -193,6 +203,17 @@ export class UazapiEventsHandler {
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instance.nome, status, instance.tenant_id);
+
+    // Reconectou (close/connecting → open): re-sincroniza a última semana em
+    // background. É isso que faz o CRM se comportar como o WhatsApp Web —
+    // ficou fora, voltou, o histórico se recompõe sozinho.
+    if (status === 'open' && instance.status !== 'open') {
+      void this.historySync
+        .syncInstance(instance.id, HistorySyncService.RECONNECT_WINDOW_MS)
+        .catch((err) =>
+          this.logger.warn(`history sync pós-reconexão (${instance.nome}): ${String(err)}`),
+        );
+    }
   }
 
   async handleUazapiChats(payload: Obj) {
