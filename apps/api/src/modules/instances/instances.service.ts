@@ -278,12 +278,16 @@ export class InstancesService implements OnModuleInit {
     });
     if (!instance) throw new NotFoundException(`Instancia ${nome} nao encontrada`);
     const cfg = (instance.config ?? {}) as Record<string, unknown>;
-    if (typeof cfg.uazapi_token !== 'string' || !cfg.uazapi_token) {
-      throw new BadRequestException('History sync disponivel apenas para instancias UazAPI');
+    const isEvolution = cfg.provider === 'evolution';
+    const hasUazapiToken = typeof cfg.uazapi_token === 'string' && !!cfg.uazapi_token;
+    if (!isEvolution && !hasUazapiToken) {
+      throw new BadRequestException('Instancia sem provider suportado para history sync');
     }
-    void this.historySync
-      .syncInstance(instance.id, days * 24 * 3_600_000)
-      .catch((err) => this.logger.warn(`history sync manual (${nome}): ${String(err)}`));
+    const windowMs = days * 24 * 3_600_000;
+    const run = isEvolution
+      ? this.historySync.syncEvolutionInstance(instance.id, windowMs)
+      : this.historySync.syncInstance(instance.id, windowMs);
+    void run.catch((err) => this.logger.warn(`history sync manual (${nome}): ${String(err)}`));
     return { started: true, days };
   }
 

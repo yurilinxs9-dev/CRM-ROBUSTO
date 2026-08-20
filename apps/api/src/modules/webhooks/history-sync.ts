@@ -115,6 +115,82 @@ export function messageTs(m: Obj): number {
   return v < 1e12 ? v * 1000 : v;
 }
 
+/** Chat Evolution normalizado (POST /chat/findChats/{instance}). */
+export interface EvoSyncChat {
+  /** JID que o findMessages entende (pode ser @lid). */
+  queryJid: string;
+  phone: string;
+  name: string | null;
+  lastMsgTs: number;
+  unreadCount: number | null;
+  /** key.id da última mensagem — prova exata de chat em dia sem request extra. */
+  newestId: string | null;
+}
+
+/**
+ * Normaliza a resposta do findChats da Evolution. Chats @lid resolvem o
+ * telefone pelo `lastMessage.key.remoteJidAlt` (PN real) — dígitos de LID
+ * nunca viram telefone. Grupos e chats sem PN resolvível são descartados.
+ */
+export function parseEvolutionChats(raw: unknown): EvoSyncChat[] {
+  if (!Array.isArray(raw)) return [];
+  const pnDigits = (jid: unknown): string | null => {
+    if (typeof jid !== 'string' || !jid.endsWith('@s.whatsapp.net')) return null;
+    const d = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    return d.length >= 8 && d.length <= 13 ? d : null;
+  };
+  const out: EvoSyncChat[] = [];
+  for (const item of raw) {
+    const c = item as Obj;
+    const remoteJid = asStr(c.remoteJid);
+    if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.includes('@broadcast')) continue;
+    const last = (c.lastMessage ?? {}) as Obj;
+    const lastKey = (last.key ?? {}) as Obj;
+    const phone = pnDigits(remoteJid) ?? pnDigits(lastKey.remoteJidAlt);
+    if (!phone) continue;
+    out.push({
+      queryJid: remoteJid,
+      phone,
+      name: asStr(c.pushName),
+      lastMsgTs: messageTs({ messageTimestamp: last.messageTimestamp }),
+      unreadCount:
+        typeof c.unreadCount === 'number' && c.unreadCount >= 0 ? c.unreadCount : null,
+      newestId: asStr(lastKey.id),
+    });
+  }
+  return out;
+}
+
+/**
+ * Normaliza uma página do findMessages Evolution:
+ * `{messages: {records, total, pages, currentPage}}`, records em ordem DESC.
+ */
+export function parseEvolutionMessages(raw: unknown): { records: Obj[]; hasMore: boolean } {
+  const box = (raw as Obj | undefined)?.messages as Obj | undefined;
+  const records = Array.isArray(box?.records) ? (box.records as Obj[]) : [];
+  const pages = typeof box?.pages === 'number' ? box.pages : 1;
+  const current = typeof box?.currentPage === 'number' ? box.currentPage : 1;
+  return { records, hasMore: current < pages };
+}
+
+/**
+ * Payload do job `messages.upsert` (Evolution) re-injetado pelo history sync —
+ * mesmo contrato do webhook ao vivo, mais backfill/chat_phone.
+ */
+export function evolutionBackfillJobPayload(
+  record: Obj,
+  instanceNome: string,
+  chatPhone: string,
+): Obj {
+  return {
+    event: 'messages.upsert',
+    instance: instanceNome,
+    data: record,
+    backfill: true,
+    chat_phone: chatPhone,
+  };
+}
+
 /**
  * Payload do job `uazapi.messages` re-injetado na fila `webhooks` — mesmo
  * contrato do webhook ao vivo, mais a flag `backfill` que o

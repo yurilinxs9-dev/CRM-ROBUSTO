@@ -11,9 +11,13 @@ import { CrmGateway } from '../websocket/websocket.gateway';
 import {
   backfillJobPayload,
   chatHasGap,
+  evolutionBackfillJobPayload,
   messageTs,
   parseChatsPage,
+  parseEvolutionChats,
+  parseEvolutionMessages,
   parseFindMessages,
+  type EvoSyncChat,
   type SyncChat,
 } from './history-sync';
 
@@ -94,79 +98,197 @@ export class HistorySyncService {
       if (!this.tokenOf(inst.config)) continue; // Evolution ou sem credencial
       summaries.push(await this.syncInstance(inst.id, windowMs));
     }
-    // Evolution entra na parte de BADGES: o Baileys espelha a sessão real,
-    // então o unreadCount do findChats cai quando a pessoa lê no
-    // celular/WhatsApp Web — exatamente o sinal que o webhook chats.update
-    // da Evolution NÃO carrega (payload vem só com remoteJid).
+    // Evolution: mesmo espelho. O gateway guarda TODAS as mensagens no
+    // Postgres dele (independente do webhook ter chegado ao CRM), então
+    // buraco também é recuperável — findChats acha o gap, findMessages
+    // re-injeta. Badges vão na mesma passada (Baileys espelha a sessão real:
+    // unreadCount cai quando a pessoa lê no celular/WhatsApp Web — sinal que
+    // o webhook chats.update da Evolution NÃO carrega).
     for (const inst of instances) {
       const cfg = (inst.config ?? {}) as Record<string, unknown>;
       if (cfg.provider !== 'evolution') continue;
       try {
-        await this.reconcileEvolutionBadges(inst.tenant_id, inst.nome);
+        summaries.push(await this.syncEvolutionInstance(inst.id, windowMs));
       } catch (err) {
         this.logger.warn(
-          `badge sweep evolution (${inst.nome}) falhou: ${(err as Error).message}`,
+          `history sync evolution (${inst.nome}) falhou: ${(err as Error).message}`,
         );
       }
     }
     return summaries;
   }
 
-  /**
-   * Zera badges presas de instâncias Evolution. Um findChats por instância
-   * (traz TODOS os chats com unreadCount real do Baileys), cruzado com os
-   * leads que o CRM marca como não-lidos. Só zera com prova unreadCount=0.
-   */
-  private async reconcileEvolutionBadges(tenantId: string, instanceNome: string): Promise<void> {
-    if (!this.evoBaseUrl || !this.evoApiKey) return;
+  /** Espelho WhatsApp Web para uma instância Evolution. */
+  async syncEvolutionInstance(instanceId: string, windowMs: number): Promise<SyncSummary> {
+    if (this.syncing.has(instanceId)) return { ...ZERO };
+    this.syncing.add(instanceId);
+    try {
+      return await this.runEvolution(instanceId, windowMs);
+    } finally {
+      this.syncing.delete(instanceId);
+    }
+  }
+
+  private async runEvolution(instanceId: string, windowMs: number): Promise<SyncSummary> {
+    const instance = await this.prisma.whatsappInstance.findUnique({ where: { id: instanceId } });
+    if (!instance || !this.evoBaseUrl || !this.evoApiKey) return { ...ZERO };
+
+    const since = Date.now() - windowMs;
+    const summary: SyncSummary = { ...ZERO };
+
+    const res = await firstValueFrom(
+      this.http.post(
+        `${this.evoBaseUrl}/chat/findChats/${instance.nome}`,
+        {},
+        { headers: { apikey: this.evoApiKey }, timeout: 30_000 },
+      ),
+    );
+    const chats = parseEvolutionChats(res.data);
+
+    for (const chat of chats) {
+      if (chat.lastMsgTs < since) continue;
+      if (summary.chats_scanned >= HistorySyncService.MAX_CHATS_PER_RUN) break;
+      summary.chats_scanned++;
+      try {
+        const enqueued = await this.syncEvolutionChat(
+          instance.tenant_id,
+          instance.id,
+          instance.nome,
+          chat,
+          since,
+        );
+        if (enqueued > 0) {
+          summary.chats_synced++;
+          summary.messages_enqueued += enqueued;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `sync do chat ${chat.phone} (evolution ${instance.nome}) falhou: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Badges de QUALQUER idade na mesma passada: o findChats já trouxe TODOS
+    // os chats (não só a janela). unreadCount=0 do Baileys = lido no
+    // aparelho/WhatsApp Web. Só zera, nunca sobe.
+    const unreadByPhone = new Map<string, number>();
+    for (const c of chats) {
+      if (c.unreadCount === null) continue;
+      const prev = unreadByPhone.get(c.phone);
+      unreadByPhone.set(c.phone, prev === undefined ? c.unreadCount : Math.min(prev, c.unreadCount));
+    }
     const unreadLeads = await this.prisma.lead.findMany({
       where: {
-        tenant_id: tenantId,
-        instancia_whatsapp: instanceNome,
+        tenant_id: instance.tenant_id,
+        instancia_whatsapp: instance.nome,
         mensagens_nao_lidas: { gt: 0 },
       },
       orderBy: { ultima_interacao: 'desc' },
       take: HistorySyncService.MAX_BADGE_CHECKS,
       select: { id: true, telefone: true },
     });
-    if (unreadLeads.length === 0) return;
-
-    const res = await firstValueFrom(
-      this.http.post(
-        `${this.evoBaseUrl}/chat/findChats/${instanceNome}`,
-        {},
-        { headers: { apikey: this.evoApiKey }, timeout: 20_000 },
-      ),
-    );
-    const raw = res.data;
-    const chats = (Array.isArray(raw) ? raw : []) as Array<Record<string, unknown>>;
-
-    // Mapa telefone → unreadCount. Chats @lid usam o PN alternativo que o
-    // Baileys anexa (lastMessage.key.remoteJidAlt) — dígitos de LID não são
-    // telefone (mesma regra do resolvedor de @lid do inbound).
-    const pnDigits = (jid: unknown): string | null => {
-      if (typeof jid !== 'string' || !jid.endsWith('@s.whatsapp.net')) return null;
-      const d = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
-      return d.length >= 8 && d.length <= 13 ? d : null;
-    };
-    const unreadByPhone = new Map<string, number>();
-    for (const c of chats) {
-      const unread = c.unreadCount;
-      if (typeof unread !== 'number' || unread < 0) continue;
-      const lastKey = ((c.lastMessage as Record<string, unknown> | undefined)?.key ?? {}) as
-        Record<string, unknown>;
-      const phone = pnDigits(c.remoteJid) ?? pnDigits(lastKey.remoteJidAlt);
-      if (!phone) continue;
-      // Mesmo telefone em chat PN e @lid: qualquer visão dizendo "lido" vale.
-      const prev = unreadByPhone.get(phone);
-      unreadByPhone.set(phone, prev === undefined ? unread : Math.min(prev, unread));
-    }
-
     for (const lead of unreadLeads) {
       if (unreadByPhone.get(lead.telefone) === 0) {
-        await this.zeroLeadUnread(tenantId, lead.id, lead.telefone);
+        await this.zeroLeadUnread(instance.tenant_id, lead.id, lead.telefone);
       }
     }
+
+    if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
+      this.logger.log(
+        `history sync evolution ${instance.nome}: ${summary.chats_scanned} chats na janela, ` +
+          `${summary.chats_synced} com buraco, ${summary.messages_enqueued} msgs re-injetadas`,
+      );
+    }
+    return summary;
+  }
+
+  private async syncEvolutionChat(
+    tenantId: string,
+    instanceId: string,
+    instanceNome: string,
+    chat: EvoSyncChat,
+    sinceMs: number,
+  ): Promise<number> {
+    // Prova exata primeiro (vem de graça no findChats): última msg do chat já
+    // está no banco → em dia, nem consulta o findMessages.
+    if (chat.newestId) {
+      const existing = await this.prisma.message.findUnique({
+        where: {
+          tenant_id_whatsapp_message_id: {
+            tenant_id: tenantId,
+            whatsapp_message_id: chat.newestId,
+          },
+        },
+        select: { id: true },
+      });
+      if (existing) return 0;
+    }
+    const last = await this.prisma.message.findFirst({
+      where: { tenant_id: tenantId, lead: { telefone: chat.phone, tenant_id: tenantId } },
+      orderBy: { created_at: 'desc' },
+      select: { created_at: true },
+    });
+    if (
+      !chatHasGap(
+        {
+          chatid: chat.queryJid,
+          phone: chat.phone,
+          name: chat.name,
+          contactName: null,
+          lidJid: null,
+          lastMsgTs: chat.lastMsgTs,
+          unreadCount: chat.unreadCount,
+        },
+        last ? last.created_at.getTime() : null,
+        sinceMs,
+      )
+    ) {
+      return 0;
+    }
+
+    let enqueued = 0;
+    let page = 1;
+    for (;;) {
+      const res = await firstValueFrom(
+        this.http.post(
+          `${this.evoBaseUrl}/chat/findMessages/${instanceNome}`,
+          {
+            where: { key: { remoteJid: chat.queryJid } },
+            limit: HistorySyncService.PAGE_SIZE,
+            page,
+          },
+          { headers: { apikey: this.evoApiKey }, timeout: 20_000 },
+        ),
+      );
+      const { records, hasMore } = parseEvolutionMessages(res.data);
+      if (records.length === 0) break;
+
+      let sawOutOfWindow = false;
+      for (const rec of records) {
+        const ts = messageTs(rec);
+        if (ts < sinceMs) {
+          sawOutOfWindow = true; // ordem DESC — daqui pra frente é mais velho
+          continue;
+        }
+        const key = (rec.key ?? {}) as Record<string, unknown>;
+        const messageid = typeof key.id === 'string' && key.id ? key.id : null;
+        if (!messageid) continue;
+        await this.webhookQueue.add(
+          'messages.upsert',
+          evolutionBackfillJobPayload(rec, instanceNome, chat.phone),
+          {
+            jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
+            attempts: 3,
+          },
+        );
+        enqueued++;
+        if (enqueued >= HistorySyncService.MAX_MSGS_PER_CHAT) return enqueued;
+      }
+
+      if (sawOutOfWindow || !hasMore) break;
+      page++;
+    }
+    return enqueued;
   }
 
   async syncInstance(instanceId: string, windowMs: number): Promise<SyncSummary> {

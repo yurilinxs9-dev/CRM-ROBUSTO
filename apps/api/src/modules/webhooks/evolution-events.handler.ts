@@ -5,6 +5,8 @@ import { CrmGateway } from '../websocket/websocket.gateway';
 import { InboundMessageService, type Obj } from './inbound-message.service';
 import { normalizeAckUpdates, extractAck } from './ack-normalizer';
 import { extractFromEvolution } from './message-extractor';
+import { messageTs } from './history-sync';
+import { HistorySyncService } from './history-sync.service';
 
 /**
  * Handlers dos eventos Evolution API v2 (messages.upsert/update,
@@ -20,6 +22,7 @@ export class EvolutionEventsHandler {
     private leadsService: LeadsService,
     private gateway: CrmGateway,
     private inbound: InboundMessageService,
+    private historySync: HistorySyncService,
   ) {}
   /**
    * Resolve o telefone REAL do contato a partir da `key` Evolution/Baileys.
@@ -80,7 +83,13 @@ export class EvolutionEventsHandler {
 
     const messageId = key?.id as string | undefined;
     const isFromMe = !!(key?.fromMe as boolean);
-    const phone = this.resolveEvolutionPhone(key, isFromMe);
+    // Backfill (history sync) manda o telefone REAL do chat no payload —
+    // cinto de segurança contra @lid sem PN em registros antigos.
+    const chatPhone =
+      data?.backfill === true && typeof data?.chat_phone === 'string'
+        ? (data.chat_phone as string)
+        : undefined;
+    const phone = this.resolveEvolutionPhone(key, isFromMe) ?? chatPhone ?? null;
     if (!phone) {
       this.logger.warn(
         `Evolution message sem telefone resolvível — remoteJid=${remoteJid} (LID sem PN?) instance=${instanceName}`,
@@ -92,6 +101,12 @@ export class EvolutionEventsHandler {
 
     const extracted = extractFromEvolution(messageContent);
 
+    // Job re-injetado pelo history sync: preserva o timestamp original e
+    // suprime efeitos de "mensagem nova" (ver SaveMessageInput.backfill).
+    const ts = messageTs(msg as Obj);
+    const backfill =
+      data?.backfill === true && ts > 0 ? { timestamp: new Date(ts) } : undefined;
+
     await this.inbound.saveIncomingMessage({
       tenantId: instance.tenant_id,
       instance,
@@ -102,6 +117,7 @@ export class EvolutionEventsHandler {
       extracted,
       rawPayload: data,
       lidJid: remoteJid.endsWith('@lid') ? remoteJid : undefined,
+      backfill,
     });
   }
 
@@ -209,6 +225,17 @@ export class EvolutionEventsHandler {
       data: { status, ultimo_check: new Date() },
     });
     this.gateway.emitInstanceStatusChanged(instanceName, status, instance.tenant_id);
+
+    // Reconectou (close/connecting → open): re-sincroniza a última semana em
+    // background — espelho WhatsApp Web: ficou fora, voltou, o histórico se
+    // recompõe sozinho (o gateway Evolution guarda tudo no Postgres dele).
+    if (status === 'open' && instance.status !== 'open') {
+      void this.historySync
+        .syncEvolutionInstance(instance.id, HistorySyncService.RECONNECT_WINDOW_MS)
+        .catch((err) =>
+          this.logger.warn(`history sync pós-reconexão (${instance.nome}): ${String(err)}`),
+        );
+    }
   }
 
   async handleContactsUpsert(data: Obj) {

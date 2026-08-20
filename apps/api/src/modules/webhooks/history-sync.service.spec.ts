@@ -355,26 +355,39 @@ describe('HistorySyncService — badges presas de qualquer idade', () => {
   });
 });
 
-describe('HistorySyncService — badges de instâncias Evolution', () => {
-  it('findChats com unreadCount=0 zera o lead; >0 não mexe; chat @lid resolve pelo remoteJidAlt', async () => {
+describe('HistorySyncService — instâncias Evolution (espelho completo)', () => {
+  const evoInstance = { id: 'inst-evo', nome: 'teste', tenant_id: 't1', config: { provider: 'evolution' } };
+
+  it('badges: unreadCount=0 zera (inclusive @lid via remoteJidAlt e chats FORA da janela); >0 não mexe', async () => {
     const m = makeService();
-    m.prisma.whatsappInstance.findMany.mockResolvedValue([
-      { id: 'inst-evo', nome: 'teste', tenant_id: 't1', config: { provider: 'evolution' } },
-    ]);
+    m.prisma.whatsappInstance.findMany.mockResolvedValue([evoInstance]);
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
     m.prisma.lead.findMany.mockResolvedValue([
       { id: 'lead-lido', telefone: '553799086000' },
       { id: 'lead-pendente', telefone: '553798083479' },
       { id: 'lead-lid', telefone: '553791048239' },
     ]);
+    const OLD = NOW - 100 * HOUR; // fora da janela de 1h — badge zera mesmo assim
     m.http.post.mockReturnValueOnce(
       of({
         data: [
-          { remoteJid: '553799086000@s.whatsapp.net', unreadCount: 0 },
-          { remoteJid: '553798083479@s.whatsapp.net', unreadCount: 5 },
+          {
+            remoteJid: '553799086000@s.whatsapp.net',
+            unreadCount: 0,
+            lastMessage: { key: { id: 'K1' }, messageTimestamp: Math.floor(OLD / 1000) },
+          },
+          {
+            remoteJid: '553798083479@s.whatsapp.net',
+            unreadCount: 5,
+            lastMessage: { key: { id: 'K2' }, messageTimestamp: Math.floor(OLD / 1000) },
+          },
           {
             remoteJid: '231314238263306@lid',
             unreadCount: 0,
-            lastMessage: { key: { remoteJidAlt: '553791048239@s.whatsapp.net' } },
+            lastMessage: {
+              key: { id: 'K3', remoteJidAlt: '553791048239@s.whatsapp.net' },
+              messageTimestamp: Math.floor(OLD / 1000),
+            },
           },
         ],
       }),
@@ -389,6 +402,84 @@ describe('HistorySyncService — badges de instâncias Evolution', () => {
     );
     const zeroed = m.prisma.lead.update.mock.calls.map((c: any[]) => c[0].where.id).sort();
     expect(zeroed).toEqual(['lead-lid', 'lead-lido']);
+  });
+
+  it('chat com buraco na janela: pagina findMessages e re-injeta como messages.upsert com backfill', async () => {
+    const m = makeService();
+    m.prisma.whatsappInstance.findMany.mockResolvedValue([evoInstance]);
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    const ts = Math.floor((NOW - HOUR) / 1000); // epoch s, dentro da janela
+    m.http.post
+      .mockReturnValueOnce(
+        of({
+          data: [
+            {
+              remoteJid: '253227262034086@lid',
+              unreadCount: null,
+              lastMessage: {
+                key: { id: 'NEW-1', remoteJidAlt: '553799086000@s.whatsapp.net' },
+                messageTimestamp: ts,
+              },
+            },
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            messages: {
+              records: [
+                { key: { id: 'NEW-1', fromMe: false }, messageTimestamp: ts, message: { conversation: 'oi' } },
+                { key: { id: 'NEW-2', fromMe: true }, messageTimestamp: ts - 60, message: { conversation: 'olá' } },
+              ],
+              total: 2,
+              pages: 1,
+              currentPage: 1,
+            },
+          },
+        }),
+      );
+
+    const r = await m.service.syncAllUazapi(48 * HOUR);
+
+    expect(r[0]).toEqual({ chats_scanned: 1, chats_synced: 1, messages_enqueued: 2 });
+    const [name, payload, opts] = m.queue.add.mock.calls[0];
+    expect(name).toBe('messages.upsert');
+    expect(payload).toMatchObject({
+      event: 'messages.upsert',
+      instance: 'teste',
+      backfill: true,
+      chat_phone: '553799086000',
+    });
+    expect(payload.data.key.id).toBe('NEW-1');
+    expect(opts.jobId).toBe('bf-inst-evo-NEW-1');
+  });
+
+  it('prova exata: newestId do findChats já no banco → nem chama findMessages', async () => {
+    const m = makeService();
+    m.prisma.whatsappInstance.findMany.mockResolvedValue([evoInstance]);
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    m.prisma.message.findUnique.mockResolvedValue({ id: 'ja-existe' });
+    m.http.post.mockReturnValueOnce(
+      of({
+        data: [
+          {
+            remoteJid: '553799086000@s.whatsapp.net',
+            unreadCount: null,
+            lastMessage: {
+              key: { id: 'JA-SALVA' },
+              messageTimestamp: Math.floor((NOW - HOUR) / 1000),
+            },
+          },
+        ],
+      }),
+    );
+
+    const r = await m.service.syncAllUazapi(48 * HOUR);
+
+    expect(r[0].messages_enqueued).toBe(0);
+    expect(m.queue.add).not.toHaveBeenCalled();
+    expect(m.http.post).toHaveBeenCalledTimes(1); // só o findChats
   });
 });
 
