@@ -123,7 +123,7 @@ export class EvolutionEventsHandler {
       // todas; emitMessageStatusUpdate dispara por linha encontrada.
       const matches = await this.prisma.message.findMany({
         where: { whatsapp_message_id: messageId },
-        select: { id: true, lead_id: true, tenant_id: true, direction: true },
+        select: { id: true, lead_id: true, tenant_id: true, direction: true, created_at: true },
       });
       if (matches.length === 0) continue;
 
@@ -135,18 +135,37 @@ export class EvolutionEventsHandler {
         this.gateway.emitMessageStatusUpdate(m.lead_id, m.id, mappedStatus);
       }
 
-      // READ em msg INCOMING = operador leu a conversa no celular (app oficial
-      // manda um ack por mensagem lida, `fromMe:false`). O `chats.update` do
-      // Evolution NÃO carrega unreadCount (payload vem só com remoteJid), então
-      // este é o único sinal confiável pra zerar o badge do CRM quando a leitura
-      // acontece fora dele. Recalcula o contador em vez de zerar cego: se ainda
-      // restam INCOMING não-lidas (ack parcial), o badge reflete o resto.
+      // READ em msg INCOMING = operador leu a conversa no celular/WhatsApp Web.
+      // O `chats.update` do Evolution NÃO carrega unreadCount (payload vem só
+      // com remoteJid), então este é o sinal confiável pra zerar o badge quando
+      // a leitura acontece fora do CRM.
+      //
+      // SEMÂNTICA WHATSAPP: ler a mensagem N = leu TUDO até N. O aparelho só
+      // manda ack da(s) última(s) visíveis — as INCOMING antigas do lead nunca
+      // recebem ack individual e ficavam != READ pra sempre. O recálculo
+      // ingênuo então RESSUSCITAVA a contagem histórica: abrir a conversa no
+      // Web fazia o badge ir pra 21 em vez de sumir. Cascade primeiro: tudo
+      // até o created_at da msg lida vira READ; o remaining conta só o que
+      // chegou DEPOIS dela.
       if (mappedStatus !== 'READ') continue;
-      const incomingLeads = new Map<string, string | null>();
+      const incomingLeads = new Map<string, { tenantId: string | null; upTo: Date }>();
       for (const m of matches) {
-        if (m.direction === 'INCOMING') incomingLeads.set(m.lead_id, m.tenant_id);
+        if (m.direction !== 'INCOMING') continue;
+        const prev = incomingLeads.get(m.lead_id);
+        if (!prev || m.created_at > prev.upTo) {
+          incomingLeads.set(m.lead_id, { tenantId: m.tenant_id, upTo: m.created_at });
+        }
       }
-      for (const [leadId, tenantId] of incomingLeads) {
+      for (const [leadId, { tenantId, upTo }] of incomingLeads) {
+        await this.prisma.message.updateMany({
+          where: {
+            lead_id: leadId,
+            direction: 'INCOMING',
+            status: { not: 'READ' },
+            created_at: { lte: upTo },
+          },
+          data: { status: 'READ' },
+        });
         const remaining = await this.prisma.message.count({
           where: { lead_id: leadId, direction: 'INCOMING', status: { not: 'READ' } },
         });
