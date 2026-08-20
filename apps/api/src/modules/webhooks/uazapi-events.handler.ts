@@ -3,7 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { InboundMessageService, type Obj } from './inbound-message.service';
 import { extractFromUazapi, extractFromWpp, synthesizeMessageId } from './message-extractor';
-import { messageTs } from './history-sync';
+import { messageTs, resolveUazapiPhone } from './history-sync';
 import { HistorySyncService } from './history-sync.service';
 
 /**
@@ -106,7 +106,18 @@ export class UazapiEventsHandler {
       return;
     }
 
-    const phone = chatid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    // Telefone LID-safe: chatid @lid tem dígitos que NÃO são telefone —
+    // extrair cru criava lead fantasma de 14-15 dígitos (46 no banco antes
+    // do fix). Backfill manda o telefone real do chat no payload; ao vivo
+    // cai pro sender_pn; sem PN resolvível, descarta com warn.
+    const chatPhone = payload.chat_phone as string | undefined;
+    const phone = chatPhone ?? resolveUazapiPhone(message);
+    if (!phone) {
+      this.logger.warn(
+        `UazAPI message sem telefone resolvível — chatid=${chatid} (LID sem PN?)`,
+      );
+      return;
+    }
     const messageId = (message.messageid as string | undefined) ?? (message.id as string | undefined);
     const isFromMe = !!(message.fromMe as boolean | undefined);
     const pushName =

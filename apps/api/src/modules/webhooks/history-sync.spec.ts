@@ -4,6 +4,7 @@ import {
   messageTs,
   parseChatsPage,
   parseFindMessages,
+  resolveUazapiPhone,
 } from './history-sync';
 
 /**
@@ -145,13 +146,44 @@ describe('messageTs', () => {
 });
 
 describe('backfillJobPayload', () => {
-  it('monta payload com flag backfill e token', () => {
+  it('monta payload com flag backfill, token e telefone real do chat', () => {
     const message = { messageid: 'A', text: 'oi' };
-    expect(backfillJobPayload(message, 'tok-1')).toEqual({
+    expect(backfillJobPayload(message, 'tok-1', '553186332984')).toEqual({
       event: 'uazapi.messages',
       token: 'tok-1',
       message,
       backfill: true,
+      chat_phone: '553186332984',
     });
+  });
+});
+
+describe('resolveUazapiPhone', () => {
+  it('chatid PN usa os dígitos', () => {
+    expect(resolveUazapiPhone({ chatid: '553186332984@s.whatsapp.net' })).toBe('553186332984');
+  });
+
+  it('chatid @lid NUNCA vira telefone — cai pro sender_pn quando !fromMe', () => {
+    expect(
+      resolveUazapiPhone({
+        chatid: '150122142949534@lid',
+        fromMe: false,
+        sender_pn: '553186332984@s.whatsapp.net',
+      }),
+    ).toBe('553186332984');
+  });
+
+  it('chatid @lid com fromMe true não confia no sender_pn (é o próprio dono) → null', () => {
+    expect(
+      resolveUazapiPhone({
+        chatid: '150122142949534@lid',
+        fromMe: true,
+        sender_pn: '553799043643@s.whatsapp.net',
+      }),
+    ).toBeNull();
+  });
+
+  it('chatid @lid sem sender_pn → null (descarta em vez de lead fantasma)', () => {
+    expect(resolveUazapiPhone({ chatid: '150122142949534@lid' })).toBeNull();
   });
 });

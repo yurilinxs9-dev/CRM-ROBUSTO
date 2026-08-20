@@ -245,7 +245,7 @@ export class HistorySyncService {
           (typeof m.id === 'string' && m.id) ||
           null;
         if (!messageid) continue; // sem id não há dedupe seguro
-        await this.webhookQueue.add('uazapi.messages', backfillJobPayload(m, token), {
+        await this.webhookQueue.add('uazapi.messages', backfillJobPayload(m, token, chat.phone), {
           jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
           attempts: 3,
         });

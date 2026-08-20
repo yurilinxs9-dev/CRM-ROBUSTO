@@ -110,7 +110,34 @@ export function messageTs(m: Obj): number {
  * Payload do job `uazapi.messages` re-injetado na fila `webhooks` — mesmo
  * contrato do webhook ao vivo, mais a flag `backfill` que o
  * InboundMessageService usa pra preservar timestamp e calar notificações.
+ * `chatPhone` é o telefone REAL do chat (do /chat/find): mensagens antigas
+ * voltam do /message/find com `chatid` @lid, e extrair dígitos de LID criava
+ * lead fantasma com telefone de 14-15 dígitos.
  */
-export function backfillJobPayload(message: Obj, token: string): Obj {
-  return { event: 'uazapi.messages', token, message, backfill: true };
+export function backfillJobPayload(message: Obj, token: string, chatPhone: string): Obj {
+  return { event: 'uazapi.messages', token, message, backfill: true, chat_phone: chatPhone };
+}
+
+/**
+ * Telefone LID-safe pra mensagem UazAPI ao vivo: chatid PN usa os dígitos;
+ * chatid @lid cai pro `sender_pn` (só confiável quando !fromMe — no fromMe o
+ * sender é o próprio dono). Sem PN resolvível retorna null e o caller
+ * descarta com warn — lead fantasma é pior que mensagem pulada.
+ */
+export function resolveUazapiPhone(message: Obj): string | null {
+  const chatid = typeof message.chatid === 'string' ? message.chatid : '';
+  const digits = (jid: string): string | null => {
+    const d = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    return d.length >= 8 && d.length <= 13 ? d : null;
+  };
+  if (chatid && !chatid.endsWith('@lid')) return digits(chatid);
+  const senderPn = message.sender_pn;
+  if (
+    message.fromMe !== true &&
+    typeof senderPn === 'string' &&
+    senderPn.endsWith('@s.whatsapp.net')
+  ) {
+    return digits(senderPn);
+  }
+  return null;
 }
