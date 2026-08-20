@@ -316,6 +316,105 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
   });
 });
 
+describe('InboundMessageService.saveIncomingMessage — modo backfill (history sync)', () => {
+  const OLD_TS = new Date('2026-08-16T12:00:00.000Z'); // dentro do buraco 15-17/ago
+  const setupHappyPath = (m: ReturnType<typeof makeService>) => {
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+      metadata: {},
+    });
+  };
+
+  it('backfill grava created_at do message e ultima_interacao do lead com o timestamp ORIGINAL', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+
+    const leadArgs = m.prisma.lead.upsert.mock.calls[0][0];
+    expect(leadArgs.create.ultima_interacao).toEqual(OLD_TS);
+    expect(leadArgs.create.last_customer_message_at).toEqual(OLD_TS);
+    const msgArgs = m.prisma.message.upsert.mock.calls[0][0];
+    expect(msgArgs.create.created_at).toEqual(OLD_TS);
+    expect(m.conversations.resolveForInbound).toHaveBeenCalledWith(
+      expect.objectContaining({ occurredAt: OLD_TS }),
+    );
+  });
+
+  it('backfill NÃO incrementa não-lidas e avança ultima_interacao só com guarda lt (nunca retrocede)', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+
+    const leadArgs = m.prisma.lead.upsert.mock.calls[0][0];
+    expect(leadArgs.update.mensagens_nao_lidas).toBeUndefined();
+    expect(leadArgs.update.ultima_interacao).toBeUndefined();
+    expect(m.prisma.lead.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'lead-1', ultima_interacao: { lt: OLD_TS } }),
+        data: expect.objectContaining({ ultima_interacao: OLD_TS }),
+      }),
+    );
+  });
+
+  it('backfill não notifica: sem push, sem notificação in-app, sem webhook de saída, sem blockAi', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+    await m.service.saveIncomingMessage(
+      baseInput({ isFromMe: true, messageId: 'wa-msg-2', backfill: { timestamp: OLD_TS } }),
+    );
+
+    expect(m.push.sendToUsers).not.toHaveBeenCalled();
+    expect(m.prisma.notification.create).not.toHaveBeenCalled();
+    expect(m.outboundWebhooks.dispatchMessageCreated).not.toHaveBeenCalled();
+    expect(m.conversations.blockAi).not.toHaveBeenCalled();
+    expect(m.conversations.syncLeadFromActive).not.toHaveBeenCalled();
+  });
+
+  it('backfill ANTIGO (>1h) não emite message:new; backfill RECENTE emite (recupera queda ao vivo)', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+    expect(m.gateway.emitNewMessage).not.toHaveBeenCalled();
+
+    const recentTs = new Date(Date.now() - 5 * 60_000);
+    await m.service.saveIncomingMessage(
+      baseInput({ messageId: 'wa-msg-3', backfill: { timestamp: recentTs } }),
+    );
+    expect(m.gateway.emitNewMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('backfill ainda registra resposta do cliente no follow-up (resposta perdida deve sair da fila)', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+
+    expect(m.broadcastReply.registerCustomerReply).toHaveBeenCalledWith('lead-1', 't1');
+  });
+
+  it('regressão: SEM backfill o comportamento atual segue intacto (increment, emit, push)', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+
+    await m.service.saveIncomingMessage(baseInput());
+
+    const leadArgs = m.prisma.lead.upsert.mock.calls[0][0];
+    expect(leadArgs.update.mensagens_nao_lidas).toEqual({ increment: 1 });
+    expect(m.gateway.emitNewMessage).toHaveBeenCalled();
+    expect(m.push.sendToUsers).toHaveBeenCalled();
+    expect(m.prisma.lead.updateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe('InboundMessageService.saveIncomingMessage — anúncio de origem em tempo real', () => {
   /** Formato Evolution — é este objeto que o serviço grava em metadata.raw. */
   const AD_RAW = {

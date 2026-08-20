@@ -3,6 +3,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { InboundMessageService, type Obj } from './inbound-message.service';
 import { extractFromUazapi, extractFromWpp, synthesizeMessageId } from './message-extractor';
+import { messageTs } from './history-sync';
 
 /**
  * Handlers dos eventos UazAPI (messages, message_ack, connection, chats) e do
@@ -117,6 +118,12 @@ export class UazapiEventsHandler {
 
     const extracted = extractFromUazapi(message);
 
+    // Job re-injetado pelo history sync: preserva o timestamp original e
+    // suprime efeitos de "mensagem nova" (ver SaveMessageInput.backfill).
+    const ts = messageTs(message);
+    const backfill =
+      payload.backfill === true && ts > 0 ? { timestamp: new Date(ts) } : undefined;
+
     await this.inbound.saveIncomingMessage({
       tenantId: instance.tenant_id,
       instance,
@@ -126,6 +133,7 @@ export class UazapiEventsHandler {
       isFromMe,
       extracted,
       rawPayload: payload,
+      backfill,
     });
   }
 
