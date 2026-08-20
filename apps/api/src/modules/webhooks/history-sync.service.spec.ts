@@ -50,7 +50,10 @@ function makeService() {
       findUnique: jest.fn().mockResolvedValue({ ...instanceRow }),
       findMany: jest.fn().mockResolvedValue([{ ...instanceRow }]),
     },
-    message: { findFirst: jest.fn().mockResolvedValue(null) },
+    message: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     lead: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
   };
   const http: any = { post: jest.fn() };
@@ -96,6 +99,29 @@ describe('HistorySyncService.syncInstance', () => {
     expect(payload).toMatchObject({ event: 'uazapi.messages', token: 'tok-1', backfill: true });
     expect(payload.message.messageid).toBe('A');
     expect(opts.jobId).toBe('bf-inst-1-A');
+  });
+
+  it('mensagem mais nova do servidor já no banco (wa_id) → chat em dia, zero jobs (disparo com throttle)', async () => {
+    const { service, prisma, http, queue } = makeService();
+    prisma.message.findUnique.mockResolvedValue({ id: 'msg-existente' });
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(r.messages_enqueued).toBe(0);
+    expect(prisma.message.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          tenant_id_whatsapp_message_id: { tenant_id: 't1', whatsapp_message_id: 'A' },
+        },
+        select: { id: true },
+      }),
+    );
   });
 
   it('chat em dia (banco dentro da margem) não busca mensagens', async () => {

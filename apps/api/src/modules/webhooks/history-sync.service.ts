@@ -194,6 +194,7 @@ export class HistorySyncService {
 
     let enqueued = 0;
     let offset = 0;
+    let newestChecked = false;
     for (;;) {
       const res = await firstValueFrom(
         this.http.post(
@@ -204,6 +205,31 @@ export class HistorySyncService {
       );
       const page = parseFindMessages(res.data);
       if (page.messages.length === 0) break;
+
+      // O timestamp do chat não prova buraco: OUTGOING do CRM nasce no banco
+      // ao ENFILEIRAR e o WhatsApp carimba até minutos depois (disparo com
+      // throttle) — margem de relógio nunca cobre todos os casos. Prova
+      // exata: se a mensagem MAIS NOVA do servidor já está no banco pelo
+      // whatsapp_message_id, o chat está em dia — sai sem re-injetar.
+      if (!newestChecked) {
+        newestChecked = true;
+        const newest = page.messages.find(
+          (m) => m.isGroup !== true && (typeof m.messageid === 'string' && m.messageid),
+        );
+        const newestId = newest ? (newest.messageid as string) : null;
+        if (newestId) {
+          const existing = await this.prisma.message.findUnique({
+            where: {
+              tenant_id_whatsapp_message_id: {
+                tenant_id: tenantId,
+                whatsapp_message_id: newestId,
+              },
+            },
+            select: { id: true },
+          });
+          if (existing) return 0;
+        }
+      }
 
       let sawOutOfWindow = false;
       for (const m of page.messages) {
