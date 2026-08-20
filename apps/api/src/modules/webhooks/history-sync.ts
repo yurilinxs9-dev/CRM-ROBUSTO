@@ -12,7 +12,14 @@ type Obj = Record<string, unknown>;
 export interface SyncChat {
   chatid: string;
   phone: string;
+  /** Melhor nome disponível (agenda > pushName) — usado pra placeholder. */
   name: string | null;
+  /**
+   * Nome salvo na AGENDA do aparelho (wa_contactName). É o que o WhatsApp
+   * Web exibe — vale mais que o pushName do perfil do cliente, senão a
+   * operadora procura "Fernanda Greick" e o CRM mostra o nome de perfil.
+   */
+  contactName: string | null;
   lidJid: string | null;
   lastMsgTs: number;
 }
@@ -41,6 +48,7 @@ export function parseChatsPage(raw: unknown): SyncChat[] {
       chatid,
       phone,
       name: asStr(c.wa_contactName) ?? asStr(c.name),
+      contactName: asStr(c.wa_contactName),
       lidJid: lid && lid.endsWith('@lid') ? lid : null,
       lastMsgTs: messageTs({ messageTimestamp: c.wa_lastMsgTimestamp }),
     });

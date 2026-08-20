@@ -142,7 +142,7 @@ describe('HistorySyncService.syncInstance', () => {
     expect(http.post).toHaveBeenCalledTimes(2); // não pediu a página seguinte
   });
 
-  it('atualiza nome placeholder e lid do lead a partir do chat', async () => {
+  it('nome da AGENDA (wa_contactName) sobrescreve pushName divergente; lid entra quando faltava', async () => {
     const { service, prisma, http } = makeService();
     http.post
       .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
@@ -151,12 +151,28 @@ describe('HistorySyncService.syncInstance', () => {
     await service.syncInstance('inst-1', 48 * HOUR);
 
     expect(prisma.lead.updateMany).toHaveBeenCalledWith({
-      where: { tenant_id: 't1', telefone: '553186332984', nome: '553186332984' },
+      where: { tenant_id: 't1', telefone: '553186332984', nome: { not: 'Ricardo Borges' } },
       data: { nome: 'Ricardo Borges' },
     });
     expect(prisma.lead.updateMany).toHaveBeenCalledWith({
       where: { tenant_id: 't1', telefone: '553186332984', whatsapp_lid: null },
       data: { whatsapp_lid: '126740374524068@lid' },
+    });
+  });
+
+  it('sem nome de agenda, o nome do chat só substitui placeholder (nome = telefone)', async () => {
+    const { service, prisma, http } = makeService();
+    http.post
+      .mockReturnValueOnce(
+        of({ data: { chats: [chatPayload({ wa_contactName: '', name: 'Perfil Cliente' })] } }),
+      )
+      .mockReturnValueOnce(of({ data: { hasMore: false, messages: [] } }));
+
+    await service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { tenant_id: 't1', telefone: '553186332984', nome: '553186332984' },
+      data: { nome: 'Perfil Cliente' },
     });
   });
 

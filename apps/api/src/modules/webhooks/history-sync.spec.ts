@@ -30,6 +30,7 @@ describe('parseChatsPage', () => {
         chatid: '553186332984@s.whatsapp.net',
         phone: '553186332984',
         name: 'Ricardo Borges Tapetes',
+        contactName: 'Ricardo Borges Tapetes',
         lidJid: '126740374524068@lid',
         lastMsgTs: 1787231638000,
       },
@@ -62,7 +63,16 @@ describe('parseChatsPage', () => {
       chats: [{ ...chatFixture, name: '', wa_contactName: '', wa_chatlid: '' }],
     });
     expect(chats[0].name).toBeNull();
+    expect(chats[0].contactName).toBeNull();
     expect(chats[0].lidJid).toBeNull();
+  });
+
+  it('sem wa_contactName: name cai pro nome do chat e contactName fica null', () => {
+    const chats = parseChatsPage({
+      chats: [{ ...chatFixture, wa_contactName: '', name: 'Perfil do Cliente' }],
+    });
+    expect(chats[0].name).toBe('Perfil do Cliente');
+    expect(chats[0].contactName).toBeNull();
   });
 
   it('payload invalido vira lista vazia', () => {
@@ -77,6 +87,7 @@ describe('chatHasGap', () => {
     chatid: 'x@s.whatsapp.net',
     phone: '553186332984',
     name: null,
+    contactName: null,
     lidJid: null,
     lastMsgTs: 2_000_000,
   };

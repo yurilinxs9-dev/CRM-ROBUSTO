@@ -156,7 +156,9 @@ export class HistorySyncService {
           }
           await this.refreshLeadContact(instance.tenant_id, chat);
         } catch (err) {
-          this.logger.debug(
+          // warn, não debug: LOG_LEVEL de produção esconde debug e um chat
+          // que sempre falha ficaria invisível pra sempre.
+          this.logger.warn(
             `sync do chat ${chat.phone} (${instance.nome}) falhou: ${(err as Error).message}`,
           );
         }
@@ -232,12 +234,21 @@ export class HistorySyncService {
   }
 
   /**
-   * Contato correto mesmo sem mensagem nova: nome real do chat substitui o
-   * placeholder (lead salvo com o próprio telefone como nome) e o @lid entra
-   * quando faltava (envio LID-safe).
+   * Contato correto mesmo sem mensagem nova, espelhando o WhatsApp Web:
+   * - nome da AGENDA (wa_contactName) vale mais que o pushName do perfil do
+   *   cliente — a operadora salvou "Fernanda Greick" no celular e precisa
+   *   achar por esse nome, não pelo nome de perfil do contato;
+   * - sem nome de agenda, o melhor nome do chat só substitui placeholder
+   *   (lead com o próprio telefone como nome);
+   * - @lid entra quando faltava (envio LID-safe).
    */
   private async refreshLeadContact(tenantId: string, chat: SyncChat): Promise<void> {
-    if (chat.name) {
+    if (chat.contactName) {
+      await this.prisma.lead.updateMany({
+        where: { tenant_id: tenantId, telefone: chat.phone, nome: { not: chat.contactName } },
+        data: { nome: chat.contactName },
+      });
+    } else if (chat.name) {
       await this.prisma.lead.updateMany({
         where: { tenant_id: tenantId, telefone: chat.phone, nome: chat.phone },
         data: { nome: chat.name },
