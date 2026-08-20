@@ -34,6 +34,7 @@ describe('parseChatsPage', () => {
         contactName: 'Ricardo Borges Tapetes',
         lidJid: '126740374524068@lid',
         lastMsgTs: 1787231638000,
+        unreadCount: 0,
       },
     ]);
   });
@@ -68,6 +69,13 @@ describe('parseChatsPage', () => {
     expect(chats[0].lidJid).toBeNull();
   });
 
+  it('unreadCount: número passa, ausente ou negativo vira null', () => {
+    const on = parseChatsPage({ chats: [{ ...chatFixture, wa_unreadCount: 3 }] });
+    expect(on[0].unreadCount).toBe(3);
+    const off = parseChatsPage({ chats: [{ ...chatFixture, wa_unreadCount: undefined }] });
+    expect(off[0].unreadCount).toBeNull();
+  });
+
   it('sem wa_contactName: name cai pro nome do chat e contactName fica null', () => {
     const chats = parseChatsPage({
       chats: [{ ...chatFixture, wa_contactName: '', name: 'Perfil do Cliente' }],
@@ -91,6 +99,7 @@ describe('chatHasGap', () => {
     contactName: null,
     lidJid: null,
     lastMsgTs: 2_000_000,
+    unreadCount: null,
   };
 
   it('true quando nao existe mensagem no banco', () => {

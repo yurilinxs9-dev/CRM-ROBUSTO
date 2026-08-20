@@ -6,6 +6,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
 import {
   backfillJobPayload,
   chatHasGap,
@@ -58,6 +60,8 @@ export class HistorySyncService {
     private readonly http: HttpService,
     private readonly config: ConfigService,
     @InjectQueue('webhooks') private readonly webhookQueue: Queue,
+    private readonly gateway: CrmGateway,
+    private readonly cache: RedisCacheService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
   }
@@ -155,6 +159,7 @@ export class HistorySyncService {
             summary.messages_enqueued += enqueued;
           }
           await this.refreshLeadContact(instance.tenant_id, chat);
+          await this.reconcileUnread(instance.tenant_id, chat);
         } catch (err) {
           // warn, não debug: LOG_LEVEL de produção esconde debug e um chat
           // que sempre falha ficaria invisível pra sempre.
@@ -257,6 +262,34 @@ export class HistorySyncService {
       offset = page.nextOffset > offset ? page.nextOffset : offset + page.messages.length;
     }
     return enqueued;
+  }
+
+  /**
+   * Badge espelha o APARELHO: wa_unreadCount=0 no servidor significa que a
+   * pessoa já leu (ou respondeu) no celular — o CRM não pode continuar
+   * mostrando não-lidas. Só zera, nunca sobe: badge >0 no servidor com CRM
+   * zerado é leitura feita DENTRO do CRM, que o celular não conhece.
+   * É o caminho que conserta o badge preso: o ReadReceipt deste uazapiGO vem
+   * sem message id e o ack de leitura nunca casa (ver status-reconciler).
+   */
+  private async reconcileUnread(tenantId: string, chat: SyncChat): Promise<void> {
+    if (chat.unreadCount !== 0) return;
+    const lead = await this.prisma.lead.findFirst({
+      where: { tenant_id: tenantId, telefone: chat.phone, mensagens_nao_lidas: { gt: 0 } },
+      select: { id: true },
+    });
+    if (!lead) return;
+    await this.prisma.lead.update({
+      where: { id: lead.id },
+      data: { mensagens_nao_lidas: 0 },
+    });
+    await this.prisma.message.updateMany({
+      where: { lead_id: lead.id, direction: 'INCOMING', status: { not: 'READ' } },
+      data: { status: 'READ' },
+    });
+    await this.cache.delPattern(`leads:list:${tenantId}:*`);
+    this.gateway.emitLeadUnreadReset(lead.id, tenantId);
+    this.logger.log(`badge zerado via aparelho: lead ${lead.id} (${chat.phone})`);
   }
 
   /**

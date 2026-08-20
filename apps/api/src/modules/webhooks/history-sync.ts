@@ -22,6 +22,13 @@ export interface SyncChat {
   contactName: string | null;
   lidJid: string | null;
   lastMsgTs: number;
+  /**
+   * wa_unreadCount do servidor — estado de leitura do APARELHO. 0 = a pessoa
+   * já leu no celular; null = servidor não informou. Este servidor uazapiGO
+   * manda ReadReceipt sem message id, então esta é a única fonte confiável
+   * pra zerar o badge quando a leitura aconteceu fora do CRM.
+   */
+  unreadCount: number | null;
 }
 
 const asStr = (v: unknown): string | null =>
@@ -51,6 +58,8 @@ export function parseChatsPage(raw: unknown): SyncChat[] {
       contactName: asStr(c.wa_contactName),
       lidJid: lid && lid.endsWith('@lid') ? lid : null,
       lastMsgTs: messageTs({ messageTimestamp: c.wa_lastMsgTimestamp }),
+      unreadCount:
+        typeof c.wa_unreadCount === 'number' && c.wa_unreadCount >= 0 ? c.wa_unreadCount : null,
     });
   }
   return out;

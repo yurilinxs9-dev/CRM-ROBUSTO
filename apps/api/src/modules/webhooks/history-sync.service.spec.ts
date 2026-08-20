@@ -53,15 +53,22 @@ function makeService() {
     message: {
       findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn().mockResolvedValue(null),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
-    lead: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    lead: {
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findFirst: jest.fn().mockResolvedValue(null),
+      update: jest.fn().mockResolvedValue({}),
+    },
   };
   const http: any = { post: jest.fn() };
   const config: any = { get: jest.fn().mockReturnValue('https://uaz.test') };
   const queue: any = { add: jest.fn().mockResolvedValue(undefined) };
-  const service = new HistorySyncService(prisma, http, config, queue);
+  const gateway: any = { emitLeadUnreadReset: jest.fn() };
+  const cache: any = { delPattern: jest.fn().mockResolvedValue(undefined) };
+  const service = new HistorySyncService(prisma, http, config, queue, gateway, cache);
   jest.spyOn(Date, 'now').mockReturnValue(NOW);
-  return { service, prisma, http, config, queue };
+  return { service, prisma, http, config, queue, gateway, cache };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -235,6 +242,58 @@ describe('HistorySyncService.syncInstance', () => {
     prisma.whatsappInstance.findUnique = orig;
 
     expect(r2).toEqual({ chats_scanned: 0, chats_synced: 0, messages_enqueued: 0 });
+  });
+});
+
+describe('HistorySyncService — badge espelha o aparelho', () => {
+  it('wa_unreadCount=0 no servidor + não-lidas no CRM → zera badge, marca READ e emite reset', async () => {
+    const m = makeService();
+    m.prisma.lead.findFirst.mockResolvedValue({ id: 'lead-9' });
+    // chat em dia (sem gap) — badge reconcilia mesmo assim
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: new Date(NOW - HOUR) });
+    m.http.post.mockReturnValueOnce(
+      of({ data: { chats: [chatPayload({ wa_unreadCount: 0 })] } }),
+    );
+
+    await m.service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(m.prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 'lead-9' },
+      data: { mensagens_nao_lidas: 0 },
+    });
+    expect(m.prisma.message.updateMany).toHaveBeenCalledWith({
+      where: { lead_id: 'lead-9', direction: 'INCOMING', status: { not: 'READ' } },
+      data: { status: 'READ' },
+    });
+    expect(m.gateway.emitLeadUnreadReset).toHaveBeenCalledWith('lead-9', 't1');
+    expect(m.cache.delPattern).toHaveBeenCalledWith('leads:list:t1:*');
+  });
+
+  it('wa_unreadCount>0 no servidor NÃO mexe no badge (leitura no CRM não chega ao celular)', async () => {
+    const m = makeService();
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: new Date(NOW - HOUR) });
+    m.http.post.mockReturnValueOnce(
+      of({ data: { chats: [chatPayload({ wa_unreadCount: 4 })] } }),
+    );
+
+    await m.service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+    expect(m.gateway.emitLeadUnreadReset).not.toHaveBeenCalled();
+  });
+
+  it('CRM já zerado → nada a fazer (sem update, sem emit)', async () => {
+    const m = makeService();
+    m.prisma.lead.findFirst.mockResolvedValue(null); // nenhum lead com não-lidas > 0
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: new Date(NOW - HOUR) });
+    m.http.post.mockReturnValueOnce(
+      of({ data: { chats: [chatPayload({ wa_unreadCount: 0 })] } }),
+    );
+
+    await m.service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+    expect(m.gateway.emitLeadUnreadReset).not.toHaveBeenCalled();
   });
 });
 
