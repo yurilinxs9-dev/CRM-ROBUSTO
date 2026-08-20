@@ -409,6 +409,20 @@ describe('InboundMessageService.saveIncomingMessage — modo backfill (history s
     expect(m.broadcastReply.registerCustomerReply).toHaveBeenCalledWith('lead-1', 't1');
   });
 
+  it('race create→create no lead (P2002) re-tenta o upsert e a mensagem é salva', async () => {
+    const m = makeService();
+    setupHappyPath(m);
+    const p2002 = Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+    m.prisma.lead.upsert
+      .mockRejectedValueOnce(p2002)
+      .mockResolvedValueOnce({ ...leadOwnedByA });
+
+    await m.service.saveIncomingMessage(baseInput({ backfill: { timestamp: OLD_TS } }));
+
+    expect(m.prisma.lead.upsert).toHaveBeenCalledTimes(2);
+    expect(m.prisma.message.upsert).toHaveBeenCalledTimes(1);
+  });
+
   it('regressão: SEM backfill o comportamento atual segue intacto (increment, emit, push)', async () => {
     const m = makeService();
     setupHappyPath(m);

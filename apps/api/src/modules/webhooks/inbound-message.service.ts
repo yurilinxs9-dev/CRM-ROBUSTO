@@ -412,7 +412,7 @@ export class InboundMessageService {
     // fica por conta de responsavel_id + visibilidade, não da duplicação de linha.
     const leadScope = tenantId;
 
-    const lead = await this.prisma.lead.upsert({
+    const leadUpsertArgs: Prisma.LeadUpsertArgs = {
       where: {
         telefone_pipeline_scope: {
           telefone: phone,
@@ -460,7 +460,19 @@ export class InboundMessageService {
             // próxima interação; se o WhatsApp remapear o contato, atualiza).
             whatsapp_lid: lidJid ?? undefined,
           },
-    });
+    };
+
+    // Race create→create no lead: duas mensagens do MESMO contato novo em
+    // workers paralelos (comum no backfill, que despeja o chat inteiro na
+    // fila de uma vez). O perdedor toma P2002 antes de o Prisma enxergar a
+    // linha do vencedor — na segunda tentativa o lead existe e cai no update.
+    let lead;
+    try {
+      lead = await this.prisma.lead.upsert(leadUpsertArgs);
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      lead = await this.prisma.lead.upsert(leadUpsertArgs);
+    }
 
     if (backfill) {
       await this.prisma.lead.updateMany({
