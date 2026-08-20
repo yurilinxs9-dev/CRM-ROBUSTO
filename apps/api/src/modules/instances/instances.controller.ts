@@ -8,6 +8,7 @@ import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
 const setSectorSchema = z.object({ sector_id: z.string().uuid().nullable() });
+const historySyncSchema = z.object({ days: z.number().int().min(1).max(60).optional() });
 
 @Controller('instances')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -69,6 +70,20 @@ export class InstancesController {
   @Roles(UserRole.OPERADOR)
   delete(@Param('nome') nome: string, @Req() req: Record<string, unknown>) {
     return this.instancesService.delete(nome, req.user as AuthUser);
+  }
+
+  // Re-sincroniza o histórico da instância a partir do servidor UazAPI
+  // (espelho WhatsApp Web) — repara buracos de webhook perdido. Dispara em
+  // background; acompanhar pelo log do backend.
+  @Post(':nome/history-sync')
+  @Roles(UserRole.GERENTE)
+  historySync(
+    @Param('nome') nome: string,
+    @Body() body: unknown,
+    @Req() req: Record<string, unknown>,
+  ) {
+    const { days = 30 } = historySyncSchema.parse(body ?? {});
+    return this.instancesService.startHistorySync(nome, days, req.user as AuthUser);
   }
 
   // F-02: define o setor que atende este número (destino do round-robin).
