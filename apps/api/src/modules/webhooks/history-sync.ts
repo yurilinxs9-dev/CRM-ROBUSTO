@@ -56,8 +56,15 @@ export function parseChatsPage(raw: unknown): SyncChat[] {
   return out;
 }
 
-/** Margem pra clock skew entre servidor UazAPI e created_at local. */
-const GAP_SKEW_MS = 2000;
+/**
+ * Margem entre o carimbo oficial do WhatsApp e o created_at local. Precisa ser
+ * generosa: mensagem OUTGOING enviada pelo CRM nasce no banco ANTES de o
+ * WhatsApp carimbar (medido em produção: 3-4s de diferença em disparos).
+ * Margem menor vira falso gap eterno — o mesmo lote é re-injetado a cada
+ * passada (o upsert dedupa, mas o trabalho se repete). Buraco real nos
+ * últimos segundos fica pro webhook ao vivo, que é quem cobre o presente.
+ */
+const GAP_SKEW_MS = 10_000;
 
 /**
  * O chat tem mensagem que o CRM não viu? `dbLastMs` é o created_at da última

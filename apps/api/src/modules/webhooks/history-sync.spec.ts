@@ -96,12 +96,13 @@ describe('chatHasGap', () => {
     expect(chatHasGap(chat, null, since)).toBe(true);
   });
 
-  it('true quando banco esta atras alem da margem de 2s', () => {
-    expect(chatHasGap(chat, 2_000_000 - 2001, since)).toBe(true);
+  it('true quando banco esta atras alem da margem de 10s', () => {
+    expect(chatHasGap(chat, 2_000_000 - 10_001, since)).toBe(true);
   });
 
-  it('false quando banco esta em dia (dentro da margem de 2s)', () => {
-    expect(chatHasGap(chat, 2_000_000 - 2000, since)).toBe(false);
+  it('false quando banco esta em dia (dentro da margem de 10s — CRM grava antes do carimbo do WhatsApp)', () => {
+    expect(chatHasGap(chat, 2_000_000 - 10_000, since)).toBe(false);
+    expect(chatHasGap(chat, 2_000_000 - 3500, since)).toBe(false);
     expect(chatHasGap(chat, 2_000_000, since)).toBe(false);
   });
 
