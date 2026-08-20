@@ -421,6 +421,13 @@ export function extractFromUazapi(message: Obj): ExtractedMessage {
           vcard: asStr(message.vcard),
         },
       };
+    case 'reaction':
+    case 'reactionmessage':
+      // Paridade com extractFromEvolution: reação vira TEXT com marcador.
+      return {
+        type: 'TEXT',
+        content: `[reaction] ${asStr(contentObj?.text) ?? text ?? ''}`.trim(),
+      };
     default: {
       // ExtendedTextMessage or unknown — try content.text, then flat text
       const fallbackText = asStr(contentObj?.text) ?? text;
