@@ -64,6 +64,12 @@ function makeMocks() {
   const broadcastReply: any = {
     registerCustomerReply: jest.fn().mockResolvedValue({ replied: 0, skipped: 0 }),
   };
+  const attribution: any = {
+    extractClickCode: jest.fn().mockReturnValue(null),
+    consumeClick: jest.fn().mockResolvedValue(null),
+    fromAdReferral: jest.fn().mockReturnValue({}),
+    recordFirstTouch: jest.fn().mockResolvedValue(undefined),
+  };
   return {
     prisma,
     leadsService,
@@ -75,6 +81,7 @@ function makeMocks() {
     assignment,
     conversations,
     broadcastReply,
+    attribution,
   };
 }
 
@@ -91,6 +98,7 @@ function makeService() {
     m.assignment,
     m.conversations,
     m.broadcastReply,
+    m.attribution,
   ) as InboundMessageService;
   return { service, ...m };
 }
@@ -469,5 +477,29 @@ describe('InboundMessageService.saveIncomingMessage — anúncio de origem em te
 
     const [, payload] = gateway.emitNewMessage.mock.calls.at(-1);
     expect(payload.ad_referral).toBeNull();
+  });
+
+  it('DISCRIMINANTE: lead novo do WhatsApp nasce no topo da coluna', async () => {
+    // A maioria dos leads entra por aqui, não pelo create() da UI. Sem
+    // `position`, eles caíam no default 0 do schema e o "lead novo no topo"
+    // valia só para os criados na tela. Negativo = acima de todos, e o
+    // relógio garante o mais recente por cima sem consultar a coluna.
+    const { service, prisma, conversations } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+
+    const antes = -Date.now();
+    await service.saveIncomingMessage(baseInput());
+    const depois = -Date.now();
+
+    const [{ create }] = prisma.lead.upsert.mock.calls.at(-1);
+    expect(create.position).toBeLessThanOrEqual(antes);
+    expect(create.position).toBeGreaterThanOrEqual(depois);
+    expect(create.position).toBeLessThan(0);
   });
 });

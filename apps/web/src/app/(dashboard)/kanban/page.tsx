@@ -49,6 +49,9 @@ import {
   TEMP_LABELS,
 } from '@/components/kanban/lead-card';
 import { StageColumn, type Stage } from '@/components/kanban/stage-column';
+import { LeadFilterPanel } from '@/components/kanban/lead-filter-panel';
+import { FILTROS_VAZIOS, toQueryParams, type LeadPanelFilters } from '@/lib/lead-filters';
+import { compareLeadsInStage, topPositionFor } from '@/lib/lead-order';
 import {
   NewLeadDialog,
   type NewLeadFormData,
@@ -92,6 +95,8 @@ interface BoardResponse {
   leads: Lead[];
   stage_counts: Record<string, number>;
   stage_values: Record<string, number>;
+  /** Total de cada aba (Meus Leads / Escritório) sob os demais filtros. */
+  owner_counts?: { me: number; others: number };
 }
 
 const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
@@ -210,7 +215,50 @@ export default function KanbanPage() {
   );
 
   // --- Leads ---
-  const leadsQueryKey = useMemo(() => ['leads', activePipelineId] as const, [activePipelineId]);
+  // Filtros do painel lateral. Viram query params: o recorte acontece no banco,
+  // é o único jeito de o filtro estar certo num board que carrega em janela de
+  // 50 por coluna.
+  const [panelFilters, setPanelFilters] = useState<LeadPanelFilters>(FILTROS_VAZIOS);
+  const panelParams = useMemo(() => toQueryParams(panelFilters), [panelFilters]);
+
+  // Busca também é do servidor, pelo mesmo motivo dos demais filtros; o debounce
+  // evita uma consulta por tecla digitada.
+  const [searchAplicado, setSearchAplicado] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setSearchAplicado(searchTerm.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
+
+  // Aba / temperatura / responsável: até aqui recortavam no CLIENTE o que já
+  // tinha sido baixado, e por isso o número no topo da coluna (que vem do
+  // servidor, sobre o board inteiro) não batia com os cards à vista — 103 em
+  // "Orçamento" com a coluna vazia em "Meus Leads". Indo para a query, contagem
+  // e conteúdo passam a sair do mesmo recorte.
+  const scopeParams = useMemo(() => {
+    const p: Record<string, string> = {};
+    if (searchAplicado) p.search = searchAplicado;
+    if (tempFilter !== 'ALL') p.temperatura = tempFilter;
+    if (responsavelFilter !== 'ALL') {
+      // O dropdown sobrepõe as abas — gestor olhando o kanban de um operador vê
+      // os leads dele inteiros, sem recorte de "meus"/"escritório".
+      p.responsavel_id = responsavelFilter;
+    } else if (isPoolEnabled) {
+      // Operador não tem aba "Escritório" — sempre vê só os próprios.
+      p.owner = isOperador || activeTab === 'meus' ? 'me' : 'others';
+    }
+    return p;
+  }, [searchAplicado, tempFilter, responsavelFilter, isPoolEnabled, isOperador, activeTab]);
+
+  const serverParams = useMemo(
+    () => ({ ...panelParams, ...scopeParams }),
+    [panelParams, scopeParams],
+  );
+
+  // serverParams entra na chave: mudou filtro, é outra consulta ao servidor.
+  const leadsQueryKey = useMemo(
+    () => ['leads', activePipelineId, serverParams] as const,
+    [activePipelineId, serverParams],
+  );
 
   // Janela por coluna: servidor manda top-50 de cada estágio + contagem/valor
   // totais por estágio. Board de 2k+ leads deixa de baixar tudo de uma vez.
@@ -221,7 +269,7 @@ export default function KanbanPage() {
     queryFn: async () => {
       if (!activePipelineId) return { leads: [], stage_counts: {}, stage_values: {} };
       const res = await api.get('/api/leads', {
-        params: { pipeline_id: activePipelineId, per_stage: String(PER_STAGE) },
+        params: { pipeline_id: activePipelineId, per_stage: String(PER_STAGE), ...serverParams },
       });
       return res.data;
     },
@@ -254,6 +302,9 @@ export default function KanbanPage() {
             estagio_id: stageId,
             limit: String(PER_STAGE),
             offset: String(loaded),
+            // Sem isto, "Carregar mais" traria a próxima página SEM filtro e
+            // misturaria na coluna leads que o filtro tinha excluído.
+            ...serverParams,
           },
         });
         const page = res.data as Lead[];
@@ -268,7 +319,7 @@ export default function KanbanPage() {
         setLoadingMoreStage(null);
       }
     },
-    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey],
+    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey, serverParams],
   );
 
   const selectAllInStage = useCallback(
@@ -292,41 +343,12 @@ export default function KanbanPage() {
     },
   });
 
-  // --- Filtered leads ---
-  const filteredLeads = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-    return leads.filter((l) => {
-      if (tempFilter !== 'ALL' && l.temperatura !== tempFilter) return false;
-      if (responsavelFilter !== 'ALL' && l.responsavel?.id !== responsavelFilter) return false;
-      if (term) {
-        const haystack = `${l.nome} ${l.telefone}`.toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
-      return true;
-    });
-  }, [leads, searchTerm, tempFilter, responsavelFilter]);
-
-  const meuCount = useMemo(
-    () => filteredLeads.filter((l) => l.responsavel?.id === currentUserId).length,
-    [filteredLeads, currentUserId],
-  );
-  const escritorioCount = useMemo(
-    () => filteredLeads.filter((l) => !l.responsavel || l.responsavel.id !== currentUserId).length,
-    [filteredLeads, currentUserId],
-  );
-
-  const tabFilteredLeads = useMemo(() => {
-    if (!isPoolEnabled) return filteredLeads;
-    // Filtro de responsável no dropdown sobrepõe as abas — admin/manager
-    // selecionando um operador específico vê os leads dele inteiros, sem
-    // restrição de "meus" / "escritório".
-    if (responsavelFilter !== 'ALL') return filteredLeads;
-    // Operador nao tem aba "Escritório" — sempre vê só os próprios.
-    const effectiveTab = isOperador ? 'meus' : activeTab;
-    if (effectiveTab === 'meus') return filteredLeads.filter((l) => l.responsavel?.id === currentUserId);
-    // Escritório: leads sem dono OU de outros usuarios (NÃO os meus).
-    return filteredLeads.filter((l) => !l.responsavel || l.responsavel.id !== currentUserId);
-  }, [filteredLeads, isPoolEnabled, activeTab, currentUserId, responsavelFilter, isOperador]);
+  // Rótulo das abas. Vem do servidor junto do board: contado sobre o banco
+  // inteiro (já sob os demais filtros), e não sobre a janela de 50 por coluna
+  // que está carregada — era daí que saía "Meus Leads (19)" ao lado de colunas
+  // somando 201.
+  const meuCount = board?.owner_counts?.me ?? 0;
+  const escritorioCount = board?.owner_counts?.others ?? 0;
 
   // Lista pra filtro "ver kanban de cada responsável". Vem de tenantUsers
   // (não dos leads) pra incluir operadores mesmo que ainda não tenham lead
@@ -545,13 +567,28 @@ export default function KanbanPage() {
       if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
       queryClient.invalidateQueries({ queryKey: ['leads'] });
     };
+    // Lead novo (integração de formulário, criação manual de um colega). Nasce
+    // sem mensagem e sem mudança de estágio, então não era coberto por nenhum
+    // dos outros eventos — o card só aparecia no poll de 60s ou num F5.
+    //
+    // Invalida em vez de inserir o card na cache de propósito: com filtro no
+    // servidor, um lead novo pode NÃO pertencer ao recorte que está na tela, e
+    // enfiá-lo direto mostraria um card que o filtro exclui. O refetch devolve
+    // exatamente o que o filtro atual manda.
+    const handleLeadCreated = (payload: { pipeline_id?: string }) => {
+      // Lead de outro funil não mexe neste board.
+      if (payload?.pipeline_id && payload.pipeline_id !== activePipelineId) return;
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+    };
     // new-message/unread-reset: delta-patch feito no SocketEventsProvider
     // global (trata o shape { leads, stage_counts } do board).
     socket.on('lead:stage-changed', handleStageChanged);
+    socket.on('lead:created', handleLeadCreated);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
+      socket.off('lead:created', handleLeadCreated);
     };
-  }, [queryClient, leadsQueryKey, currentUserId]);
+  }, [queryClient, leadsQueryKey, currentUserId, activePipelineId]);
 
   // --- DnD ---
   const handleDragStart = useCallback(
@@ -654,6 +691,10 @@ export default function KanbanPage() {
 
       // Cross-stage move (+ ajusta contadores das colunas na hora).
       const finalTarget = targetStageId;
+      // Card vindo de outra coluna entra no topo do destino, mesma regra do
+      // lead novo. Vai explícito no pedido para o card não piscar na posição
+      // antiga até a resposta chegar; sem posição, o backend decide igual.
+      const topPosition = topPositionFor(leads.filter((l) => l.estagio_id === finalTarget));
       queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
         if (!old) return old;
         const moved = old.leads.find((l) => l.id === activeId);
@@ -666,17 +707,20 @@ export default function KanbanPage() {
           ...old,
           stage_counts: counts,
           leads: old.leads.map((l) =>
-            l.id === activeId ? { ...l, estagio_id: finalTarget } : l,
+            l.id === activeId ? { ...l, estagio_id: finalTarget, position: topPosition } : l,
           ),
         };
       });
-      stageMutation.mutate({ leadId: activeId, estagioId: finalTarget });
+      stageMutation.mutate({
+        leadId: activeId,
+        estagioId: finalTarget,
+        position: topPosition,
+      });
     },
     [leads, queryClient, leadsQueryKey, stageMutation, orderedStages, reorderStagesMutation],
   );
 
-  // Quantos leads (sem filtro de aba/busca) já estão carregados por estágio —
-  // base do "Carregar mais" (comparar filtrado com total daria falso positivo).
+  // Quantos leads já estão carregados por estágio — base do "Carregar mais".
   const loadedByStage = useMemo(() => {
     const map: Record<string, number> = {};
     for (const lead of leads) {
@@ -689,18 +733,14 @@ export default function KanbanPage() {
   const leadsByStage = useMemo(() => {
     const map: Record<string, Lead[]> = {};
     for (const stage of orderedStages) map[stage.id] = [];
-    for (const lead of tabFilteredLeads) {
+    for (const lead of leads) {
       if (map[lead.estagio_id]) map[lead.estagio_id].push(lead);
     }
     for (const stageId of Object.keys(map)) {
-      map[stageId].sort((a, b) => {
-        const dateA = a.ultima_interacao ? new Date(a.ultima_interacao).getTime() : 0;
-        const dateB = b.ultima_interacao ? new Date(b.ultima_interacao).getTime() : 0;
-        return dateB - dateA;
-      });
+      map[stageId].sort(compareLeadsInStage);
     }
     return map;
-  }, [tabFilteredLeads, orderedStages]);
+  }, [leads, orderedStages]);
 
   const claimLeadMutation = useMutation({
     mutationFn: async (leadId: string) => {
@@ -899,6 +939,7 @@ export default function KanbanPage() {
             className="pl-8 h-9"
           />
         </div>
+        <LeadFilterPanel value={panelFilters} onChange={setPanelFilters} />
         <Select value={tempFilter} onValueChange={(v) => setTempFilter(v as Temperatura | 'ALL')}>
           <SelectTrigger className="h-9 w-40">
             <SelectValue />

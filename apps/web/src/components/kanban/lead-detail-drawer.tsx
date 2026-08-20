@@ -24,7 +24,6 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -46,6 +45,7 @@ import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
+import { TagPicker } from './tag-picker';
 import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
 // ---------------------------------------------------------------------------
@@ -146,6 +146,8 @@ interface LeadDetailDrawerProps {
   open: boolean;
   onClose: () => void;
   activePipelineId?: string | null;
+  /** Sem handler o botão "Arquivar" some — quem abre a ficha fora do Kanban
+   *  (o chat) não tem o diálogo de confirmação de arquivamento. */
   onArchive?: (leadId: string) => void;
 }
 
@@ -164,6 +166,18 @@ export function LeadDetailDrawer({
   const currentUser = useAuthStore((s) => s.user);
   const isPoolEnabled = useIsPoolEnabled();
   const podeConfigurar = !!currentUser?.role && GESTORES.includes(currentUser.role);
+
+  // Invalidações comuns a toda mutação da ficha. Aberta pelo chat não há
+  // pipeline ativo, e ['leads', undefined] não casaria nenhuma listagem — o
+  // prefixo cobre os dois casos. ['chat','leads'] é a lista lateral do chat,
+  // que mostra responsável e tags e ficava desatualizada após transferir.
+  const invalidarListas = () => {
+    void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+    void queryClient.invalidateQueries({
+      queryKey: activePipelineId ? ['leads', activePipelineId] : ['leads'],
+    });
+    void queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+  };
 
   // ---- Remote data ----
   const { data: lead, isLoading: leadLoading } = useQuery<LeadDetail>({
@@ -206,7 +220,7 @@ export function LeadDetailDrawer({
   // ---- Form state ----
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [responsavelId, setResponsavelId] = useState('');
-  const [tagsInput, setTagsInput] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
 
   const leadDefs = schema ? flattenFields(groupFields(schema, 'LEAD')) : [];
@@ -215,9 +229,11 @@ export function LeadDetailDrawer({
   useEffect(() => {
     if (!lead || !schema) return;
     setValues(initialValues(flattenFields(groupFields(schema, 'LEAD')), lead));
-    setResponsavelId(lead.responsavel_id);
+    // Lead no pool vem com responsavel_id null — o estado do Select é string,
+    // e mandar null no PATCH derrubava o save inteiro com "Campos inválidos".
+    setResponsavelId(lead.responsavel_id ?? '');
     const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
-    setTagsInput(existingTags.join(', '));
+    setTags(existingTags);
     setDirty(false);
   }, [lead, schema]);
 
@@ -236,8 +252,7 @@ export function LeadDetailDrawer({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/claim`); },
     onSuccess: () => {
       toast.success('Lead assumido!');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
     },
     onError: (err: unknown) => {
       const status = (err as { response?: { status?: number } })?.response?.status;
@@ -252,8 +267,7 @@ export function LeadDetailDrawer({
     },
     onSuccess: () => {
       toast.success('Lead transferido.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
     },
     onError: () => toast.error('Erro ao transferir lead.'),
   });
@@ -266,8 +280,7 @@ export function LeadDetailDrawer({
     },
     onSuccess: () => {
       toast.success('Lead transferido para o setor.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
     },
     onError: () => toast.error('Erro ao transferir lead para o setor.'),
@@ -277,8 +290,7 @@ export function LeadDetailDrawer({
     mutationFn: async () => { await api.post(`/api/leads/${leadId}/return-to-pool`); },
     onSuccess: () => {
       toast.success('Lead devolvido ao escritorio.');
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
     },
     onError: () => toast.error('Erro ao devolver lead.'),
@@ -288,16 +300,15 @@ export function LeadDetailDrawer({
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!leadId) return;
-      const tags = tagsInput
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
       // buildPayload separa o que vai pra coluna do que vai pro Json e resolve
       // os formatos que o updateLeadSchema exige (ver field-render.spec.ts).
       const { native, custom } = buildPayload(leadDefs, values);
       const body: Record<string, unknown> = {
         ...native,
-        responsavel_id: responsavelId,
+        // Só vai quando há responsável escolhido: o campo não tem opção
+        // "ninguém" (isso é o botão "Devolver ao Escritório"), então vazio
+        // aqui significa "não mexe", não "remove o dono".
+        ...(responsavelId ? { responsavel_id: responsavelId } : {}),
         tags,
       };
       if (Object.keys(custom).length > 0) body.dados_custom = custom;
@@ -305,8 +316,7 @@ export function LeadDetailDrawer({
       return res.data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
-      void queryClient.invalidateQueries({ queryKey: ['leads', activePipelineId] });
+      invalidarListas();
       void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
       setDirty(false);
       toast.success('Lead atualizado.');
@@ -535,30 +545,14 @@ export function LeadDetailDrawer({
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <Label htmlFor="drawer-tags">
+                  <Label>
                     <Tag className="inline h-3 w-3 mr-1" />
                     Tags
-                    <span className="text-muted-foreground ml-1">(separadas por virgula)</span>
                   </Label>
-                  <Input
-                    id="drawer-tags"
-                    value={tagsInput}
-                    onChange={(e) => { setTagsInput(e.target.value); mark(); }}
-                    placeholder="vip, retorno, indicacao"
+                  <TagPicker
+                    value={tags}
+                    onChange={(next) => { setTags(next); mark(); }}
                   />
-                  {tagsInput.trim() && (
-                    <div className="flex flex-wrap gap-1 pt-1">
-                      {tagsInput
-                        .split(',')
-                        .map((t) => t.trim())
-                        .filter(Boolean)
-                        .map((tag) => (
-                          <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0">
-                            {tag}
-                          </Badge>
-                        ))}
-                    </div>
-                  )}
                 </div>
               </section>
             </TabsContent>
@@ -594,17 +588,21 @@ export function LeadDetailDrawer({
         {/* Footer actions */}
         {!leadLoading && lead && (
           <div className="px-5 py-4 border-t shrink-0 flex items-center justify-between gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => {
-                onArchive?.(lead.id);
-                onClose();
-              }}
-            >
-              Arquivar
-            </Button>
+            {onArchive ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => {
+                  onArchive(lead.id);
+                  onClose();
+                }}
+              >
+                Arquivar
+              </Button>
+            ) : (
+              <span />
+            )}
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={onClose}>
                 <X className="h-3.5 w-3.5 mr-1" />

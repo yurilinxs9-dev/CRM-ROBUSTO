@@ -34,7 +34,10 @@ import { ChatWallpaper } from '@/components/chat/chat-wallpaper';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { TypingIndicator } from '@/components/chat/typing-indicator';
 import { ScrollToBottomButton } from '@/components/chat/scroll-to-bottom-button';
-import { LeadDetailsSheet } from '@/components/chat/lead-details-sheet';
+// Mesma ficha do Kanban, de propósito: a versão só-leitura que existia aqui
+// mostrava os campos e parava — pra pôr uma tag ou transferir o lead o
+// atendente tinha que sair do chat e achar o card no funil.
+import { LeadDetailDrawer } from '@/components/kanban/lead-detail-drawer';
 import type { ReplyTarget } from '@/components/chat/reply-preview';
 import {
   ChatLead,
@@ -1059,10 +1062,13 @@ export default function ChatDetailPage() {
         );
       })()}
 
-      <LeadDetailsSheet
-        lead={currentLead ?? null}
+      {/* Sem activePipelineId/onArchive: no chat não há board na tela pra
+          invalidar por funil (a ficha cai no prefixo ['leads']) nem diálogo de
+          confirmação de arquivamento. */}
+      <LeadDetailDrawer
+        leadId={leadId}
         open={detailsOpen}
-        onOpenChange={setDetailsOpen}
+        onClose={() => setDetailsOpen(false)}
       />
 
       <Dialog

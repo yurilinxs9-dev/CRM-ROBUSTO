@@ -11,7 +11,8 @@ import { AssignmentService } from '../queue/assignment.service';
 import { BroadcastReplyService } from '../broadcasts/broadcast-reply.service';
 import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
-import { extractAdReferral } from './ad-referral';
+import { AD_REFERRAL_KEY, extractAdReferral, type AdReferral } from './ad-referral';
+import { AttributionService, CLICK_CODE_PATTERN } from '../attribution/attribution.service';
 import {
   assertValidMagic,
   decryptWhatsAppMedia,
@@ -86,7 +87,42 @@ export class InboundMessageService {
     private assignment: AssignmentService,
     private readonly conversations: ConversationService,
     private readonly broadcastReply: BroadcastReplyService,
+    private readonly attribution: AttributionService,
   ) {}
+  /**
+   * Grava de onde o lead veio. Duas fontes, nesta ordem de confiança:
+   *   1. anúncio da Meta, que chega dentro do payload da própria mensagem;
+   *   2. código de clique no texto, trocado pelo payload que o site guardou
+   *      quando a pessoa apertou o botão de WhatsApp.
+   *
+   * O first-touch é garantido no banco (unique em lead_id), então reprocessar
+   * webhook ou o cliente clicar num anúncio novo não sobrescreve nada.
+   */
+  private async recordAttribution(
+    leadId: string,
+    tenantId: string,
+    adReferral: AdReferral | null,
+    texto: string | null,
+  ): Promise<void> {
+    try {
+      if (adReferral) {
+        await this.attribution.recordFirstTouch(
+          leadId,
+          tenantId,
+          this.attribution.fromAdReferral(adReferral),
+        );
+        return;
+      }
+      const clickCode = this.attribution.extractClickCode(texto);
+      if (clickCode) {
+        const input = await this.attribution.consumeClick(tenantId, clickCode);
+        if (input) await this.attribution.recordFirstTouch(leadId, tenantId, input);
+      }
+    } catch (err) {
+      this.logger.warn(`atribuicao do lead ${leadId}: ${String(err)}`);
+    }
+  }
+
   /**
    * F-02: setor sem agentes ativos — lead fica em espera (sem dono). Avisa os
    * supervisores (SUPER_ADMIN/GERENTE) por push para que alguém assuma.
@@ -388,6 +424,12 @@ export class InboundMessageService {
         nome: incomingPushName || phone,
         telefone: phone,
         whatsapp_lid: lidJid,
+        // Lead novo entra no TOPO da coluna, como os criados pela UI e pela
+        // API. `position` cresce para baixo, então o relógio negativo resolve
+        // isso sem consulta nenhuma — de outro jeito seria um aggregate por
+        // mensagem recebida, inclusive nas 99% que caem no branch update.
+        // Entre si, o mais recente fica acima.
+        position: -Date.now(),
         origem: 'WHATSAPP_INCOMING',
         instancia_whatsapp: instance.nome,
         lead_scope: leadScope,
@@ -531,13 +573,28 @@ export class InboundMessageService {
       );
     }
 
+    const strippedRaw = stripHeavyRawKeys(JSON.parse(JSON.stringify(rawPayload)));
+    // Anúncio (Click to WhatsApp) gravado FORA do `raw`: a poda dos 30 dias
+    // (DataRetentionService) remove só a chave `raw`, então o card sobrevive.
+    // Custa 1–8 KB e só nas mensagens que vieram de anúncio (<1% do total).
+    const adReferral = extractAdReferral({ raw: strippedRaw });
+
     const metadata: Prisma.InputJsonValue = {
-      raw: stripHeavyRawKeys(
-        JSON.parse(JSON.stringify(rawPayload)),
-      ) as Prisma.InputJsonValue,
+      raw: strippedRaw as Prisma.InputJsonValue,
+      ...(adReferral ? { [AD_REFERRAL_KEY]: { ...adReferral } } : {}),
       ...(extracted.location ? { location: extracted.location } : {}),
       ...(extracted.contact ? { contact: extracted.contact } : {}),
     };
+
+    // Origem do lead (métrica). Solta e engolindo os próprios erros de
+    // propósito: é relatório, não atendimento — não pode atrasar nem derrubar
+    // o inbound. No caminho comum (mensagem sem anúncio e sem código de
+    // clique) as duas checagens abaixo são baratas e nada mais acontece.
+    // O teste da guarda é um regex puro de propósito: é a única linha desta
+    // feature que roda dentro do fluxo do inbound, e regex não lança.
+    if (!isFromMe && (adReferral || CLICK_CODE_PATTERN.test(extracted.content ?? ''))) {
+      void this.recordAttribution(lead.id, tenantId, adReferral, extracted.content);
+    }
 
     // Echo dedup: when isFromMe=true, this webhook PODE ser o eco de uma
     // mensagem enviada pelo CRM (em que já criamos a linha + emitimos

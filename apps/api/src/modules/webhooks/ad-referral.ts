@@ -20,6 +20,26 @@ export interface AdReferral {
 
 const AD_KEY = 'externalAdReply';
 
+/**
+ * Chave irmã de `raw` onde o ingest grava o anúncio já normalizado. Existe
+ * porque `DataRetentionService.pruneMessageRawMetadata` faz `metadata - 'raw'`
+ * aos 30 dias: o payload do provider some, e com ele sumia o card. Só o `raw`
+ * é podado, então o que está aqui sobrevive.
+ */
+export const AD_REFERRAL_KEY = 'ad_referral';
+
+/** Campos do AdReferral, na ordem em que o card os usa. */
+const AD_FIELDS = [
+  'title',
+  'body',
+  'source_app',
+  'source_url',
+  'source_id',
+  'media_url',
+  'ctwa_clid',
+  'thumbnail_data_url',
+] as const;
+
 /** Caminhos conhecidos, um por provider. Testados nesta ordem. */
 const KNOWN_PATHS = [
   ['raw', 'data', 'contextInfo', AD_KEY],
@@ -122,6 +142,23 @@ function findAdNode(metadata: Obj): Obj | undefined {
 }
 
 /**
+ * Lê o bloco já normalizado gravado em `metadata.ad_referral`. Copia campo a
+ * campo em vez de devolver o objeto do banco: assim uma chave estranha que
+ * tenha ido parar lá não vaza para o frontend.
+ */
+function readStoredReferral(value: unknown): AdReferral | null {
+  const stored = asObj(value);
+  if (!stored) return null;
+
+  const referral: AdReferral = {};
+  for (const field of AD_FIELDS) {
+    const v = asStr(stored[field]);
+    if (v) referral[field] = v;
+  }
+  return Object.keys(referral).length > 0 ? referral : null;
+}
+
+/**
  * Devolve o card do anúncio, ou `null` quando a mensagem não veio de anúncio —
  * o caso de 99,3% das mensagens. A checagem por substring evita percorrer o
  * objeto nesse caminho comum.
@@ -129,6 +166,12 @@ function findAdNode(metadata: Obj): Obj | undefined {
 export function extractAdReferral(metadata: unknown): AdReferral | null {
   const root = asObj(metadata);
   if (!root) return null;
+
+  // O gravado no ingest tem precedência: é a única fonte que sobrevive à poda
+  // dos 30 dias. Sem ele, cai na leitura do `raw` — o que mantém funcionando
+  // as mensagens recebidas antes desta mudança e ainda não podadas.
+  const stored = readStoredReferral(root[AD_REFERRAL_KEY]);
+  if (stored) return stored;
 
   let serialized: string;
   try {

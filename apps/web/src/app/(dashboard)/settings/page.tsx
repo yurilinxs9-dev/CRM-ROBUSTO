@@ -8,6 +8,7 @@ import {
   Copy,
   Webhook,
   KeyRound,
+  Megaphone,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/layout/page-header';
@@ -19,6 +20,7 @@ import { GeneralTab } from './components/GeneralTab';
 import { WebhooksTab } from './components/WebhooksTab';
 import { ApiKeysTab } from './components/ApiKeysTab';
 import { DuplicatesTab } from './components/DuplicatesTab';
+import { TrackingTab } from './components/TrackingTab';
 
 const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
 
@@ -62,6 +64,11 @@ export default function SettingsPage() {
             </TabsTrigger>
           )}
           {canManageTeam && (
+            <TabsTrigger value="tracking" className="gap-1.5">
+              <Megaphone size={14} /> Rastreamento
+            </TabsTrigger>
+          )}
+          {canManageTeam && (
             <TabsTrigger value="api-keys" className="gap-1.5">
               <KeyRound size={14} /> API Keys
             </TabsTrigger>
@@ -93,6 +100,11 @@ export default function SettingsPage() {
         {canManageTeam && (
           <TabsContent value="webhooks">
             <WebhooksTab />
+          </TabsContent>
+        )}
+        {canManageTeam && (
+          <TabsContent value="tracking">
+            <TrackingTab />
           </TabsContent>
         )}
         {canManageTeam && (

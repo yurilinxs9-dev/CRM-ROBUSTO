@@ -18,10 +18,12 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { WebSocketModule } from './modules/websocket/websocket.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { TagsModule } from './modules/tags/tags.module';
+import { LeadViewsModule } from './modules/lead-views/lead-views.module';
 import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module';
 import { UsersModule } from './modules/users/users.module';
 import { MediaModule } from './modules/media/media.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AttributionModule } from './modules/attribution/attribution.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AutomationModule } from './modules/automation/automation.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
@@ -110,10 +112,12 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     WebSocketModule,
     NotificationsModule,
     TagsModule,
+    LeadViewsModule,
     QuickRepliesModule,
     UsersModule,
     MediaModule,
     AnalyticsModule,
+    AttributionModule,
     AdminModule,
     AutomationModule,
     TenantsModule,

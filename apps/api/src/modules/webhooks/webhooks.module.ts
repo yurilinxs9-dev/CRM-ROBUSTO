@@ -15,6 +15,7 @@ import { PushModule } from '../push/push.module';
 import { QueueModule } from '../queue/queue.module';
 import { BroadcastsModule } from '../broadcasts/broadcasts.module';
 import { HistorySyncModule } from './history-sync.module';
+import { AttributionModule } from '../attribution/attribution.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { HistorySyncModule } from './history-sync.module';
     QueueModule,
     BroadcastsModule,
     HistorySyncModule,
+    AttributionModule,
   ],
   controllers: [WebhooksController],
   providers: [

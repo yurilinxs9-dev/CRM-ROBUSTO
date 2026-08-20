@@ -31,7 +31,9 @@ function makeMocks() {
     stage: { findFirst: jest.fn() },
     whatsappInstance: { findFirst: jest.fn() },
     lead: {
-      aggregate: jest.fn().mockResolvedValue({ _max: { position: null } }),
+      // Lead novo entra no topo da coluna: o service pergunta a MENOR position
+      // do estágio e grava uma abaixo dela. Coluna vazia → _min.position null.
+      aggregate: jest.fn().mockResolvedValue({ _min: { position: null } }),
       create: jest.fn().mockImplementation(({ data }: any) =>
         Promise.resolve({ id: 'lead-new-1', ...data }),
       ),
@@ -47,7 +49,7 @@ function makeMocks() {
     $transaction: jest.fn((arg: unknown) => Promise.all(arg as Promise<unknown>[])),
   };
   const cache: any = { delPattern: jest.fn() };
-  const gateway: any = { emitLeadUpdated: jest.fn() };
+  const gateway: any = { emitLeadUpdated: jest.fn(), emitLeadCreated: jest.fn() };
   const outboundWebhooks: any = {
     dispatchLeadEvent: jest.fn().mockReturnValue(Promise.resolve()),
   };

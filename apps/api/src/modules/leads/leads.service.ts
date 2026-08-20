@@ -17,8 +17,15 @@ import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
 import { resolveActiveConversation } from '../webhooks/conversation-routing';
+import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
+import {
+  applyPanelFilters,
+  ownerCondition,
+  parseOwnerScope,
+  withCondition,
+} from './lead-filters';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -66,7 +73,12 @@ const updateLeadSchema = z.object({
   // mandaria o valor e o backend descartaria em silêncio.
   empresa: z.string().max(120).optional().nullable(),
   cargo: z.string().max(80).optional().nullable(),
-  responsavel_id: z.string().uuid().optional(),
+  // A ficha manda o campo sempre, e ele vem vazio quando o lead está no pool
+  // (sem responsável) — o select não tem opção "ninguém", quem devolve é o
+  // botão "Devolver ao Escritório". Sem este tratamento, salvar QUALQUER coisa
+  // num lead sem dono (uma tag, por exemplo) voltava "Campos inválidos:
+  // responsavel_id". Vazio aqui significa "não mexe no responsável".
+  responsavel_id: vazioComoAusente(z.string().uuid()),
   tags: z.array(z.string()).optional(),
   // Campos customizados por tenant — validados contra CustomFieldDef ativas.
   dados_custom: z.record(z.unknown()).optional(),
@@ -75,9 +87,12 @@ const updateLeadSchema = z.object({
  * Trata string vazia como campo ausente. Formulário React controlado inicia
  * campo não preenchido como `''`, e um `.optional()` do Zod aceita `undefined`
  * mas não `''` — o que virava 400 sem indicar o campo.
+ *
+ * `null` entra na mesma regra: quando a ficha carrega um lead sem responsável,
+ * o estado do select recebe o null que veio do banco e é ele que sobe no PATCH.
  */
 function vazioComoAusente<T extends z.ZodTypeAny>(schema: T) {
-  return z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+  return z.preprocess((v) => (v === '' || v === null ? undefined : v), schema.optional());
 }
 
 const createLeadSchema = z.object({
@@ -151,6 +166,21 @@ interface LeadFilters {
   scope?: string;
   unread?: string;
   per_stage?: string;
+  /** Aba do board: 'me' = Meus Leads · 'others' = Escritório. Ver parseOwnerScope. */
+  owner?: string;
+  /** Nomes separados por vírgula. Casa lead que tenha QUALQUER uma (OR). */
+  tags?: string;
+  /** Criação do lead, ISO. `to` é inclusivo no dia inteiro (ver parseDiaFinal). */
+  created_from?: string;
+  created_to?: string;
+  valor_min?: string;
+  valor_max?: string;
+  /** 'sem' = nenhuma tarefa pendente · 'atrasada' = pendente com prazo vencido. */
+  tarefa?: string;
+  /** Valores de LeadOrigem separados por vírgula (o "Lead fonte" do painel). */
+  origem?: string;
+  followup_from?: string;
+  followup_to?: string;
 }
 
 export interface ExportLeadFilters {
@@ -383,6 +413,19 @@ export class LeadsService {
       mergeSearchCondition(where, searchCondition);
     }
 
+    // Filtros do painel lateral. Todos entram DEPOIS do merge da busca, via
+    // pushAnd, porque mergeSearchCondition só sabe combinar dois OR — um
+    // terceiro (o de tags) sobrescreveria os anteriores em silêncio, e filtro
+    // que devolve lead a mais é pior que filtro que não existe.
+    applyPanelFilters(where, filters);
+
+    // Abas "Meus Leads" / "Escritório". Entram por último e SEM mutar `where`:
+    // a contagem que vai no rótulo das abas precisa do recorte de todos os
+    // outros filtros, mas não do recorte da aba — senão a aba em que o usuário
+    // não está mostraria sempre zero.
+    const owner = parseOwnerScope(filters.owner);
+    const whereFinal = owner ? withCondition(where, ownerCondition(owner, user.id)) : where;
+
     const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
@@ -425,17 +468,26 @@ export class LeadsService {
       { created_at: 'desc' },
     ] as const;
 
+    // Kanban: a ordem é a que o usuário arrastou (`position`), com recência só
+    // como desempate. O chat continua por recência pura — lá "mais recente
+    // primeiro" É a ordem certa, e ordem manual não faz sentido.
+    // Isto também define a JANELA por coluna: com lead novo entrando no topo,
+    // a primeira página traz sempre os mais novos e os fixados pelo usuário.
+    const boardOrder = [{ position: 'asc' }, ...recencyOrder] as const;
+
     const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
       this.prisma.lead.findMany({
         relationLoadStrategy: 'join',
-        where: { ...where, ...extraWhere },
+        where: { ...whereFinal, ...extraWhere },
         select: leadListSelect,
         // Chat/coluna: ordem pura de recência. Lista plena do kanban:
         // agrupada por estágio (agrupamento final é no cliente).
         orderBy:
-          filters.scope === 'chat' || filters.estagio_id || filters.per_stage
+          filters.scope === 'chat'
             ? [...recencyOrder]
-            : [{ estagio_id: 'asc' }, ...recencyOrder],
+            : filters.estagio_id || filters.per_stage
+              ? [...boardOrder]
+              : [{ estagio_id: 'asc' }, ...boardOrder],
         take,
         skip,
       });
@@ -474,13 +526,22 @@ export class LeadsService {
         where: { pipeline_id: filters.pipeline_id },
         select: { id: true },
       });
-      const [lists, counts] = await Promise.all([
+      const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
         Promise.all(stages.map((s) => runQuery({ estagio_id: s.id }, perStage, 0))),
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
-          where: where as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
+          where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
           _count: { _all: true },
           _sum: { valor_estimado: true },
+        }),
+        // Rótulo das abas: total de cada uma sob os demais filtros. Sai de
+        // `where` (sem a aba), por isso as duas contagens continuam certas
+        // esteja o usuário em qual aba estiver.
+        this.prisma.lead.count({
+          where: withCondition(where, ownerCondition('me', user.id)) as Prisma.LeadWhereInput,
+        }),
+        this.prisma.lead.count({
+          where: withCondition(where, ownerCondition('others', user.id)) as Prisma.LeadWhereInput,
         }),
       ]);
       const stage_counts: Record<string, number> = {};
@@ -489,7 +550,12 @@ export class LeadsService {
         stage_counts[c.estagio_id] = c._count._all;
         stage_values[c.estagio_id] = Number(c._sum?.valor_estimado ?? 0);
       }
-      result = { leads: lists.flat().map(mapRow), stage_counts, stage_values };
+      result = {
+        leads: lists.flat().map(mapRow),
+        stage_counts,
+        stage_values,
+        owner_counts: { me: meuTotal, others: escritorioTotal },
+      };
     } else {
       const leads = await runQuery(
         {},
@@ -765,16 +831,8 @@ export class LeadsService {
     const instanciaWhatsapp =
       parsed.instancia_whatsapp ?? (await this.resolveDefaultInstance(user, poolEnabled));
 
-    // Compute initial position so new leads append at the bottom of the stage.
-    let initialPosition = 1000;
-    const maxResult = await this.prisma.lead.aggregate({
-      where: { estagio_id: stageId, tenant_id: user.tenantId },
-      _max: { position: true },
-    });
-    const maxPos = maxResult._max.position;
-    if (maxPos !== null && maxPos !== undefined) {
-      initialPosition = maxPos + 1000;
-    }
+    // Lead novo entra no TOPO da coluna — decisão do cliente (10/08/2026).
+    const initialPosition = await this.topPositionOf(stageId, user.tenantId);
 
     let lead;
     try {
@@ -826,6 +884,20 @@ export class LeadsService {
     });
 
     await this.invalidateLeadsCache(user.tenantId);
+
+    // Mesmo motivo do createContact da API pública: lead novo não emitia nada,
+    // então o card só surgia para os OUTROS usuários no poll de 60s. Quem criou
+    // via UI não percebia (a própria tela invalida a query), mas o colega com o
+    // mesmo board aberto ficava sem ver.
+    try {
+      this.gateway.emitLeadCreated(
+        lead.id,
+        { pipeline_id: pipelineId, estagio_id: stageId },
+        user.tenantId,
+      );
+    } catch (err) {
+      this.logger.warn(`emitLeadCreated failed for lead ${lead.id}: ${String(err)}`);
+    }
 
     this.outboundWebhooks.dispatchLeadEvent({
       tenantId: user.tenantId,
@@ -960,6 +1032,21 @@ export class LeadsService {
     return updated;
   }
 
+  /**
+   * Posição que coloca o lead acima de todos os outros do estágio. `position`
+   * é fracionária e cresce para baixo: mover um card grava uma linha só, sem
+   * renumerar a coluna inteira. O passo de 1000 deixa espaço de sobra para
+   * inserções entre vizinhos antes de a precisão do float apertar.
+   */
+  private async topPositionOf(stageId: string, tenantId: string): Promise<number> {
+    const { _min } = await this.prisma.lead.aggregate({
+      where: { estagio_id: stageId, tenant_id: tenantId },
+      _min: { position: true },
+    });
+    const min = _min.position;
+    return min === null || min === undefined ? 1000 : min - 1000;
+  }
+
   async updateStage(id: string, data: unknown, user: AuthUser) {
     const { estagio_id, position } = updateStageSchema.parse(data);
 
@@ -991,7 +1078,11 @@ export class LeadsService {
       estagio_id,
       estagio_entered_at: new Date(),
     };
-    if (position !== undefined) leadUpdateData.position = position;
+    // Mudou de coluna sem posição explícita (automação, SLA, ação em massa):
+    // entra no topo do destino, mesma regra do lead novo. Sem isto ele levaria
+    // a posição da coluna antiga e cairia num ponto arbitrário da nova.
+    leadUpdateData.position =
+      position !== undefined ? position : await this.topPositionOf(estagio_id, user.tenantId);
     // Operador movendo o lead = conversa tratada; leitura no celular não gera
     // evento na UazAPI, então esta ação é o sinal de "visto" que zera o badge.
     // Automação (SYSTEM) não zera — mover por SLA não significa que alguém leu.
@@ -1186,7 +1277,10 @@ export class LeadsService {
   private async transferActiveConversation(
     tx: Prisma.TransactionClient,
     leadId: string,
-    toUserId: string,
+    // null = volta pro pool (devolução ao escritório, ou setor sem agente
+    // ativo). Sem passar o null adiante, a conversa continuaria apontando pro
+    // dono anterior e a próxima mensagem do cliente o traria de volta.
+    toUserId: string | null,
     tenantId: string,
   ): Promise<string | null> {
     const rows = await tx.conversation.findMany({
@@ -1203,7 +1297,7 @@ export class LeadsService {
 
     await tx.conversation.update({
       where: { id: active.id },
-      data: { responsavel_id: toUserId, assumed_at: new Date() },
+      data: { responsavel_id: toUserId, assumed_at: toUserId ? new Date() : null },
     });
     return active.id;
   }
@@ -1357,10 +1451,15 @@ export class LeadsService {
     const result = await this.assignment.assignBySector(user.tenantId, sectorId, leadId);
 
     if (!result.userId) {
-      // Sem agentes ativos: lead em espera no pool.
-      await this.prisma.lead.update({
-        where: { id: leadId },
-        data: { responsavel_id: null, assumed_at: null, is_private: false },
+      // Sem agentes ativos: lead em espera no pool. Lead e conversa ativa na
+      // MESMA transação, mesmo motivo do claim/reassign — deixar a conversa
+      // com o dono anterior faz a próxima mensagem do cliente desfazer isto.
+      await this.prisma.$transaction(async (tx) => {
+        await tx.lead.update({
+          where: { id: leadId },
+          data: { responsavel_id: null, assumed_at: null, is_private: false },
+        });
+        await this.transferActiveConversation(tx, leadId, null, user.tenantId);
       });
       await this.prisma.leadActivity.create({
         data: {
@@ -1378,16 +1477,26 @@ export class LeadsService {
       return { id: leadId, sector_id: sectorId, responsavel_id: null, reason: result.reason };
     }
 
-    const ownedInstance = await this.findOwnedInstance(result.userId, user.tenantId);
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        responsavel_id: result.userId,
-        // Novo responsável começa do zero (sem histórico do anterior).
-        assumed_at: new Date(),
-        is_private: false,
-        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
-      },
+    // Depois do guard acima o id é garantido; o const local preserva o
+    // estreitamento dentro do callback da transação.
+    const assignedUserId = result.userId;
+    const ownedInstance = await this.findOwnedInstance(assignedUserId, user.tenantId);
+    // Lead e conversa ativa na MESMA transação. Era exatamente isto que
+    // faltava: a distribuição por setor gravava só o Lead, a Conversation
+    // seguia com o dono anterior, e o `syncLeadFromActive` do inbound
+    // devolvia o lead pro dono antigo na mensagem seguinte do cliente.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          responsavel_id: assignedUserId,
+          // Novo responsável começa do zero (sem histórico do anterior).
+          assumed_at: new Date(),
+          is_private: false,
+          ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+        },
+      });
+      await this.transferActiveConversation(tx, leadId, assignedUserId, user.tenantId);
     });
     await this.prisma.leadActivity.create({
       data: {
@@ -1437,11 +1546,17 @@ export class LeadsService {
       throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem devolver ao escritorio');
     }
 
-    await this.prisma.lead.update({
-      where: { id: leadId },
-      // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
-      // continuam protegidas pelo visible_to_user_id do dono anterior.
-      data: { responsavel_id: null, assumed_at: null, is_private: false },
+    // Lead e conversa ativa na MESMA transação — sem devolver a conversa ao
+    // pool junto, a próxima mensagem do cliente reatribuía o lead ao dono
+    // anterior (mesma classe de bug do claim/reassign).
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lead.update({
+        where: { id: leadId },
+        // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
+        // continuam protegidas pelo visible_to_user_id do dono anterior.
+        data: { responsavel_id: null, assumed_at: null, is_private: false },
+      });
+      await this.transferActiveConversation(tx, leadId, null, user.tenantId);
     });
     await this.prisma.leadActivity.create({
       data: {
@@ -1551,10 +1666,17 @@ export class LeadsService {
     });
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
+    // É ESTE endpoint que o chat consome (`/api/leads/:id/messages`), não o
+    // `MessagesService.getHistory`. O card do anúncio precisa sair daqui —
+    // senão ele aparece pelo WebSocket na mensagem que chega ao vivo e some no
+    // primeiro refetch. Mesmo contrato dos outros dois caminhos: `ad_referral`
+    // derivado e `metadata` fora da resposta (ninguém o lê, e ele levava o
+    // payload inteiro do provider até o navegador).
     const messages = await Promise.all(
-      sliced.map(async (m) => ({
+      sliced.map(async ({ metadata, ...m }) => ({
         ...m,
         media_url: await this.resolveMediaUrl(m.media_url),
+        ad_referral: extractAdReferral(metadata),
       })),
     );
     return {

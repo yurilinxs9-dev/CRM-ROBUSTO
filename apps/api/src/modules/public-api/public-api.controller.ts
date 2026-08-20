@@ -64,6 +64,13 @@ export class PublicApiController {
     return this.svc.getContact(this.tenantId(req), id);
   }
 
+  // 2.1a — Campos personalizados do tenant (as chaves de `dados_custom`)
+  @Get('custom-fields')
+  @RequireScopes('contacts:read')
+  listCustomFields(@Req() req: ApiRequest) {
+    return this.svc.listCustomFields(this.tenantId(req));
+  }
+
   // 2.1b — Criar contato
   @Post('users')
   @HttpCode(201)
@@ -77,6 +84,28 @@ export class PublicApiController {
   @RequireScopes('contacts:write')
   updateUser(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
     return this.svc.updateContact(this.tenantId(req), id, body);
+  }
+
+  // 2.1d — Funis + estágios (para descobrir o stage_id)
+  @Get('pipelines')
+  @RequireScopes('contacts:read')
+  listPipelines(@Req() req: ApiRequest) {
+    return this.svc.listPipelines(this.tenantId(req));
+  }
+
+  // 2.1e — Mover o lead de estágio (ex.: devolver para "Novo Lead")
+  @Post('users/:id/stage')
+  @RequireScopes('contacts:write')
+  moveStage(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
+    return this.svc.moveStage(this.tenantId(req), id, body);
+  }
+
+  // 2.1f — Anotação na timeline do lead
+  @Post('users/:id/activities')
+  @HttpCode(201)
+  @RequireScopes('contacts:write')
+  createActivity(@Param('id') id: string, @Body() body: unknown, @Req() req: ApiRequest) {
+    return this.svc.createActivity(this.tenantId(req), id, body);
   }
 
   // Listar conversas (filtro ?status= ?tag= ?limit= ?offset=)

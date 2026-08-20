@@ -4,16 +4,20 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConversationStatus } from '@prisma/client';
+import { ConversationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
 import { LeadsService } from '../leads/leads.service';
+import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
+import { AttributionService } from '../attribution/attribution.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
   conversationMessagesQuerySchema,
   createContactSchema,
+  createActivitySchema,
+  moveStageSchema,
   listContactsQuerySchema,
   listConversationsQuerySchema,
   moveToSectorSchema,
@@ -55,7 +59,140 @@ export class PublicApiService {
     private readonly messages: MessagesService,
     private readonly leads: LeadsService,
     private readonly gateway: CrmGateway,
+    private readonly customFields: CustomFieldsService,
+    private readonly attribution: AttributionService,
   ) {}
+
+  /**
+   * Funis do tenant com seus estágios, na ordem do Kanban.
+   *
+   * Existe para a integração descobrir o `stage_id` que `POST /users/:id/stage`
+   * exige. Sem isto, o id do estágio "Novo Lead" só sairia de alguém abrir o
+   * banco — e um id copiado à mão apodrece calado quando o funil é reorganizado.
+   */
+  async listPipelines(tenantId: string) {
+    const pipelines = await this.prisma.pipeline.findMany({
+      where: { tenant_id: tenantId },
+      orderBy: { ordem: 'asc' },
+      select: {
+        id: true,
+        nome: true,
+        ordem: true,
+        stages: {
+          orderBy: { ordem: 'asc' },
+          select: { id: true, nome: true, ordem: true, is_won: true, is_lost: true },
+        },
+      },
+    });
+    return { data: pipelines };
+  }
+
+  /**
+   * Move o lead de estágio, delegando para `LeadsService.updateStage`.
+   *
+   * Delegar, e não reimplementar, é o ponto: aquele método já reseta
+   * `estagio_entered_at`, grava a atividade "Movido de X para Y", dispara as
+   * auto-ações do estágio de destino, invalida o cache da listagem e emite o
+   * evento de WebSocket que faz o card andar no Kanban de quem está com a tela
+   * aberta. Um `prisma.lead.update` aqui pularia as cinco coisas.
+   *
+   * `id: 'SYSTEM'` é a convenção que o próprio updateStage já entende para ação
+   * não-humana: a atividade fica sem usuário e o contador de não-lidas NÃO é
+   * zerado — mover por integração não significa que alguém leu a conversa.
+   */
+  async moveStage(tenantId: string, leadId: string, body: unknown) {
+    const { stage_id } = moveStageSchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    // Estágio precisa ser do MESMO tenant. Sem esta checagem, um stage_id de
+    // outro workspace moveria o lead para um funil que não é dele.
+    const stage = await this.prisma.stage.findFirst({
+      where: { id: stage_id, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!stage) throw new NotFoundException('Estágio não encontrado.');
+
+    await this.leads.updateStage(leadId, { estagio_id: stage_id }, this.systemUser(tenantId));
+
+    const atualizado = await this.prisma.lead.findFirst({
+      where: { id: leadId },
+      select: CONTACT_SELECT,
+    });
+    return toContactDto(atualizado!);
+  }
+
+  /**
+   * Registra uma anotação na timeline do lead.
+   *
+   * É o que dá sinal ao vendedor quando a integração encosta num lead que já
+   * existia — "preencheu o formulário de novo" —, em vez de a segunda passagem
+   * da pessoa sumir dentro de um update silencioso de campos.
+   */
+  async createActivity(tenantId: string, leadId: string, body: unknown) {
+    const d = createActivitySchema.parse(body);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!lead) throw new NotFoundException('Usuário não encontrado.');
+
+    const activity = await this.prisma.leadActivity.create({
+      data: {
+        lead_id: leadId,
+        // Sem user_id: quem escreveu foi uma integração, não uma pessoa. A
+        // timeline já trata user_id nulo (é o mesmo caso das automações).
+        user_id: null,
+        tipo: d.tipo ?? 'api_note',
+        descricao: d.descricao,
+        tenant_id: tenantId,
+      },
+      select: { id: true, tipo: true, descricao: true, created_at: true },
+    });
+
+    return { ...activity, created_at: activity.created_at.toISOString() };
+  }
+
+  /** AuthUser sintético para as ações de integração (ver moveStage). */
+  private systemUser(tenantId: string): AuthUser {
+    return {
+      id: 'SYSTEM',
+      nome: 'API',
+      email: '',
+      role: 'ADMIN' as AuthUser['role'],
+      ativo: true,
+      tenantId,
+    };
+  }
+
+  /**
+   * Campos personalizados de LEAD do tenant — as chaves que `dados_custom`
+   * aceita, com tipo e opções.
+   *
+   * Existe para a integração poder DESCOBRIR o contrato em vez de adivinhar:
+   * sem isto, quem monta um fluxo no n8n só descobre o nome da chave errando e
+   * lendo a mensagem do 400. Inclui os `api_only`, que são invisíveis na ficha
+   * mas graváveis por aqui — é justamente o caso de uso do badge "Apenas API".
+   */
+  async listCustomFields(tenantId: string) {
+    const defs = await this.prisma.customFieldDef.findMany({
+      where: { tenant_id: tenantId, active: true, escopo: 'LEAD', native_key: null },
+      orderBy: [{ ordem: 'asc' }, { created_at: 'asc' }],
+      select: {
+        key: true,
+        nome: true,
+        tipo: true,
+        options: true,
+        api_only: true,
+      },
+    });
+    return { data: defs };
+  }
 
   // ---- Contatos (Leads) -----------------------------------------------------
 
@@ -113,6 +250,16 @@ export class PublicApiService {
       select: { nome: true },
     });
 
+    // `fromPublicApi: true` libera os campos marcados "Apenas API" — o badge
+    // existe para isto: invisível na ficha, gravável pela integração. Chave
+    // desconhecida ou valor de tipo errado vira 400 com o nome do campo, em vez
+    // de entrar cru no Json e aparecer torto na ficha depois.
+    const dadosCustom = d.dados_custom
+      ? await this.customFields.validateValues(d.dados_custom, tenantId, 'LEAD', {
+          fromPublicApi: true,
+        })
+      : undefined;
+
     const phone = d.phone.replace(/\D/g, '') || d.phone;
     const lead = await this.prisma.lead.create({
       data: {
@@ -120,6 +267,7 @@ export class PublicApiService {
         telefone: phone,
         email: d.email ?? null,
         tags: d.tags ?? [],
+        ...(dadosCustom ? { dados_custom: dadosCustom as Prisma.InputJsonObject } : {}),
         origem: 'MANUAL',
         tenant_id: tenantId,
         pipeline_id: pipeline.id,
@@ -142,6 +290,32 @@ export class PublicApiService {
       },
     });
 
+    // Origem do lead. Só grava quando a integração mandou `attribution` — quem
+    // não manda nada segue funcionando exatamente como antes. `recordFirstTouch`
+    // engole os próprios erros: o lead já está gravado, e métrica não pode
+    // transformar um cadastro que deu certo em erro para o n8n.
+    if (d.attribution) {
+      await this.attribution.recordFirstTouch(lead.id, tenantId, d.attribution);
+    }
+
+    // Sem isto, o lead criado pela integração não aparece para quem está com o
+    // Kanban aberto: o board só reagia a stage-changed e new-message, e um lead
+    // de formulário nasce sem nenhum dos dois. Ficava esperando o poll de 60s.
+    //
+    // Dentro de try/catch porque o lead JÁ ESTÁ GRAVADO neste ponto: deixar uma
+    // falha de WebSocket derrubar a resposta faria a integração receber erro e
+    // tentar de novo um cadastro que deu certo. Notificação é acessório; o
+    // registro é o que importa.
+    try {
+      this.gateway.emitLeadCreated(
+        lead.id,
+        { pipeline_id: pipeline.id, estagio_id: pipeline.stages[0].id },
+        tenantId,
+      );
+    } catch {
+      // Sem logger neste serviço — o lead está salvo, a tela atualiza no poll.
+    }
+
     return toContactDto(lead);
   }
 
@@ -158,6 +332,24 @@ export class PublicApiService {
     if (d.name !== undefined) data.nome = d.name;
     if (d.email !== undefined) data.email = d.email;
     if (d.tags !== undefined) data.tags = d.tags;
+    if (d.dados_custom !== undefined) {
+      // MERGE, não substituição: o PATCH manda só os campos que mudaram, e
+      // trocar o Json inteiro apagaria em silêncio tudo o que não veio no corpo.
+      const atual = await this.prisma.lead.findFirst({
+        where: { id, tenant_id: tenantId },
+        select: { dados_custom: true },
+      });
+      const validados = await this.customFields.validateValues(
+        d.dados_custom,
+        tenantId,
+        'LEAD',
+        { fromPublicApi: true },
+      );
+      data.dados_custom = {
+        ...((atual?.dados_custom as Record<string, unknown> | null) ?? {}),
+        ...validados,
+      } as Prisma.InputJsonObject;
+    }
 
     const updated = await this.prisma.lead.update({ where: { id }, data, select: CONTACT_SELECT });
     this.gateway.emitLeadUpdated(id, data, tenantId);

@@ -74,6 +74,7 @@ export interface WhatsappInstance {
 
 export interface ServerToClientEvents {
   'lead:stage-changed': (data: { leadId: string; estagio_id: string }) => void;
+  'lead:created': (data: { leadId: string; pipeline_id?: string; estagio_id?: string }) => void;
   'lead:new-message': (data: { leadId: string; message: Message }) => void;
   'lead:unread-reset': (data: { leadId: string; mensagens_nao_lidas: 0 }) => void;
   'message:new': (message: Message) => void;

@@ -20,6 +20,7 @@ import {
   MessageSquare,
   CheckSquare,
   DollarSign,
+  Megaphone,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -28,6 +29,7 @@ import { KpiCard } from '@/components/dashboard/kpi-card';
 import { AreaChart, type TrendPoint } from '@/components/dashboard/area-chart';
 import { FunnelChart, type FunnelStage } from '@/components/dashboard/funnel-chart';
 import { TemperatureDonut, type TempDatum } from '@/components/dashboard/temperature-donut';
+import { AttributionDonut } from '@/components/dashboard/attribution-donut';
 import { ActivityFeed, type ActivityItem } from '@/components/dashboard/activity-feed';
 import {
   OperatorsLeaderboard,
@@ -310,8 +312,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Funil + Temperatura */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Funil + Temperatura + Origem */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <SectionCard title="Funil de Vendas" icon={BarChart3} className="lg:col-span-2">
           {isLoading ? (
             <div className="space-y-3">
@@ -333,6 +335,10 @@ export default function DashboardPage() {
           ) : (
             <TemperatureDonut data={stats?.leadsByTemp ?? []} />
           )}
+        </SectionCard>
+
+        <SectionCard title="Origem dos Leads" icon={Megaphone}>
+          <AttributionDonut />
         </SectionCard>
       </div>
 

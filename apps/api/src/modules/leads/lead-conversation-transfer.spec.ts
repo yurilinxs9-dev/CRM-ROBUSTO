@@ -67,6 +67,8 @@ function makeMocks() {
       update: jest.fn(),
     },
     user: { findFirst: jest.fn() },
+    sector: { findFirst: jest.fn() },
+    leadActivity: { create: jest.fn() },
     $transaction: jest.fn(async (arg: unknown) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return (arg as (tx: unknown) => unknown)(txClient);
@@ -75,7 +77,8 @@ function makeMocks() {
   const cache: any = { delPattern: jest.fn() };
   const gateway: any = { emitLeadUpdated: jest.fn() };
   const push: any = { sendToUsers: jest.fn() };
-  return { prisma, txClient, cache, gateway, push };
+  const assignment: any = { assignBySector: jest.fn() };
+  return { prisma, txClient, cache, gateway, push, assignment };
 }
 
 function makeService() {
@@ -88,7 +91,7 @@ function makeService() {
     {} as any, // MediaService
     m.push,
     {} as any, // OutboundWebhooksService
-    {} as any, // AssignmentService
+    m.assignment,
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
   );
@@ -176,6 +179,114 @@ describe('LeadsService.reassign — transfere a conversa ATIVA, não a do destin
       data: { responsavel_id: novoResponsavelId, assumed_at: expect.any(Date) },
     });
     expect(txClient.conversation.update).toHaveBeenCalledTimes(1);
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Bug de producao (Diplapel, ago/2026): a IA distribuia por setor, a API
+ * respondia `status: "assigned"` com o responsavel_id certo, e minutos depois
+ * o lead estava de volta com o dono anterior — "muitos contatos nao foram
+ * transferidos".
+ *
+ * Causa: `moveToSector` (e `returnToPool`) gravavam SO no Lead. A Conversation
+ * seguia apontando pro dono antigo, e o `syncLeadFromActive` do inbound espelha
+ * o Lead a partir da conversa ativa — ou seja, a proxima mensagem do CLIENTE
+ * desfazia a distribuicao sozinha. Por isso so aparecia em lead que respondia:
+ * quem nao respondia continuava transferido, o que fazia o sintoma parecer
+ * aleatorio.
+ */
+describe('LeadsService.moveToSector — distribuicao por setor nao pode ser desfeita pelo inbound', () => {
+  const gerente: AuthUser = {
+    ...alex,
+    id: 'u-gerente',
+    role: UserRole.GERENTE as unknown as AuthUser['role'],
+  };
+  const sectorId = '0b202b1c-7b47-43d3-b29d-eb1a93cb2d21';
+  const agenteDoSetor = 'ffdbcfb9-ebbb-49e9-8a9b-114bc96f352d';
+
+  function cenario() {
+    const s = makeService();
+    s.prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      nome: 'Roberto',
+      responsavel_id: 'u-diplapel',
+    });
+    s.prisma.sector.findFirst.mockResolvedValue({ id: sectorId, name: 'Vendas Varejo' });
+    return s;
+  }
+
+  it('transfere a conversa ativa junto com o lead, no MESMO tx', async () => {
+    const { service, txClient, prisma, assignment } = cenario();
+    assignment.assignBySector.mockResolvedValue({ userId: agenteDoSetor, reason: 'round-robin' });
+    txClient.conversation.findMany.mockResolvedValue([
+      conv('c1', 'inst-diplapel', 'u-diplapel', '2026-08-12T14:46:00Z'), // ativa
+      conv('c2', 'inst-varejo', agenteDoSetor, '2026-03-01T10:00:00Z'),
+    ]);
+
+    await service.moveToSector('lead-1', { sectorId }, gerente);
+
+    // Sem esta escrita, a msg das 14:46 devolvia o lead pro dono anterior.
+    expect(txClient.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'c1' },
+      data: { responsavel_id: agenteDoSetor, assumed_at: expect.any(Date) },
+    });
+    expect(txClient.lead.update).toHaveBeenCalledTimes(1);
+    // Nada pode vazar pra fora da transacao: um crash entre as duas escritas
+    // reabre a mesma divergencia, so que por uma janela mais estreita.
+    expect(prisma.lead.update).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('setor sem agente ativo devolve a conversa ao pool tambem, nao so o lead', async () => {
+    const { service, txClient, prisma, assignment } = cenario();
+    assignment.assignBySector.mockResolvedValue({ userId: null, reason: 'no-active-agents' });
+    txClient.conversation.findMany.mockResolvedValue([
+      conv('c1', 'inst-diplapel', 'u-diplapel', '2026-08-12T14:46:00Z'),
+    ]);
+
+    await service.moveToSector('lead-1', { sectorId }, gerente);
+
+    // assumed_at tem que zerar junto: conversa "em espera" com dono null e
+    // assumed_at antigo faria o novo dono herdar o corte de historico errado.
+    expect(txClient.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'c1' },
+      data: { responsavel_id: null, assumed_at: null },
+    });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('lead sem conversa nenhuma nao quebra a distribuicao', async () => {
+    const { service, txClient, assignment } = cenario();
+    assignment.assignBySector.mockResolvedValue({ userId: agenteDoSetor, reason: 'round-robin' });
+    txClient.conversation.findMany.mockResolvedValue([]);
+
+    const result = await service.moveToSector('lead-1', { sectorId }, gerente);
+
+    expect(result).toMatchObject({ id: 'lead-1', responsavel_id: agenteDoSetor });
+    expect(txClient.conversation.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('LeadsService.returnToPool — devolve a conversa junto', () => {
+  it('zera o dono da conversa ativa no MESMO tx', async () => {
+    const { service, txClient, prisma } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      responsavel_id: 'u-alex',
+      instancia_whatsapp: 'inst-alex',
+    });
+    txClient.conversation.findMany.mockResolvedValue([
+      conv('c1', 'inst-alex', 'u-alex', '2026-08-12T14:46:00Z'),
+    ]);
+
+    await service.returnToPool('lead-1', alex);
+
+    expect(txClient.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'c1' },
+      data: { responsavel_id: null, assumed_at: null },
+    });
+    expect(prisma.lead.update).not.toHaveBeenCalled();
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 });
