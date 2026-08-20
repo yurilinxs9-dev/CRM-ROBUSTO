@@ -55,6 +55,9 @@ export class HistorySyncService {
   private static readonly MAX_MSGS_PER_CHAT = 500;
   private static readonly HTTP_TIMEOUT_MS = 12_000;
 
+  private readonly evoBaseUrl: string;
+  private readonly evoApiKey: string;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
@@ -64,6 +67,8 @@ export class HistorySyncService {
     private readonly cache: RedisCacheService,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
+    this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
+    this.evoApiKey = this.config.get<string>('EVOLUTION_API_KEY', '');
   }
 
   @Cron(CronExpression.EVERY_30_MINUTES)
@@ -82,14 +87,86 @@ export class HistorySyncService {
   async syncAllUazapi(windowMs: number): Promise<SyncSummary[]> {
     const instances = await this.prisma.whatsappInstance.findMany({
       where: { status: 'open' },
-      select: { id: true, nome: true, config: true },
+      select: { id: true, nome: true, tenant_id: true, config: true },
     });
     const summaries: SyncSummary[] = [];
     for (const inst of instances) {
       if (!this.tokenOf(inst.config)) continue; // Evolution ou sem credencial
       summaries.push(await this.syncInstance(inst.id, windowMs));
     }
+    // Evolution entra na parte de BADGES: o Baileys espelha a sessão real,
+    // então o unreadCount do findChats cai quando a pessoa lê no
+    // celular/WhatsApp Web — exatamente o sinal que o webhook chats.update
+    // da Evolution NÃO carrega (payload vem só com remoteJid).
+    for (const inst of instances) {
+      const cfg = (inst.config ?? {}) as Record<string, unknown>;
+      if (cfg.provider !== 'evolution') continue;
+      try {
+        await this.reconcileEvolutionBadges(inst.tenant_id, inst.nome);
+      } catch (err) {
+        this.logger.warn(
+          `badge sweep evolution (${inst.nome}) falhou: ${(err as Error).message}`,
+        );
+      }
+    }
     return summaries;
+  }
+
+  /**
+   * Zera badges presas de instâncias Evolution. Um findChats por instância
+   * (traz TODOS os chats com unreadCount real do Baileys), cruzado com os
+   * leads que o CRM marca como não-lidos. Só zera com prova unreadCount=0.
+   */
+  private async reconcileEvolutionBadges(tenantId: string, instanceNome: string): Promise<void> {
+    if (!this.evoBaseUrl || !this.evoApiKey) return;
+    const unreadLeads = await this.prisma.lead.findMany({
+      where: {
+        tenant_id: tenantId,
+        instancia_whatsapp: instanceNome,
+        mensagens_nao_lidas: { gt: 0 },
+      },
+      orderBy: { ultima_interacao: 'desc' },
+      take: HistorySyncService.MAX_BADGE_CHECKS,
+      select: { id: true, telefone: true },
+    });
+    if (unreadLeads.length === 0) return;
+
+    const res = await firstValueFrom(
+      this.http.post(
+        `${this.evoBaseUrl}/chat/findChats/${instanceNome}`,
+        {},
+        { headers: { apikey: this.evoApiKey }, timeout: 20_000 },
+      ),
+    );
+    const raw = res.data;
+    const chats = (Array.isArray(raw) ? raw : []) as Array<Record<string, unknown>>;
+
+    // Mapa telefone → unreadCount. Chats @lid usam o PN alternativo que o
+    // Baileys anexa (lastMessage.key.remoteJidAlt) — dígitos de LID não são
+    // telefone (mesma regra do resolvedor de @lid do inbound).
+    const pnDigits = (jid: unknown): string | null => {
+      if (typeof jid !== 'string' || !jid.endsWith('@s.whatsapp.net')) return null;
+      const d = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+      return d.length >= 8 && d.length <= 13 ? d : null;
+    };
+    const unreadByPhone = new Map<string, number>();
+    for (const c of chats) {
+      const unread = c.unreadCount;
+      if (typeof unread !== 'number' || unread < 0) continue;
+      const lastKey = ((c.lastMessage as Record<string, unknown> | undefined)?.key ?? {}) as
+        Record<string, unknown>;
+      const phone = pnDigits(c.remoteJid) ?? pnDigits(lastKey.remoteJidAlt);
+      if (!phone) continue;
+      // Mesmo telefone em chat PN e @lid: qualquer visão dizendo "lido" vale.
+      const prev = unreadByPhone.get(phone);
+      unreadByPhone.set(phone, prev === undefined ? unread : Math.min(prev, unread));
+    }
+
+    for (const lead of unreadLeads) {
+      if (unreadByPhone.get(lead.telefone) === 0) {
+        await this.zeroLeadUnread(tenantId, lead.id, lead.telefone);
+      }
+    }
   }
 
   async syncInstance(instanceId: string, windowMs: number): Promise<SyncSummary> {

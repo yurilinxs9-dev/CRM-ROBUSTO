@@ -355,6 +355,43 @@ describe('HistorySyncService — badges presas de qualquer idade', () => {
   });
 });
 
+describe('HistorySyncService — badges de instâncias Evolution', () => {
+  it('findChats com unreadCount=0 zera o lead; >0 não mexe; chat @lid resolve pelo remoteJidAlt', async () => {
+    const m = makeService();
+    m.prisma.whatsappInstance.findMany.mockResolvedValue([
+      { id: 'inst-evo', nome: 'teste', tenant_id: 't1', config: { provider: 'evolution' } },
+    ]);
+    m.prisma.lead.findMany.mockResolvedValue([
+      { id: 'lead-lido', telefone: '553799086000' },
+      { id: 'lead-pendente', telefone: '553798083479' },
+      { id: 'lead-lid', telefone: '553791048239' },
+    ]);
+    m.http.post.mockReturnValueOnce(
+      of({
+        data: [
+          { remoteJid: '553799086000@s.whatsapp.net', unreadCount: 0 },
+          { remoteJid: '553798083479@s.whatsapp.net', unreadCount: 5 },
+          {
+            remoteJid: '231314238263306@lid',
+            unreadCount: 0,
+            lastMessage: { key: { remoteJidAlt: '553791048239@s.whatsapp.net' } },
+          },
+        ],
+      }),
+    );
+
+    await m.service.syncAllUazapi(HOUR);
+
+    expect(m.http.post).toHaveBeenCalledWith(
+      'https://uaz.test/chat/findChats/teste',
+      {},
+      expect.objectContaining({ headers: { apikey: 'https://uaz.test' } }),
+    );
+    const zeroed = m.prisma.lead.update.mock.calls.map((c: any[]) => c[0].where.id).sort();
+    expect(zeroed).toEqual(['lead-lid', 'lead-lido']);
+  });
+});
+
 describe('HistorySyncService.syncAllUazapi', () => {
   it('sincroniza só instâncias open com token uazapi', async () => {
     const { service, prisma, http } = makeService();
