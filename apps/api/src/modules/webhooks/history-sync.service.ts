@@ -173,6 +173,13 @@ export class HistorySyncService {
       offset += pageLen;
     }
 
+    // Badges presas de QUALQUER idade: a varredura acima só visita chats com
+    // atividade dentro da janela — um chat lido no celular semanas atrás
+    // ficaria com o badge do CRM preso pra sempre. Direção inversa: pega os
+    // leads que o CRM acha não-lidos (conjunto pequeno) e pergunta ao
+    // servidor o estado real de cada um.
+    await this.reconcileStuckBadges(instance.tenant_id, instance.nome, token);
+
     if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
       this.logger.log(
         `history sync ${instance.nome}: ${summary.chats_scanned} chats na janela, ` +
@@ -279,17 +286,67 @@ export class HistorySyncService {
       select: { id: true },
     });
     if (!lead) return;
+    await this.zeroLeadUnread(tenantId, lead.id, chat.phone);
+  }
+
+  private async zeroLeadUnread(tenantId: string, leadId: string, phone: string): Promise<void> {
     await this.prisma.lead.update({
-      where: { id: lead.id },
+      where: { id: leadId },
       data: { mensagens_nao_lidas: 0 },
     });
     await this.prisma.message.updateMany({
-      where: { lead_id: lead.id, direction: 'INCOMING', status: { not: 'READ' } },
+      where: { lead_id: leadId, direction: 'INCOMING', status: { not: 'READ' } },
       data: { status: 'READ' },
     });
     await this.cache.delPattern(`leads:list:${tenantId}:*`);
-    this.gateway.emitLeadUnreadReset(lead.id, tenantId);
-    this.logger.log(`badge zerado via aparelho: lead ${lead.id} (${chat.phone})`);
+    this.gateway.emitLeadUnreadReset(leadId, tenantId);
+    this.logger.log(`badge zerado via aparelho: lead ${leadId} (${phone})`);
+  }
+
+  /** Máx. de leads não-lidos consultados no servidor por varredura. */
+  private static readonly MAX_BADGE_CHECKS = 150;
+
+  /**
+   * Zera badges presas de QUALQUER idade. Consulta o servidor lead a lead
+   * (filtro exato `wa_chatid`, verificado em produção) só para os que o CRM
+   * marca como não-lidos nesta instância — dezenas, não milhares. Só zera
+   * quando o servidor afirma wa_unreadCount=0; chat não encontrado = sem
+   * prova, não mexe.
+   */
+  private async reconcileStuckBadges(
+    tenantId: string,
+    instanceNome: string,
+    token: string,
+  ): Promise<void> {
+    const unreadLeads = await this.prisma.lead.findMany({
+      where: {
+        tenant_id: tenantId,
+        instancia_whatsapp: instanceNome,
+        mensagens_nao_lidas: { gt: 0 },
+      },
+      orderBy: { ultima_interacao: 'desc' },
+      take: HistorySyncService.MAX_BADGE_CHECKS,
+      select: { id: true, telefone: true },
+    });
+    for (const lead of unreadLeads) {
+      try {
+        const res = await firstValueFrom(
+          this.http.post(
+            `${this.baseUrl}/chat/find`,
+            { operator: 'AND', wa_chatid: `${lead.telefone}@s.whatsapp.net`, limit: 1 },
+            { headers: { token }, timeout: HistorySyncService.HTTP_TIMEOUT_MS },
+          ),
+        );
+        const chat = parseChatsPage(res.data)[0];
+        if (chat && chat.unreadCount === 0) {
+          await this.zeroLeadUnread(tenantId, lead.id, lead.telefone);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `badge check falhou (${instanceNome}/${lead.telefone}): ${(err as Error).message}`,
+        );
+      }
+    }
   }
 
   /**

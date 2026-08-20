@@ -58,6 +58,7 @@ function makeService() {
     lead: {
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockResolvedValue({}),
     },
   };
@@ -294,6 +295,63 @@ describe('HistorySyncService — badge espelha o aparelho', () => {
 
     expect(m.prisma.lead.update).not.toHaveBeenCalled();
     expect(m.gateway.emitLeadUnreadReset).not.toHaveBeenCalled();
+  });
+});
+
+describe('HistorySyncService — badges presas de qualquer idade', () => {
+  it('lead não-lido fora da janela: servidor diz unread=0 → zera; unread>0 → não mexe', async () => {
+    const m = makeService();
+    m.prisma.lead.findMany.mockResolvedValue([
+      { id: 'lead-old', telefone: '553111111111' },
+      { id: 'lead-hot', telefone: '553122222222' },
+    ]);
+    m.http.post
+      .mockReturnValueOnce(of({ data: { chats: [] } })) // /chat/find da varredura (sem chats na janela)
+      .mockReturnValueOnce(
+        of({
+          data: {
+            chats: [
+              { ...chatPayload({ wa_chatid: '553111111111@s.whatsapp.net', wa_unreadCount: 0 }) },
+            ],
+          },
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            chats: [
+              { ...chatPayload({ wa_chatid: '553122222222@s.whatsapp.net', wa_unreadCount: 5 }) },
+            ],
+          },
+        }),
+      );
+
+    await m.service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(m.prisma.lead.update).toHaveBeenCalledTimes(1);
+    expect(m.prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 'lead-old' },
+      data: { mensagens_nao_lidas: 0 },
+    });
+    expect(m.gateway.emitLeadUnreadReset).toHaveBeenCalledWith('lead-old', 't1');
+    // consulta exata por chatid do lead preso
+    expect(m.http.post).toHaveBeenCalledWith(
+      'https://uaz.test/chat/find',
+      expect.objectContaining({ wa_chatid: '553111111111@s.whatsapp.net' }),
+      expect.anything(),
+    );
+  });
+
+  it('chat não encontrado no servidor = sem prova → badge fica', async () => {
+    const m = makeService();
+    m.prisma.lead.findMany.mockResolvedValue([{ id: 'lead-x', telefone: '553133333333' }]);
+    m.http.post
+      .mockReturnValueOnce(of({ data: { chats: [] } }))
+      .mockReturnValueOnce(of({ data: { chats: [] } }));
+
+    await m.service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
   });
 });
 
