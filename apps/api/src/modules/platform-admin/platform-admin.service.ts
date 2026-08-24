@@ -11,7 +11,11 @@ import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { AuthUser } from '../../common/types/auth-user';
-import { deriveBillingStatus, addCycleMonths, monthlyCents } from './billing-status';
+import { deriveBillingStatus, addCycleMonths, monthlyCents, dayInTz } from './billing-status';
+
+/** Fuso da operação — mesmo default de `deriveBillingStatus`. */
+const BILLING_TZ = 'America/Sao_Paulo';
+const NOON_MS = 12 * 3_600_000;
 
 const announcementSchema = z.object({
   title: z.string().min(1).max(200),
@@ -22,7 +26,9 @@ const announcementSchema = z.object({
 });
 
 const billingSchema = z.object({
-  billing_value: z.number().int().min(0).nullable().optional(),
+  // Teto = int4 da coluna. Sem ele o Prisma estoura com erro de driver (500)
+  // em vez de 400, e o painel mostra "erro interno" para um dígito a mais.
+  billing_value: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
   billing_cycle_months: z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]).nullable().optional(),
   billing_paid_until: z.string().datetime().nullable().optional(),
 });
@@ -473,8 +479,21 @@ export class PlatformAdminService {
       },
       select: { billing_value: true, billing_cycle_months: true, billing_paid_until: true },
     });
+    // Loga o ESTADO SALVO, não o body: depois do re-anchor (e de um patch
+    // parcial) o input não descreve mais a coluna, e a auditoria existe pra
+    // responder "o que ficou gravado". Datas viram ISO na mão — `detail` é Json.
     await this.prisma.adminAuditLog.create({
-      data: { admin_user_id: admin.id, action: 'tenant_billing_update', target_tenant_id: tenantId, detail: { nome: t.nome, ...d } },
+      data: {
+        admin_user_id: admin.id,
+        action: 'tenant_billing_update',
+        target_tenant_id: tenantId,
+        detail: {
+          nome: t.nome,
+          billing_value: updated.billing_value,
+          billing_cycle_months: updated.billing_cycle_months,
+          billing_paid_until: updated.billing_paid_until ? updated.billing_paid_until.toISOString() : null,
+        },
+      },
     });
     return { ok: true, ...updated };
   }
@@ -484,6 +503,14 @@ export class PlatformAdminService {
    * partir de MAX(vencimento atual, hoje). Quem está atrasado não ganha crédito
    * retroativo (o mês em atraso não é "coberto" pelo pagamento de agora), e quem
    * paga adiantado acumula a partir do vencimento futuro.
+   *
+   * "Hoje" é o dia calendário de SÃO PAULO, não o dia UTC: das 21h à meia-noite
+   * o relógio UTC já virou, e o cliente que pagasse às 23h ganharia um dia a
+   * mais de graça (e o vencimento cairia num dia diferente do que a listagem
+   * mostra, que usa o mesmo `dayInTz`).
+   *
+   * O write é CONDICIONAL ao `billing_paid_until` lido: dois cliques no botão
+   * (ou duas abas) avançariam dois ciclos com um `update` seco.
    */
   async markTenantPaid(admin: AuthUser, tenantId: string, now: Date = new Date()) {
     await this.assertTenantAllowed(admin, tenantId);
@@ -492,11 +519,20 @@ export class PlatformAdminService {
       select: { id: true, nome: true, billing_value: true, billing_cycle_months: true, billing_paid_until: true },
     });
     if (!t) throw new NotFoundException('Tenant não encontrado');
-    if (!t.billing_cycle_months) throw new BadRequestException('Cobrança não configurada — defina valor e ciclo antes.');
-    const base = t.billing_paid_until && t.billing_paid_until > now ? t.billing_paid_until : now;
+    if (!t.billing_cycle_months || !t.billing_value || t.billing_value <= 0) {
+      throw new BadRequestException('Cobrança não configurada — defina valor e ciclo antes.');
+    }
+    const hoje = new Date(dayInTz(now, BILLING_TZ) + NOON_MS);
+    const base = t.billing_paid_until && t.billing_paid_until > hoje ? t.billing_paid_until : hoje;
     // addCycleMonths devolve sempre ancorado ao meio-dia UTC.
     const paidUntil = addCycleMonths(base, t.billing_cycle_months);
-    await this.prisma.tenant.update({ where: { id: tenantId }, data: { billing_paid_until: paidUntil } });
+    const res = await this.prisma.tenant.updateMany({
+      where: { id: tenantId, billing_paid_until: t.billing_paid_until },
+      data: { billing_paid_until: paidUntil },
+    });
+    if (res.count === 0) {
+      throw new ConflictException('Pagamento já registrado — recarregue');
+    }
     await this.prisma.adminAuditLog.create({
       data: {
         admin_user_id: admin.id,

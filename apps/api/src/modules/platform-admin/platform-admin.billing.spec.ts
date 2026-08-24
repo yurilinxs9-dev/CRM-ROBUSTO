@@ -16,6 +16,7 @@ function makeSvc(prismaPatch: Record<string, unknown>) {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockImplementation(({ data }: { data: unknown }) => Promise.resolve(data)),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     whatsappInstance: { groupBy: jest.fn().mockResolvedValue([]) },
     adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
@@ -25,56 +26,75 @@ function makeSvc(prismaPatch: Record<string, unknown>) {
   return { svc, prisma };
 }
 
+/** Mock de tenant para markTenantPaid — `updateMany` é o write condicional. */
+const paidMock = (over: Record<string, unknown>, count = 1) => ({
+  tenant: {
+    findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X', billing_value: 30000, billing_cycle_months: 1, billing_paid_until: null, ...over }),
+    update: jest.fn().mockResolvedValue({}),
+    updateMany: jest.fn().mockResolvedValue({ count }),
+  },
+});
+
 describe('markTenantPaid', () => {
   it('avanca paid_until pelo ciclo a partir de max(paid_until, hoje) — atrasado nao ganha credito retroativo', async () => {
-    const { svc, prisma } = makeSvc({
-      tenant: {
-        findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X', billing_value: 30000, billing_cycle_months: 1, billing_paid_until: d('2026-08-01') }),
-        update: jest.fn().mockResolvedValue({}),
-      },
-    });
+    const { svc, prisma } = makeSvc(paidMock({ billing_cycle_months: 1, billing_paid_until: d('2026-08-01') }));
     await svc.markTenantPaid(admin, 't1', d('2026-08-24'));
-    const arg = (prisma.tenant.update as jest.Mock).mock.calls[0][0];
+    const arg = (prisma.tenant.updateMany as jest.Mock).mock.calls[0][0];
     expect(arg.data.billing_paid_until.toISOString().slice(0, 10)).toBe('2026-09-24');
     expect(prisma.adminAuditLog.create).toHaveBeenCalled();
   });
 
   it('adiantado avanca a partir do paid_until futuro', async () => {
-    const { svc, prisma } = makeSvc({
-      tenant: {
-        findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X', billing_value: 30000, billing_cycle_months: 3, billing_paid_until: d('2026-09-10') }),
-        update: jest.fn().mockResolvedValue({}),
-      },
-    });
+    const { svc, prisma } = makeSvc(paidMock({ billing_cycle_months: 3, billing_paid_until: d('2026-09-10') }));
     await svc.markTenantPaid(admin, 't1', d('2026-08-24'));
-    const arg = (prisma.tenant.update as jest.Mock).mock.calls[0][0];
+    const arg = (prisma.tenant.updateMany as jest.Mock).mock.calls[0][0];
     expect(arg.data.billing_paid_until.toISOString().slice(0, 10)).toBe('2026-12-10');
   });
 
   it('grava sempre ancorado no meio-dia UTC', async () => {
-    const { svc, prisma } = makeSvc({
-      tenant: {
-        findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X', billing_value: 30000, billing_cycle_months: 1, billing_paid_until: null }),
-        update: jest.fn().mockResolvedValue({}),
-      },
-    });
-    // "hoje" às 23h de UTC: o resultado ainda tem de cair ao meio-dia, senão em
-    // São Paulo (UTC-3) a data lida seria a do dia anterior.
+    const { svc, prisma } = makeSvc(paidMock({}));
+    // "hoje" às 23h30 UTC = 20h30 em São Paulo, ainda dia 24.
     await svc.markTenantPaid(admin, 't1', new Date('2026-08-24T23:30:00Z'));
-    const arg = (prisma.tenant.update as jest.Mock).mock.calls[0][0];
+    const arg = (prisma.tenant.updateMany as jest.Mock).mock.calls[0][0];
+    expect(arg.data.billing_paid_until.toISOString()).toBe('2026-09-24T12:00:00.000Z');
+  });
+
+  it('usa o dia de São Paulo, nao o dia UTC, como base', async () => {
+    // 2026-08-25T02:00Z é 23h do dia 24 em São Paulo. Quem paga às 23h tem de
+    // renovar a partir do dia 24 — o dia UTC (25) daria um dia a mais de graça.
+    const { svc, prisma } = makeSvc(paidMock({ billing_paid_until: d('2026-08-01') }));
+    await svc.markTenantPaid(admin, 't1', new Date('2026-08-25T02:00:00Z'));
+    const arg = (prisma.tenant.updateMany as jest.Mock).mock.calls[0][0];
     expect(arg.data.billing_paid_until.toISOString()).toBe('2026-09-24T12:00:00.000Z');
   });
 
   it('rejeita sem ciclo configurado', async () => {
-    const { svc } = makeSvc({
-      tenant: { findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X', billing_value: null, billing_cycle_months: null, billing_paid_until: null }), update: jest.fn() },
-    });
+    const { svc } = makeSvc(paidMock({ billing_value: null, billing_cycle_months: null }));
     await expect(svc.markTenantPaid(admin, 't1')).rejects.toThrow('Cobrança não configurada');
+  });
+
+  it('rejeita com ciclo mas sem valor', async () => {
+    const { svc } = makeSvc(paidMock({ billing_value: null, billing_cycle_months: 3 }));
+    await expect(svc.markTenantPaid(admin, 't1')).rejects.toThrow('Cobrança não configurada');
+  });
+
+  it('rejeita valor zero', async () => {
+    const { svc } = makeSvc(paidMock({ billing_value: 0, billing_cycle_months: 3 }));
+    await expect(svc.markTenantPaid(admin, 't1')).rejects.toThrow('Cobrança não configurada');
+  });
+
+  it('só grava se o paid_until ainda for o que foi lido (double-click nao avanca 2 ciclos)', async () => {
+    const { svc, prisma } = makeSvc(paidMock({ billing_paid_until: d('2026-08-01') }, 0));
+    await expect(svc.markTenantPaid(admin, 't1', d('2026-08-24'))).rejects.toThrow('Pagamento já registrado');
+    const arg = (prisma.tenant.updateMany as jest.Mock).mock.calls[0][0];
+    expect(arg.where.billing_paid_until).toEqual(d('2026-08-01'));
+    // Nada de auditoria para um write que não aconteceu.
+    expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
   });
 
   it('404 quando o tenant nao existe', async () => {
     const { svc } = makeSvc({
-      tenant: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() },
+      tenant: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn(), updateMany: jest.fn() },
     });
     await expect(svc.markTenantPaid(admin, 'nope')).rejects.toThrow('Tenant não encontrado');
   });
@@ -107,6 +127,31 @@ describe('setTenantBilling', () => {
     await svc.setTenantBilling(admin, 't1', { billing_paid_until: '2026-09-10T00:00:00.000Z' });
     const arg = (prisma.tenant.update as jest.Mock).mock.calls[0][0];
     expect(arg.data.billing_paid_until.toISOString()).toBe('2026-09-10T12:00:00.000Z');
+  });
+
+  it('audita o que foi SALVO, nao o que chegou no body', async () => {
+    const { svc, prisma } = makeSvc({
+      tenant: {
+        findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X' }),
+        // O que o banco devolve após o re-anchor — é isso que tem de virar log.
+        update: jest.fn().mockResolvedValue({ billing_value: 30000, billing_cycle_months: 1, billing_paid_until: d('2026-09-10') }),
+      },
+    });
+    await svc.setTenantBilling(admin, 't1', { billing_paid_until: '2026-09-10T00:00:00.000Z' });
+    const detail = (prisma.adminAuditLog.create as jest.Mock).mock.calls[0][0].data.detail;
+    expect(detail).toEqual({
+      nome: 'X',
+      billing_value: 30000,
+      billing_cycle_months: 1,
+      billing_paid_until: '2026-09-10T12:00:00.000Z',
+    });
+  });
+
+  it('rejeita valor acima do teto do int4 da coluna', async () => {
+    const { svc } = makeSvc({
+      tenant: { findUnique: jest.fn().mockResolvedValue({ id: 't1', nome: 'X' }), update: jest.fn() },
+    });
+    await expect(svc.setTenantBilling(admin, 't1', { billing_value: 2_147_483_648 })).rejects.toThrow();
   });
 
   it('campo ausente nao entra no update (patch parcial)', async () => {

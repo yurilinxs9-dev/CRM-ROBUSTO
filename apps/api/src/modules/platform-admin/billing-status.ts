@@ -13,8 +13,12 @@ const DAY_MS = 86_400_000;
  * (serve só de rótulo para subtrair dois dias). Usar `getUTC*` direto contaria o
  * dia errado: às 21h30 de São Paulo já é o dia seguinte em UTC, e um vencimento
  * de hoje apareceria como "vencido há 1 dia" durante a noite inteira.
+ *
+ * Exportada porque o service precisa da MESMA noção de "hoje" ao renovar um
+ * vencimento (`markTenantPaid`) — duas definições de dia divergiriam justamente
+ * na faixa das 21h à meia-noite, que é quando o bug aparece.
  */
-const dayInTz = (x: Date, tz: string): number => {
+export const dayInTz = (x: Date, tz: string): number => {
   const [y, m, d] = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     year: 'numeric',
