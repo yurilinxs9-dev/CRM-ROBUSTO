@@ -101,6 +101,31 @@ export class PlatformAdminController {
     return this.svc.setTenantSuspended(this.user(req), id, suspended);
   }
 
+  // Cobrança manual. As duas MUTAÇÕES seguem `tenants/:id/suspend`
+  // (`tenant_actions`) — quem pode suspender um cliente é quem cuida da
+  // cobrança dele. O resumo é LEITURA e segue os GETs vizinhos (`tenants`),
+  // porque ele alimenta os KPIs da própria tela de clientes: exigir
+  // `tenant_actions` num GET quebraria a tela de um admin só-leitura.
+  // O body vai cru para o service, que valida com Zod (padrão do
+  // createAnnouncement).
+  @Patch('tenants/:id/billing')
+  @PlatformScopes('tenant_actions')
+  setBilling(@Param('id') id: string, @Body() body: unknown, @Req() req: Request) {
+    return this.svc.setTenantBilling(this.user(req), id, body);
+  }
+
+  @Post('tenants/:id/billing/mark-paid')
+  @PlatformScopes('tenant_actions')
+  markPaid(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.markTenantPaid(this.user(req), id);
+  }
+
+  @Get('billing-summary')
+  @PlatformScopes('tenants')
+  billingSummary(@Req() req: Request) {
+    return this.svc.billingSummary(this.user(req));
+  }
+
   // Re-sync de histórico UazAPI de TODAS as instâncias conectadas (todos os
   // tenants) — repara buracos de webhook em lote. Roda em background.
   @Post('history-sync')

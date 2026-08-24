@@ -22,6 +22,10 @@ const EXPECTED: Record<string, PlatformScope> = {
   deleteUser: 'tenant_actions',
   deleteTenant: 'tenant_actions',
   suspendTenant: 'tenant_actions',
+  setBilling: 'tenant_actions',
+  markPaid: 'tenant_actions',
+  // Leitura: alimenta os KPIs da tela de clientes, então acompanha `tenants`.
+  billingSummary: 'tenants',
   impersonate: 'tenant_actions',
   startHistorySync: 'tenant_actions',
   listAnnouncements: 'announcements',

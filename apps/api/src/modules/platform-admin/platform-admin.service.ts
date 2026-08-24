@@ -1,9 +1,17 @@
-import { Injectable, Logger, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { AuthUser } from '../../common/types/auth-user';
+import { deriveBillingStatus, addCycleMonths, monthlyCents } from './billing-status';
 
 const announcementSchema = z.object({
   title: z.string().min(1).max(200),
@@ -12,6 +20,31 @@ const announcementSchema = z.object({
   target_tenant_id: z.string().uuid().optional().nullable(),
   expires_at: z.string().datetime().optional().nullable(),
 });
+
+const billingSchema = z.object({
+  billing_value: z.number().int().min(0).nullable().optional(),
+  billing_cycle_months: z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]).nullable().optional(),
+  billing_paid_until: z.string().datetime().nullable().optional(),
+});
+
+/**
+ * `billing_paid_until` é um DIA de calendário guardado em TIMESTAMP(3) naive.
+ * Ancorar no MEIO-DIA UTC mantém o mesmo dia em qualquer leitura com
+ * deslocamento de até ±12h; meia-noite UTC leria como o dia anterior em São
+ * Paulo (UTC-3) — o cliente veria "vence dia 9" tendo pago até o dia 10.
+ *
+ * O painel já manda o ISO ancorado, mas a rota aceita qualquer cliente do
+ * endpoint: se vier meia-noite exata (o formato natural de um `<input
+ * type="date">` serializado), re-ancoramos aqui. Horário diferente de 00:00 é
+ * intenção explícita e passa como veio.
+ */
+function anchorPaidUntil(iso: string): Date {
+  const dt = new Date(iso);
+  const midnightUtc =
+    dt.getUTCHours() === 0 && dt.getUTCMinutes() === 0 && dt.getUTCSeconds() === 0 && dt.getUTCMilliseconds() === 0;
+  if (!midnightUtc) return dt;
+  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12));
+}
 
 @Injectable()
 export class PlatformAdminService {
@@ -134,6 +167,10 @@ export class PlatformAdminService {
           created_at: true,
           owner: { select: { id: true, nome: true, email: true } },
           _count: { select: { users: true, leads: true, instances: true } },
+          billing_value: true,
+          billing_cycle_months: true,
+          billing_paid_until: true,
+          suspended_at: true,
         },
       }),
       this.prisma.whatsappInstance.groupBy({
@@ -155,6 +192,11 @@ export class PlatformAdminService {
       leads: t._count.leads,
       instances: t._count.instances,
       active_instances: activeMap.get(t.id) ?? 0,
+      billing_value: t.billing_value,
+      billing_cycle_months: t.billing_cycle_months,
+      billing_paid_until: t.billing_paid_until,
+      suspended: !!t.suspended_at,
+      billing: deriveBillingStatus(t),
     }));
   }
 
@@ -407,6 +449,100 @@ export class PlatformAdminService {
       data: { admin_user_id: admin.id, action: suspended ? 'tenant_suspend' : 'tenant_unsuspend', target_tenant_id: tenantId, detail: { nome: t.nome, users: res.count } },
     });
     return { ok: true, users_affected: res.count };
+  }
+
+  // ---- Cobrança manual ------------------------------------------------------
+  /**
+   * Patch parcial: campo ausente no body fica como está, campo `null` LIMPA a
+   * coluna. Por isso o teste é `!== undefined` e não truthiness — `billing_value:
+   * 0` e `billing_paid_until: null` são valores legítimos que precisam gravar.
+   */
+  async setTenantBilling(admin: AuthUser, tenantId: string, body: unknown) {
+    await this.assertTenantAllowed(admin, tenantId);
+    const d = billingSchema.parse(body);
+    const t = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, nome: true } });
+    if (!t) throw new NotFoundException('Tenant não encontrado');
+    const updated = await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        ...(d.billing_value !== undefined ? { billing_value: d.billing_value } : {}),
+        ...(d.billing_cycle_months !== undefined ? { billing_cycle_months: d.billing_cycle_months } : {}),
+        ...(d.billing_paid_until !== undefined
+          ? { billing_paid_until: d.billing_paid_until ? anchorPaidUntil(d.billing_paid_until) : null }
+          : {}),
+      },
+      select: { billing_value: true, billing_cycle_months: true, billing_paid_until: true },
+    });
+    await this.prisma.adminAuditLog.create({
+      data: { admin_user_id: admin.id, action: 'tenant_billing_update', target_tenant_id: tenantId, detail: { nome: t.nome, ...d } },
+    });
+    return { ok: true, ...updated };
+  }
+
+  /**
+   * Registra um pagamento: empurra `billing_paid_until` um ciclo à frente a
+   * partir de MAX(vencimento atual, hoje). Quem está atrasado não ganha crédito
+   * retroativo (o mês em atraso não é "coberto" pelo pagamento de agora), e quem
+   * paga adiantado acumula a partir do vencimento futuro.
+   */
+  async markTenantPaid(admin: AuthUser, tenantId: string, now: Date = new Date()) {
+    await this.assertTenantAllowed(admin, tenantId);
+    const t = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, nome: true, billing_value: true, billing_cycle_months: true, billing_paid_until: true },
+    });
+    if (!t) throw new NotFoundException('Tenant não encontrado');
+    if (!t.billing_cycle_months) throw new BadRequestException('Cobrança não configurada — defina valor e ciclo antes.');
+    const base = t.billing_paid_until && t.billing_paid_until > now ? t.billing_paid_until : now;
+    // addCycleMonths devolve sempre ancorado ao meio-dia UTC.
+    const paidUntil = addCycleMonths(base, t.billing_cycle_months);
+    await this.prisma.tenant.update({ where: { id: tenantId }, data: { billing_paid_until: paidUntil } });
+    await this.prisma.adminAuditLog.create({
+      data: {
+        admin_user_id: admin.id,
+        action: 'tenant_mark_paid',
+        target_tenant_id: tenantId,
+        detail: { nome: t.nome, valor: t.billing_value, paid_until: paidUntil.toISOString() },
+      },
+    });
+    return { ok: true, paid_until: paidUntil.toISOString() };
+  }
+
+  /**
+   * KPIs de receita em CENTAVOS, tudo normalizado para o equivalente MENSAL —
+   * um anual de R$1.200 pesa R$100/mês, senão o total oscilaria conforme o ciclo
+   * de cada cliente. O tenant do master fica de fora para o admin restrito, pela
+   * mesma razão de `listTenants`: o valor do resumo denunciaria a existência
+   * dele.
+   */
+  async billingSummary(admin: AuthUser, now: Date = new Date()) {
+    const full = await this.hasFullScope(admin);
+    const hidden = new Set(full ? [] : await this.protectedTenantIds());
+    const tenants = (
+      await this.prisma.tenant.findMany({
+        select: { id: true, billing_value: true, billing_cycle_months: true, billing_paid_until: true, suspended_at: true },
+      })
+    ).filter((t) => !hidden.has(t.id));
+    const acc = {
+      receita_mensal_esperada: 0,
+      em_dia: { qtde: 0, valor_mensal: 0 },
+      vence_em_breve: { qtde: 0, valor_mensal: 0 },
+      vencidos: { qtde: 0, valor_mensal: 0 },
+      suspensos: 0,
+    };
+    for (const t of tenants) {
+      if (t.suspended_at) acc.suspensos++;
+      const { status } = deriveBillingStatus(t, now);
+      // 'sem_cobranca' já garante valor > 0 e ciclo válido nos que passam daqui;
+      // os `??` só existem para não precisar de cast.
+      if (status === 'sem_cobranca') continue;
+      const mensal = monthlyCents(t.billing_value ?? 0, t.billing_cycle_months ?? 1);
+      acc.receita_mensal_esperada += mensal;
+      const bucket = status === 'em_dia' ? acc.em_dia : status === 'vence_em_breve' ? acc.vence_em_breve : acc.vencidos;
+      bucket.qtde++;
+      bucket.valor_mensal += mensal;
+    }
+    return acc;
   }
 
   // ---- Impersonação ---------------------------------------------------------
