@@ -119,6 +119,19 @@ export class InstancesService implements OnModuleInit {
     const instances = await this.prisma.whatsappInstance.findMany({
       select: { id: true, nome: true, config: true, webhook_secret: true },
     });
+
+    const evoTargets = instances
+      .map((i) => {
+        const cfg = (i.config ?? {}) as InstanceConfig;
+        if (cfg.provider !== 'evolution' || !cfg.evolution_token) return null;
+        return {
+          nome: i.nome,
+          apikey: cfg.evolution_token,
+          baseUrl: cfg.evolution_base_url || this.evoBaseUrl,
+        };
+      })
+      .filter((x): x is { nome: string; apikey: string; baseUrl: string } => !!x);
+
     const targets = instances
       .map((i) => {
         const cfg = (i.config ?? {}) as InstanceConfig;
@@ -204,7 +217,81 @@ export class InstancesService implements OnModuleInit {
       }
     };
 
-    await Promise.all([worker(), worker(), worker(), worker(), worker()]);
+    // Evolution: só 1 webhook por instância no gateway — se outro sistema
+    // registrar a URL dele (aconteceu com o app do questionário em 24/08/2026),
+    // o CRM para de receber TUDO silenciosamente, inclusive connection.update,
+    // e o status vira mentira. Aqui a gente re-aponta pra evoWebhookUrl e
+    // garante o set completo de eventos.
+    const expectedEvoEvents = [...this.evoEvents()].sort();
+    const evoQueue = [...evoTargets];
+    const evoWorker = async (): Promise<void> => {
+      while (evoQueue.length) {
+        const t = evoQueue.shift();
+        if (!t) break;
+        checked++;
+        let needsSet = false;
+        try {
+          const { data } = await firstValueFrom(
+            this.http.get<{ url?: string; enabled?: boolean; events?: string[] }>(
+              `${t.baseUrl}/webhook/find/${t.nome}`,
+              { headers: this.evoHeaders(t.apikey), timeout: 8000 },
+            ),
+          );
+          const sameEvents =
+            Array.isArray(data?.events) &&
+            JSON.stringify([...data.events].sort()) === JSON.stringify(expectedEvoEvents);
+          needsSet = data?.url !== this.evoWebhookUrl || data?.enabled !== true || !sameEvents;
+        } catch (err: unknown) {
+          const status = (err as { response?: { status?: number } })?.response?.status;
+          if (status === 404) {
+            // Nenhum webhook registrado — precisa setar.
+            needsSet = true;
+          } else {
+            // 401 = apikey revogada (instância deletada no gateway). Skip.
+            skipped++;
+            const msg = status === 401 ? '401 apikey revogada' : String((err as Error)?.message ?? err);
+            this.logger.debug(`webhook re-sync evolution ${t.nome} skip: ${msg}`);
+            continue;
+          }
+        }
+        if (!needsSet) {
+          skipped++;
+          continue;
+        }
+        try {
+          await firstValueFrom(
+            this.http.post(
+              `${t.baseUrl}/webhook/set/${t.nome}`,
+              {
+                webhook: {
+                  enabled: true,
+                  url: this.evoWebhookUrl,
+                  webhookByEvents: false,
+                  webhookBase64: false,
+                  events: this.evoEvents(),
+                },
+              },
+              { headers: this.evoHeaders(t.apikey), timeout: 8000 },
+            ),
+          );
+          updated++;
+          this.logger.log({
+            event: 'instances.healWebhooks.evolution_url_updated',
+            instance_name_hash: hashTruncated(t.nome),
+          });
+        } catch (err: unknown) {
+          skipped++;
+          this.logger.debug(
+            `webhook re-sync evolution ${t.nome} set falhou: ${String((err as Error)?.message ?? err)}`,
+          );
+        }
+      }
+    };
+
+    await Promise.all([
+      worker(), worker(), worker(), worker(), worker(),
+      evoWorker(), evoWorker(), evoWorker(),
+    ]);
     this.logger.log(
       `Webhook sync completo: checked=${checked} updated=${updated} skipped=${skipped}`,
     );
