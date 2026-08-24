@@ -790,7 +790,7 @@ git commit -m "feat(web): secao de cobranca no detalhe do cliente + exclusao via
 
 - [ ] **Step 1:** `git push origin master` (frontend: Vercel faz deploy sozinho no push).
 - [ ] **Step 2: Aplicar migration no VPS** (Windows ssh.exe, alias `crm-vps`):
-  - copiar `2026-08-24-tenant-billing.sql` pro VPS (`scp` ou heredoc) e aplicar com psql via container OU rodar node+Prisma `$executeRawUnsafe` dentro do `crm-backend` usando `DIRECT_URL`. Transação já está no arquivo.
+  - arquivo vive em `apps/api/prisma/manual/2026-08-24-tenant-billing.sql` (FORA de `prisma/migrations/` — lá o Prisma trataria como migration pendente). Copiar pro VPS (`scp` ou heredoc) e aplicar com psql via container OU rodar node+Prisma `$executeRawUnsafe` dentro do `crm-backend` usando `DIRECT_URL`. Transação já está no arquivo; `ADD COLUMN IF NOT EXISTS` torna re-execução segura.
   - registrar: `node ../../node_modules/prisma/build/index.js migrate resolve --applied 2026-08-24-tenant-billing` **não se aplica** (migration manual fora da pasta migrations) — só documentar no arquivo que foi aplicada em produção (comentário com data).
 - [ ] **Step 3:** VPS: `cd /opt/crm-whatsapp && git stash push nginx/nginx.conf; git pull origin master && docker compose build crm-backend && docker compose up -d crm-backend`.
 - [ ] **Step 4: Verificar:** `curl https://yurilinscrm.duckdns.org/api/health` → ok; abrir `/admin/tenants` no Vercel: KPIs carregam, badge aparece, marcar pago avança data, suspender esconde inbound (mandar msg de teste pra tenant suspenso e conferir que NÃO entra), excluir via modal funciona num tenant descartável.
