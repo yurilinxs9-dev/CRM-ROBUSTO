@@ -98,6 +98,13 @@ model Tenant {
   broadcast_window_start    Int     @default(9)
   broadcast_window_end      Int     @default(18)
   broadcast_window_days     Int[]   @default([1, 2, 3, 4, 5])
+  // Cobrança manual (painel admin). Valor em centavos; ciclo 1/3/6/12 meses.
+  // billing_paid_until É a data de vencimento (fonte única).
+  billing_value        Int?
+  billing_cycle_months Int?
+  billing_paid_until   DateTime?
+  // Suspensão explícita pelo admin (antes era inferida por users inativos).
+  suspended_at         DateTime?
 
   owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users               User[]             @relation("TenantMembers")
