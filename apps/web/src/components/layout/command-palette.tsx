@@ -12,7 +12,7 @@
  * só tinha leads + navegação — duas paletas ouvindo Ctrl+K abririam as duas.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Bookmark, Plus, Shield, User } from 'lucide-react';
@@ -121,9 +121,15 @@ export function CommandPalette(): JSX.Element {
     },
   });
 
+  /**
+   * Navegar para a rota em que já se está não é "ir a lugar nenhum": o
+   * `router.push` revalida o segmento à toa. Importa sobretudo para as views,
+   * que aplicam estado por evento ANTES daqui — o refresh só teria a chance de
+   * atrapalhar o que o evento acabou de fazer.
+   */
   const ir = (href: string) => {
     setOpen(false);
-    router.push(href);
+    if (href !== pathname) router.push(href);
   };
 
   /**
@@ -144,16 +150,45 @@ export function CommandPalette(): JSX.Element {
   };
 
   /**
+   * Ação que só pode rodar DEPOIS que a palette fechou de verdade.
+   *
+   * A palette é um Dialog do Radix, e abrir OUTRO Dialog no mesmo gesto é uma
+   * briga de foco que a palette ganha: enquanto ela toca a animação de saída
+   * (`duration-200` no DialogContent) o conteúdo dela continua montado com o
+   * FocusScope preso, e ao desmontar ele devolve o foco a quem o tinha antes —
+   * roubando do diálogo recém-aberto, que some sem deixar rastro. Era esse o
+   * bug: em /kanban, "Novo lead" fechava a palette e não abria nada.
+   *
+   * `onCloseAutoFocus` é exatamente o momento seguro (desmonte concluído), e o
+   * `preventDefault()` cancela a devolução de foco que causava o roubo. Um
+   * `setTimeout` seria chute: 0ms cai no meio da animação, e qualquer número
+   * maior vira magia acoplada ao CSS.
+   */
+  const aposFechar = useRef<(() => void) | null>(null);
+
+  const aoTerminarDeFechar = (event: Event) => {
+    const acao = aposFechar.current;
+    if (!acao) return;
+    aposFechar.current = null;
+    event.preventDefault();
+    acao();
+  };
+
+  /**
    * Novo lead: o diálogo mora no kanban. Estando FORA dele, o `?novo=1` viaja
    * junto da navegação e a página o lê na montagem. Estando DENTRO, `router.push`
    * na mesma rota não remonta nem dispara efeito — só deixaria o parâmetro
    * pendurado na URL para abrir um diálogo fantasma no próximo F5. Por isso o
-   * caminho de dentro é o evento.
+   * caminho de dentro é o evento, e ele espera a palette sair de cena.
    */
   const novoLead = () => {
+    if (pathname === '/kanban') {
+      aposFechar.current = () => window.dispatchEvent(new CustomEvent('crm:novo-lead'));
+      setOpen(false);
+      return;
+    }
     setOpen(false);
-    if (pathname === '/kanban') window.dispatchEvent(new CustomEvent('crm:novo-lead'));
-    else router.push('/kanban?novo=1');
+    router.push('/kanban?novo=1');
   };
 
   const filtro = busca.trim().toLowerCase();
@@ -176,7 +211,12 @@ export function CommandPalette(): JSX.Element {
     !buscandoLeads;
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen} shouldFilter={false}>
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      shouldFilter={false}
+      onCloseAutoFocus={aoTerminarDeFechar}
+    >
       <CommandInput placeholder="Buscar lead, tela, view ou ação..." value={busca} onValueChange={setBusca} />
       <CommandList>
         {nadaEncontrado && <CommandEmpty>Nada encontrado.</CommandEmpty>}

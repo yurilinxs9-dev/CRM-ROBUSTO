@@ -30,15 +30,31 @@ interface CommandDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   shouldFilter?: boolean;
+  /**
+   * Radix dispara isto quando o conteúdo REALMENTE desmonta — depois da animação
+   * de saída — e está prestes a devolver o foco a quem o tinha antes da palette.
+   * É o único gancho seguro para uma ação que abre OUTRO dialog (`preventDefault`
+   * no evento impede o roubo de foco); ver o comentário em `command-palette.tsx`.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
   children: React.ReactNode;
 }
 
-function CommandDialog({ open, onOpenChange, shouldFilter, children }: CommandDialogProps): JSX.Element {
+function CommandDialog({
+  open,
+  onOpenChange,
+  shouldFilter,
+  onCloseAutoFocus,
+  children,
+}: CommandDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* [&>button]:hidden esconde o X do DialogContent, que com p-0 cairia dentro da linha do
           CommandInput; a palette fecha por Escape (cmdk) e por clique no overlay. */}
-      <DialogContent className="overflow-hidden p-0 shadow-lg sm:max-w-lg [&>button]:hidden">
+      <DialogContent
+        className="overflow-hidden p-0 shadow-lg sm:max-w-lg [&>button]:hidden"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         {/* Radix exige um DialogTitle no Content (a11y + warning em dev); a palette não mostra título. */}
         <DialogTitle className="sr-only">Paleta de comandos</DialogTitle>
         <Command
