@@ -61,7 +61,7 @@ API: mesmos endpoints CRUD `/lead-views`, payload estendido com os 4 campos
 `GET /api/leads` ganha `sort` + `dir` com whitelist server-side:
 `nome`, `created_at`, `ultima_interacao`, `valor`, `temperatura`,
 `proximo_followup`. Param fora da whitelist → ordenação padrão atual (não é
-erro). Nulls last em todos.
+erro). Nulls last nos anuláveis (`temperatura` é NOT NULL — ordenação simples).
 
 ## 2. Modo Lista (`/leads`)
 
