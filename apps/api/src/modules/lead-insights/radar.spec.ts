@@ -81,6 +81,8 @@ function linha(over: Record<string, unknown> = {}) {
     // Formato cru do Prisma: relacao aninhada, nao o nome ja achatado.
     responsavel: { nome: 'Vendedor Um' },
     lead_tags: [{ tag: { nome: 'Orcamento' } }, { tag: { nome: 'VIP' } }],
+    // Coluna Json legada, vazia quando a relacao existe (lead vindo da public API).
+    tags: [],
     lead_insight: {
       proxima_acao_at: new Date('2026-08-25T09:00:00Z'),
       proxima_acao_motivo: 'Confirmar a proposta enviada.',
@@ -153,12 +155,60 @@ describe('LeadInsightsService.radar', () => {
   it('lead sem responsavel vira null e sem tag vira lista vazia', async () => {
     const m = montar();
     m.lead.findMany.mockResolvedValueOnce([
-      linha({ id: 'lead-orfao', responsavel: null, lead_tags: [] }),
+      linha({ id: 'lead-orfao', responsavel: null, lead_tags: [], tags: [] }),
     ]);
 
     const radar = await m.service.radar(operador);
 
     expect(radar.chamar_hoje[0].responsavel).toBeNull();
+    expect(radar.chamar_hoje[0].tags).toEqual([]);
+  });
+
+  it('tag gravada pelo app interno (coluna Json) aparece quando a relacao esta vazia', async () => {
+    // Dois estoques de tag no CRM: o app interno grava na coluna Json `tags` e a
+    // public API grava na join LeadTag. Ler so a join deixaria quase todo lead do
+    // app interno sem chip nenhum no radar.
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({ id: 'lead-do-app', lead_tags: [], tags: ['VIP'] }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].tags).toEqual(['VIP']);
+  });
+
+  it('com as duas fontes preenchidas, a relacao ganha do Json legado', async () => {
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({ id: 'lead-dois-estoques', lead_tags: [{ tag: { nome: 'Reforma' } }], tags: ['Antiga'] }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].tags).toEqual(['Reforma']);
+  });
+
+  it('lixo na coluna Json nao vira chip (numero, null, objeto)', async () => {
+    // A coluna e Json cru: nada no banco garante que so tem string la dentro.
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({ id: 'lead-lixo', lead_tags: [], tags: ['VIP', 7, null, { nome: 'x' }] }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].tags).toEqual(['VIP']);
+  });
+
+  it('coluna Json nula (lead antigo) nao quebra o card', async () => {
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({ id: 'lead-velho', lead_tags: [], tags: null }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
     expect(radar.chamar_hoje[0].tags).toEqual([]);
   });
 
@@ -172,7 +222,13 @@ describe('LeadInsightsService.radar', () => {
     for (let i = 0; i < 3; i++) {
       const { select } = argsDe(m.lead, i);
       expect(select.responsavel).toEqual({ select: { nome: true } });
-      expect(select.lead_tags).toEqual({ select: { tag: { select: { nome: true } } } });
+      expect(select.lead_tags).toEqual({
+        select: { tag: { select: { nome: true } } },
+        // Ordem estavel: sem isso os chips trocam de lugar entre requisicoes.
+        orderBy: { tag: { nome: 'asc' } },
+      });
+      // As duas fontes de tag saem na mesma linha: o Json custa zero a mais.
+      expect(select.tags).toBe(true);
     }
   });
 

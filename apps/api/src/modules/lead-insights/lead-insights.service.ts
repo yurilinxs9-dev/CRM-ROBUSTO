@@ -204,13 +204,33 @@ const RADAR_SELECT = {
   ultima_interacao: true,
   estagio: { select: { nome: true } },
   responsavel: { select: { nome: true } },
-  lead_tags: { select: { tag: { select: { nome: true } } } },
+  // Ordem alfabetica: sem orderBy os chips trocam de lugar entre requisicoes.
+  lead_tags: { select: { tag: { select: { nome: true } } }, orderBy: { tag: { nome: 'asc' } } },
+  // Fonte legada de tag (ver `tagsDoLead`). Coluna da mesma linha: custo zero.
+  tags: true,
   lead_insight: {
     select: { proxima_acao_at: true, proxima_acao_motivo: true, msg_sugerida: true },
   },
 } as const;
 
 type LinhaRadar = Prisma.LeadGetPayload<{ select: typeof RADAR_SELECT }>;
+
+/**
+ * O CRM tem DOIS estoques de tag e o radar precisa dos dois:
+ * - a join `LeadTag -> Tag.nome`, que so a public API popula (e que espelha de
+ *   volta no Json);
+ * - a coluna Json `tags`, que e onde o app interno grava (tag-picker, PATCH, bulk).
+ * Ler so a join deixaria quase todo lead do app interno sem chip nenhum.
+ * A relacao ganha quando existe (tem id e cor); o Json e o fallback legado —
+ * mesma precedencia da tabela de leads (`lead-table.tsx`).
+ */
+function tagsDoLead(relacao: { tag: { nome: string } }[], legado: Prisma.JsonValue): string[] {
+  const daRelacao = relacao.map((lt) => lt.tag.nome);
+  if (daRelacao.length > 0) return daRelacao;
+  // Json cru: nada no banco impede numero, null ou objeto no meio da lista.
+  if (!Array.isArray(legado)) return [];
+  return legado.filter((t): t is string => typeof t === 'string');
+}
 
 /** Dias inteiros parados. `null` = lead que nunca teve interacao registrada. */
 function diasParado(ultima: Date | null, agora: number): number | null {
@@ -245,7 +265,7 @@ function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
     msg_sugerida: linha.lead_insight?.msg_sugerida ?? '',
     proxima_acao_at: linha.lead_insight?.proxima_acao_at ?? null,
     responsavel: linha.responsavel?.nome ?? null,
-    tags: linha.lead_tags.map((lt) => lt.tag.nome),
+    tags: tagsDoLead(linha.lead_tags, linha.tags),
   };
 }
 
