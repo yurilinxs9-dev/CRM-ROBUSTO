@@ -28,3 +28,20 @@ export class LeadInsightsController {
     return this.insights.refrescar(id, req.user as AuthUser);
   }
 }
+
+/**
+ * Radar comercial. Prefixo proprio (`/api/insights/radar`) porque a lista nao
+ * pertence a um lead: e a fila de trabalho do usuario logado. Sem @Roles — o
+ * recorte de quem ve o que ja e feito no `where` (mesma visibilidade da
+ * listagem de leads), e leitura nao muda nada.
+ */
+@Controller('insights')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class RadarController {
+  constructor(private readonly insights: LeadInsightsService) {}
+
+  @Get('radar')
+  radar(@Req() req: Record<string, unknown>) {
+    return this.insights.radar(req.user as AuthUser);
+  }
+}

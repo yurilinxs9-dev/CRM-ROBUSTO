@@ -84,6 +84,13 @@ describe('LeadInsightsService.enfileirarSeElegivel', () => {
 
     await expect(m.service.enfileirarSeElegivel('lead-1', 't1')).resolves.toBe(true);
 
+    // Nota interna e conversa da EQUIPE com ela mesma: nao e novidade do
+    // cliente e nao pode gastar uma geracao do modelo.
+    const [contagem] = m.message.count.mock.calls[0] as [
+      { where: { lead_id: string; is_internal_note: boolean } },
+    ];
+    expect(contagem.where.is_internal_note).toBe(false);
+
     expect(m.queue.add).toHaveBeenCalledTimes(1);
     const [nome, dados, opts] = m.queue.add.mock.calls[0] as [
       string,
@@ -322,10 +329,12 @@ describe('LeadInsightsService.gerarInsight', () => {
     expect(opts.delay).toBe(120_000);
     // Conta a partir do watermark que acabou de ser gravado.
     const [contagem] = m.message.count.mock.calls[0] as [
-      { where: { lead_id: string; created_at: { gt: Date } } },
+      { where: { lead_id: string; created_at: { gt: Date }; is_internal_note: boolean } },
     ];
     expect(contagem.where.lead_id).toBe('lead-1');
     expect(contagem.where.created_at.gt).toEqual(new Date('2026-08-07T11:00:00Z'));
+    // Nota interna escrita durante a geracao nao pode re-enfileirar o lead.
+    expect(contagem.where.is_internal_note).toBe(false);
   });
 
   it('sem mensagem nova durante a geracao nao re-enfileira', async () => {

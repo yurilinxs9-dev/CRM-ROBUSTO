@@ -6,7 +6,9 @@ import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
 import { LeadsService } from '../leads/leads.service';
+import { buildVisibilityWhere } from '../leads/lead-visibility';
 import { isWithinBroadcastWindow } from '../broadcasts/broadcast-window';
+import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import type { AiChatMessage } from '../ai/ai.types';
 import { LEAD_INSIGHTS_QUEUE, type GerarInsightJobData } from './lead-insights.queue';
@@ -42,6 +44,13 @@ const CRON_JANELA_ATIVIDADE_DIAS = 30;
 const CRON_FICHA_VELHA_DIAS = 7;
 /** Lead que nunca teve ficha so entra no cron com conversa de verdade. */
 const CRON_MIN_MSGS_PRIMEIRA = 5;
+
+/** Radar: teto por secao. Lista maior que isso ninguem trabalha num dia. */
+const RADAR_CAP = 30;
+/** Lead quente parado a partir daqui ja e oportunidade esfriando na mao. */
+const RADAR_PROMISSOR_DIAS = 2;
+const RADAR_ESFRIANDO_DIAS = 7;
+const RADAR_TEMPERATURAS_QUENTES = ['QUENTE', 'MUITO_QUENTE'];
 
 const TIMEZONE = 'America/Sao_Paulo';
 /** Teto da busca pela proxima hora dentro da janela do tenant. */
@@ -107,6 +116,77 @@ function achatar(texto: string): string {
   return texto.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 }
 
+/** Card do radar: tudo que a UI precisa para agir sem abrir o lead. */
+export interface RadarItem {
+  lead_id: string;
+  nome: string;
+  telefone: string;
+  etapa: string;
+  temperatura: string;
+  ultima_interacao: Date | null;
+  motivo: string;
+  msg_sugerida: string;
+  proxima_acao_at: Date | null;
+}
+
+export interface RadarResultado {
+  chamar_hoje: RadarItem[];
+  promissores: RadarItem[];
+  esfriando: RadarItem[];
+}
+
+const RADAR_SELECT = {
+  id: true,
+  nome: true,
+  telefone: true,
+  temperatura: true,
+  ultima_interacao: true,
+  estagio: { select: { nome: true } },
+  lead_insight: {
+    select: { proxima_acao_at: true, proxima_acao_motivo: true, msg_sugerida: true },
+  },
+} as const;
+
+type LinhaRadar = Prisma.LeadGetPayload<{ select: typeof RADAR_SELECT }>;
+
+/** Dias inteiros parados. `null` = lead que nunca teve interacao registrada. */
+function diasParado(ultima: Date | null, agora: number): number | null {
+  if (ultima === null) return null;
+  return Math.floor((agora - ultima.getTime()) / DIA);
+}
+
+/**
+ * Motivo quando a ficha nao tem um (lead sem insight, ou insight sem motivo).
+ * Sem acento, como o resto das mensagens do modulo.
+ */
+function motivoDerivado(dias: number | null, quente: boolean): string {
+  const prefixo = quente ? 'QUENTE ' : '';
+  if (dias === null) return `${prefixo}sem contato registrado`;
+  return `${prefixo}sem contato ha ${dias} dia${dias === 1 ? '' : 's'}`;
+}
+
+function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
+  const temperatura = String(linha.temperatura);
+  const motivoFicha = linha.lead_insight?.proxima_acao_motivo.trim() ?? '';
+  return {
+    lead_id: linha.id,
+    nome: linha.nome,
+    telefone: linha.telefone,
+    etapa: linha.estagio?.nome ?? 'sem etapa',
+    temperatura,
+    ultima_interacao: linha.ultima_interacao,
+    motivo:
+      motivoFicha !== ''
+        ? motivoFicha
+        : motivoDerivado(
+            diasParado(linha.ultima_interacao, agora),
+            RADAR_TEMPERATURAS_QUENTES.includes(temperatura),
+          ),
+    msg_sugerida: linha.lead_insight?.msg_sugerida ?? '',
+    proxima_acao_at: linha.lead_insight?.proxima_acao_at ?? null,
+  };
+}
+
 /**
  * Ficha inteligente do lead: enfileira, gera pelo LLM e serve para a UI.
  * Toda geracao passa pela fila (regra 1 do projeto: nada de LLM sincrono no
@@ -137,8 +217,14 @@ export class LeadInsightsService {
     });
     const watermark = anterior?.ultima_msg_processada_at ?? null;
 
+    // Nota interna e a equipe falando com ela mesma: nao e novidade do cliente
+    // e nao pode disparar (nem gastar) uma geracao do modelo.
     const novas = await this.prisma.message.count({
-      where: { lead_id: leadId, created_at: { gt: watermark ?? new Date(0) } },
+      where: {
+        lead_id: leadId,
+        is_internal_note: false,
+        created_at: { gt: watermark ?? new Date(0) },
+      },
     });
     if (novas === 0) return false;
 
@@ -188,6 +274,81 @@ export class LeadInsightsService {
     this.podarRefresh(agora);
     this.ultimoRefresh.set(leadId, agora);
     return { ok: true, enfileirado: true };
+  }
+
+  /**
+   * Radar comercial: a fila de trabalho do vendedor em 3 secoes.
+   * - chamar_hoje: a ficha marcou uma proxima acao que ja venceu.
+   * - promissores: lead quente que parou de conversar.
+   * - esfriando: qualquer lead ativo parado ha uma semana.
+   * Um lead aparece UMA vez so, na secao mais urgente
+   * (chamar_hoje > promissores > esfriando) — a mesma pessoa em tres listas
+   * seria trabalho repetido. Estagio ganho/perdido nunca entra: negocio
+   * fechado ou morto nao e tarefa.
+   */
+  async radar(user: AuthUser): Promise<RadarResultado> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
+    const base: Record<string, unknown> = {
+      tenant_id: user.tenantId,
+      estagio: { is_won: false, is_lost: false },
+    };
+    Object.assign(
+      base,
+      buildVisibilityWhere({
+        userId: user.id,
+        role: user.role as UserRole,
+        poolEnabled: Boolean(tenant?.pool_enabled),
+      }),
+    );
+
+    const agora = Date.now();
+    const [vencidos, quentes, parados] = await Promise.all([
+      this.buscarRadar(
+        { ...base, lead_insight: { proxima_acao_at: { lte: new Date(agora) } } },
+        // Mais atrasado primeiro: a acao vencida ha mais tempo e a mais urgente.
+        { lead_insight: { proxima_acao_at: 'asc' } },
+      ),
+      this.buscarRadar(
+        {
+          ...base,
+          temperatura: { in: RADAR_TEMPERATURAS_QUENTES },
+          ultima_interacao: { lte: new Date(agora - RADAR_PROMISSOR_DIAS * DIA) },
+        },
+        { ultima_interacao: 'asc' },
+      ),
+      this.buscarRadar(
+        { ...base, ultima_interacao: { lte: new Date(agora - RADAR_ESFRIANDO_DIAS * DIA) } },
+        { ultima_interacao: 'asc' },
+      ),
+    ]);
+
+    const vistos = new Set<string>();
+    const secao = (linhas: LinhaRadar[]): RadarItem[] => {
+      const saida: RadarItem[] = [];
+      for (const linha of linhas) {
+        if (saida.length >= RADAR_CAP) break;
+        if (vistos.has(linha.id)) continue;
+        vistos.add(linha.id);
+        saida.push(montarRadarItem(linha, agora));
+      }
+      return saida;
+    };
+
+    return {
+      chamar_hoje: secao(vencidos),
+      promissores: secao(quentes),
+      esfriando: secao(parados),
+    };
+  }
+
+  private buscarRadar(
+    where: Record<string, unknown>,
+    orderBy: Prisma.LeadOrderByWithRelationInput,
+  ): Promise<LinhaRadar[]> {
+    return this.prisma.lead.findMany({ where, select: RADAR_SELECT, orderBy, take: RADAR_CAP });
   }
 
   private podarRefresh(agora: number): void {
@@ -320,8 +481,9 @@ export class LeadInsightsService {
     watermark: Date,
   ): Promise<void> {
     try {
+      // Mesmo recorte do gatilho: nota interna nao conta como novidade.
       const pendentes = await this.prisma.message.count({
-        where: { lead_id: leadId, created_at: { gt: watermark } },
+        where: { lead_id: leadId, is_internal_note: false, created_at: { gt: watermark } },
       });
       if (pendentes === 0) return;
       // jobId NAO pode ser `lead-<id>`: e o do job que esta rodando agora, e o
