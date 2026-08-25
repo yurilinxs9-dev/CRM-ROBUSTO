@@ -45,7 +45,7 @@ import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
-import { InsightCard } from '@/components/leads/insight-card';
+import { Ficha360 } from '@/components/leads/ficha-360';
 import { TagPicker } from './tag-picker';
 import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
@@ -100,9 +100,20 @@ type LeadDetail = {
   lead_tags?: { tag: Tag }[];
   pipeline_id: string;
   estagio_id: string;
+  // `GET /api/leads/:id` já traz o estágio inteiro e a última interação — a
+  // Ficha 360 lê os dois daqui em vez de disparar um fetch próprio.
+  estagio?: { nome: string } | null;
+  ultima_interacao?: string | null;
   dados_custom?: Record<string, unknown> | null;
   lead_contacts?: LeadContactLink[];
 };
+
+/** `valor_estimado` é Decimal(12,2): chega como string do Nest. */
+function lerValorEstimado(valor: string | null | undefined): number | null {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  return Number.isFinite(n) ? n : null;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -426,7 +437,26 @@ export function LeadDetailDrawer({
               {/* Topo do corpo: é a leitura de contexto que o vendedor faz
                   antes de mexer em qualquer campo. Colapsável para não
                   empurrar o formulário pra baixo em quem não usa. */}
-              {leadId && <InsightCard leadId={leadId} onUsarMensagem={onUsarMensagem} enabled={open} />}
+              {leadId && lead && (
+                <Ficha360
+                  leadId={leadId}
+                  lead={{
+                    nome: lead.nome,
+                    telefone: lead.telefone,
+                    etapa: lead.estagio?.nome ?? '',
+                    temperatura: lead.temperatura,
+                    valor_estimado: lerValorEstimado(lead.valor_estimado),
+                    ultima_interacao: lead.ultima_interacao ?? null,
+                    responsavel: lead.responsavel?.nome ?? null,
+                    tags: lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [],
+                  }}
+                  onUsarMensagem={onUsarMensagem}
+                  enabled={open}
+                  // O cabeçalho do Sheet já mostra avatar, nome e telefone —
+                  // repetir aqui seria a mesma identidade duas vezes na tela.
+                  mostrarCabecalho={false}
+                />
+              )}
 
               <FieldGroupList
                 schema={schema}
