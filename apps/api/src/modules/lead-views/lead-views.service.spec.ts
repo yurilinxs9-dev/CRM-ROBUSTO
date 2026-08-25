@@ -192,6 +192,43 @@ describe('LeadViewsService', () => {
       expect(data.card_fields).toEqual(['telefone']);
     });
 
+    /** Chave repetida vira key duplicada no React depois; a primeira ocorrencia manda. */
+    it('descarta chave repetida em colunas e card_fields', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, {
+        nome: 'Repetida',
+        colunas: [{ key: 'nome', width: 240 }, { key: 'estagio' }, { key: 'nome', width: 100 }],
+        card_fields: ['telefone', 'tags', 'telefone'],
+      });
+
+      const data = prisma.leadView.create.mock.calls[0][0].data;
+      expect(data.colunas).toEqual([{ key: 'nome', width: 240 }, { key: 'estagio' }]);
+      expect(data.card_fields).toEqual(['telefone', 'tags']);
+    });
+
+    /** Sem teto, o cliente entope a coluna Json com milhares de entradas validas. */
+    it('trunca as listas em 100 entradas', async () => {
+      const { service, prisma } = makeService({
+        customFieldDef: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(Array.from({ length: 300 }, (_, i) => ({ key: `x_${i}` }))),
+        },
+      });
+
+      await service.create(gerente, {
+        nome: 'Gigante',
+        colunas: Array.from({ length: 300 }, (_, i) => ({ key: `x_${i}` })),
+        card_fields: Array.from({ length: 300 }, (_, i) => `x_${i}`),
+      });
+
+      const data = prisma.leadView.create.mock.calls[0][0].data;
+      expect(data.colunas).toHaveLength(100);
+      expect(data.card_fields).toHaveLength(100);
+      expect(data.colunas[99]).toEqual({ key: 'x_99' });
+      expect(data.card_fields[99]).toBe('x_99');
+    });
+
     it('so consulta campos custom ativos do tenant no escopo LEAD', async () => {
       const { service, prisma } = makeService();
       await service.create(gerente, { nome: 'X' });

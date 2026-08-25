@@ -51,6 +51,12 @@ const GESTORES: readonly string[] = ['GERENTE', 'SUPER_ADMIN'];
 const WIDTH_MIN = 60;
 const WIDTH_MAX = 640;
 
+/**
+ * Teto de entradas por lista. Nenhuma tela mostra 100 colunas — o número existe
+ * para que a coluna Json não vire depósito de milhares de chaves válidas.
+ */
+const MAX_ITENS = 100;
+
 /** Parte do corpo que descreve a configuração de tela. Tudo `unknown`: vem do cliente. */
 interface ConfigBody {
   tipo_padrao?: unknown;
@@ -132,6 +138,9 @@ export class LeadViewsService {
    * Recorta a config de tela igual aos filtros: só tipo conhecido, só chave que
    * existe hoje no tenant, largura dentro do que a tabela aguenta. O que sobra é
    * exatamente o que a UI consegue renderizar sem checagem extra na leitura.
+   *
+   * As listas ainda saem sem repetição (chave repetida viraria key duplicada no
+   * React) e cortadas em MAX_ITENS. Tudo em silêncio, como o resto do recorte.
    */
   private sanitizarConfig(body: ConfigBody, validas: Set<string>): ConfigSanitizada {
     const tipo_padrao = body.tipo_padrao === 'lista' ? 'lista' : 'kanban';
@@ -149,11 +158,15 @@ export class LeadViewsService {
     }
 
     const colunas: Array<{ key: string; width?: number }> = [];
+    const vistasColunas = new Set<string>();
     if (Array.isArray(body.colunas)) {
       for (const c of body.colunas) {
+        if (colunas.length >= MAX_ITENS) break;
         if (!c || typeof c !== 'object' || Array.isArray(c)) continue;
         const col = c as Record<string, unknown>;
         if (typeof col.key !== 'string' || !validas.has(col.key)) continue;
+        if (vistasColunas.has(col.key)) continue; // repetida: vale a primeira
+        vistasColunas.add(col.key);
         const width =
           typeof col.width === 'number' && Number.isFinite(col.width)
             ? Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(col.width)))
@@ -162,9 +175,16 @@ export class LeadViewsService {
       }
     }
 
-    const card_fields = Array.isArray(body.card_fields)
-      ? body.card_fields.filter((v): v is string => typeof v === 'string' && validas.has(v))
-      : [];
+    const card_fields: string[] = [];
+    const vistosCards = new Set<string>();
+    if (Array.isArray(body.card_fields)) {
+      for (const v of body.card_fields) {
+        if (card_fields.length >= MAX_ITENS) break;
+        if (typeof v !== 'string' || !validas.has(v) || vistosCards.has(v)) continue;
+        vistosCards.add(v);
+        card_fields.push(v);
+      }
+    }
 
     return {
       tipo_padrao,
