@@ -447,6 +447,12 @@ export function Ficha360({
     refetchInterval: POLL_MS,
   });
 
+  // O drawer e reaproveitado entre leads (o componente nao remonta). Sem isto,
+  // recolher a ficha de um lead deixaria a do PROXIMO recolhida tambem.
+  useEffect(() => {
+    setAberto(true);
+  }, [leadId]);
+
   // Libera o botao sozinho quando o bloqueio vence — sem isto o usuario
   // precisaria fechar e reabrir a ficha para o "Regenerar" voltar.
   useEffect(() => {
@@ -605,6 +611,18 @@ export function Ficha360({
           )}
           <Brain className="h-3.5 w-3.5" />
           Ficha 360
+          {/* Recolhida, a barra e a unica coisa visivel: o sinal de urgencia
+              nao pode sumir junto com o corpo. */}
+          {!aberto && classificacao && (
+            <span
+              className={cn(
+                'ml-auto rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide',
+                PILULA_CLASSIFICACAO[classificacao],
+              )}
+            >
+              {ROTULO_CLASSIFICACAO[classificacao]}
+            </span>
+          )}
         </button>
       )}
 
@@ -673,11 +691,13 @@ export function Ficha360({
               rotulo="Próximo contato"
               title={motivoProximaAcao !== '' ? motivoProximaAcao : undefined}
             >
-              {proximaAcao && (
+              {/* O motivo so aparecia dentro do bloco da sugestao — ficha sem
+                  `msg_sugerida` perdia o "por que". E o modelo pode devolver
+                  motivo SEM data: entao a linha existe com "—" no lugar da
+                  data, senao o motivo sumia de novo. */}
+              {(proximaAcao || motivoProximaAcao !== '') && (
                 <>
-                  {proximaAcao}
-                  {/* O motivo so aparecia dentro do bloco da sugestao — ficha sem
-                      `msg_sugerida` perdia o "por que" da data. */}
+                  {proximaAcao ?? <span className="font-normal text-muted-foreground">—</span>}
                   {motivoProximaAcao !== '' && (
                     <span className="mt-0.5 line-clamp-2 block text-xs font-normal text-muted-foreground">
                       {motivoProximaAcao}

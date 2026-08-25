@@ -126,7 +126,28 @@ function lerValorEstimado(valor: string | null | undefined): number | null {
 function tagsDoLead(lead: LeadDetail): string[] {
   const daRelacao = lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
   if (daRelacao.length > 0) return daRelacao;
-  return Array.isArray(lead.tags) ? lead.tags : [];
+  return tagsDoJson(lead);
+}
+
+/** Json cru: nada no banco impede número, null ou objeto no meio da lista. */
+function tagsDoJson(lead: LeadDetail): string[] {
+  if (!Array.isArray(lead.tags)) return [];
+  return lead.tags.filter((t) => typeof t === 'string' && t.trim() !== '');
+}
+
+/**
+ * O que o TagPicker recebe ao abrir a ficha: a UNIÃO dos dois estoques, não a
+ * precedência da exibição.
+ *
+ * Os dois estoques DESSINCRONIZAM: a public API grava na relação `lead_tags`, o
+ * picker grava só o Json `tags`. Exibir relação-first é certo (é a fonte mais
+ * confiável quando existe), mas SEEDAR relação-first poda: lead com relação
+ * ['A'] e Json ['A','B'] entraria no editor como ['A'], e o Salvar PATCHa
+ * `tags: ['A']` — 'B' some do Json de vez, e o card do Kanban lê só o Json.
+ * União no editor: nada é apagado por ter sido gravado no outro estoque.
+ */
+function tagsParaEditar(lead: LeadDetail): string[] {
+  return [...new Set([...(lead.lead_tags?.map((lt) => lt.tag.nome) ?? []), ...tagsDoJson(lead)])];
 }
 
 // ---------------------------------------------------------------------------
@@ -262,9 +283,9 @@ export function LeadDetailDrawer({
     // Lead no pool vem com responsavel_id null — o estado do Select é string,
     // e mandar null no PATCH derrubava o save inteiro com "Campos inválidos".
     setResponsavelId(lead.responsavel_id ?? '');
-    // Mesma precedência do resto do app (ver `tagsDoLead`): sem isso o picker
-    // abria vazio para lead com tag só na relação — e o Salvar apagava as tags.
-    setTags(tagsDoLead(lead));
+    // União dos dois estoques (ver `tagsParaEditar`): seedar com a precedência
+    // da exibição poda tag em qualquer uma das direções no Salvar.
+    setTags(tagsParaEditar(lead));
     setDirty(false);
   }, [lead, schema]);
 
