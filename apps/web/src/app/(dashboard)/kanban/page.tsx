@@ -192,26 +192,51 @@ export default function KanbanPage() {
   );
 
   /**
-   * `/kanban?novo=1` — destino da ação "Novo lead" da palette (Ctrl+K). Espera
-   * os estágios chegarem (o diálogo sem estágio não teria onde criar o lead) e
-   * apaga o parâmetro depois, senão um F5 reabriria o diálogo para sempre.
+   * "Novo lead" da palette (Ctrl+K) chega por dois caminhos, porque a palette é
+   * global e o diálogo é daqui:
+   *
+   * 1. De outra tela: `/kanban?novo=1`. O parâmetro é lido UMA vez na montagem e
+   *    apagado na hora — deixá-lo na URL faria o F5 reabrir um diálogo que
+   *    ninguém pediu. A abertura em si espera os estágios (sem estágio o diálogo
+   *    não teria onde criar o lead), daí o `pendente` em vez de abrir aqui.
+   * 2. Já estando no kanban: o evento abaixo. Nesse caso um `router.push` não
+   *    remontaria nada, então não há parâmetro nenhum envolvido.
    *
    * Lê de `window.location` em vez de `useSearchParams` de propósito: o hook
    * exigiria envolver esta página cliente numa fronteira de Suspense só por
    * causa de um parâmetro opcional.
    */
-  const novoLeadPedido = useRef(false);
+  const [novoLeadPendente, setNovoLeadPendente] = useState(false);
+  const paramNovoLido = useRef(false);
   useEffect(() => {
-    if (novoLeadPedido.current || stages.length === 0) return;
+    if (paramNovoLido.current) return;
+    paramNovoLido.current = true;
     const params = new URLSearchParams(window.location.search);
     if (params.get('novo') !== '1') return;
-    novoLeadPedido.current = true;
-    setDefaultStageId(null);
-    setDialogOpen(true);
+    setNovoLeadPendente(true);
     params.delete('novo');
     const resto = params.toString();
     router.replace(resto ? `/kanban?${resto}` : '/kanban');
-  }, [stages.length, router]);
+  }, [router]);
+
+  useEffect(() => {
+    if (!novoLeadPendente || stages.length === 0) return;
+    setNovoLeadPendente(false);
+    setDefaultStageId(null);
+    setDialogOpen(true);
+  }, [novoLeadPendente, stages.length]);
+
+  // Sem estágio não há o que abrir — o mesmo motivo que desabilita o botão
+  // "Novo Lead" do cabeçalho. Sem ouvinte, o evento da palette só se perde.
+  useEffect(() => {
+    if (stages.length === 0) return;
+    const aoPedirNovoLead = () => {
+      setDefaultStageId(null);
+      setDialogOpen(true);
+    };
+    window.addEventListener('crm:novo-lead', aoPedirNovoLead);
+    return () => window.removeEventListener('crm:novo-lead', aoPedirNovoLead);
+  }, [stages.length]);
 
   // local state for column ordering during drag (optimistic)
   const [stageOrderOverride, setStageOrderOverride] = useState<string[] | null>(null);

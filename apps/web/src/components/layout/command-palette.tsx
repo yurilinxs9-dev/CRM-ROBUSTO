@@ -13,15 +13,13 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import {
-  BarChart3, Bookmark, CalendarDays, Kanban, LayoutDashboard, List, MessageSquare,
-  Megaphone, Plus, Settings, Shield, Smartphone, User, type LucideIcon,
-} from 'lucide-react';
+import { Bookmark, Plus, Shield, User } from 'lucide-react';
 import {
   CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from '@/components/ui/command';
+import { NAV_ITEMS, navVisivelPara, type NavEntry } from '@/components/layout/sidebar';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 
@@ -44,34 +42,14 @@ interface ViewResult {
   tipo_padrao: string;
 }
 
-interface ItemNav {
-  rotulo: string;
-  href: string;
-  Icone: LucideIcon;
-  /**
-   * Quem enxerga o atalho. Espelha o filtro do sidebar: sem isso a palette
-   * viraria porta dos fundos para tela que o menu esconde do mesmo usuário.
-   */
-  visivel?: (role: string | undefined) => boolean;
-}
-
-const NAVEGACAO: ReadonlyArray<ItemNav> = [
-  { rotulo: 'Dashboard', href: '/dashboard', Icone: LayoutDashboard },
-  { rotulo: 'Analytics', href: '/analytics', Icone: BarChart3 },
-  { rotulo: 'Kanban', href: '/kanban', Icone: Kanban },
-  { rotulo: 'Leads', href: '/leads', Icone: List },
-  { rotulo: 'Conversas', href: '/chat', Icone: MessageSquare, visivel: (r) => r !== 'VISUALIZADOR' },
-  {
-    rotulo: 'Follow-up IA',
-    href: '/followup',
-    Icone: Megaphone,
-    visivel: (r) => r === 'SUPER_ADMIN' || r === 'GERENTE',
-  },
-  { rotulo: 'Agenda', href: '/agenda', Icone: CalendarDays },
-  { rotulo: 'Instâncias', href: '/instances', Icone: Smartphone },
-  { rotulo: 'Configurações', href: '/settings', Icone: Settings },
-  { rotulo: 'Admin', href: '/admin', Icone: Shield, visivel: (r) => r === 'SUPER_ADMIN' },
-];
+/**
+ * Item "Admin": não sai do `NAV_ITEMS` porque o sidebar também o trata à parte —
+ * ele não é filtrado por ROLE e sim por `is_platform_admin`, que é o mesmo campo
+ * que o guard de `app/(dashboard)/admin/layout.tsx` usa para deixar entrar.
+ * Gatear por role aqui mostraria o atalho a um SUPER_ADMIN de tenant só para
+ * chutá-lo de volta para /dashboard.
+ */
+const ITEM_ADMIN: NavEntry = { href: '/admin', label: 'Admin', icon: Shield };
 
 /** Chave lida pelo `useLeadView` na montagem — precisa bater exatamente. */
 const CHAVE_VIEW = 'crm.leadView';
@@ -81,7 +59,9 @@ const contem = (texto: string, filtro: string) =>
 
 export function CommandPalette(): JSX.Element {
   const router = useRouter();
+  const pathname = usePathname();
   const role = useAuthStore((s) => s.user?.role);
+  const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
   const [open, setOpen] = useState(false);
   const [busca, setBusca] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -146,20 +126,42 @@ export function CommandPalette(): JSX.Element {
     router.push(href);
   };
 
+  /**
+   * Ativar view tem DOIS caminhos porque o `useLeadView` só lê o localStorage no
+   * inicializador do mount: quem já está em /leads ou /kanban não remonta nada
+   * com o `router.push`, e sem o evento a escolha não teria efeito visível.
+   * O storage continua sendo gravado — é ele que cobre a montagem depois da
+   * navegação, e é ele que faz a view sobreviver ao F5.
+   */
   const ativarView = (view: ViewResult) => {
     try {
       localStorage.setItem(CHAVE_VIEW, view.id);
     } catch {
       // storage indisponível: navega mesmo assim, sem view ativa
     }
+    window.dispatchEvent(new CustomEvent('crm:view-ativada', { detail: view.id }));
     ir(view.tipo_padrao === 'lista' ? '/leads' : '/kanban');
   };
 
+  /**
+   * Novo lead: o diálogo mora no kanban. Estando FORA dele, o `?novo=1` viaja
+   * junto da navegação e a página o lê na montagem. Estando DENTRO, `router.push`
+   * na mesma rota não remonta nem dispara efeito — só deixaria o parâmetro
+   * pendurado na URL para abrir um diálogo fantasma no próximo F5. Por isso o
+   * caminho de dentro é o evento.
+   */
+  const novoLead = () => {
+    setOpen(false);
+    if (pathname === '/kanban') window.dispatchEvent(new CustomEvent('crm:novo-lead'));
+    else router.push('/kanban?novo=1');
+  };
+
   const filtro = busca.trim().toLowerCase();
-  const navegacaoVisivel = useMemo(
-    () => NAVEGACAO.filter((n) => (!n.visivel || n.visivel(role)) && contem(n.rotulo, filtro)),
-    [role, filtro],
-  );
+  const navegacaoVisivel = useMemo(() => {
+    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role));
+    if (isPlatformAdmin) itens.push(ITEM_ADMIN);
+    return itens.filter((item) => contem(item.label, filtro));
+  }, [role, isPlatformAdmin, filtro]);
   const viewsVisiveis = useMemo(
     () => views.filter((v) => contem(v.nome, filtro)),
     [views, filtro],
@@ -199,10 +201,10 @@ export function CommandPalette(): JSX.Element {
         )}
         {navegacaoVisivel.length > 0 && (
           <CommandGroup heading="Navegação">
-            {navegacaoVisivel.map(({ rotulo, href, Icone }) => (
+            {navegacaoVisivel.map(({ label, href, icon: Icone }) => (
               <CommandItem key={href} value={`nav-${href}`} onSelect={() => ir(href)}>
                 <Icone className="h-4 w-4 opacity-70" />
-                {rotulo}
+                {label}
               </CommandItem>
             ))}
           </CommandGroup>
@@ -227,7 +229,7 @@ export function CommandPalette(): JSX.Element {
           <>
             <CommandSeparator />
             <CommandGroup heading="Ações">
-              <CommandItem value="acao-novo-lead" onSelect={() => ir('/kanban?novo=1')}>
+              <CommandItem value="acao-novo-lead" onSelect={novoLead}>
                 <Plus className="h-4 w-4 opacity-70" />
                 Novo lead
               </CommandItem>

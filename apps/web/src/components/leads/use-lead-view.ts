@@ -164,6 +164,22 @@ export function useLeadView(): UseLeadView {
     [aplicar, views],
   );
 
+  /**
+   * A palette (Ctrl+K) também ativa view, e ela é global: quando o usuário já
+   * está em /leads ou /kanban, o `router.push` dela é na rota em que ele já
+   * está — nada remonta, e a chave do localStorage só é lida no inicializador
+   * do mount. Sem este ouvinte, escolher uma view salva na palette de dentro da
+   * própria tela não faria absolutamente nada.
+   */
+  useEffect(() => {
+    const aoAtivar = (e: Event) => {
+      const { detail } = e as CustomEvent<string>;
+      if (typeof detail === 'string') selectView(detail);
+    };
+    window.addEventListener('crm:view-ativada', aoAtivar);
+    return () => window.removeEventListener('crm:view-ativada', aoAtivar);
+  }, [selectView]);
+
   useEffect(() => {
     if (!isSuccess || activeViewId === null) return;
 

@@ -30,6 +30,22 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/settings', label: 'Configurações', icon: Settings },
 ];
 
+/**
+ * Quem enxerga cada item do menu.
+ *
+ * Mora aqui, ao lado do `NAV_ITEMS`, porque o sidebar NÃO é o único consumidor:
+ * a palette (Ctrl+K) monta a seção "Navegação" da mesma lista. Duplicar o
+ * predicado faria a palette virar porta dos fundos para tela que o menu esconde
+ * do mesmo usuário — e a divergência só apareceria em produção, no papel errado.
+ */
+export function navVisivelPara(item: NavEntry, role: string | undefined): boolean {
+  // VISUALIZADOR nao tem acesso a Conversas.
+  if (item.href === '/chat' && role === 'VISUALIZADOR') return false;
+  // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).
+  if (item.href === '/followup' && role !== 'SUPER_ADMIN' && role !== 'GERENTE') return false;
+  return true;
+}
+
 interface SidebarProps {
   collapsed?: boolean;
   onNavigate?: () => void;
@@ -40,13 +56,7 @@ interface SidebarProps {
 export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, className }: SidebarProps) {
   const role = useAuthStore((s) => s.user?.role);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
-  // VISUALIZADOR nao tem acesso a Conversas — escondemos do menu.
-  // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).
-  const visibleNav = NAV_ITEMS.filter(
-    (item) =>
-      !(item.href === '/chat' && role === 'VISUALIZADOR') &&
-      !(item.href === '/followup' && role !== 'SUPER_ADMIN' && role !== 'GERENTE'),
-  );
+  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role));
 
   return (
     <aside
