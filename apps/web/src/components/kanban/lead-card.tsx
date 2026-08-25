@@ -124,6 +124,12 @@ interface LeadCardProps extends HTMLAttributes<HTMLDivElement> {
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   showCheckbox?: boolean;
+  /**
+   * `card_fields` da view ativa: quais blocos opcionais o card mostra. Lista
+   * vazia (ou ausente) = card padrão, com tudo — é o que toda tela que não passa
+   * a prop continua vendo.
+   */
+  cardFields?: string[];
 }
 
 const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
@@ -142,12 +148,20 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       selected,
       onToggleSelect,
       showCheckbox,
+      cardFields,
       className,
       ...props
     },
     ref,
   ) => {
     const [isClaiming, setIsClaiming] = useState(false);
+    /**
+     * O que a view escolheu mostrar. Só governa o que é INFORMAÇÃO opcional:
+     * nome, foto, não lidas e os alertas de SLA/ociosidade ficam de fora desta
+     * conta de propósito — são a identidade do card e o aviso de que algo está
+     * atrasado, e um card que esconde isso deixa de servir para o que existe.
+     */
+    const mostrar = (campo: string): boolean => !cardFields?.length || cardFields.includes(campo);
     const hasUnread = lead.mensagens_nao_lidas > 0;
     const enteredAt = lead.estagio_entered_at ?? lead.created_at;
     const dis = daysInStage(enteredAt);
@@ -178,9 +192,12 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       idleElapsedMs !== null &&
       idleElapsedMs > durationToMs(idleAlertConfig?.duration ?? 2, idleAlertConfig?.unit ?? 'HOURS');
     const followupDue =
-      !!lead.proximo_followup && new Date(lead.proximo_followup).getTime() <= Date.now();
+      mostrar('proximo_followup') &&
+      !!lead.proximo_followup &&
+      new Date(lead.proximo_followup).getTime() <= Date.now();
 
     const pendingTasks = lead.pending_tasks_count ?? 0;
+    const tagsVisiveis = mostrar('tags') ? lead.tags ?? [] : [];
 
     const stop = (e: MouseEvent) => e.stopPropagation();
 
@@ -282,10 +299,12 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </Avatar>
           <div className="flex-1 min-w-0">
             <p className="text-[13px] font-semibold leading-tight truncate">{lead.nome}</p>
-            <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1 leading-tight">
-              <MessageCircle className="h-3 w-3 text-emerald-500 shrink-0" />
-              {formatPhone(lead.telefone)}
-            </p>
+            {mostrar('telefone') && (
+              <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1 leading-tight">
+                <MessageCircle className="h-3 w-3 text-emerald-500 shrink-0" />
+                {formatPhone(lead.telefone)}
+              </p>
+            )}
           </div>
         </div>
 
@@ -295,7 +314,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
           </p>
         )}
 
-        {((lead.tags && lead.tags.length > 0) || pendingTasks > 0) && (
+        {(tagsVisiveis.length > 0 || pendingTasks > 0) && (
           <div className="flex flex-wrap items-center gap-1 mb-1">
             {pendingTasks > 0 && (
               <Badge
@@ -306,7 +325,7 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
                 {pendingTasks}
               </Badge>
             )}
-            {lead.tags?.slice(0, 3).map((t) => (
+            {tagsVisiveis.slice(0, 3).map((t) => (
               <Badge key={t} variant="outline" className="text-[10px] px-1.5 py-0">
                 {t}
               </Badge>
@@ -316,9 +335,11 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
 
         <div className="flex items-center justify-between gap-2 text-[11px]">
           <div className="flex items-center gap-1.5 min-w-0">
-            <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0 leading-tight', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
-              {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
-            </Badge>
+            {mostrar('temperatura') && (
+              <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0 leading-tight', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
+                {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
+              </Badge>
+            )}
             {isPoolEnabled && lead.responsavel && (
               <span className="flex items-center gap-1 text-[10px] text-muted-foreground truncate">
                 <Avatar className="h-3.5 w-3.5 shrink-0">
@@ -331,7 +352,9 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
             )}
           </div>
           <div className="flex items-center gap-1.5 min-w-0">
-            {lead.valor_estimado && <span className="font-semibold tnum text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>}
+            {mostrar('valor_estimado') && lead.valor_estimado && (
+              <span className="font-semibold tnum text-emerald-500 truncate">{formatBRL(lead.valor_estimado)}</span>
+            )}
             <span className="text-muted-foreground shrink-0">{timeAgo(lead.ultima_interacao, lead.created_at)}</span>
           </div>
         </div>
