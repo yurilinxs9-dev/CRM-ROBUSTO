@@ -1,3 +1,4 @@
+import type { InsightContexto } from './insight-prompt';
 import { extrairInsight, mesclarMemoria, montarPromptInsight } from './insight-prompt';
 
 describe('extrairInsight', () => {
@@ -88,13 +89,66 @@ describe('mesclarMemoria', () => {
   });
 });
 
+/** Contexto minimo reutilizavel nos testes de prompt. */
+function ctxMinimo(): InsightContexto {
+  return {
+    lead: { nome: 'Ana', telefone: '55999', etapa: 'Consulta', temperatura: 'MORNO', valor_estimado: 1500, ultima_interacao: new Date('2026-08-20') },
+    insightAnterior: { resumo: 'antigo', memoria: [{ fato: 'gripe', quando_dito: '2026-08-10' }] },
+    mensagens: [{ de: 'cliente', texto: 'quero orçamento', em: new Date('2026-08-20') }],
+  };
+}
+
+describe('nota do atendimento e ultima compra', () => {
+  const base = {
+    resumo: 'Cliente pediu prazo.',
+    memoria_novos_fatos: [],
+    proxima_acao_em_dias: 3,
+    proxima_acao_motivo: 'confirmar metragem',
+    msg_sugerida: 'Oi!',
+  };
+
+  it('nota valida e compra citada passam sanitizados', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base,
+      nota_atendimento: 8.5,
+      nota_ponto_forte: 'respondeu rápido',
+      nota_ponto_melhoria: 'não confirmou o prazo',
+      ultima_compra: { descricao: 'treliça e vergalhão', valor: 4200, quando: 'mês passado' },
+    }));
+    expect(r?.nota_atendimento).toBe(9); // round de 8.5
+    expect(r?.nota_ponto_forte).toBe('respondeu rápido');
+    expect(r?.ultima_compra).toEqual({ descricao: 'treliça e vergalhão', valor: 4200, quando: 'mês passado' });
+  });
+
+  it('nota fora do dominio vira null; compra suja vira null; valor negativo vira null dentro da compra', () => {
+    const r1 = extrairInsight(JSON.stringify({ ...base, nota_atendimento: 'otima' }));
+    expect(r1?.nota_atendimento).toBeNull();
+    const r2 = extrairInsight(JSON.stringify({ ...base, nota_atendimento: 15, ultima_compra: 'comprou algo' }));
+    expect(r2?.nota_atendimento).toBe(10); // clamp
+    expect(r2?.ultima_compra).toBeNull();
+    const r3 = extrairInsight(JSON.stringify({ ...base, ultima_compra: { descricao: 'cimento', valor: -5, quando: 42 } }));
+    expect(r3?.ultima_compra).toEqual({ descricao: 'cimento', valor: null, quando: '' });
+  });
+
+  it('campos ausentes: nota null, compra null, textos vazios (retrocompat)', () => {
+    const r = extrairInsight(JSON.stringify(base));
+    expect(r?.nota_atendimento).toBeNull();
+    expect(r?.ultima_compra).toBeNull();
+    expect(r?.nota_ponto_forte).toBe('');
+  });
+
+  it('prompt pede as chaves novas e as regras (avaliar o atendente; nunca inventar compra)', () => {
+    const msgs = montarPromptInsight(ctxMinimo());
+    expect(msgs[0].content).toMatch(/nota_atendimento/);
+    expect(msgs[0].content).toMatch(/ultima_compra/);
+    expect(msgs[0].content).toMatch(/atendente/i);
+    expect(msgs[0].content).toMatch(/[nN]unca invente/);
+  });
+});
+
 describe('montarPromptInsight', () => {
   it('system exige JSON e proibe responder pelo cliente; user carrega lead, memoria e mensagens', () => {
-    const msgs = montarPromptInsight({
-      lead: { nome: 'Ana', telefone: '55999', etapa: 'Consulta', temperatura: 'MORNO', valor_estimado: 1500, ultima_interacao: new Date('2026-08-20') },
-      insightAnterior: { resumo: 'antigo', memoria: [{ fato: 'gripe', quando_dito: '2026-08-10' }] },
-      mensagens: [{ de: 'cliente', texto: 'quero orçamento', em: new Date('2026-08-20') }],
-    });
+    const msgs = montarPromptInsight(ctxMinimo());
     expect(msgs[0].role).toBe('system');
     expect(msgs[0].content).toMatch(/JSON/);
     expect(msgs[1].content).toContain('Ana');
