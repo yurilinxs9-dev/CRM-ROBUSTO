@@ -114,7 +114,8 @@ function comoMemoria(valor: unknown): MemoriaFato[] {
 /**
  * Lista de candidatos a JSON dentro da resposta do modelo, do mais provavel ao menos.
  * 1) do primeiro `{` ate o ultimo `}` (cobre objeto com chaves aninhadas);
- * 2) do primeiro `{` ate o `}` que fecha o balanceamento (cobre prosa com `}` depois do JSON).
+ * 2) TODOS os objetos balanceados de nivel raiz, na ordem em que aparecem — cobre
+ *    preambulo com `{chaves}` soltas e ruido do tipo `{"thinking":...} {json real}`.
  */
 function candidatosJson(texto: string): string[] {
   const inicio = texto.indexOf('{');
@@ -123,6 +124,7 @@ function candidatosJson(texto: string): string[] {
   const fim = texto.lastIndexOf('}');
   if (fim > inicio) candidatos.push(texto.slice(inicio, fim + 1));
 
+  let abertura = -1;
   let profundidade = 0;
   let dentroDeString = false;
   let escapado = false;
@@ -138,22 +140,38 @@ function candidatosJson(texto: string): string[] {
       continue;
     }
     if (c === '"') dentroDeString = true;
-    else if (c === '{') profundidade++;
-    else if (c === '}') {
+    else if (c === '{') {
+      if (profundidade === 0) abertura = i;
+      profundidade++;
+    } else if (c === '}' && profundidade > 0) {
       profundidade--;
       if (profundidade === 0) {
-        const balanceado = texto.slice(inicio, i + 1);
+        const balanceado = texto.slice(abertura, i + 1);
         if (!candidatos.includes(balanceado)) candidatos.push(balanceado);
-        break;
       }
     }
   }
   return candidatos;
 }
 
+const CHAVES_INSIGHT = [
+  'resumo',
+  'memoria_novos_fatos',
+  'proxima_acao_em_dias',
+  'proxima_acao_motivo',
+  'msg_sugerida',
+] as const;
+
+/** Objeto so conta como insight se trouxer ao menos uma das 5 chaves do contrato. */
+function pareceInsight(obj: Record<string, unknown>): boolean {
+  return CHAVES_INSIGHT.some((chave) => chave in obj);
+}
+
 /**
  * Parse defensivo da resposta do modelo local (3B costuma sujar a saida com
- * markdown e conversa). Nunca lanca: devolve null quando nao ha JSON aproveitavel.
+ * markdown e conversa). Nunca lanca.
+ * Contrato: `null` significa "nao veio JSON utilizavel" — o chamador deve tratar como
+ * falha (retry / manter o insight anterior), nunca sobrescrever ficha boa com brancos.
  */
 export function extrairInsight(textoModelo: string): InsightGerado | null {
   if (typeof textoModelo !== 'string' || textoModelo.trim() === '') return null;
@@ -165,7 +183,8 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
     } catch {
       continue;
     }
-    if (!ehObjeto(bruto)) continue;
+    // Objeto sem nenhuma das 5 chaves e ruido (ex.: {"thinking":...}): tenta o proximo.
+    if (!ehObjeto(bruto) || !pareceInsight(bruto)) continue;
     return {
       resumo: comoTexto(bruto.resumo, LIMITE_RESUMO),
       memoria_novos_fatos: comoMemoria(bruto.memoria_novos_fatos),

@@ -56,6 +56,20 @@ describe('extrairInsight', () => {
     expect(extrairInsight(undefined as unknown as string)).toBeNull();
   });
 
+  it('objeto de ruido antes do real e descartado; vence o candidato com as chaves', () => {
+    const r = extrairInsight('{"thinking":"vou analisar a conversa"}\n' + valido);
+    expect(r?.resumo).toContain('prazo');
+    expect(r?.proxima_acao_em_dias).toBe(3);
+    // preambulo com chaves soltas antes do JSON real tambem e recuperado
+    const r2 = extrairInsight('Segue {conforme pedido}: ' + valido);
+    expect(r2?.resumo).toContain('prazo');
+  });
+
+  it('objeto sem nenhuma das 5 chaves -> null (nao vira insight vazio)', () => {
+    expect(extrairInsight('{"thinking":"nao consegui"}')).toBeNull();
+    expect(extrairInsight('blz: {"ok":true, "detalhe":{"x":1}} fim')).toBeNull();
+  });
+
   it('truncagem nao parte par substituto (emoji na fronteira)', () => {
     const base = JSON.parse(valido);
     const r = extrairInsight(JSON.stringify({ ...base, resumo: 'a'.repeat(799) + '😀fim' }));
