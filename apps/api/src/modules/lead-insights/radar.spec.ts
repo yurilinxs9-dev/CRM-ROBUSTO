@@ -52,6 +52,7 @@ const gerente: AuthUser = { ...operador, id: 'u9', role: UserRole.GERENTE };
 interface WhereRadar {
   tenant_id?: string;
   responsavel_id?: string;
+  OR?: unknown[];
   estagio?: { is_won: boolean; is_lost: boolean };
   temperatura?: { in: string[] };
   ultima_interacao?: { lte: Date };
@@ -215,6 +216,32 @@ describe('LeadInsightsService.radar', () => {
     for (let i = 0; i < 3; i++) {
       expect(argsDe(m.lead, i).where.responsavel_id).toBe('u1');
     }
+  });
+
+  it('modo compartilhado: o OR do pool sobrevive nas 3 secoes, ao lado do filtro da secao', async () => {
+    // O `where` trafega como Record<string, unknown>: nada de tipo impede uma
+    // secao futura de trazer o proprio `OR` e comer o da visibilidade em
+    // silencio — o que vazaria lead de outro operador com a suite verde.
+    const m = montar();
+    m.tenant.findUnique.mockResolvedValue({ pool_enabled: true });
+
+    await m.service.radar(operador);
+
+    const orDoPool = [{ responsavel_id: null, is_private: false }, { responsavel_id: 'u1' }];
+    for (let i = 0; i < 3; i++) {
+      const args = argsDe(m.lead, i);
+      expect(args.where.OR).toEqual(orDoPool);
+      // No pool, o vinculo e pelo OR: amarrar responsavel_id esconderia o pool.
+      expect(args.where.responsavel_id).toBeUndefined();
+    }
+    // Filtro da secao entra como chave IRMA do OR (AND implicito do Prisma).
+    expect(argsDe(m.lead, 0).where.lead_insight).toEqual({ proxima_acao_at: { lte: AGORA } });
+    expect(argsDe(m.lead, 1).where.ultima_interacao).toEqual({
+      lte: new Date(AGORA.getTime() - 2 * DIA),
+    });
+    expect(argsDe(m.lead, 2).where.ultima_interacao).toEqual({
+      lte: new Date(AGORA.getTime() - 7 * DIA),
+    });
   });
 
   it('GERENTE em modo individual nao e amarrado a responsavel_id', async () => {

@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { AiFeature, type Prisma } from '@prisma/client';
+import { AiFeature, LeadTemperatura, type Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
@@ -50,7 +50,11 @@ const RADAR_CAP = 30;
 /** Lead quente parado a partir daqui ja e oportunidade esfriando na mao. */
 const RADAR_PROMISSOR_DIAS = 2;
 const RADAR_ESFRIANDO_DIAS = 7;
-const RADAR_TEMPERATURAS_QUENTES = ['QUENTE', 'MUITO_QUENTE'];
+/** Tipado pelo enum: rename no schema quebra aqui, nao em producao. */
+const RADAR_TEMPERATURAS_QUENTES: LeadTemperatura[] = [
+  LeadTemperatura.QUENTE,
+  LeadTemperatura.MUITO_QUENTE,
+];
 
 const TIMEZONE = 'America/Sao_Paulo';
 /** Teto da busca pela proxima hora dentro da janela do tenant. */
@@ -166,22 +170,19 @@ function motivoDerivado(dias: number | null, quente: boolean): string {
 }
 
 function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
-  const temperatura = String(linha.temperatura);
+  const quente = RADAR_TEMPERATURAS_QUENTES.includes(linha.temperatura);
   const motivoFicha = linha.lead_insight?.proxima_acao_motivo.trim() ?? '';
   return {
     lead_id: linha.id,
     nome: linha.nome,
     telefone: linha.telefone,
     etapa: linha.estagio?.nome ?? 'sem etapa',
-    temperatura,
+    temperatura: String(linha.temperatura),
     ultima_interacao: linha.ultima_interacao,
     motivo:
       motivoFicha !== ''
         ? motivoFicha
-        : motivoDerivado(
-            diasParado(linha.ultima_interacao, agora),
-            RADAR_TEMPERATURAS_QUENTES.includes(temperatura),
-          ),
+        : motivoDerivado(diasParado(linha.ultima_interacao, agora), quente),
     msg_sugerida: linha.lead_insight?.msg_sugerida ?? '',
     proxima_acao_at: linha.lead_insight?.proxima_acao_at ?? null,
   };
