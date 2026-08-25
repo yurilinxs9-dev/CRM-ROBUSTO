@@ -7,6 +7,11 @@ interface SalvarViewBody {
   nome?: string;
   filtros?: unknown;
   compartilhada?: boolean;
+  // Config de tela; chega crua e o service sanitiza.
+  tipo_padrao?: unknown;
+  sort?: unknown;
+  colunas?: unknown;
+  card_fields?: unknown;
 }
 
 @Controller('lead-views')

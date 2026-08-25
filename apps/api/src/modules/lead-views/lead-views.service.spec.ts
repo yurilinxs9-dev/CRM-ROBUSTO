@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { LeadViewsService } from './lead-views.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -11,6 +11,7 @@ import type { AuthUser } from '../../common/types/auth-user';
  *    dois operadores do mesmo workspace mexeriam na barra lateral um do outro.
  * 2. Gravar qualquer coisa na coluna Json. O que entra aqui volta depois como
  *    query string da listagem; chave desconhecida tem que ser descartada.
+ * 3. View compartilhada é da equipe inteira — só gestor mexe nela.
  */
 
 const TENANT = 'tenant-1';
@@ -24,15 +25,29 @@ const user: AuthUser = {
   tenantId: TENANT,
 };
 
+const operador = user;
+
+const gerente: AuthUser = {
+  ...user,
+  id: 'g1',
+  nome: 'Gerente',
+  email: 'g@x.com',
+  role: UserRole.GERENTE as never,
+};
+
 function makeService(over: Record<string, any> = {}) {
   const prisma: any = {
     leadView: {
       findMany: jest.fn().mockResolvedValue([]),
-      findFirst: jest.fn().mockResolvedValue({ id: 'v1' }),
+      findFirst: jest.fn().mockResolvedValue({ id: 'v1', user_id: 'u1' }),
       create: jest.fn().mockImplementation(({ data }: any) => Promise.resolve({ id: 'v-novo', ...data })),
       update: jest.fn().mockImplementation(({ data }: any) => Promise.resolve({ id: 'v1', ...data })),
       delete: jest.fn().mockResolvedValue({}),
       ...(over.leadView ?? {}),
+    },
+    customFieldDef: {
+      findMany: jest.fn().mockResolvedValue([{ key: 'x_cnpj' }]),
+      ...(over.customFieldDef ?? {}),
     },
   };
   return { service: new LeadViewsService(prisma), prisma };
@@ -70,7 +85,7 @@ describe('LeadViewsService', () => {
 
     it('compartilhada nasce sem dono', async () => {
       const { service, prisma } = makeService();
-      await service.create(user, { nome: 'Do time', compartilhada: true });
+      await service.create(gerente, { nome: 'Do time', compartilhada: true });
 
       expect(prisma.leadView.create.mock.calls[0][0].data.user_id).toBeNull();
     });
@@ -139,6 +154,112 @@ describe('LeadViewsService', () => {
       await service.update(user, 'v1', { nome: 'So o nome' });
 
       expect(prisma.leadView.update.mock.calls[0][0].data).toEqual({ nome: 'So o nome' });
+    });
+  });
+
+  describe('sanitizacao da config de view', () => {
+    it('grava config valida', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, {
+        nome: 'Minha lista',
+        tipo_padrao: 'lista',
+        sort: { campo: 'valor_estimado', dir: 'desc' },
+        colunas: [{ key: 'nome', width: 240 }, { key: 'x_cnpj' }, { key: 'estagio' }],
+        card_fields: ['valor_estimado', 'tags'],
+      });
+
+      const data = prisma.leadView.create.mock.calls[0][0].data;
+      expect(data.tipo_padrao).toBe('lista');
+      expect(data.sort).toEqual({ campo: 'valor_estimado', dir: 'desc' });
+      expect(data.colunas).toEqual([{ key: 'nome', width: 240 }, { key: 'x_cnpj' }, { key: 'estagio' }]);
+      expect(data.card_fields).toEqual(['valor_estimado', 'tags']);
+    });
+
+    it('descarta chave desconhecida, sort fora da whitelist e clampa width', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, {
+        nome: 'Suja',
+        tipo_padrao: 'grafico',
+        sort: { campo: 'x_cnpj', dir: 'desc' }, // custom nao e ordenavel
+        colunas: [{ key: 'nao_existe' }, { key: 'nome', width: 9000 }],
+        card_fields: ['nao_existe', 'telefone'],
+      });
+
+      const data = prisma.leadView.create.mock.calls[0][0].data;
+      expect(data.tipo_padrao).toBe('kanban');
+      expect(data.sort).toEqual({});
+      expect(data.colunas).toEqual([{ key: 'nome', width: 640 }]);
+      expect(data.card_fields).toEqual(['telefone']);
+    });
+
+    it('so consulta campos custom ativos do tenant no escopo LEAD', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, { nome: 'X' });
+
+      expect(prisma.customFieldDef.findMany.mock.calls[0][0].where).toEqual({
+        tenant_id: TENANT,
+        escopo: 'LEAD',
+        active: true,
+      });
+    });
+
+    it('update so grava a config presente no corpo', async () => {
+      const { service, prisma } = makeService();
+      await service.update(user, 'v1', { colunas: [{ key: 'nome' }] });
+
+      expect(prisma.leadView.update.mock.calls[0][0].data).toEqual({
+        colunas: [{ key: 'nome' }],
+      });
+    });
+  });
+
+  describe('view compartilhada exige gestor', () => {
+    it('OPERADOR nao cria compartilhada', async () => {
+      const { service, prisma } = makeService();
+      await expect(
+        service.create(operador, { nome: 'Time', compartilhada: true }),
+      ).rejects.toThrow('Apenas gestores');
+      expect(prisma.leadView.create).not.toHaveBeenCalled();
+    });
+
+    it('OPERADOR nao edita view compartilhada', async () => {
+      const { service, prisma } = makeService({
+        leadView: { findFirst: jest.fn().mockResolvedValue({ id: 'v1', user_id: null }) },
+      });
+
+      await expect(service.update(operador, 'v1', { nome: 'Novo' })).rejects.toThrow(
+        'Apenas gestores',
+      );
+      expect(prisma.leadView.update).not.toHaveBeenCalled();
+    });
+
+    it('OPERADOR nao apaga view compartilhada', async () => {
+      const { service, prisma } = makeService({
+        leadView: { findFirst: jest.fn().mockResolvedValue({ id: 'v1', user_id: null }) },
+      });
+
+      await expect(service.remove(operador, 'v1')).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.leadView.delete).not.toHaveBeenCalled();
+    });
+
+    it('GERENTE pode', async () => {
+      const { service } = makeService();
+      await expect(service.create(gerente, { nome: 'Time', compartilhada: true })).resolves.toBeDefined();
+    });
+
+    it('GERENTE edita view compartilhada', async () => {
+      const { service, prisma } = makeService({
+        leadView: { findFirst: jest.fn().mockResolvedValue({ id: 'v1', user_id: null }) },
+      });
+
+      await service.update(gerente, 'v1', { nome: 'Novo' });
+      expect(prisma.leadView.update).toHaveBeenCalled();
+    });
+
+    it('OPERADOR continua editando a propria view pessoal', async () => {
+      const { service, prisma } = makeService();
+      await service.update(operador, 'v1', { nome: 'Minha' });
+      expect(prisma.leadView.update).toHaveBeenCalled();
     });
   });
 });
