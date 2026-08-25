@@ -694,6 +694,11 @@ model LeadInsight {
   proxima_acao_at          DateTime?
   proxima_acao_motivo      String    @default("")
   msg_sugerida             String    @default("")
+  // Ficha 360 (spec 2026-08-25-ficha-360): avaliacao do atendimento e compra citada.
+  nota_atendimento         Int?
+  nota_ponto_forte         String    @default("")
+  nota_ponto_melhoria      String    @default("")
+  ultima_compra            Json? // { descricao, valor, quando } | null
   ultima_msg_processada_at DateTime?
   geracoes                 Int       @default(0)
   created_at               DateTime  @default(now())
