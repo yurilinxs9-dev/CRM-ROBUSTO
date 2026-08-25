@@ -1,4 +1,4 @@
-import { createModelSchema, updateModelSchema } from './ai.dto';
+import { createModelSchema, updateModelSchema, isValidBaseUrl } from './ai.dto';
 
 const baseCreatePayload = {
   label: 'Modelo teste',
@@ -81,5 +81,55 @@ describe('ai.dto — whitelist de host para base_url', () => {
   it('updateModelSchema aplica a mesma whitelist', () => {
     const result = updateModelSchema.safeParse({ base_url: 'https://evil.example.com' });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('ai.dto — hosts internos http (LLM local)', () => {
+  const originalInternal = process.env.AI_ALLOWED_INTERNAL_HOSTS;
+
+  afterEach(() => {
+    if (originalInternal === undefined) {
+      delete process.env.AI_ALLOWED_INTERNAL_HOSTS;
+    } else {
+      process.env.AI_ALLOWED_INTERNAL_HOSTS = originalInternal;
+    }
+  });
+
+  it('aceita http://ollama:11434/v1 (host interno allowlistado)', () => {
+    expect(isValidBaseUrl('http://ollama:11434/v1')).toBe(true);
+  });
+
+  it('recusa http em host externo mesmo allowlistado para https', () => {
+    expect(isValidBaseUrl('http://api.openai.com/v1')).toBe(false);
+  });
+
+  it('recusa host interno nao listado', () => {
+    expect(isValidBaseUrl('http://redis:6379')).toBe(false);
+  });
+
+  it('mantem https com whitelist externa', () => {
+    expect(isValidBaseUrl('https://api.anthropic.com/v1')).toBe(true);
+    expect(isValidBaseUrl('https://evil.example.com')).toBe(false);
+  });
+
+  it('recusa protocolos fora de http/https', () => {
+    expect(isValidBaseUrl('ftp://ollama:11434')).toBe(false);
+    expect(isValidBaseUrl('file:///etc/passwd')).toBe(false);
+    expect(isValidBaseUrl('nao-e-url')).toBe(false);
+  });
+
+  it('AI_ALLOWED_INTERNAL_HOSTS substitui a lista padrao', () => {
+    process.env.AI_ALLOWED_INTERNAL_HOSTS = 'llm-local';
+    expect(isValidBaseUrl('http://ollama:11434/v1')).toBe(false);
+    expect(isValidBaseUrl('http://llm-local:8000/v1')).toBe(true);
+  });
+
+  it('createModelSchema aceita base_url do ollama de ponta a ponta', () => {
+    const result = createModelSchema.safeParse({
+      ...baseCreatePayload,
+      provider: 'openai_compatible' as const,
+      base_url: 'http://ollama:11434/v1',
+    });
+    expect(result.success).toBe(true);
   });
 });
