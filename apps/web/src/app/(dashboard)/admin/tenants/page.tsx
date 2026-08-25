@@ -4,12 +4,14 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Search, ChevronRight, Trash2 } from 'lucide-react';
+import { Search, ChevronRight, Trash2, LogIn, Power, BadgeCheck } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/stores/auth.store';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { CopyId } from '@/components/ui/copy-id';
+import { BillingBadge, DeleteTenantDialog, moneyFmt, type BillingInfo } from './billing-ui';
 
 interface TenantRow {
   id: string;
@@ -21,9 +23,22 @@ interface TenantRow {
   leads: number;
   instances: number;
   active_instances: number;
+  billing_value: number | null;
+  billing_cycle_months: number | null;
+  billing_paid_until: string | null;
+  suspended: boolean;
+  billing: BillingInfo;
 }
 
-type Tab = 'connected' | 'disconnected' | 'all';
+interface BillingSummary {
+  receita_mensal_esperada: number;
+  em_dia: { qtde: number; valor_mensal: number };
+  vence_em_breve: { qtde: number; valor_mensal: number };
+  vencidos: { qtde: number; valor_mensal: number };
+  suspensos: number;
+}
+
+type Tab = 'connected' | 'disconnected' | 'overdue' | 'all';
 
 const numberFmt = new Intl.NumberFormat('pt-BR');
 const isConnected = (t: TenantRow) => t.active_instances > 0;
@@ -31,27 +46,69 @@ const isConnected = (t: TenantRow) => t.active_instances > 0;
 export default function AdminTenantsPage() {
   const [q, setQ] = useState('');
   const [tab, setTab] = useState<Tab>('connected');
+  const [deleteTarget, setDeleteTarget] = useState<TenantRow | null>(null);
   const qc = useQueryClient();
+  const startImpersonation = useAuthStore((s) => s.startImpersonation);
 
   const { data = [], isLoading } = useQuery<TenantRow[]>({
     queryKey: ['admin-tenants'],
     queryFn: async () => (await api.get<TenantRow[]>('/api/platform-admin/tenants')).data,
   });
 
+  const { data: summary } = useQuery<BillingSummary>({
+    queryKey: ['admin-billing-summary'],
+    queryFn: async () => (await api.get<BillingSummary>('/api/platform-admin/billing-summary')).data,
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['admin-tenants'] });
+    qc.invalidateQueries({ queryKey: ['admin-billing-summary'] });
+  };
+
   const deleteTenant = useMutation({
     mutationFn: async (id: string) => api.delete(`/api/platform-admin/tenants/${id}`),
-    onSuccess: () => { toast.success('Cliente excluído'); qc.invalidateQueries({ queryKey: ['admin-tenants'] }); },
+    onSuccess: () => { toast.success('Cliente excluído'); setDeleteTarget(null); invalidate(); },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao excluir'),
+  });
+
+  const markPaid = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.post<{ ok: boolean; paid_until: string }>(`/api/platform-admin/tenants/${id}/billing/mark-paid`)).data,
+    onSuccess: (res) => {
+      toast.success(`Pago até ${new Date(res.paid_until).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}`);
+      invalidate();
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao marcar pago'),
+  });
+
+  const suspendTenant = useMutation({
+    mutationFn: async ({ id, suspended }: { id: string; suspended: boolean }) =>
+      api.patch(`/api/platform-admin/tenants/${id}/suspend`, { suspended }),
+    onSuccess: (_d, v) => { toast.success(v.suspended ? 'Workspace suspenso' : 'Workspace reativado'); invalidate(); },
+    onError: () => toast.error('Falha ao suspender'),
+  });
+
+  const impersonate = useMutation({
+    mutationFn: async (userId: string) =>
+      (await api.post<{ accessToken: string; user: { id: string; nome: string; email: string; role: string; tenantId: string } }>(`/api/platform-admin/impersonate/${userId}`)).data,
+    onSuccess: (res) => {
+      startImpersonation(res.user, res.accessToken);
+      toast.success(`Entrando como ${res.user.nome}`);
+      window.location.href = '/dashboard';
+    },
+    onError: () => toast.error('Falha ao entrar como usuário'),
   });
 
   const connectedCount = useMemo(() => data.filter(isConnected).length, [data]);
   const disconnectedCount = data.length - connectedCount;
+  const overdueCount = useMemo(() => data.filter((t) => t.billing.status === 'vencido').length, [data]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     let rows = data;
     if (tab === 'connected') rows = rows.filter(isConnected);
     else if (tab === 'disconnected') rows = rows.filter((t) => !isConnected(t));
+    else if (tab === 'overdue') rows = rows.filter((t) => t.billing.status === 'vencido');
     if (!term) return rows;
     return rows.filter(
       (t) =>
@@ -62,25 +119,32 @@ export default function AdminTenantsPage() {
     );
   }, [data, q, tab]);
 
-  const askDelete = (t: TenantRow) => {
-    const typed = window.prompt(
-      `EXCLUSÃO TOTAL e irreversível do cliente "${t.nome}":\n` +
-        `${numberFmt.format(t.users)} usuário(s), ${numberFmt.format(t.leads)} lead(s), ${numberFmt.format(t.instances)} instância(s) serão apagados.\n\n` +
-        `Para confirmar, digite o nome do cliente:`,
-    );
-    if (typed === null) return;
-    if (typed.trim() !== t.nome.trim()) { toast.error('Nome não confere — exclusão cancelada'); return; }
-    deleteTenant.mutate(t.id);
-  };
-
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: 'connected', label: 'Conectados', count: connectedCount },
     { key: 'disconnected', label: 'Desconectados', count: disconnectedCount },
+    { key: 'overdue', label: 'Vencidos', count: overdueCount },
     { key: 'all', label: 'Todos', count: data.length },
   ];
 
+  const kpi = (label: string, value: string, sub?: string, color?: string) => (
+    <div className="rounded-xl border px-4 py-3" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-2)' }}>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</p>
+      <p className="text-lg font-semibold tabular-nums" style={{ color: color ?? 'var(--text-primary)' }}>{value}</p>
+      {sub && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
+      {summary && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {kpi('Receita mensal esperada', moneyFmt(summary.receita_mensal_esperada))}
+          {kpi('Em dia', String(summary.em_dia.qtde), moneyFmt(summary.em_dia.valor_mensal) + '/mês', '#22c55e')}
+          {kpi('Vencidos', String(summary.vencidos.qtde), moneyFmt(summary.vencidos.valor_mensal) + '/mês', summary.vencidos.qtde > 0 ? '#ef4444' : undefined)}
+          {kpi('Suspensos', String(summary.suspensos))}
+        </div>
+      )}
+
       <div className="flex items-center gap-1 border-b" style={{ borderColor: 'var(--border-default)' }}>
         {tabs.map((tb) => (
           <button
@@ -110,16 +174,19 @@ export default function AdminTenantsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ background: 'var(--bg-surface-2)', borderBottom: '1px solid var(--border-default)' }}>
-                  {['Cliente', 'ID', 'Owner', 'Modelo', 'Usuários', 'Leads', 'Instâncias', ''].map((h) => (
+                  {['Cliente', 'ID', 'Owner', 'Pagamento', 'Usuários', 'Leads', 'Instâncias', ''].map((h) => (
                     <th key={h} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((t) => (
-                  <tr key={t.id} className="hover:bg-accent/40 transition-colors" style={{ borderBottom: '1px solid var(--border-default)' }}>
+                  <tr key={t.id} className={`hover:bg-accent/40 transition-colors${t.suspended ? ' opacity-60' : ''}`} style={{ borderBottom: '1px solid var(--border-default)' }}>
                     <td className="px-3 py-3">
-                      <Link href={`/admin/tenants/${t.id}`} className="font-medium hover:underline" style={{ color: 'var(--text-primary)' }}>{t.nome}</Link>
+                      <span className="inline-flex items-center gap-1.5">
+                        <Link href={`/admin/tenants/${t.id}`} className="font-medium hover:underline" style={{ color: 'var(--text-primary)' }}>{t.nome}</Link>
+                        {t.suspended && <span className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>SUSPENSO</span>}
+                      </span>
                     </td>
                     <td className="px-3 py-3">
                       <CopyId value={t.id} />
@@ -128,7 +195,9 @@ export default function AdminTenantsPage() {
                       <div className="truncate max-w-[200px]">{t.owner?.nome ?? '—'}</div>
                       <div className="truncate max-w-[200px] text-xs text-muted-foreground">{t.owner?.email ?? ''}</div>
                     </td>
-                    <td className="px-3 py-3 text-xs" style={{ color: 'var(--text-secondary)' }}>{t.pool_enabled ? 'Compartilhado' : 'Individual'}</td>
+                    <td className="px-3 py-3" title={t.billing_value != null ? `${moneyFmt(t.billing_value)} / ${t.billing_cycle_months ?? 1} mês(es)` : undefined}>
+                      <BillingBadge billing={t.billing} />
+                    </td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.users)}</td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.leads)}</td>
                     <td className="px-3 py-3">
@@ -139,11 +208,41 @@ export default function AdminTenantsPage() {
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center justify-end gap-1">
+                        {t.billing.status !== 'sem_cobranca' && (
+                          <Button
+                            size="icon" variant="ghost" className="h-7 w-7"
+                            title={`Marcar pago (+${t.billing_cycle_months ?? 1} mês/es)`}
+                            disabled={markPaid.isPending}
+                            onClick={() => markPaid.mutate(t.id)}
+                          >
+                            <BadgeCheck className="h-3.5 w-3.5 text-emerald-500" />
+                          </Button>
+                        )}
+                        <Button
+                          size="icon" variant="ghost" className="h-7 w-7"
+                          title={t.suspended ? 'Reativar workspace' : 'Suspender workspace'}
+                          disabled={suspendTenant.isPending}
+                          onClick={() => {
+                            if (confirm(t.suspended ? `Reativar workspace "${t.nome}"?` : `Suspender "${t.nome}"? Login, recebimento e envio param imediatamente.`)) {
+                              suspendTenant.mutate({ id: t.id, suspended: !t.suspended });
+                            }
+                          }}
+                        >
+                          <Power className={`h-3.5 w-3.5 ${t.suspended ? 'text-emerald-500' : 'text-amber-500'}`} />
+                        </Button>
+                        <Button
+                          size="icon" variant="ghost" className="h-7 w-7"
+                          title={t.owner ? `Entrar como ${t.owner.nome}` : 'Sem owner para impersonar'}
+                          disabled={!t.owner || impersonate.isPending}
+                          onClick={() => t.owner && impersonate.mutate(t.owner.id)}
+                        >
+                          <LogIn className="h-3.5 w-3.5" />
+                        </Button>
                         <Button
                           size="icon" variant="ghost" className="h-7 w-7"
                           title="Excluir cliente totalmente"
                           disabled={deleteTenant.isPending}
-                          onClick={() => askDelete(t)}
+                          onClick={() => setDeleteTarget(t)}
                         >
                           <Trash2 className="h-3.5 w-3.5 text-red-500" />
                         </Button>
@@ -159,6 +258,17 @@ export default function AdminTenantsPage() {
             </table>
           </div>
         </div>
+      )}
+
+      {deleteTarget && (
+        <DeleteTenantDialog
+          open
+          onOpenChange={(v) => { if (!v) setDeleteTarget(null); }}
+          nome={deleteTarget.nome}
+          counts={{ users: deleteTarget.users, leads: deleteTarget.leads, instances: deleteTarget.instances }}
+          pending={deleteTenant.isPending}
+          onConfirm={() => deleteTenant.mutate(deleteTarget.id)}
+        />
       )}
     </div>
   );
