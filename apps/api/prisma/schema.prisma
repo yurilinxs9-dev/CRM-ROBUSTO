@@ -660,6 +660,13 @@ model LeadView {
   id         String   @id @default(uuid())
   nome       String
   filtros    Json     @default("{}")
+
+  // Config da view (rodada Twenty). Defaults mantêm views antigas válidas.
+  tipo_padrao String @default("kanban") // 'kanban' | 'lista'
+  sort        Json   @default("{}")     // { campo, dir } — vazio = sem ordenação salva
+  colunas     Json   @default("[]")     // tabela: [{ key, width? }] em ordem
+  card_fields Json   @default("[]")     // kanban: chaves visíveis no card
+
   user_id    String?
   user       User?    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   tenant_id  String
