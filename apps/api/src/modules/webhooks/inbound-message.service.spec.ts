@@ -64,6 +64,9 @@ function makeMocks() {
   const broadcastReply: any = {
     registerCustomerReply: jest.fn().mockResolvedValue({ replied: 0, skipped: 0 }),
   };
+  const leadInsights: any = {
+    enfileirarSeElegivel: jest.fn().mockResolvedValue(false),
+  };
   const attribution: any = {
     extractClickCode: jest.fn().mockReturnValue(null),
     consumeClick: jest.fn().mockResolvedValue(null),
@@ -81,6 +84,7 @@ function makeMocks() {
     assignment,
     conversations,
     broadcastReply,
+    leadInsights,
     attribution,
   };
 }
@@ -98,6 +102,7 @@ function makeService() {
     m.assignment,
     m.conversations,
     m.broadcastReply,
+    m.leadInsights,
     m.attribution,
   ) as InboundMessageService;
   return { service, ...m };
@@ -548,5 +553,58 @@ describe('InboundMessageService.saveIncomingMessage — anúncio de origem em te
     expect(create.position).toBeLessThanOrEqual(antes);
     expect(create.position).toBeGreaterThanOrEqual(depois);
     expect(create.position).toBeLessThan(0);
+  });
+});
+
+describe('InboundMessageService.saveIncomingMessage — gatilho da ficha inteligente', () => {
+  function cenario() {
+    const m = makeService();
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+    return m;
+  }
+
+  it('mensagem do cliente enfileira a geração da ficha do lead', async () => {
+    const { service, leadInsights } = cenario();
+
+    await service.saveIncomingMessage(baseInput());
+
+    expect(leadInsights.enfileirarSeElegivel).toHaveBeenCalledWith('lead-1', 't1');
+  });
+
+  it('mensagem NOSSA (isFromMe) não enfileira ficha — não é novidade do cliente', async () => {
+    const { service, leadInsights } = cenario();
+
+    await service.saveIncomingMessage(baseInput({ isFromMe: true }));
+
+    expect(leadInsights.enfileirarSeElegivel).not.toHaveBeenCalled();
+  });
+
+  it('backfill de histórico não enfileira ficha — histórico não é evento novo', async () => {
+    const { service, leadInsights } = cenario();
+
+    await service.saveIncomingMessage(baseInput({ backfill: { timestamp: new Date() } }));
+
+    expect(leadInsights.enfileirarSeElegivel).not.toHaveBeenCalled();
+  });
+
+  it('falha ao enfileirar não derruba o inbound', async () => {
+    const { service, leadInsights } = cenario();
+    leadInsights.enfileirarSeElegivel.mockRejectedValue(new Error('redis fora do ar'));
+
+    // Falharia se o gatilho fosse `await` sem `.catch()`: a rejeição da fila
+    // subiria e derrubaria a persistência da mensagem recebida.
+    let erro: unknown = null;
+    try {
+      await service.saveIncomingMessage(baseInput());
+    } catch (e) {
+      erro = e;
+    }
+    expect(erro).toBeNull();
   });
 });

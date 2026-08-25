@@ -9,6 +9,7 @@ import { PushService } from '../push/push.service';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { AssignmentService } from '../queue/assignment.service';
 import { BroadcastReplyService } from '../broadcasts/broadcast-reply.service';
+import { LeadInsightsService } from '../lead-insights/lead-insights.service';
 import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
 import { AD_REFERRAL_KEY, extractAdReferral, type AdReferral } from './ad-referral';
@@ -87,6 +88,7 @@ export class InboundMessageService {
     private assignment: AssignmentService,
     private readonly conversations: ConversationService,
     private readonly broadcastReply: BroadcastReplyService,
+    private readonly leadInsights: LeadInsightsService,
     private readonly attribution: AttributionService,
   ) {}
   /**
@@ -860,6 +862,17 @@ export class InboundMessageService {
         direction: isFromMe ? 'outbound' : 'inbound',
         type: String(extracted.type),
       }).catch((err) => this.logger.warn(`dispatch message.created: ${String(err)}`));
+    }
+
+    if (tenantId && !backfill && !isFromMe) {
+      // Ficha inteligente do lead: só novidade DO CLIENTE justifica regerar.
+      // Sem await, igual ao registerCustomerReply logo acima — o contrato de
+      // latência deste método não pode depender de uma escrita no Redis.
+      void this.leadInsights
+        .enfileirarSeElegivel(lead.id, tenantId)
+        .catch((err) =>
+          this.logger.warn(`enfileirarSeElegivel falhou lead=${lead.id}: ${String(err)}`),
+        );
     }
 
     if (!isFromMe && !backfill) {

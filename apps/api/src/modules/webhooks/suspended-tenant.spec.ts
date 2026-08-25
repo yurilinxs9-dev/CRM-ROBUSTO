@@ -37,6 +37,7 @@ function makeInbound(instanceRow: unknown) {
     {} as any, // assignment
     {} as any, // conversations
     {} as any, // broadcastReply
+    {} as any, // leadInsights
     {} as any, // attribution
   );
   return { service, prisma };

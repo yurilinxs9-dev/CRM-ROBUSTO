@@ -34,6 +34,7 @@ import { PlatformAdminModule } from './modules/platform-admin/platform-admin.mod
 import { SectorsModule } from './modules/sectors/sectors.module';
 import { AiModule } from './modules/ai/ai.module';
 import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
+import { LeadInsightsModule } from './modules/lead-insights/lead-insights.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { CacheModule } from './common/cache/cache.module';
@@ -128,6 +129,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     SectorsModule,
     AiModule,
     BroadcastsModule,
+    LeadInsightsModule,
     QueueModule,
   ],
   providers: [
