@@ -62,6 +62,7 @@ interface ArgsRadar {
   where: WhereRadar;
   orderBy: Record<string, unknown>;
   take: number;
+  select: Record<string, unknown>;
 }
 
 function argsDe(lead: { findMany: jest.Mock }, i: number): ArgsRadar {
@@ -77,6 +78,9 @@ function linha(over: Record<string, unknown> = {}) {
     temperatura: 'QUENTE',
     ultima_interacao: new Date('2026-08-20T12:00:00Z'),
     estagio: { nome: 'Proposta' },
+    // Formato cru do Prisma: relacao aninhada, nao o nome ja achatado.
+    responsavel: { nome: 'Vendedor Um' },
+    lead_tags: [{ tag: { nome: 'Orcamento' } }, { tag: { nome: 'VIP' } }],
     lead_insight: {
       proxima_acao_at: new Date('2026-08-25T09:00:00Z'),
       proxima_acao_motivo: 'Confirmar a proposta enviada.',
@@ -125,7 +129,51 @@ describe('LeadInsightsService.radar', () => {
       motivo: 'Retomar o orcamento.',
       msg_sugerida: 'Oi, tudo certo com o orcamento?',
       proxima_acao_at: new Date('2026-08-22T09:00:00Z'),
+      responsavel: 'Vendedor Um',
+      tags: ['Orcamento', 'VIP'],
     });
+  });
+
+  it('responsavel e tags chegam achatados no card', async () => {
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({
+        id: 'lead-com-dono',
+        responsavel: { nome: 'Maria Vendas' },
+        lead_tags: [{ tag: { nome: 'Reforma' } }],
+      }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].responsavel).toBe('Maria Vendas');
+    expect(radar.chamar_hoje[0].tags).toEqual(['Reforma']);
+  });
+
+  it('lead sem responsavel vira null e sem tag vira lista vazia', async () => {
+    const m = montar();
+    m.lead.findMany.mockResolvedValueOnce([
+      linha({ id: 'lead-orfao', responsavel: null, lead_tags: [] }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].responsavel).toBeNull();
+    expect(radar.chamar_hoje[0].tags).toEqual([]);
+  });
+
+  it('as 3 secoes pedem responsavel e tags ao banco', async () => {
+    // O mock devolve o que quiser: sem conferir o `select`, a UI ficaria sem
+    // dono e sem tag em producao com a suite verde.
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    for (let i = 0; i < 3; i++) {
+      const { select } = argsDe(m.lead, i);
+      expect(select.responsavel).toEqual({ select: { nome: true } });
+      expect(select.lead_tags).toEqual({ select: { tag: { select: { nome: true } } } });
+    }
   });
 
   it('promissores: lead quente sem interacao ha 2 dias ou mais', async () => {

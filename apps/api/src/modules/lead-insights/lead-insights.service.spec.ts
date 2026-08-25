@@ -530,6 +530,26 @@ describe('LeadInsightsService.gerarInsight', () => {
     });
   });
 
+  it('valor absurdo (estoura no arredondamento) vira null, nunca Infinity', async () => {
+    // 1e308 e finito, mas `* 100` estoura para Infinity — que a coluna nao aceita.
+    const m = prepararFeliz();
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({
+        ultima_compra: { descricao: '3 janelas', valor: 1e308, quando: '' },
+      }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toEqual({
+      descricao: '3 janelas',
+      valor: null,
+      quando: '',
+    });
+  });
+
   it('pede 900 tokens ao modelo (a resposta agora tem 9 chaves)', async () => {
     const m = prepararFeliz();
 

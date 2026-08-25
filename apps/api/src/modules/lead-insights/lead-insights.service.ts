@@ -105,10 +105,16 @@ export function lerCompra(valor: unknown): CompraCitada | null {
   };
 }
 
-/** Reais com centavos: o modelo devolve float longo (1234.5678) e o banco guarda 2 casas. */
+/**
+ * Reais com centavos: o modelo devolve float longo (1234.5678) e o banco guarda
+ * 2 casas. O sanitizador so garante que o valor e finito — 1e308 passa por ele e
+ * vira `Infinity` no `* 100`, que a coluna nao aceita. Valor assim nao e preco:
+ * melhor compra sem valor do que a gravacao inteira falhando.
+ */
 function arredondarValor(valor: number | null): number | null {
   if (valor === null) return null;
-  return Math.round(valor * 100) / 100;
+  const arredondado = Math.round(valor * 100) / 100;
+  return Number.isFinite(arredondado) ? arredondado : null;
 }
 
 /**
@@ -178,6 +184,10 @@ export interface RadarItem {
   motivo: string;
   msg_sugerida: string;
   proxima_acao_at: Date | null;
+  /** Nome de quem responde pelo lead. `null` = lead sem dono (pool). */
+  responsavel: string | null;
+  /** Nomes das tags, achatados: a UI so pinta chip, nao navega relacao. */
+  tags: string[];
 }
 
 export interface RadarResultado {
@@ -193,6 +203,8 @@ const RADAR_SELECT = {
   temperatura: true,
   ultima_interacao: true,
   estagio: { select: { nome: true } },
+  responsavel: { select: { nome: true } },
+  lead_tags: { select: { tag: { select: { nome: true } } } },
   lead_insight: {
     select: { proxima_acao_at: true, proxima_acao_motivo: true, msg_sugerida: true },
   },
@@ -232,6 +244,8 @@ function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
         : motivoDerivado(diasParado(linha.ultima_interacao, agora), quente),
     msg_sugerida: linha.lead_insight?.msg_sugerida ?? '',
     proxima_acao_at: linha.lead_insight?.proxima_acao_at ?? null,
+    responsavel: linha.responsavel?.nome ?? null,
+    tags: linha.lead_tags.map((lt) => lt.tag.nome),
   };
 }
 
