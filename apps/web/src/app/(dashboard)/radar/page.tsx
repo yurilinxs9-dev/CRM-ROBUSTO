@@ -285,9 +285,9 @@ function RadarCard({ item, expandido, onAlternar, onCopiar, onAbrir }: CardProps
       {/* Tags do lead: contexto que decide a abordagem antes de abrir a ficha. */}
       {item.tags.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {item.tags.slice(0, 4).map((tag) => (
+          {item.tags.slice(0, 4).map((tag, i) => (
             <span
-              key={tag}
+              key={`${i}-${tag}`}
               className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
             >
               {tag}

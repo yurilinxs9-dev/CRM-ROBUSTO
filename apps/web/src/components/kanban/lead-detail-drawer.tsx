@@ -115,6 +115,20 @@ function lerValorEstimado(valor: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * O CRM tem DOIS estoques de tag e a precedência é a MESMA do backend
+ * (`tagsDoLead` do radar) e da tabela de leads: a relação `lead_tags` ganha
+ * quando existe; a coluna Json `tags` é o fallback legado. Coalescer por
+ * nullish (`lead.tags ?? relação`) não funciona — `Lead.tags` é Json com
+ * default `[]`, então quase nunca é nullish e o fallback nunca rodaria: lead
+ * vindo da public API mostraria tags no Radar e nenhuma aqui.
+ */
+function tagsDoLead(lead: LeadDetail): string[] {
+  const daRelacao = lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
+  if (daRelacao.length > 0) return daRelacao;
+  return Array.isArray(lead.tags) ? lead.tags : [];
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -248,8 +262,9 @@ export function LeadDetailDrawer({
     // Lead no pool vem com responsavel_id null — o estado do Select é string,
     // e mandar null no PATCH derrubava o save inteiro com "Campos inválidos".
     setResponsavelId(lead.responsavel_id ?? '');
-    const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
-    setTags(existingTags);
+    // Mesma precedência do resto do app (ver `tagsDoLead`): sem isso o picker
+    // abria vazio para lead com tag só na relação — e o Salvar apagava as tags.
+    setTags(tagsDoLead(lead));
     setDirty(false);
   }, [lead, schema]);
 
@@ -435,8 +450,9 @@ export function LeadDetailDrawer({
               className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4"
             >
               {/* Topo do corpo: é a leitura de contexto que o vendedor faz
-                  antes de mexer em qualquer campo. Colapsável para não
-                  empurrar o formulário pra baixo em quem não usa. */}
+                  antes de mexer em qualquer campo. Colapsável porque a ficha é
+                  alta e o Sheet tem 448px — quem não usa não pode ficar com o
+                  formulário empurrado pra fora da tela. */}
               {leadId && lead && (
                 <Ficha360
                   leadId={leadId}
@@ -448,13 +464,14 @@ export function LeadDetailDrawer({
                     valor_estimado: lerValorEstimado(lead.valor_estimado),
                     ultima_interacao: lead.ultima_interacao ?? null,
                     responsavel: lead.responsavel?.nome ?? null,
-                    tags: lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [],
+                    tags: tagsDoLead(lead),
                   }}
                   onUsarMensagem={onUsarMensagem}
                   enabled={open}
                   // O cabeçalho do Sheet já mostra avatar, nome e telefone —
                   // repetir aqui seria a mesma identidade duas vezes na tela.
                   mostrarCabecalho={false}
+                  colapsavel
                 />
               )}
 

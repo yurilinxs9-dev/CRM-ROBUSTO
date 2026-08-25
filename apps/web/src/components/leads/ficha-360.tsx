@@ -2,7 +2,16 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Loader2, RefreshCw, Send, Sparkles } from 'lucide-react';
+import {
+  Brain,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Loader2,
+  RefreshCw,
+  Send,
+  Sparkles,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -227,6 +236,10 @@ export interface ClassificarLeadEntrada {
  * Badge derivado da ficha, com a MESMA precedencia do radar do backend:
  * chamar hoje > promissor > esfriando. Funcao pura de proposito — e a unica
  * regra de negocio da tela e precisa poder ser testada sem React.
+ *
+ * O corte de 2 dias do "Promissor" casa com `RADAR_PROMISSOR_DIAS` do backend —
+ * badge e fila mostram a mesma populacao. Decisao registrada 2026-08-25: a
+ * coerencia com o Radar vence a letra da spec.
  */
 export function classificarLead({
   temperatura,
@@ -258,7 +271,17 @@ const ROTULO_CLASSIFICACAO: Record<Exclude<ClassificacaoLead, null>, string> = {
 
 const PILULA = 'rounded-full border px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide';
 const PILULA_ETAPA = 'border-blue-500/50 bg-blue-500/10 text-blue-300';
-const PILULA_CLASSIFICACAO = 'border-orange-500/50 bg-orange-500/10 text-orange-300';
+
+/**
+ * Cor por classificacao, nao uma cor so: a mesma pilula laranja em "Chamar
+ * hoje" e em "Esfriando" faria a badge decorar em vez de informar. Verde =
+ * agir agora, laranja = oportunidade viva, azul apagado = perdendo calor.
+ */
+const PILULA_CLASSIFICACAO: Record<Exclude<ClassificacaoLead, null>, string> = {
+  chamar_hoje: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300',
+  promissor: 'border-orange-500/50 bg-orange-500/10 text-orange-300',
+  esfriando: 'border-sky-500/40 bg-sky-500/10 text-sky-300/80',
+};
 
 /** Cabecalho small-caps das secoes — a assinatura visual da ficha. */
 function Secao({ children, className }: { children: ReactNode; className?: string }) {
@@ -278,12 +301,23 @@ function Secao({ children, className }: { children: ReactNode; className?: strin
  * Linha rotulo/valor. Sem `children` a linha inteira some — assim quem chama
  * nao precisa repetir a condicao em cada campo opcional.
  */
-function Linha({ rotulo, children }: { rotulo: string; children: ReactNode }) {
+function Linha({
+  rotulo,
+  title,
+  children,
+}: {
+  rotulo: string;
+  /** Detalhe que nao cabe na linha (data completa, motivo inteiro). */
+  title?: string;
+  children: ReactNode;
+}) {
   if (children === null || children === undefined || children === false) return null;
   return (
     <div className="flex items-center justify-between gap-4 border-b border-white/5 py-[10px]">
       <dt className="shrink-0 text-sm text-muted-foreground">{rotulo}</dt>
-      <dd className="min-w-0 break-words text-right text-sm font-semibold">{children}</dd>
+      <dd className="min-w-0 break-words text-right text-sm font-semibold" title={title}>
+        {children}
+      </dd>
     </div>
   );
 }
@@ -349,6 +383,13 @@ export interface Ficha360Props {
    * drawer): sobra so a fileira de badges, sem repetir a identidade do lead.
    */
   mostrarCabecalho?: boolean;
+  /**
+   * `true` onde a ficha divide a rolagem com outra coisa (o drawer de 448px, em
+   * cima de um formulario inteiro): ganha uma barra de titulo que recolhe o
+   * corpo. Aberta por padrao. No Radar fica `false` — a expansao do card ja e o
+   * colapso, e uma segunda seta dentro dela seria um botao de fechar duplicado.
+   */
+  colapsavel?: boolean;
   className?: string;
 }
 
@@ -373,11 +414,14 @@ export function Ficha360({
   onUsarMensagem,
   enabled = true,
   mostrarCabecalho = true,
+  colapsavel = false,
   className,
 }: Ficha360Props) {
   const queryClient = useQueryClient();
   const papel = useAuthStore((s) => s.user?.role);
   const podeRegerar = !!papel && PAPEIS_QUE_REGERAM.includes(papel);
+  /** So tem efeito com `colapsavel`. A query segue viva de qualquer jeito. */
+  const [aberto, setAberto] = useState(true);
   /** Timestamp ate quando "Regenerar" fica travado. 0 = liberado. */
   const [bloqueadoAte, setBloqueadoAte] = useState(0);
 
@@ -475,6 +519,8 @@ export function Ficha360({
     [lead.ultima_interacao],
   );
   const proximaAcao = formatarData(proximaAcaoAt);
+  const motivoProximaAcao = insight?.proxima_acao_motivo.trim() ?? '';
+  const ultimaInteracaoCompleta = formatarData(lead.ultima_interacao);
   const atualizadaEm = formatarData(insight?.updated_at);
 
   const temperaturaRotulo = buscarTexto(TEMP_LABELS, lead.temperatura) ?? lead.temperatura.trim();
@@ -509,7 +555,7 @@ export function Ficha360({
       <>
         {etapa !== '' && <span className={cn(PILULA, PILULA_ETAPA)}>{etapa}</span>}
         {classificacao && (
-          <span className={cn(PILULA, PILULA_CLASSIFICACAO)}>
+          <span className={cn(PILULA, PILULA_CLASSIFICACAO[classificacao])}>
             {ROTULO_CLASSIFICACAO[classificacao]}
           </span>
         )}
@@ -541,256 +587,146 @@ export function Ficha360({
       className={cn('overflow-hidden rounded-xl border border-border bg-card', className)}
       aria-label="Ficha 360 do lead"
     >
-      {/* ---------------- Cabecalho ---------------- */}
-      {mostrarCabecalho ? (
-        <div className="flex items-start gap-3 px-4 pb-3 pt-4">
-          <span
-            aria-hidden
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-500/20 text-sm font-semibold text-blue-300"
-          >
-            {iniciais(lead.nome)}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-base font-semibold leading-tight">{lead.nome}</p>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {lead.telefone ? formatPhone(lead.telefone) : 'Sem telefone'}
-            </p>
-            {badges && <div className="mt-2 flex flex-wrap gap-1.5">{badges}</div>}
-          </div>
-        </div>
-      ) : (
-        // Sem cabecalho proprio a fileira de badges continua: a classificacao
-        // derivada nao existe em nenhum outro lugar da tela. Sem badge nenhum o
-        // bloco some inteiro, senao sobra um vao em branco no topo.
-        badges && <div className="flex flex-wrap gap-1.5 px-4 pb-2 pt-4">{badges}</div>
+      {/* ---------------- Barra de colapso ---------------- */}
+      {colapsavel && (
+        <button
+          type="button"
+          onClick={() => setAberto((v) => !v)}
+          aria-expanded={aberto}
+          className={cn(
+            'flex w-full items-center gap-1.5 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground',
+            aberto && 'border-b border-white/5',
+          )}
+        >
+          {aberto ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+          <Brain className="h-3.5 w-3.5" />
+          Ficha 360
+        </button>
       )}
 
-      {/* ---------------- Dados duros ---------------- */}
-      <dl className="px-4">
-        <Linha rotulo="Responsável">{responsavel}</Linha>
-        <Linha rotulo="Temperatura">
-          {temperaturaRotulo !== '' && (
-            <span
-              className={cn(
-                'rounded-full border px-2 py-0.5 text-[11px] font-semibold',
-                temperaturaClasse,
-              )}
-            >
-              {temperaturaRotulo}
-            </span>
-          )}
-        </Linha>
-        <Linha rotulo="Valor estimado">
-          {lead.valor_estimado !== null && Number.isFinite(lead.valor_estimado) && (
-            <span className="text-emerald-400">{BRL.format(lead.valor_estimado)}</span>
-          )}
-        </Linha>
-        <Linha rotulo="Último contato">
-          {dias === null ? (
-            <span className="font-normal text-muted-foreground">Sem registro</span>
-          ) : (
-            // Uma semana parado e o gatilho de "esfriando" no backend: a mesma
-            // fronteira acende o ambar aqui.
-            <span className={cn(dias >= DIAS_ALERTA && 'text-amber-400')}>
-              {dias === 0 ? 'Hoje' : `Há ${dias} dia${dias === 1 ? '' : 's'}`}
-            </span>
-          )}
-        </Linha>
-        <Linha rotulo="Próximo contato">{proximaAcao}</Linha>
-        <Linha rotulo="Tags">
-          {tags.length > 0 && (
-            <span className="flex flex-wrap justify-end gap-1">
-              {tags.map((t) => (
-                <span
-                  key={t}
-                  className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                >
-                  {t}
-                </span>
-              ))}
-            </span>
-          )}
-        </Linha>
-      </dl>
-
-      {/* ---------------- Conteudo da IA ---------------- */}
-      <div className="px-4 pb-4">
-        {isLoading ? (
-          <div className="pt-4">
-            <EsqueletoFicha />
-          </div>
-        ) : isError ? (
-          <p className="mt-4 text-xs text-muted-foreground">
-            Não foi possível carregar a leitura da IA
-            {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead acima
-            continuam válidos.
-          </p>
-        ) : !insight ? (
-          <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">
-            <Sparkles aria-hidden className="mx-auto h-5 w-5 text-muted-foreground/70" />
-            <p className="mt-2 text-sm text-muted-foreground">
-              A IA ainda não leu esta conversa. A ficha é montada sozinha conforme o cliente
-              responde.
-            </p>
-            {podeRegerar && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 h-8 text-xs"
-                disabled={pedindo || bloqueado}
-                title={
-                  bloqueado
-                    ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
-                    : undefined
-                }
-                onClick={() => regerar.mutate()}
+      {colapsavel && !aberto ? null : (
+        <>
+          {/* ---------------- Cabecalho ---------------- */}
+          {mostrarCabecalho ? (
+            <div className="flex items-start gap-3 px-4 pb-3 pt-4">
+              <span
+                aria-hidden
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-500/20 text-sm font-semibold text-blue-300"
               >
-                {pedindo ? (
-                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="mr-1 h-3.5 w-3.5" />
-                )}
-                {pedindo ? 'Enviando...' : 'Gerar agora'}
-              </Button>
-            )}
-          </div>
-        ) : (
-          <>
-            {insight.resumo.trim() !== '' && (
-              <>
-                <Secao>Última conversa — resumo da IA</Secao>
-                <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                  {insight.resumo}
+                {iniciais(lead.nome)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-base font-semibold leading-tight">{lead.nome}</p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {lead.telefone ? formatPhone(lead.telefone) : 'Sem telefone'}
                 </p>
-              </>
-            )}
+                {badges && <div className="mt-2 flex flex-wrap gap-1.5">{badges}</div>}
+              </div>
+            </div>
+          ) : (
+            // Sem cabecalho proprio a fileira de badges continua: a classificacao
+            // derivada nao existe em nenhum outro lugar da tela. Sem badge nenhum o
+            // bloco some inteiro, senao sobra um vao em branco no topo.
+            badges && (
+              <div className={cn('flex flex-wrap gap-1.5 px-4 pb-2', colapsavel ? 'pt-3' : 'pt-4')}>
+                {badges}
+              </div>
+            )
+          )}
 
-            {insight.memoria.length > 0 && (
-              <>
-                <Secao>Memória do relacionamento</Secao>
-                {/* Paragrafo corrido separado por " · " (nao lista de chips):
-                    le como uma frase sobre a pessoa, que e o ponto. */}
-                <p className="mt-1.5 break-words text-sm leading-relaxed">
-                  {insight.memoria.map((fato, i) => (
-                    <span key={`${i}-${fato.fato}`}>
-                      {i > 0 && <span className="text-muted-foreground/50"> · </span>}
-                      {fato.fato}
-                      {fato.quando_dito.trim() !== '' && (
-                        <span className="text-muted-foreground"> ({fato.quando_dito})</span>
-                      )}
+          {/* ---------------- Dados duros ---------------- */}
+          <dl className="px-4">
+            <Linha rotulo="Responsável">{responsavel}</Linha>
+            <Linha rotulo="Temperatura">
+              {temperaturaRotulo !== '' && (
+                <span
+                  className={cn(
+                    'rounded-full border px-2 py-0.5 text-[11px] font-semibold',
+                    temperaturaClasse,
+                  )}
+                >
+                  {temperaturaRotulo}
+                </span>
+              )}
+            </Linha>
+            <Linha rotulo="Valor estimado">
+              {lead.valor_estimado !== null && Number.isFinite(lead.valor_estimado) && (
+                <span className="text-emerald-400">{BRL.format(lead.valor_estimado)}</span>
+              )}
+            </Linha>
+            <Linha rotulo="Último contato" title={ultimaInteracaoCompleta ?? undefined}>
+              {dias === null ? (
+                <span className="font-normal text-muted-foreground">Sem registro</span>
+              ) : (
+                // Uma semana parado e o gatilho de "esfriando" no backend: a mesma
+                // fronteira acende o ambar aqui.
+                <span className={cn(dias >= DIAS_ALERTA && 'text-amber-400')}>
+                  {dias === 0 ? 'Hoje' : `Há ${dias} dia${dias === 1 ? '' : 's'}`}
+                </span>
+              )}
+            </Linha>
+            <Linha
+              rotulo="Próximo contato"
+              title={motivoProximaAcao !== '' ? motivoProximaAcao : undefined}
+            >
+              {proximaAcao && (
+                <>
+                  {proximaAcao}
+                  {/* O motivo so aparecia dentro do bloco da sugestao — ficha sem
+                      `msg_sugerida` perdia o "por que" da data. */}
+                  {motivoProximaAcao !== '' && (
+                    <span className="mt-0.5 line-clamp-2 block text-xs font-normal text-muted-foreground">
+                      {motivoProximaAcao}
+                    </span>
+                  )}
+                </>
+              )}
+            </Linha>
+            <Linha rotulo="Tags">
+              {tags.length > 0 && (
+                <span className="flex flex-wrap justify-end gap-1">
+                  {/* Tag repetida (relacao + Json legado) nao pode quebrar a key. */}
+                  {tags.map((t, i) => (
+                    <span
+                      key={`${i}-${t}`}
+                      className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    >
+                      {t}
                     </span>
                   ))}
-                </p>
-              </>
-            )}
+                </span>
+              )}
+            </Linha>
+          </dl>
 
-            {compra && (
-              <>
-                <Secao>Última compra</Secao>
-                <p className="mt-1.5 break-words text-sm leading-relaxed">
-                  {compra.descricao}
-                  {compra.valor !== null && (
-                    <span className="font-semibold text-emerald-400">
-                      {' · '}
-                      {BRL.format(compra.valor)}
-                    </span>
-                  )}
-                  {compra.quando !== '' && (
-                    <span className="text-muted-foreground">
-                      {' · '}
-                      {compra.quando}
-                    </span>
-                  )}
-                </p>
-              </>
-            )}
-
-            {/* Nota e textos sao INDEPENDENTES: pode vir so o quadrado (o
-                modelo pontuou sem justificar) ou so os textos (justificou sem
-                pontuar). Cada metade aparece por conta propria. */}
-            {temNota && (
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <Secao>Nota do atendimento</Secao>
-                  {(pontoForte !== '' || pontoMelhoria !== '') && (
-                    <div className="mt-1.5 space-y-1">
-                      {pontoForte !== '' && (
-                        <p className="break-words text-sm leading-relaxed">
-                          <span className="font-medium text-foreground">Ponto forte: </span>
-                          <span className="text-muted-foreground">{pontoForte}</span>
-                        </p>
-                      )}
-                      {pontoMelhoria !== '' && (
-                        <p className="break-words text-sm leading-relaxed">
-                          <span className="font-medium text-foreground">Melhorar: </span>
-                          <span className="text-muted-foreground">{pontoMelhoria}</span>
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {nota !== null && (
-                  <div
-                    className={cn(
-                      'mt-4 flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-xl border',
-                      corDaNota(nota),
-                    )}
-                    title={`Nota ${nota} de 10`}
-                  >
-                    <span className="text-2xl font-bold leading-none">{nota}</span>
-                    <span className="mt-0.5 text-[10px] font-medium opacity-70">/10</span>
-                  </div>
-                )}
+          {/* ---------------- Conteudo da IA ---------------- */}
+          <div className="px-4 pb-4">
+            {isLoading ? (
+              <div className="pt-4">
+                <EsqueletoFicha />
               </div>
-            )}
-
-            {/* ---------------- Sugestao da IA ---------------- */}
-            {msg !== '' ? (
-              <div className="mt-4 rounded-xl border border-orange-500/40 bg-gradient-to-br from-orange-500/20 to-orange-600/10 p-4">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-orange-300/90">
-                  Sugestão da IA
+            ) : isError ? (
+              <p className="mt-4 text-xs text-muted-foreground">
+                Não foi possível carregar a leitura da IA
+                {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead acima
+                continuam válidos.
+              </p>
+            ) : !insight ? (
+              <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">
+                <Sparkles aria-hidden className="mx-auto h-5 w-5 text-muted-foreground/70" />
+                <p className="mt-2 text-sm text-muted-foreground">
+                  A IA ainda não leu esta conversa. A ficha é montada sozinha conforme o cliente
+                  responde.
                 </p>
-                <p className="mt-2 whitespace-pre-wrap break-words text-sm font-medium leading-relaxed text-orange-200">
-                  {msg}
-                </p>
-                {(proximaAcao || insight.proxima_acao_motivo.trim() !== '') && (
-                  <p className="mt-2 break-words text-xs leading-relaxed text-orange-300/80">
-                    {proximaAcao ? `Melhor momento: ${proximaAcao}` : 'Sem janela definida'}
-                    {insight.proxima_acao_motivo.trim() !== '' && ` — ${insight.proxima_acao_motivo}`}
-                  </p>
-                )}
-                <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-                  {botaoRegerar}
+                {podeRegerar && (
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8 border-orange-500/40 bg-transparent px-2.5 text-xs text-orange-200 hover:bg-orange-500/15 hover:text-orange-100"
-                    onClick={() => void copiar(msg)}
-                  >
-                    <Copy className="mr-1 h-3.5 w-3.5" />
-                    Copiar
-                  </Button>
-                  {onUsarMensagem && (
-                    <Button
-                      size="sm"
-                      className="h-8 bg-orange-500 px-3 text-xs font-semibold text-white hover:bg-orange-600"
-                      onClick={() => onUsarMensagem(msg)}
-                    >
-                      <Send className="mr-1 h-3.5 w-3.5" />
-                      Usar
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ) : (
-              // Ficha sem `msg_sugerida` (o modelo devolveu vazio) tambem
-              // precisa de um caminho para pedir outra geracao.
-              podeRegerar && (
-                <div className="mt-4 flex justify-end">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-xs"
+                    className="mt-3 h-8 text-xs"
                     disabled={pedindo || bloqueado}
                     title={
                       bloqueado
@@ -802,23 +738,179 @@ export function Ficha360({
                     {pedindo ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <RefreshCw className="mr-1 h-3.5 w-3.5" />
+                      <Sparkles className="mr-1 h-3.5 w-3.5" />
                     )}
-                    {pedindo ? 'Enviando...' : 'Regenerar'}
+                    {pedindo ? 'Enviando...' : 'Gerar agora'}
                   </Button>
-                </div>
-              )
-            )}
+                )}
+              </div>
+            ) : (
+              <>
+                {insight.resumo.trim() !== '' && (
+                  <>
+                    <Secao>Última conversa — resumo da IA</Secao>
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                      {insight.resumo}
+                    </p>
+                  </>
+                )}
 
-            {atualizadaEm && (
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Ficha atualizada em {atualizadaEm}
-                {insight.geracoes > 0 ? ` · ${insight.geracoes} geração(ões)` : ''}
-              </p>
+                {insight.memoria.length > 0 && (
+                  <>
+                    <Secao>Memória do relacionamento</Secao>
+                    {/* Paragrafo corrido separado por " · " (nao lista de chips):
+                        le como uma frase sobre a pessoa, que e o ponto. */}
+                    <p className="mt-1.5 break-words text-sm leading-relaxed">
+                      {insight.memoria.map((fato, i) => (
+                        <span key={`${i}-${fato.fato}`}>
+                          {i > 0 && <span className="text-muted-foreground/50"> · </span>}
+                          {fato.fato}
+                          {fato.quando_dito.trim() !== '' && (
+                            <span className="text-muted-foreground"> ({fato.quando_dito})</span>
+                          )}
+                        </span>
+                      ))}
+                    </p>
+                  </>
+                )}
+
+                {compra && (
+                  <>
+                    <Secao>Última compra</Secao>
+                    <p className="mt-1.5 break-words text-sm leading-relaxed">
+                      {compra.descricao}
+                      {compra.valor !== null && (
+                        <span className="font-semibold text-emerald-400">
+                          {' · '}
+                          {BRL.format(compra.valor)}
+                        </span>
+                      )}
+                      {compra.quando !== '' && (
+                        <span className="text-muted-foreground">
+                          {' · '}
+                          {compra.quando}
+                        </span>
+                      )}
+                    </p>
+                  </>
+                )}
+
+                {/* Nota e textos sao INDEPENDENTES: pode vir so o quadrado (o
+                    modelo pontuou sem justificar) ou so os textos (justificou sem
+                    pontuar). Cada metade aparece por conta propria. */}
+                {temNota && (
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Secao>Nota do atendimento</Secao>
+                      {(pontoForte !== '' || pontoMelhoria !== '') && (
+                        <div className="mt-1.5 space-y-1">
+                          {pontoForte !== '' && (
+                            <p className="break-words text-sm leading-relaxed">
+                              <span className="font-medium text-foreground">Ponto forte: </span>
+                              <span className="text-muted-foreground">{pontoForte}</span>
+                            </p>
+                          )}
+                          {pontoMelhoria !== '' && (
+                            <p className="break-words text-sm leading-relaxed">
+                              <span className="font-medium text-foreground">Melhorar: </span>
+                              <span className="text-muted-foreground">{pontoMelhoria}</span>
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {nota !== null && (
+                      <div
+                        className={cn(
+                          'mt-4 flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-xl border',
+                          corDaNota(nota),
+                        )}
+                        title={`Nota ${nota} de 10`}
+                      >
+                        <span className="text-2xl font-bold leading-none">{nota}</span>
+                        <span className="mt-0.5 text-[10px] font-medium opacity-70">/10</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ---------------- Sugestao da IA ---------------- */}
+                {msg !== '' ? (
+                  <div className="mt-4 rounded-xl border border-orange-500/40 bg-gradient-to-br from-orange-500/20 to-orange-600/10 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-orange-300/90">
+                      Sugestão da IA
+                    </p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm font-medium leading-relaxed text-orange-200">
+                      {msg}
+                    </p>
+                    {(proximaAcao || motivoProximaAcao !== '') && (
+                      <p className="mt-2 break-words text-xs leading-relaxed text-orange-300/80">
+                        {proximaAcao ? `Melhor momento: ${proximaAcao}` : 'Sem janela definida'}
+                        {motivoProximaAcao !== '' && ` — ${motivoProximaAcao}`}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                      {botaoRegerar}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 border-orange-500/40 bg-transparent px-2.5 text-xs text-orange-200 hover:bg-orange-500/15 hover:text-orange-100"
+                        onClick={() => void copiar(msg)}
+                      >
+                        <Copy className="mr-1 h-3.5 w-3.5" />
+                        Copiar
+                      </Button>
+                      {onUsarMensagem && (
+                        <Button
+                          size="sm"
+                          className="h-8 bg-orange-500 px-3 text-xs font-semibold text-white hover:bg-orange-600"
+                          onClick={() => onUsarMensagem(msg)}
+                        >
+                          <Send className="mr-1 h-3.5 w-3.5" />
+                          Usar
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  // Ficha sem `msg_sugerida` (o modelo devolveu vazio) tambem
+                  // precisa de um caminho para pedir outra geracao.
+                  podeRegerar && (
+                    <div className="mt-4 flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={pedindo || bloqueado}
+                        title={
+                          bloqueado
+                            ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
+                            : undefined
+                        }
+                        onClick={() => regerar.mutate()}
+                      >
+                        {pedindo ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {pedindo ? 'Enviando...' : 'Regenerar'}
+                      </Button>
+                    </div>
+                  )
+                )}
+
+                {atualizadaEm && (
+                  <p className="mt-3 text-[11px] text-muted-foreground">
+                    Ficha atualizada em {atualizadaEm}
+                    {insight.geracoes > 0 ? ` · ${insight.geracoes} geração(ões)` : ''}
+                  </p>
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }
