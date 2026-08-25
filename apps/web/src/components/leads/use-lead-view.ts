@@ -61,6 +61,23 @@ const CHAVE_STORAGE = 'crm.leadView';
 /** Referência estável: `data ?? []` novo a cada render invalidaria todo memo. */
 const SEM_VIEWS: LeadViewDto[] = [];
 
+/**
+ * O vazio, sempre em objeto NOVO com arrays NOVOS.
+ *
+ * `CONFIG_VAZIA`/`FILTROS_VAZIOS` são constantes de módulo compartilhadas pelo
+ * app inteiro, e `fromSavedConfig` devolve cópia rasa delas — o `colunas` é a
+ * MESMA array. Um consumidor que fizesse `config.colunas.push(...)` reescreveria
+ * o vazio de todo mundo, e o bug apareceria numa tela que não encostou em nada.
+ * Espalhar as listas aqui corta a partilha na origem. O spread preserva a ordem
+ * das chaves, que é o que `configIgual` compara.
+ */
+const configVazia = (): LeadViewConfig => ({ ...CONFIG_VAZIA, colunas: [], card_fields: [] });
+const filtrosVazios = (): LeadPanelFilters => ({ ...FILTROS_VAZIOS, tags: [], origem: [] });
+
+/** Impressão do estado de tela, para saber se ele mudou enquanto o request voava. */
+const assinatura = (f: LeadPanelFilters, c: LeadViewConfig): string =>
+  JSON.stringify({ filters: f, config: c });
+
 function lerViewSalva(): string | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -112,8 +129,8 @@ export function useLeadView(): UseLeadView {
   const views = data ?? SEM_VIEWS;
 
   const [activeViewId, setActiveViewId] = useState<string | null>(() => lerViewSalva());
-  const [filters, setFilters] = useState<LeadPanelFilters>(FILTROS_VAZIOS);
-  const [config, setConfig] = useState<LeadViewConfig>(CONFIG_VAZIA);
+  const [filters, setFilters] = useState<LeadPanelFilters>(filtrosVazios);
+  const [config, setConfig] = useState<LeadViewConfig>(configVazia);
 
   /**
    * Id já hidratado a partir de uma linha real. Serve para dois julgamentos que
@@ -134,10 +151,10 @@ export function useLeadView(): UseLeadView {
     setActiveViewId(id);
     gravarViewSalva(id);
     hidratadoRef.current = id;
-    setFilters(view ? fromSaved(view.filtros) : FILTROS_VAZIOS);
+    setFilters(view ? fromSaved(view.filtros) : filtrosVazios());
     // A DTO carrega tipo_padrao/sort/colunas/card_fields no topo; fromSavedConfig
     // lê só as chaves que conhece, então dá para passar a view inteira.
-    setConfig(view ? fromSavedConfig(view) : CONFIG_VAZIA);
+    setConfig(view ? fromSavedConfig(view) : configVazia());
   }, []);
 
   // Id que não está na lista carregada não tem o que aplicar — cai no vazio, o
@@ -179,16 +196,22 @@ export function useLeadView(): UseLeadView {
   }, [activeView, meuId, meuRole]);
 
   /**
-   * Troca a linha no cache pelo que o servidor devolveu, ANTES do refetch.
+   * Adota a linha que o servidor devolveu, ANTES do refetch — mas só se a tela
+   * ainda estiver como estava quando o request saiu.
    *
-   * O backend sanitiza o corpo (coluna de campo que não existe mais some, sort
-   * fora da whitelist vira {}), então a linha gravada pode não ser byte a byte o
-   * que foi enviado. Adotar a resposta é o que faz `dirty` apagar de imediato —
-   * comparar o estado local com a linha ANTIGA do cache deixaria a barra piscando
-   * "não salvo" até o refetch chegar.
+   * O cache é atualizado sempre: a linha gravada pode não ser byte a byte o que
+   * foi enviado (o backend descarta coluna de campo apagado, sort fora da
+   * whitelist vira {}), e é a versão dele que vale como "salvo".
+   *
+   * Já o ESTADO DE TELA só é sobrescrito se ninguém mexeu no meio do caminho. O
+   * request leva alguns centenas de ms e a barra continua viva: se o usuário
+   * arrastou uma coluna nesse intervalo, aplicar a resposta apagaria a edição
+   * dele sem aviso. Com a assinatura diferente, a resposta fica só no cache e a
+   * barra volta a acender "não salvo" — que é a verdade: aquela edição nova
+   * ainda não foi gravada.
    */
-  const trocarNoCache = useCallback(
-    (view: LeadViewDto) => {
+  const adotarResposta = useCallback(
+    (view: LeadViewDto, instantaneo: string) => {
       queryClient.setQueryData<LeadViewDto[]>(['lead-views'], (antigas) => {
         const lista = antigas ?? [];
         return lista.some((v) => v.id === view.id)
@@ -196,9 +219,20 @@ export function useLeadView(): UseLeadView {
           : [...lista, view];
       });
       void queryClient.invalidateQueries({ queryKey: ['lead-views'] });
-      aplicar(view);
+
+      if (instantaneo === assinatura(filters, config)) {
+        aplicar(view);
+        return;
+      }
+
+      // Edição em voo vence. A view recém-criada ainda precisa virar a ativa, e
+      // o ref precisa marcá-la como hidratada — senão o efeito re-hidrataria e
+      // faria justamente o estrago que este ramo existe para evitar.
+      setActiveViewId(view.id);
+      gravarViewSalva(view.id);
+      hidratadoRef.current = view.id;
     },
-    [aplicar, queryClient],
+    [aplicar, config, filters, queryClient],
   );
 
   /** `sort` null vira {} — é como o backend guarda "sem ordenação". */
@@ -207,18 +241,22 @@ export function useLeadView(): UseLeadView {
     [],
   );
 
+  // A assinatura é tirada DENTRO do mutationFn, antes do await: é o retrato do
+  // que está sendo enviado, e volta junto com a resposta para o onSuccess poder
+  // comparar com o que a tela virou enquanto isso.
   const salvar = useMutation({
     mutationFn: async (id: string) => {
+      const instantaneo = assinatura(filters, config);
       const res = await api.patch(`/api/lead-views/${id}`, {
         // O painel já fala a língua do backend: o service descarta chave que não
         // conhece e valor vazio, então o objeto vai direto.
         filtros: filters,
         ...corpoConfig(config),
       });
-      return res.data as LeadViewDto;
+      return { view: res.data as LeadViewDto, instantaneo };
     },
-    onSuccess: (view) => {
-      trocarNoCache(view);
+    onSuccess: ({ view, instantaneo }) => {
+      adotarResposta(view, instantaneo);
       toast.success('View salva.');
     },
     onError: () => toast.error('Erro ao salvar a view.'),
@@ -226,16 +264,17 @@ export function useLeadView(): UseLeadView {
 
   const salvarComo = useMutation({
     mutationFn: async (args: { nome: string; compartilhada: boolean }) => {
+      const instantaneo = assinatura(filters, config);
       const res = await api.post('/api/lead-views', {
         nome: args.nome,
         compartilhada: args.compartilhada,
         filtros: filters,
         ...corpoConfig(config),
       });
-      return res.data as LeadViewDto;
+      return { view: res.data as LeadViewDto, instantaneo };
     },
-    onSuccess: (view) => {
-      trocarNoCache(view);
+    onSuccess: ({ view, instantaneo }) => {
+      adotarResposta(view, instantaneo);
       toast.success('View criada.');
     },
     onError: () => toast.error('Erro ao criar a view.'),

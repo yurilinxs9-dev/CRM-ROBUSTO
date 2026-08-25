@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ChevronDown, Columns3, List, Plus, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
 
@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuthStore } from '@/stores/auth.store';
 import { contarFiltrosAtivos } from '@/lib/lead-filters';
-import { CONFIG_VAZIA, configIgual } from '@/lib/lead-view-config';
+import { CONFIG_VAZIA, configIgual, type LeadViewConfig } from '@/lib/lead-view-config';
 import { GESTORES, type UseLeadView } from './use-lead-view';
 
 interface ViewBarProps {
@@ -66,12 +66,34 @@ export function ViewBar({ view, mode, onOpenFilters }: ViewBarProps): JSX.Elemen
 
   const ativos = contarFiltrosAtivos(view.filters);
 
+  const { activeView, config, setConfig } = view;
+
+  /**
+   * Sem view ativa, o `tipo_padrao` acompanha a tela onde a barra está.
+   *
+   * `CONFIG_VAZIA` nasce 'kanban', então salvar como nova a partir da lista
+   * criaria uma view que abre em kanban — o usuário arrumou uma tabela e ganhou
+   * um board. Com view ativa não encosta: ali o tipo é escolha salva, e sobrepor
+   * seria a barra mexendo sozinha no que o usuário gravou.
+   */
+  useEffect(() => {
+    if (activeView === null && config.tipo_padrao !== mode) {
+      setConfig({ ...config, tipo_padrao: mode });
+    }
+  }, [activeView, config, mode, setConfig]);
+
+  /** O "nada" desta tela — o vazio já com o tipo que o efeito acima aplica. */
+  const vazioDaTela: LeadViewConfig = useMemo(
+    () => ({ ...CONFIG_VAZIA, tipo_padrao: mode, colunas: [], card_fields: [] }),
+    [mode],
+  );
+
   // Sem view ativa `dirty` é sempre false (não há linha para comparar), mas
   // continua fazendo sentido virar view o que está na tela — é assim que a
   // primeira view de alguém nasce.
   const podeVirarView =
     view.dirty ||
-    (view.activeView === null && (ativos > 0 || !configIgual(view.config, CONFIG_VAZIA)));
+    (view.activeView === null && (ativos > 0 || !configIgual(view.config, vazioDaTela)));
 
   const abrirDialog = () => {
     setNomeNovo(view.activeView ? `${view.activeView.nome} (cópia)` : '');
