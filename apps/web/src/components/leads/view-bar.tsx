@@ -25,7 +25,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuthStore } from '@/stores/auth.store';
 import { contarFiltrosAtivos } from '@/lib/lead-filters';
-import { CONFIG_VAZIA, configIgual, type LeadViewConfig } from '@/lib/lead-view-config';
+import {
+  CONFIG_VAZIA,
+  configIgual,
+  fromSavedConfig,
+  type LeadViewConfig,
+} from '@/lib/lead-view-config';
+import { CardFieldsMenu } from './card-fields-menu';
 import { GESTORES, type UseLeadView } from './use-lead-view';
 
 interface ViewBarProps {
@@ -232,6 +238,15 @@ export function ViewBar({ view, mode, onOpenFilters }: ViewBarProps): JSX.Elemen
           </span>
         )}
       </Button>
+
+      {mode === 'kanban' && (
+        <CardFieldsMenu
+          value={view.config.card_fields}
+          onChange={(fields) =>
+            view.setConfig(fromSavedConfig({ ...view.config, card_fields: fields }))
+          }
+        />
+      )}
 
       {/* ============== Estado sujo ============== */}
       {podeVirarView && (
