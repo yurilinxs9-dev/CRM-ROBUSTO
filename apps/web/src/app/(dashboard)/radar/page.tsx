@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Copy, MessageSquare, PhoneCall, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -114,12 +114,20 @@ function formatarData(iso: string | null): string | null {
 /**
  * `temperatura` vem do backend como string solta — pode ser um valor novo do
  * enum, ou uma chave do prototipo (`constructor`). Checa o TIPO do resultado em
- * vez de `in`: chave herdada devolveria uma funcao, e funcao nao renderiza.
+ * vez de confiar no indice: chave herdada devolve funcao, e funcao nao renderiza
+ * (e, na classe, viraria `class=[object Function]`).
  */
+function buscarTexto(mapa: Record<string, string>, chave: string): string | null {
+  const valor: unknown = mapa[chave];
+  return typeof valor === 'string' ? valor : null;
+}
+
 function rotuloTemperatura(valor: string): string {
-  const rotulos: Record<string, string> = TEMP_LABELS;
-  const rotulo: unknown = rotulos[valor];
-  return typeof rotulo === 'string' ? rotulo : valor;
+  return buscarTexto(TEMP_LABELS, valor) ?? valor;
+}
+
+function classeTemperatura(valor: string): string {
+  return buscarTexto(TEMP_BADGE, valor) ?? buscarTexto(TEMP_BADGE, '_DEFAULT') ?? '';
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +182,7 @@ interface CardProps {
 function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
   const acaoEm = formatarData(item.proxima_acao_at);
   const msg = item.msg_sugerida.trim();
+  const temperatura = rotuloTemperatura(item.temperatura).trim();
 
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
@@ -195,14 +204,17 @@ function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
               {item.etapa}
             </span>
           )}
-          <span
-            className={cn(
-              'rounded-full border px-2 py-0.5 text-[11px] font-medium',
-              TEMP_BADGE[item.temperatura] ?? TEMP_BADGE._DEFAULT,
-            )}
-          >
-            {rotuloTemperatura(item.temperatura)}
-          </span>
+          {/* Lead sem temperatura nao ganha pilula vazia. */}
+          {temperatura && (
+            <span
+              className={cn(
+                'rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                classeTemperatura(item.temperatura),
+              )}
+            >
+              {temperatura}
+            </span>
+          )}
         </div>
       </div>
 
@@ -253,9 +265,8 @@ function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
 
 export default function RadarPage() {
   const router = useRouter();
-  const queryClient = useQueryClient();
 
-  const { data, isLoading, isError, isFetching } = useQuery<RadarResposta>({
+  const { data, isLoading, isError, isFetching, refetch } = useQuery<RadarResposta>({
     queryKey: ['radar'],
     queryFn: async () => normalizar((await api.get('/api/insights/radar')).data),
     // A fila e montada por cron; recarregar a cada foco de aba nao muda nada.
@@ -275,10 +286,20 @@ export default function RadarPage() {
     );
   };
 
+  /**
+   * `invalidateQueries` NAO serve aqui: no react-query v5 a promise dela resolve
+   * mesmo quando o refetch falha (o erro fica no estado da query, nao rejeita) —
+   * com o backend fora do ar a tela dizia "Radar atualizado". `refetch` devolve
+   * o resultado, entao da pra falar a verdade.
+   */
   const atualizar = () => {
-    void queryClient
-      .invalidateQueries({ queryKey: ['radar'] })
-      .then(() => toast.success('Radar atualizado'));
+    void refetch().then((resultado) => {
+      if (resultado.isError) {
+        toast.error('Não foi possível atualizar o radar.');
+        return;
+      }
+      toast.success('Radar atualizado');
+    });
   };
 
   return (
@@ -300,12 +321,14 @@ export default function RadarPage() {
           <PhoneCall className="h-5 w-5" />
         </span>
         <div>
+          {/* Em erro NAO cai pro zero: "0 para chamar hoje" em cima do bloco de
+              erro e a tela mentindo que o dia esta limpo. */}
           <p className="text-2xl font-semibold leading-none">
-            {isLoading ? '—' : radar.chamar_hoje.length}
+            {isLoading || isError ? '—' : radar.chamar_hoje.length}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
             para chamar hoje
-            {!isLoading && total > 0 ? ` · ${total} no radar` : ''}
+            {!isLoading && !isError && total > 0 ? ` · ${total} no radar` : ''}
           </p>
         </div>
       </div>
