@@ -29,8 +29,24 @@ interface CardFieldsMenuProps {
   onChange: (fields: string[]) => void;
 }
 
+const CHAVES: ReadonlyArray<string> = CAMPOS_DO_CARD.map((c) => c.key);
+
 export function CardFieldsMenu({ value, onChange }: CardFieldsMenuProps): JSX.Element {
-  const marcados = value.length === 0 ? CAMPOS_DO_CARD.map((c) => c.key) : value;
+  /**
+   * `marcados` sai SEMPRE do vocabulário conhecido, nunca do `value` cru: o
+   * array vem do banco gravado por qualquer versão do cliente e pode trazer
+   * chave órfã (campo que já existiu) ou repetida. Contar o bruto quebraria os
+   * dois invariantes — órfã inflaria o total e o "mínimo 1" deixaria de travar
+   * o último campo; duplicata sumiria no filter e emitiria `[]`, que significa
+   * o oposto ("mostrar tudo"). Derivar de CHAVES também normaliza ordem e
+   * remove repetição, o que estabiliza o JSON.stringify do configIgual.
+   *
+   * Borda: `value` só com órfãs vira `marcados = []` — nada marcado e nada
+   * travado. É a leitura honesta do que está salvo (o LeadCard, com lista não
+   * vazia sem nenhum campo conhecido, também não mostra bloco nenhum), e o
+   * primeiro clique já emite uma lista válida e devolve a tela ao normal.
+   */
+  const marcados = value.length === 0 ? CHAVES : CHAVES.filter((k) => value.includes(k));
   const marcado = (key: string) => marcados.includes(key);
   const soUmMarcado = marcados.length === 1;
 
