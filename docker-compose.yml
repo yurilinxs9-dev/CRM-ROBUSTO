@@ -103,6 +103,8 @@ services:
       resources:
         limits:
           memory: 3g
+          # 1.5 de 2 vCPUs: geracao continua (backfill) nunca sufoca webhooks/API.
+          cpus: "1.5"
 
 volumes:
   uptime_data:
