@@ -6,13 +6,12 @@ import type { Prisma } from '@prisma/client';
  * erro — cai na ordenação padrão da tela, porque uma view salva com sort
  * antigo tem que continuar abrindo.
  */
-const NULLABLE_SORT = [
-  'ultima_interacao',
-  'valor_estimado',
-  'temperatura',
-  'proximo_followup',
-] as const;
-const PLAIN_SORT = ['nome', 'created_at'] as const;
+const NULLABLE_SORT = ['ultima_interacao', 'valor_estimado', 'proximo_followup'] as const;
+// `temperatura` entra aqui, e não em NULLABLE_SORT: é enum NOT NULL
+// (LeadTemperatura @default(FRIO)), então Prisma só aceita SortOrder plano —
+// { sort, nulls } estouraria em runtime. Postgres ordena enum pela ordem de
+// declaração, e null é impossível: a semântica não muda.
+const PLAIN_SORT = ['nome', 'created_at', 'temperatura'] as const;
 
 export function buildSortOrder(
   sort?: string,
