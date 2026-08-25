@@ -451,6 +451,13 @@ export class PlatformAdminService {
     const t = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, nome: true } });
     if (!t) throw new NotFoundException('Tenant não encontrado');
     const res = await this.prisma.user.updateMany({ where: { tenant_id: tenantId }, data: { ativo: !suspended } });
+    // Marca explícita da suspensão: desativar usuários só barra o login, e o
+    // WhatsApp segue recebendo/enviando sozinho. `suspended_at` é o que o
+    // inbound e o processor de envio leem para parar de trabalhar.
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { suspended_at: suspended ? new Date() : null },
+    });
     await this.prisma.adminAuditLog.create({
       data: { admin_user_id: admin.id, action: suspended ? 'tenant_suspend' : 'tenant_unsuspend', target_tenant_id: tenantId, detail: { nome: t.nome, users: res.count } },
     });

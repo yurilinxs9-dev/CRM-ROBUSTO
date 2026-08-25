@@ -185,9 +185,29 @@ export class InboundMessageService {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Tenant suspenso (cobrança em atraso) não processa inbound: a instância
+   * resolve como `null` e os handlers descartam a mensagem como "instância
+   * desconhecida". O `include` do tenant é a única razão de os finders não
+   * devolverem a row crua do Prisma.
+   */
+  private dropIfSuspended<T extends { nome: string; tenant?: { suspended_at: Date | null } | null }>(
+    instance: T | null,
+  ): T | null {
+    if (instance?.tenant?.suspended_at) {
+      this.logger.debug(`inbound descartado: tenant suspenso (instancia ${instance.nome})`);
+      return null;
+    }
+    return instance;
+  }
+
   async findInstanceByName(name: string | undefined) {
     if (!name) return null;
-    return this.prisma.whatsappInstance.findFirst({ where: { nome: name } });
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { nome: name },
+      include: { tenant: { select: { suspended_at: true } } },
+    });
+    return this.dropIfSuspended(instance);
   }
 
   /**
@@ -207,15 +227,21 @@ export class InboundMessageService {
     if (!name) return null;
     const evo = await this.prisma.whatsappInstance.findFirst({
       where: { nome: name, config: { path: ['provider'], equals: 'evolution' } },
+      include: { tenant: { select: { suspended_at: true } } },
     });
-    return evo ?? this.findInstanceByName(name);
+    // Suspenso já vira null aqui — sem cair no fallback por nome cru, que
+    // acharia a MESMA instância e reintroduziria a mensagem.
+    if (evo) return this.dropIfSuspended(evo);
+    return this.findInstanceByName(name);
   }
 
   async findInstanceByUazapiToken(token: string | undefined) {
     if (!token) return null;
-    return this.prisma.whatsappInstance.findFirst({
+    const instance = await this.prisma.whatsappInstance.findFirst({
       where: { config: { path: ['uazapi_token'], equals: token } },
+      include: { tenant: { select: { suspended_at: true } } },
     });
+    return this.dropIfSuspended(instance);
   }
 
   /**

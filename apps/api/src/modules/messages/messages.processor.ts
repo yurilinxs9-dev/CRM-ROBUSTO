@@ -32,6 +32,19 @@ export class MessagesSendProcessor extends WorkerHost {
 
   async process(job: Job<SendMessageJobData>): Promise<void> {
     const d = job.data;
+    // Tenant suspenso (cobrança em atraso) não envia: o job é descartado como
+    // concluído — re-tentar não adianta enquanto a suspensão durar, e a
+    // mensagem fica no banco com o status que tinha.
+    if (d.tenantId) {
+      const t = await this.prisma.tenant.findUnique({
+        where: { id: d.tenantId },
+        select: { suspended_at: true },
+      });
+      if (t?.suspended_at) {
+        this.logger.warn(`envio descartado: tenant ${d.tenantId} suspenso (msg ${d.messageId})`);
+        return;
+      }
+    }
     switch (d.kind) {
       case 'text':  return this.handleText(job as Job<SendTextJobData>);
       case 'audio': return this.handleAudio(job as Job<SendAudioJobData>);
