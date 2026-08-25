@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone } from 'lucide-react';
+import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -20,6 +20,9 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { href: '/analytics', label: 'Analytics', icon: BarChart3, exact: true },
   { href: '/kanban', label: 'Kanban', icon: Kanban },
+  // Vizinho do Kanban de propósito: são a MESMA view de leads vista de dois
+  // jeitos, e o toggle da ViewBar leva de um para o outro.
+  { href: '/leads', label: 'Leads', icon: List },
   { href: '/chat', label: 'Conversas', icon: MessageSquare },
   { href: '/followup', label: 'Follow-up IA', icon: Megaphone },
   { href: '/agenda', label: 'Agenda', icon: CalendarDays },
