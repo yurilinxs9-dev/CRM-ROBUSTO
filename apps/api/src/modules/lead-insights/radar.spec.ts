@@ -189,16 +189,18 @@ describe('LeadInsightsService.radar', () => {
     expect(radar.chamar_hoje[0].tags).toEqual(['Reforma']);
   });
 
-  it('lixo na coluna Json nao vira chip (numero, null, objeto)', async () => {
+  it('lixo na coluna Json nao vira chip (numero, null, objeto, string em branco)', async () => {
     // A coluna e Json cru: nada no banco garante que so tem string la dentro.
     const m = montar();
     m.lead.findMany.mockResolvedValueOnce([
-      linha({ id: 'lead-lixo', lead_tags: [], tags: ['VIP', 7, null, { nome: 'x' }] }),
+      linha({ id: 'lead-lixo', lead_tags: [], tags: ['VIP', 7, null, { nome: 'x' }, '', '  '] }),
     ]);
 
     const radar = await m.service.radar(operador);
 
     expect(radar.chamar_hoje[0].tags).toEqual(['VIP']);
+    // String em branco tambem cai fora: viraria um chip vazio na UI.
+    expect(radar.chamar_hoje[0].tags).not.toContain('');
   });
 
   it('coluna Json nula (lead antigo) nao quebra o card', async () => {

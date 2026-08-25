@@ -227,9 +227,10 @@ type LinhaRadar = Prisma.LeadGetPayload<{ select: typeof RADAR_SELECT }>;
 function tagsDoLead(relacao: { tag: { nome: string } }[], legado: Prisma.JsonValue): string[] {
   const daRelacao = relacao.map((lt) => lt.tag.nome);
   if (daRelacao.length > 0) return daRelacao;
-  // Json cru: nada no banco impede numero, null ou objeto no meio da lista.
+  // Json cru: nada no banco impede numero, null, objeto ou string vazia no
+  // meio da lista (mesma defesa de `lerCompra`/`lerMemoria`).
   if (!Array.isArray(legado)) return [];
-  return legado.filter((t): t is string => typeof t === 'string');
+  return legado.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
 }
 
 /** Dias inteiros parados. `null` = lead que nunca teve interacao registrada. */
