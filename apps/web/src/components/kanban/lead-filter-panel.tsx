@@ -39,18 +39,24 @@ export interface LeadView {
   user_id: string | null;
 }
 
-interface Props {
+/**
+ * Modo controlado. Passando `open`, o botão-gatilho embutido SOME e quem abre o
+ * painel é o chamador — é o que a `/leads` precisa, onde o botão "Filtros" já
+ * existe na ViewBar e dois botões iguais lado a lado seria a mesma ação
+ * duplicada. Sem as props, o painel continua se abrindo sozinho como no kanban.
+ *
+ * As duas andam JUNTAS por tipo: `open` sem `onOpenChange` daria um diálogo que
+ * abre e não fecha nunca — Esc, clique no overlay e "Ver resultados" cairiam num
+ * handler que não existe, e o usuário ficaria preso na tela.
+ */
+type ModoAbertura =
+  | { open: boolean; onOpenChange: (aberto: boolean) => void }
+  | { open?: undefined; onOpenChange?: undefined };
+
+type Props = {
   value: LeadPanelFilters;
   onChange: (next: LeadPanelFilters) => void;
-  /**
-   * Modo controlado. Passando `open`, o botão-gatilho embutido SOME e quem abre
-   * o painel é o chamador — é o que a `/leads` precisa, onde o botão "Filtros"
-   * já existe na ViewBar e dois botões iguais lado a lado seria a mesma ação
-   * duplicada. Sem a prop, o painel continua se abrindo sozinho como no kanban.
-   */
-  open?: boolean;
-  onOpenChange?: (aberto: boolean) => void;
-}
+} & ModoAbertura;
 
 /**
  * Painel de filtros da lista de leads.
@@ -465,7 +471,11 @@ export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) 
                 variant="ghost"
                 size="sm"
                 className="h-8 text-xs"
-                onClick={() => onChange(FILTROS_VAZIOS)}
+                // Objeto NOVO com arrays NOVAS: `FILTROS_VAZIOS` é constante de
+                // módulo, e entregá-la direto faria o estado de quem chama
+                // apontar para as arrays compartilhadas pelo app inteiro — o
+                // mesmo estrago que `filtrosVazios()` no use-lead-view evita.
+                onClick={() => onChange({ ...FILTROS_VAZIOS, tags: [], origem: [] })}
               >
                 Limpar
               </Button>

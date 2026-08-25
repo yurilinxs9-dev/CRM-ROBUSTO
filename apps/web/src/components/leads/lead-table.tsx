@@ -100,8 +100,29 @@ const moedaFmt = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: '
 // Formatação de valor
 // ---------------------------------------------------------------------------
 
+/** `2026-08-25` — data pura, sem hora nem fuso. */
+const SO_DATA = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Data -> `dd/mm/aaaa`, respeitando a diferença entre data pura e instante.
+ *
+ * Campo customizado do tipo `date` é gravado CRU, no formato do
+ * `<input type="date">` (ver `coerceValue` em field-schema.ts): `2026-08-25`.
+ * `new Date('2026-08-25')` é meia-noite UTC pelo spec, e em UTC-3 isso vira
+ * 24/08 na tela — todo aniversário e toda data de fechamento apareceria um dia
+ * antes. Data pura é montada em horário LOCAL; datetime completo (created_at,
+ * ultima_interacao) é instante de verdade e continua convertido para o fuso do
+ * usuário, que é o certo ali.
+ */
 function textoData(v: unknown): string {
   if (typeof v !== 'string' && typeof v !== 'number') return '';
+  if (typeof v === 'string') {
+    const m = SO_DATA.exec(v);
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR');
+    }
+  }
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR');
 }
@@ -138,19 +159,36 @@ export function formatarValor(v: unknown, tipo: string): string {
  *  ficha: chave que é coluna real do lead nunca é procurada no Json. */
 function valorBruto(lead: LeadRow, key: string): unknown {
   const rec: Record<string, unknown> = lead;
-  if (key in rec) return rec[key];
-  return lead.dados_custom?.[key];
+  // `hasOwnProperty` e não `key in rec`: `in` anda pela cadeia de protótipos, e
+  // um campo customizado com chave `constructor` ou `toString` acharia o membro
+  // de Object.prototype em vez do valor do lead — a célula imprimiria o código
+  // da função. As chaves vêm do tenant, então isso é entrada de usuário.
+  if (Object.prototype.hasOwnProperty.call(rec, key)) return rec[key];
+  const custom = lead.dados_custom;
+  if (!custom || !Object.prototype.hasOwnProperty.call(custom, key)) return undefined;
+  return custom[key];
 }
 
 // ---------------------------------------------------------------------------
 // Célula
 // ---------------------------------------------------------------------------
 
-function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element | string {
+/** Texto de uma linha só, cortado com reticências e com o valor inteiro no
+ *  `title` — a coluna é estreita por definição, e sem o tooltip o usuário teria
+ *  que abrir a ficha só para ler o que não coube. */
+function Texto({ children }: { children: string }): JSX.Element {
+  return (
+    <span className="block truncate" title={children || undefined}>
+      {children}
+    </span>
+  );
+}
+
+function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element {
   // As chaves abaixo não são campo escalar: são relação ou enum com semântica
   // própria, e por isso vêm ANTES do despacho por tipo.
   if (key === 'estagio') {
-    if (!lead.estagio) return '';
+    if (!lead.estagio) return <Texto>{''}</Texto>;
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5">
         <span
@@ -162,7 +200,7 @@ function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element |
     );
   }
 
-  if (key === 'responsavel') return lead.responsavel?.nome ?? '';
+  if (key === 'responsavel') return <Texto>{lead.responsavel?.nome ?? ''}</Texto>;
 
   if (key === 'tags') {
     const doBanco = (lead.lead_tags ?? []).map((lt) => lt.tag);
@@ -171,7 +209,7 @@ function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element |
     const chips = doBanco.length
       ? doBanco
       : (lead.tags ?? []).map((nome) => ({ id: nome, nome, cor: '' }));
-    if (chips.length === 0) return '';
+    if (chips.length === 0) return <Texto>{''}</Texto>;
     return (
       <span className="flex flex-wrap items-center gap-1">
         {chips.map((t) => (
@@ -193,7 +231,7 @@ function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element |
   if (key === 'temperatura') {
     const temp = typeof lead.temperatura === 'string' ? lead.temperatura : '';
     const cor = TEMP_CORES[temp];
-    if (!cor) return temp;
+    if (!cor) return <Texto>{temp}</Texto>;
     return (
       <span
         className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold"
@@ -204,7 +242,7 @@ function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element |
     );
   }
 
-  return formatarValor(valorBruto(lead, key), tipo);
+  return <Texto>{formatarValor(valorBruto(lead, key), tipo)}</Texto>;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +322,9 @@ export function LeadTable({
   );
 
   const iniciarResize = (e: React.MouseEvent, c: ViewColumn) => {
+    // Só o botão esquerdo arrasta. O direito abriria o menu de contexto E
+    // armaria o arrasto, e o mouseup correspondente gravaria a largura.
+    if (e.button !== 0) return;
     // Sem isto o mousedown na alça também dispara a ordenação do cabeçalho e
     // seleciona texto da página inteira enquanto arrasta.
     e.preventDefault();
@@ -416,9 +457,13 @@ export function LeadTable({
                 style={{ borderBottom: '1px solid var(--border-default)' }}
               >
                 {efetivas.map((c) => (
+                  // `overflow-hidden` no <td>, e o `truncate` DENTRO de cada
+                  // conteúdo: `truncate` aqui traria `white-space: nowrap`, que
+                  // anularia o flex-wrap dos chips de tag — várias tags seriam
+                  // cortadas em vez de quebrar linha.
                   <td
                     key={c.key}
-                    className="truncate px-3 py-2.5"
+                    className="overflow-hidden px-3 py-2.5"
                     style={{ color: 'var(--text-secondary)' }}
                   >
                     {conteudoCelula(lead, c.key, tipoDe(c.key))}

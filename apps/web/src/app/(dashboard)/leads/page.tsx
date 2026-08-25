@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 
@@ -8,7 +8,12 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toQueryParams } from '@/lib/lead-filters';
-import { fromSavedConfig, type ViewColumn, type ViewSort } from '@/lib/lead-view-config';
+import {
+  COLUNAS_DEFAULT,
+  fromSavedConfig,
+  type ViewColumn,
+  type ViewSort,
+} from '@/lib/lead-view-config';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
 import { LeadFilterPanel } from '@/components/kanban/lead-filter-panel';
 import { LeadDetailDrawer } from '@/components/kanban/lead-detail-drawer';
@@ -69,17 +74,24 @@ export default function LeadsPage(): JSX.Element {
    * Trocar de filtro ou de ordenação volta para a primeira página.
    *
    * Sem isto, quem estava na página 7 e apertava um filtro caía numa tela vazia
-   * (offset 300 num resultado de 12 linhas) e concluía que o filtro não achou
-   * nada. O ref compara o RECORTE, ignorando limit/offset — senão o efeito
-   * dispararia a cada virada de página e prenderia o usuário na primeira.
+   * (offset 350 num resultado de 12 linhas) e concluía que o filtro não achou
+   * nada. A comparação é sobre o RECORTE, ignorando limit/offset — senão a
+   * virada de página se anularia e prenderia o usuário na primeira.
+   *
+   * Ajuste DURANTE a renderização, e não num efeito: o React descarta esta
+   * passada e re-renderiza com o estado novo antes de pintar, então a query sai
+   * uma vez só, já no offset 0. Num efeito, `params` já teria sido calculado com
+   * a página velha — dispararia um request em `offset=350` com os filtros novos,
+   * outro em 0 logo depois, e o rótulo mostraria "351–400" sobre linhas velhas
+   * por um frame. Também cobre o que não passa pelos handlers daqui: trocar de
+   * view pela ViewBar muda filtros e sort de uma vez.
    */
   const recorte = JSON.stringify({ f: toQueryParams(filters), s: config.sort });
-  const recorteAnterior = useRef(recorte);
-  useEffect(() => {
-    if (recorteAnterior.current === recorte) return;
-    recorteAnterior.current = recorte;
+  const [recorteAnterior, setRecorteAnterior] = useState(recorte);
+  if (recorte !== recorteAnterior) {
+    setRecorteAnterior(recorte);
     setPagina(0);
-  }, [recorte]);
+  }
 
   const { data: leads = [], isLoading, isFetching } = useQuery<LeadRow[]>({
     // Prefixo `['leads']` de propósito: a ficha (LeadDetailDrawer) invalida por
@@ -92,7 +104,7 @@ export default function LeadsPage(): JSX.Element {
     placeholderData: keepPreviousData,
   });
 
-  const { schema } = useFieldSchema();
+  const { schema, isLoading: carregandoCampos } = useFieldSchema();
 
   const fieldDefs = useMemo(() => {
     const mapa = new Map<string, FieldMeta>();
@@ -111,10 +123,21 @@ export default function LeadsPage(): JSX.Element {
 
   const aplicarColunas = useCallback(
     (colunas: ViewColumn[]) => {
+      // Ocultar a coluna pela qual a tabela está ordenada leva o sort junto.
+      // O servidor continuaria ordenando por um campo que sumiu da tela, sem
+      // seta em lugar nenhum e sem o ciclo asc→desc→nada para desfazer.
+      // A checagem é sobre a SAÍDA (estava antes, não está agora): zerar sempre
+      // que o campo não estivesse visível apagaria, num simples arrasto de
+      // borda, o sort de uma view salva que já nascia assim.
+      const antes = config.colunas.length > 0 ? config.colunas : COLUNAS_DEFAULT;
+      const campo = config.sort?.campo;
+      const saiu =
+        !!campo && antes.some((c) => c.key === campo) && !colunas.some((c) => c.key === campo);
+
       // `fromSavedConfig` normaliza a ORDEM DAS CHAVES e a faixa das larguras.
       // `configIgual` compara por JSON.stringify: um objeto montado à mão com as
       // chaves em outra ordem daria "sujo" eterno mesmo sem nada ter mudado.
-      setConfig(fromSavedConfig({ ...config, colunas }));
+      setConfig(fromSavedConfig({ ...config, colunas, sort: saiu ? null : config.sort }));
     },
     [config, setConfig],
   );
@@ -139,7 +162,10 @@ export default function LeadsPage(): JSX.Element {
       />
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-        {isLoading ? (
+        {/* O schema entra no gate junto com os leads: sem ele `fieldDefs` só
+            tem os pseudo, e o cabeçalho piscaria as chaves cruas (`nome`,
+            `valor_estimado`) com o menu de colunas vazio. */}
+        {isLoading || carregandoCampos ? (
           <div className="space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-10 w-full rounded-lg" />
