@@ -97,9 +97,11 @@ function utilizavel(insight: InsightGerado | null): insight is InsightGerado {
 }
 
 /**
- * Uma linha por mensagem no prompt. Quebra de linha dentro do texto do cliente
- * viraria uma linha nova comecando com "[data] EQUIPE:" — turno forjado. Colapsar
- * para espaco custa nada e fecha a porta.
+ * O prompt e montado por LINHA: cabecalhos de secao ("## Conversa"), campos do
+ * lead e turnos da conversa. Todo texto que o CLIENTE controla — o texto da
+ * mensagem, mas tambem o pushName do WhatsApp que vira `nome`, e o telefone —
+ * precisa entrar achatado, senao um `\n` cria uma linha nova e forja uma secao
+ * ou um turno "[data] EQUIPE:" que o atendente nunca escreveu.
  */
 function achatar(texto: string): string {
   return texto.replace(/\s*[\r\n]+\s*/g, ' ').trim();
@@ -241,8 +243,8 @@ export class LeadInsightsService {
 
     const contexto: InsightContexto = {
       lead: {
-        nome: lead.nome,
-        telefone: lead.telefone,
+        nome: achatar(lead.nome),
+        telefone: achatar(lead.telefone),
         etapa: lead.estagio?.nome ?? 'sem etapa',
         temperatura: String(lead.temperatura),
         // Decimal do Prisma nao serializa como numero sozinho.
@@ -301,6 +303,41 @@ export class LeadInsightsService {
       create: { tenant_id: tenantId, lead_id: leadId, ...campos, geracoes: 1 },
       update: { ...campos, geracoes: { increment: 1 } },
     });
+
+    await this.rechecarNovidade(leadId, tenantId, watermark);
+  }
+
+  /**
+   * Mensagem que chegou ENQUANTO este job rodava (o modelo local leva de 30s a
+   * 2min) perde o gatilho: o `queue.add` do inbound e descartado porque o jobId
+   * `lead-<id>` ainda existe — o job esta ACTIVE, nao so delayed. Sem esta
+   * reconferencia pos-upsert, a ultima mensagem do cliente ficaria fora da ficha
+   * ate a proxima mensagem ou ate o cron de 7 dias.
+   */
+  private async rechecarNovidade(
+    leadId: string,
+    tenantId: string,
+    watermark: Date,
+  ): Promise<void> {
+    try {
+      const pendentes = await this.prisma.message.count({
+        where: { lead_id: leadId, created_at: { gt: watermark } },
+      });
+      if (pendentes === 0) return;
+      // jobId NAO pode ser `lead-<id>`: e o do job que esta rodando agora, e o
+      // add cairia no mesmo buraco. O watermark deixa o id unico por geracao.
+      await this.enfileirar(
+        leadId,
+        tenantId,
+        `lead-${leadId}-${watermark.getTime()}`,
+        ATRASO_GATILHO_MS,
+      );
+      this.logger.log(
+        `Insight do lead ${leadId}: ${pendentes} msg(s) chegaram durante a geracao — re-enfileirado`,
+      );
+    } catch (err) {
+      this.logger.warn(`Recheque de novidade do lead ${leadId} falhou: ${String(err)}`);
+    }
   }
 
   private async pedirInsight(
