@@ -62,6 +62,11 @@ const NOTA_MAX = 10;
 /** Cada mensagem entra no prompt truncada — modelo local tem contexto curto. */
 const LIMITE_TEXTO_MENSAGEM = 1000;
 
+/**
+ * Modelo pequeno copia o shape: por isso `ultima_compra` aparece aqui como `null`
+ * (o padrao seguro) e o formato preenchido fica so na regra textual — shape com compra
+ * de exemplo ensinaria justamente a inventar a compra que a regra proibe.
+ */
 const SHAPE_JSON = `{
   "resumo": "string",
   "memoria_novos_fatos": [{ "fato": "string", "quando_dito": "AAAA-MM-DD" }],
@@ -71,7 +76,7 @@ const SHAPE_JSON = `{
   "nota_atendimento": 7,
   "nota_ponto_forte": "string",
   "nota_ponto_melhoria": "string",
-  "ultima_compra": { "descricao": "string", "valor": 0, "quando": "string" }
+  "ultima_compra": null
 }`;
 
 const SYSTEM_PROMPT = `Voce e um assistente de analise comercial de um CRM de WhatsApp em portugues do Brasil.
@@ -90,7 +95,7 @@ Regras de cada campo:
 - "nota_atendimento": inteiro de 0 a 10 avaliando o ATENDENTE (nao o cliente): rapidez das respostas, clareza das explicacoes e conducao da negociacao (perguntou o que faltava, ofereceu o proximo passo). Se a conversa nao tiver mensagens da equipe suficientes para avaliar, use null.
 - "nota_ponto_forte": UMA linha dizendo o que o atendente fez bem.
 - "nota_ponto_melhoria": UMA linha dizendo o que o atendente poderia melhorar.
-- "ultima_compra": preencha APENAS se o CLIENTE citou na conversa uma compra ou fechamento ja feito ("comprei", "levei", "fechamos", "paguei"). "descricao" = o que ele disse ter comprado; "valor" = numero em reais somente se ele falou o valor, senao null; "quando" = como ele datou ("mes passado", "em julho"), senao "". Nunca invente compra, valor ou data: sem mencao explicita do cliente, use null no campo inteiro. Orcamento, cotacao ou intencao de compra NAO contam.
+- "ultima_compra": o padrao e null. Troque por um objeto APENAS se o CLIENTE citou na conversa uma compra ou fechamento ja feito ("comprei", "levei", "fechamos", "paguei"); nesse caso use o formato { "descricao": "o que ele disse ter comprado", "valor": 1234.56, "quando": "mes passado" }, com "valor" numerico so se ele falou o valor (senao null) e "quando" como ele datou (senao ""). Nunca invente compra, valor ou data: sem mencao explicita do cliente, mantenha null. Orcamento, cotacao ou intencao de compra NAO contam.
 
 Restricoes absolutas:
 - Voce NUNCA responde pelo cliente e NUNCA envia nada: apenas sugere para o atendente humano decidir.
@@ -112,11 +117,19 @@ function comoTexto(valor: unknown, limite: number): string {
   return truncar(valor.trim(), limite);
 }
 
-/** Numero solto (aceita string numerica que o modelo local costuma devolver). */
+/**
+ * Numero solto (aceita string numerica que o modelo local costuma devolver).
+ * Prompt em pt-BR faz o modelo escrever decimal com virgula ("8,5", "4200,50"):
+ * uma virgula unica sem ponto e tratada como separador decimal. Formato misto
+ * ("4.200,00") continua sendo recusado — ambiguo demais para adivinhar.
+ */
 function comoNumero(valor: unknown): number | null {
   if (typeof valor === 'number' && Number.isFinite(valor)) return valor;
-  if (typeof valor === 'string' && valor.trim() !== '' && Number.isFinite(Number(valor))) return Number(valor);
-  return null;
+  if (typeof valor !== 'string') return null;
+  const texto = valor.trim();
+  if (texto === '') return null;
+  const normalizado = /^-?\d+,\d+$/.test(texto) ? texto.replace(',', '.') : texto;
+  return Number.isFinite(Number(normalizado)) ? Number(normalizado) : null;
 }
 
 function comoDias(valor: unknown): number {
@@ -216,7 +229,8 @@ const CHAVES_INSIGHT = [
   'msg_sugerida',
   // As 4 chaves da ficha 360 entram na deteccao de candidato porque um objeto que so
   // as traga ainda e um fragmento de insight vindo do modelo (e nao ruido tipo
-  // {"thinking":...}). Fragmento sem resumo nao gera ficha em branco no banco: quem
+  // {"thinking":...}). Fragmento sem resumo nao rouba a vez do JSON completo (a escolha
+  // em extrairInsight prefere resumo nao-vazio) nem gera ficha em branco no banco: quem
   // persiste (worker) guarda contra resumo vazio antes de sobrescrever a ficha boa.
   'nota_atendimento',
   'nota_ponto_forte',
@@ -234,9 +248,16 @@ function pareceInsight(obj: Record<string, unknown>): boolean {
  * markdown e conversa). Nunca lanca.
  * Contrato: `null` significa "nao veio JSON utilizavel" — o chamador deve tratar como
  * falha (retry / manter o insight anterior), nunca sobrescrever ficha boa com brancos.
+ *
+ * Entre os candidatos aceitos vence o PRIMEIRO com `resumo` nao-vazio: sem isso um
+ * fragmento solto no inicio da resposta (ex.: `{"nota_atendimento": 8}` antes do JSON
+ * completo) roubaria a vez e jogaria fora o insight real da mesma resposta.
  */
 export function extrairInsight(textoModelo: string): InsightGerado | null {
   if (typeof textoModelo !== 'string' || textoModelo.trim() === '') return null;
+
+  let escolhido: Record<string, unknown> | null = null;
+  let primeiroAceito: Record<string, unknown> | null = null;
 
   for (const candidato of candidatosJson(textoModelo)) {
     let bruto: unknown;
@@ -245,21 +266,31 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
     } catch {
       continue;
     }
-    // Objeto sem nenhuma das 5 chaves e ruido (ex.: {"thinking":...}): tenta o proximo.
+    // Objeto sem nenhuma das chaves do contrato e ruido (ex.: {"thinking":...}): ignora.
     if (!ehObjeto(bruto) || !pareceInsight(bruto)) continue;
-    return {
-      resumo: comoTexto(bruto.resumo, LIMITE_RESUMO),
-      memoria_novos_fatos: comoMemoria(bruto.memoria_novos_fatos),
-      proxima_acao_em_dias: comoDias(bruto.proxima_acao_em_dias),
-      proxima_acao_motivo: comoTexto(bruto.proxima_acao_motivo, LIMITE_MOTIVO),
-      msg_sugerida: comoTexto(bruto.msg_sugerida, LIMITE_MSG),
-      nota_atendimento: comoNota(bruto.nota_atendimento),
-      nota_ponto_forte: comoTexto(bruto.nota_ponto_forte, LIMITE_PONTO),
-      nota_ponto_melhoria: comoTexto(bruto.nota_ponto_melhoria, LIMITE_PONTO),
-      ultima_compra: comoCompra(bruto.ultima_compra),
-    };
+    if (primeiroAceito === null) primeiroAceito = bruto;
+    if (comoTexto(bruto.resumo, LIMITE_RESUMO) !== '') {
+      escolhido = bruto;
+      break;
+    }
   }
-  return null;
+
+  // Fallback: nenhum candidato trouxe resumo — mantem o comportamento antigo de
+  // sanear o primeiro aceito (quem persiste e que barra ficha sem resumo).
+  const alvo = escolhido ?? primeiroAceito;
+  if (alvo === null) return null;
+
+  return {
+    resumo: comoTexto(alvo.resumo, LIMITE_RESUMO),
+    memoria_novos_fatos: comoMemoria(alvo.memoria_novos_fatos),
+    proxima_acao_em_dias: comoDias(alvo.proxima_acao_em_dias),
+    proxima_acao_motivo: comoTexto(alvo.proxima_acao_motivo, LIMITE_MOTIVO),
+    msg_sugerida: comoTexto(alvo.msg_sugerida, LIMITE_MSG),
+    nota_atendimento: comoNota(alvo.nota_atendimento),
+    nota_ponto_forte: comoTexto(alvo.nota_ponto_forte, LIMITE_PONTO),
+    nota_ponto_melhoria: comoTexto(alvo.nota_ponto_melhoria, LIMITE_PONTO),
+    ultima_compra: comoCompra(alvo.ultima_compra),
+  };
 }
 
 function normalizarFato(fato: string): string {

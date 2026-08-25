@@ -144,6 +144,29 @@ describe('nota do atendimento e ultima compra', () => {
     expect(msgs[0].content).toMatch(/atendente/i);
     expect(msgs[0].content).toMatch(/[nN]unca invente/);
   });
+
+  it('shape do prompt mostra ultima_compra como null (nao ensina a copiar compra falsa)', () => {
+    const shape = montarPromptInsight(ctxMinimo())[0].content.split('Regras de cada campo')[0];
+    expect(shape).toMatch(/"ultima_compra":\s*null/);
+    expect(shape).not.toMatch(/"descricao"/); // exemplo preenchido so na regra textual, nunca no shape
+  });
+
+  it('fragmento nota-only nao rouba o candidato: vence o objeto com resumo', () => {
+    const completo = JSON.stringify({ ...base, nota_atendimento: 6 });
+    const r = extrairInsight('{"nota_atendimento": 8}\n' + completo);
+    expect(r?.resumo).toContain('prazo');
+    expect(r?.nota_atendimento).toBe(6);
+  });
+
+  it('numero em pt-BR com virgula decimal e aceito', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base,
+      nota_atendimento: '8,5',
+      ultima_compra: { descricao: 'cimento', valor: '4200,50', quando: '' },
+    }));
+    expect(r?.nota_atendimento).toBe(9);
+    expect(r?.ultima_compra?.valor).toBe(4200.5);
+  });
 });
 
 describe('montarPromptInsight', () => {
