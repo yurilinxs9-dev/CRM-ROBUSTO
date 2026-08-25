@@ -191,6 +191,28 @@ export default function KanbanPage() {
     [activePipeline],
   );
 
+  /**
+   * `/kanban?novo=1` — destino da ação "Novo lead" da palette (Ctrl+K). Espera
+   * os estágios chegarem (o diálogo sem estágio não teria onde criar o lead) e
+   * apaga o parâmetro depois, senão um F5 reabriria o diálogo para sempre.
+   *
+   * Lê de `window.location` em vez de `useSearchParams` de propósito: o hook
+   * exigiria envolver esta página cliente numa fronteira de Suspense só por
+   * causa de um parâmetro opcional.
+   */
+  const novoLeadPedido = useRef(false);
+  useEffect(() => {
+    if (novoLeadPedido.current || stages.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('novo') !== '1') return;
+    novoLeadPedido.current = true;
+    setDefaultStageId(null);
+    setDialogOpen(true);
+    params.delete('novo');
+    const resto = params.toString();
+    router.replace(resto ? `/kanban?${resto}` : '/kanban');
+  }, [stages.length, router]);
+
   // local state for column ordering during drag (optimistic)
   const [stageOrderOverride, setStageOrderOverride] = useState<string[] | null>(null);
   useEffect(() => {
