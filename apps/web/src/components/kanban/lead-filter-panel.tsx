@@ -39,10 +39,24 @@ export interface LeadView {
   user_id: string | null;
 }
 
-interface Props {
+/**
+ * Modo controlado. Passando `open`, o botão-gatilho embutido SOME e quem abre o
+ * painel é o chamador — é o que a `/leads` precisa, onde o botão "Filtros" já
+ * existe na ViewBar e dois botões iguais lado a lado seria a mesma ação
+ * duplicada. Sem as props, o painel continua se abrindo sozinho como no kanban.
+ *
+ * As duas andam JUNTAS por tipo: `open` sem `onOpenChange` daria um diálogo que
+ * abre e não fecha nunca — Esc, clique no overlay e "Ver resultados" cairiam num
+ * handler que não existe, e o usuário ficaria preso na tela.
+ */
+type ModoAbertura =
+  | { open: boolean; onOpenChange: (aberto: boolean) => void }
+  | { open?: undefined; onOpenChange?: undefined };
+
+type Props = {
   value: LeadPanelFilters;
   onChange: (next: LeadPanelFilters) => void;
-}
+} & ModoAbertura;
 
 /**
  * Painel de filtros da lista de leads.
@@ -66,9 +80,15 @@ interface Props {
  * problema que existia quando a lista era um Popover portalado para fora de um
  * Sheet.
  */
-export function LeadFilterPanel({ value, onChange }: Props) {
+export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) {
   const queryClient = useQueryClient();
-  const [aberto, setAberto] = useState(false);
+  const [abertoLocal, setAbertoLocal] = useState(false);
+  const controlado = open !== undefined;
+  const aberto = controlado ? open : abertoLocal;
+  const setAberto = (v: boolean) => {
+    if (controlado) onOpenChange?.(v);
+    else setAbertoLocal(v);
+  };
   const [buscaTag, setBuscaTag] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [nomeNovaView, setNomeNovaView] = useState('');
@@ -136,17 +156,19 @@ export function LeadFilterPanel({ value, onChange }: Props) {
 
   return (
     <Dialog open={aberto} onOpenChange={setAberto}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="h-9 gap-1.5">
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          Filtros
-          {ativos > 0 && (
-            <span className="ml-0.5 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
-              {ativos}
-            </span>
-          )}
-        </Button>
-      </DialogTrigger>
+      {!controlado && (
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" className="h-9 gap-1.5">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filtros
+            {ativos > 0 && (
+              <span className="ml-0.5 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                {ativos}
+              </span>
+            )}
+          </Button>
+        </DialogTrigger>
+      )}
 
       <DialogContent className="max-w-5xl gap-0 p-0">
         <DialogHeader className="border-b px-5 py-3">
@@ -449,7 +471,11 @@ export function LeadFilterPanel({ value, onChange }: Props) {
                 variant="ghost"
                 size="sm"
                 className="h-8 text-xs"
-                onClick={() => onChange(FILTROS_VAZIOS)}
+                // Objeto NOVO com arrays NOVAS: `FILTROS_VAZIOS` é constante de
+                // módulo, e entregá-la direto faria o estado de quem chama
+                // apontar para as arrays compartilhadas pelo app inteiro — o
+                // mesmo estrago que `filtrosVazios()` no use-lead-view evita.
+                onClick={() => onChange({ ...FILTROS_VAZIOS, tags: [], origem: [] })}
               >
                 Limpar
               </Button>

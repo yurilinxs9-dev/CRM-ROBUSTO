@@ -26,6 +26,7 @@ import {
   parseOwnerScope,
   withCondition,
 } from './lead-filters';
+import { buildSortOrder } from './lead-sort';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -181,6 +182,9 @@ interface LeadFilters {
   origem?: string;
   followup_from?: string;
   followup_to?: string;
+  /** Ordenação da lista (Task views salvas): whitelist em lead-sort.ts. */
+  sort?: string;
+  dir?: string;
 }
 
 export interface ExportLeadFilters {
@@ -449,6 +453,10 @@ export class LeadsService {
       created_at: true,
       pipeline_id: true,
       tags: true,
+      email: true,
+      empresa: true,
+      cargo: true,
+      dados_custom: true,
       position: true,
       responsavel: { select: { id: true, nome: true, avatar_url: true } },
       estagio: { select: { id: true, nome: true, cor: true } },
@@ -475,6 +483,11 @@ export class LeadsService {
     // a primeira página traz sempre os mais novos e os fixados pelo usuário.
     const boardOrder = [{ position: 'asc' }, ...recencyOrder] as const;
 
+    // Ordenação escolhida pelo usuário (ou pela view salva). Quando existe, ela
+    // entra ANTES da ordem padrão, que fica só como desempate — vale também no
+    // kanban janelado, onde é o sort-dentro-da-coluna.
+    const userSort = buildSortOrder(filters.sort, filters.dir);
+
     const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
       this.prisma.lead.findMany({
         relationLoadStrategy: 'join',
@@ -482,8 +495,9 @@ export class LeadsService {
         select: leadListSelect,
         // Chat/coluna: ordem pura de recência. Lista plena do kanban:
         // agrupada por estágio (agrupamento final é no cliente).
-        orderBy:
-          filters.scope === 'chat'
+        orderBy: userSort
+          ? [userSort, ...recencyOrder]
+          : filters.scope === 'chat'
             ? [...recencyOrder]
             : filters.estagio_id || filters.per_stage
               ? [...boardOrder]

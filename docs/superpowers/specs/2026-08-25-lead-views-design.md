@@ -52,7 +52,12 @@ Sanitização no `LeadViewsService` (mesmo espírito do `sanitizarFiltros`):
 - `sort.campo`: whitelist de ordenáveis (abaixo); `dir` só `asc|desc`.
 - `colunas[].key` e `card_fields[]`: válidos = chaves de `NATIVE_FIELDS` + o
   identificador de `CustomFieldDef` que serve de chave em `Lead.custom_fields`
-  (o mesmo formato, um só — conferido no create/update com consulta ao tenant);
+  (o mesmo formato, um só — conferido no create/update com consulta ao tenant)
+  + as pseudo-colunas de relação/derivadas que a tabela renderiza sem existir
+  em `CustomFieldDef`: `estagio`, `responsavel`, `tags`, `created_at`,
+  `ultima_interacao`, `telefone`, `ultimo_mensagem`, `mensagens_nao_lidas` e
+  `pending_tasks_count` (essa lista precisa espelhar o `PSEUDO_CAMPOS` do
+  front; as derivadas são só de leitura e não são ordenáveis);
   chave desconhecida é descartada em silêncio. `width` numérico 60–640px.
 
 API: mesmos endpoints CRUD `/lead-views`, payload estendido com os 4 campos
@@ -61,7 +66,7 @@ API: mesmos endpoints CRUD `/lead-views`, payload estendido com os 4 campos
 `GET /api/leads` ganha `sort` + `dir` com whitelist server-side:
 `nome`, `created_at`, `ultima_interacao`, `valor`, `temperatura`,
 `proximo_followup`. Param fora da whitelist → ordenação padrão atual (não é
-erro). Nulls last em todos.
+erro). Nulls last nos anuláveis (`temperatura` é NOT NULL — ordenação simples).
 
 ## 2. Modo Lista (`/leads`)
 

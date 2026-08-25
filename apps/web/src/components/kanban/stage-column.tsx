@@ -76,6 +76,7 @@ function SortableLeadImpl({
   selected,
   onToggleSelect,
   showCheckbox,
+  cardFields,
 }: {
   lead: Lead;
   stage: Stage;
@@ -89,6 +90,7 @@ function SortableLeadImpl({
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
   showCheckbox?: boolean;
+  cardFields?: string[];
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: lead.id, data: { type: 'lead', lead } });
@@ -120,6 +122,7 @@ function SortableLeadImpl({
         selected={selected}
         onToggleSelect={onToggleSelect}
         showCheckbox={showCheckbox}
+        cardFields={cardFields}
       />
     </div>
   );
@@ -154,6 +157,8 @@ interface StageColumnProps {
   hasMore?: boolean;
   onLoadMore?: (stageId: string) => void;
   loadingMore?: boolean;
+  /** `card_fields` da view ativa; repassado a cada card. Vazio = card padrão. */
+  cardFields?: string[];
 }
 
 function StageColumnImpl({
@@ -181,6 +186,7 @@ function StageColumnImpl({
   hasMore,
   onLoadMore,
   loadingMore,
+  cardFields,
 }: StageColumnProps) {
   const bulkActive = selectedLeadIds !== undefined && selectedLeadIds.size > 0;
   const [isEditing, setIsEditing] = useState(false);
@@ -394,6 +400,7 @@ function StageColumnImpl({
                 selected={selectedLeadIds?.has(lead.id)}
                 onToggleSelect={onToggleSelect}
                 showCheckbox={bulkActive}
+                cardFields={cardFields}
               />
             ))}
           </SortableContext>

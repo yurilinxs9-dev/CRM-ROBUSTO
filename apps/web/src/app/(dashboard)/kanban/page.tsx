@@ -50,7 +50,9 @@ import {
 } from '@/components/kanban/lead-card';
 import { StageColumn, type Stage } from '@/components/kanban/stage-column';
 import { LeadFilterPanel } from '@/components/kanban/lead-filter-panel';
-import { FILTROS_VAZIOS, toQueryParams, type LeadPanelFilters } from '@/lib/lead-filters';
+import { useLeadView } from '@/components/leads/use-lead-view';
+import { ViewBar } from '@/components/leads/view-bar';
+import { toQueryParams } from '@/lib/lead-filters';
 import { compareLeadsInStage, topPositionFor } from '@/lib/lead-order';
 import {
   NewLeadDialog,
@@ -104,6 +106,9 @@ const TEMP_OPTIONS: Temperatura[] = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'];
 export default function KanbanPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  // A view ativa: mesma escolha da `/leads` (o hook lê do localStorage nas duas
+  // rotas). Dela saem os filtros do painel, a ordenação e os campos do card.
+  const view = useLeadView();
   const currentUserId = useAuthStore((s) => s.user?.id);
   const userRole = useAuthStore((s) => s.user?.role);
   const isOperador = userRole === 'OPERADOR';
@@ -217,9 +222,14 @@ export default function KanbanPage() {
   // --- Leads ---
   // Filtros do painel lateral. Viram query params: o recorte acontece no banco,
   // é o único jeito de o filtro estar certo num board que carrega em janela de
-  // 50 por coluna.
-  const [panelFilters, setPanelFilters] = useState<LeadPanelFilters>(FILTROS_VAZIOS);
-  const panelParams = useMemo(() => toQueryParams(panelFilters), [panelFilters]);
+  // 50 por coluna. Quem guarda o estado é o `useLeadView` — assim o recorte é o
+  // mesmo da `/leads` e é ele que a barra salva na view.
+  const panelParams = useMemo(() => toQueryParams(view.filters), [view.filters]);
+
+  // Abre o painel de filtros. O botão vive na ViewBar, então o painel entra em
+  // modo controlado (sem o gatilho próprio) — dois botões "Filtros" lado a lado
+  // seriam a mesma ação duplicada.
+  const [painelAberto, setPainelAberto] = useState(false);
 
   // Busca também é do servidor, pelo mesmo motivo dos demais filtros; o debounce
   // evita uma consulta por tecla digitada.
@@ -249,9 +259,19 @@ export default function KanbanPage() {
     return p;
   }, [searchAplicado, tempFilter, responsavelFilter, isPoolEnabled, isOperador, activeTab]);
 
+  // A ordenação da view vale no board como RECORTE: o backend a aplica DENTRO
+  // da janela de cada coluna, então o top-50 que chega é o começo da ordem
+  // escolhida em vez de uma fatia qualquer. Já a ordem VISÍVEL dentro da coluna
+  // segue sendo a do arrasto (`position`) — é o que o usuário grava movendo o
+  // card, e reordenar por cima disso jogaria o card de volta a cada solta.
+  const sort = view.config.sort;
   const serverParams = useMemo(
-    () => ({ ...panelParams, ...scopeParams }),
-    [panelParams, scopeParams],
+    () => ({
+      ...panelParams,
+      ...scopeParams,
+      ...(sort ? { sort: sort.campo, dir: sort.dir } : {}),
+    }),
+    [panelParams, scopeParams, sort],
   );
 
   // serverParams entra na chave: mudou filtro, é outra consulta ao servidor.
@@ -873,6 +893,21 @@ export default function KanbanPage() {
         </button>
       )}
 
+      {/* Barra da view — some junto com o resto do cabeçalho ao recolher, senão
+          o botão flutuante de expandir cairia por cima dela. */}
+      {!headerCollapsed && (
+        <ViewBar view={view} mode="kanban" onOpenFilters={() => setPainelAberto(true)} />
+      )}
+
+      {/* Fora do bloco recolhível: é um Dialog, não ocupa espaço, e desmontá-lo
+          junto com o cabeçalho fecharia o painel no meio do uso. */}
+      <LeadFilterPanel
+        value={view.filters}
+        onChange={view.setFilters}
+        open={painelAberto}
+        onOpenChange={setPainelAberto}
+      />
+
       {/* Header with PipelineSwitcher */}
       {!headerCollapsed && (
       <div className="flex items-center gap-3 px-4 py-2 border-b">
@@ -939,7 +974,6 @@ export default function KanbanPage() {
             className="pl-8 h-9"
           />
         </div>
-        <LeadFilterPanel value={panelFilters} onChange={setPanelFilters} />
         <Select value={tempFilter} onValueChange={(v) => setTempFilter(v as Temperatura | 'ALL')}>
           <SelectTrigger className="h-9 w-40">
             <SelectValue />
@@ -1053,6 +1087,7 @@ export default function KanbanPage() {
                     selectedLeadIds={selectedLeadIds}
                     onToggleSelect={toggleLead}
                     onSelectAllInStage={selectAllInStage}
+                    cardFields={view.config.card_fields}
                   />
                 ))}
                 <button
@@ -1071,7 +1106,7 @@ export default function KanbanPage() {
             <DragOverlay>
               {activeDragLead ? (
                 <div className="w-80">
-                  <LeadCard lead={activeDragLead} isDragging />
+                  <LeadCard lead={activeDragLead} isDragging cardFields={view.config.card_fields} />
                 </div>
               ) : null}
             </DragOverlay>

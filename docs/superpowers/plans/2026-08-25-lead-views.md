@@ -421,8 +421,9 @@ import type { Prisma } from '@prisma/client';
  * campo fora dela NÃO é erro — cai na ordenação padrão da tela, porque uma
  * view salva com sort antigo tem que continuar abrindo.
  */
-const NULLABLE_SORT = ['ultima_interacao', 'valor_estimado', 'temperatura', 'proximo_followup'] as const;
-const PLAIN_SORT = ['nome', 'created_at'] as const;
+// temperatura é enum NOT NULL: entra no PLAIN (Prisma rejeita { sort, nulls } em coluna obrigatória).
+const NULLABLE_SORT = ['ultima_interacao', 'valor_estimado', 'proximo_followup'] as const;
+const PLAIN_SORT = ['nome', 'created_at', 'temperatura'] as const;
 
 export function buildSortOrder(sort?: string, dir?: string): Prisma.LeadOrderByWithRelationInput | null {
   if (dir !== 'asc' && dir !== 'desc') return null;
