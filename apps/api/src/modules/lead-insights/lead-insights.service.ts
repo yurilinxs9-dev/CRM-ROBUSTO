@@ -1,7 +1,8 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { AiFeature, LeadTemperatura, type Prisma } from '@prisma/client';
+// `Prisma` entra como VALOR (nao `type`): `Prisma.DbNull` e usado em tempo de execucao.
+import { AiFeature, LeadTemperatura, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
@@ -16,6 +17,7 @@ import {
   extrairInsight,
   mesclarMemoria,
   montarPromptInsight,
+  type CompraCitada,
   type InsightContexto,
   type InsightGerado,
   type MemoriaFato,
@@ -82,6 +84,51 @@ export function ajustarParaJanela(base: Date, janela: JanelaTenant): Date {
     candidata = new Date(candidata.getTime() + HORA);
   }
   return base;
+}
+
+/** Estreita `unknown` sem cast: objeto simples (nao array, nao null). */
+function ehRegistro(valor: unknown): valor is Record<string, unknown> {
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor);
+}
+
+/**
+ * Json do banco -> compra tipada. Ficha antiga, string solta ou objeto sem
+ * descricao viram `null`: melhor ficha sem compra do que compra quebrada na tela.
+ */
+export function lerCompra(valor: unknown): CompraCitada | null {
+  if (!ehRegistro(valor)) return null;
+  if (typeof valor.descricao !== 'string' || valor.descricao.trim() === '') return null;
+  return {
+    descricao: valor.descricao,
+    valor: typeof valor.valor === 'number' && Number.isFinite(valor.valor) ? valor.valor : null,
+    quando: typeof valor.quando === 'string' ? valor.quando : '',
+  };
+}
+
+/** Reais com centavos: o modelo devolve float longo (1234.5678) e o banco guarda 2 casas. */
+function arredondarValor(valor: number | null): number | null {
+  if (valor === null) return null;
+  return Math.round(valor * 100) / 100;
+}
+
+/**
+ * O que gravar em `ultima_compra`. A compra e HISTORICO: o cliente cita uma vez
+ * e as geracoes seguintes devolvem `null` — gravar esse null apagaria o dado.
+ * Por isso: compra nova substitui; sem compra nova, a anterior e regravada.
+ * Sem nenhuma das duas, `Prisma.DbNull` (SQL NULL da coluna nullable) — `null`
+ * cru nao e aceito pelo client e `Prisma.JsonNull` gravaria o literal JSON null.
+ */
+function compraParaPersistir(
+  nova: CompraCitada | null,
+  anteriorJson: unknown,
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  const compra = nova ?? lerCompra(anteriorJson);
+  if (compra === null) return Prisma.DbNull;
+  return {
+    descricao: compra.descricao,
+    valor: arredondarValor(compra.valor),
+    quando: compra.quando,
+  };
 }
 
 /** Json do banco -> memoria tipada. Tolera lixo (ficha antiga, escrita a mao). */
@@ -400,7 +447,9 @@ export class LeadInsightsService {
 
     const anterior = await this.prisma.leadInsight.findUnique({
       where: { lead_id: leadId },
-      select: { resumo: true, memoria: true },
+      // `ultima_compra` entra no select porque a ficha anterior e a fonte quando o
+      // modelo nao cita compra nenhuma nesta geracao.
+      select: { resumo: true, memoria: true, ultima_compra: true },
     });
 
     const contexto: InsightContexto = {
@@ -455,6 +504,10 @@ export class LeadInsightsService {
       proxima_acao_at: proximaAcao,
       proxima_acao_motivo: insight.proxima_acao_motivo,
       msg_sugerida: insight.msg_sugerida,
+      nota_atendimento: insight.nota_atendimento,
+      nota_ponto_forte: insight.nota_ponto_forte,
+      nota_ponto_melhoria: insight.nota_ponto_melhoria,
+      ultima_compra: compraParaPersistir(insight.ultima_compra, anterior?.ultima_compra),
       ultima_msg_processada_at: watermark,
     };
 
@@ -513,7 +566,9 @@ export class LeadInsightsService {
       messages,
       tenantId,
       leadId,
-      opts: { temperature: 0.4, maxTokens: 700 },
+      // 900 (era 700): a resposta agora tem 9 chaves — com nota, os dois pontos do
+      // atendimento e a compra, 700 tokens cortavam o JSON no meio.
+      opts: { temperature: 0.4, maxTokens: 900 },
     });
     return extrairInsight(resposta.text);
   }
