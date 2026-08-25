@@ -84,9 +84,25 @@ services:
     volumes: [uptime_data:/app/data]
     networks: [crm-network]
 
+  # LLM local para os insights de lead (spec 2026-08-25-lead-insights).
+  # Sem porta publicada: acesso so pela rede interna (http://ollama:11434).
+  # mem_limit 3g: VPS tem 7.8G e o Evolution ja consome ~1.4G.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks: [crm-network]
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+
 volumes:
   uptime_data:
   crm-redis-data:
+  ollama-data:
 
 networks:
   crm-network:

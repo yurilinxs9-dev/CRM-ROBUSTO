@@ -41,7 +41,12 @@ export const TEMP_LABELS: Record<Temperatura, string> = {
   MUITO_QUENTE: 'Fogo',
 };
 
-const TEMP_BADGE: Record<string, string> = {
+/**
+ * Cores de temperatura do Kanban. Exportado porque o Radar mostra o MESMO
+ * badge: se as cores divergirem, o mesmo lead aparece "morno" numa tela e
+ * "quente" na outra, e o vendedor deixa de confiar nas duas.
+ */
+export const TEMP_BADGE: Record<string, string> = {
   FRIO: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
   MORNO: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   QUENTE: 'bg-orange-500/15 text-orange-400 border-orange-500/30',

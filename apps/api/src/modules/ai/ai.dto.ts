@@ -34,24 +34,50 @@ function allowedAiHosts(): string[] {
   return DEFAULT_ALLOWED_AI_HOSTS;
 }
 
-/** Host exato (case-insensitive) contra a whitelist, esquema https obrigatório. */
+/**
+ * Hosts internos da rede docker autorizados a usar http (LLM local, ex.: Ollama).
+ * http só é aceito para ESTES hosts; todo host externo continua exigindo https.
+ * AI_ALLOWED_INTERNAL_HOSTS (env, csv) SUBSTITUI esta lista, igual a
+ * AI_ALLOWED_HOSTS — inclusive para esvaziá-la (`AI_ALLOWED_INTERNAL_HOSTS=` a
+ * vazio mantém o padrão; com valor, só os hosts listados passam).
+ */
+export const DEFAULT_INTERNAL_AI_HOSTS = ['ollama'];
+
+function allowedInternalAiHosts(): string[] {
+  const fromEnv = process.env.AI_ALLOWED_INTERNAL_HOSTS;
+  if (fromEnv && fromEnv.trim() !== '') {
+    return fromEnv
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h !== '');
+  }
+  return DEFAULT_INTERNAL_AI_HOSTS;
+}
+
+/**
+ * Host exato (case-insensitive) contra a whitelist. https é obrigatório para
+ * hosts externos; http só passa nos hosts internos da rede docker.
+ */
+export function isValidBaseUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (parsed.protocol === 'http:') {
+    return allowedInternalAiHosts().includes(hostname);
+  }
+  if (parsed.protocol !== 'https:') return false;
+  return allowedAiHosts().includes(hostname);
+}
+
 const baseUrlSchema = z
   .string()
   .url()
   .max(300)
-  .refine(
-    (value) => {
-      let parsed: URL;
-      try {
-        parsed = new URL(value);
-      } catch {
-        return false;
-      }
-      if (parsed.protocol !== 'https:') return false;
-      return allowedAiHosts().includes(parsed.hostname.toLowerCase());
-    },
-    { message: 'Host não permitido para base_url' },
-  )
+  .refine(isValidBaseUrl, { message: 'Host não permitido para base_url' })
   .optional()
   .nullable();
 

@@ -132,6 +132,7 @@ model Tenant {
   contacts            Contact[]
   companies           Company[]
   custom_field_groups CustomFieldGroup[]
+  lead_insights       LeadInsight[]
 
   @@index([owner_id])
 }
@@ -391,6 +392,8 @@ model Lead {
   lead_contacts LeadContact[]
   // Idem: a FK vive em LeadAttribution. Nenhum ALTER em "Lead".
   attribution   LeadAttribution?
+  // Idem: a FK vive em LeadInsight (ficha inteligente). Nenhum ALTER em "Lead".
+  lead_insight  LeadInsight?
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
@@ -678,6 +681,28 @@ model LeadView {
   @@index([tenant_id, user_id])
 }
 
+// Ficha inteligente do lead (spec 2026-08-25-lead-insights). Gerada por LLM
+// local em fila; memoria e acumulativa entre geracoes.
+model LeadInsight {
+  id                       String    @id @default(uuid())
+  tenant_id                String
+  tenant                   Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  lead_id                  String    @unique
+  lead                     Lead      @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  resumo                   String    @default("")
+  memoria                  Json      @default("[]") // [{ fato: string, quando_dito: string }]
+  proxima_acao_at          DateTime?
+  proxima_acao_motivo      String    @default("")
+  msg_sugerida             String    @default("")
+  ultima_msg_processada_at DateTime?
+  geracoes                 Int       @default(0)
+  created_at               DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
+
+  @@index([tenant_id])
+  @@index([tenant_id, proxima_acao_at])
+}
+
 model WebhookLog {
   id                 String   @id @default(uuid())
   event              String
@@ -954,6 +979,7 @@ enum AiFeature {
   suggest
   autoreply
   followup
+  insights
 }
 
 // Configuração de modelo de IA — escopo de PLATAFORMA (só super admin gerencia).

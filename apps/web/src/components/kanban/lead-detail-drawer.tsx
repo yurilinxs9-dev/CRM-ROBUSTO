@@ -45,6 +45,7 @@ import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
+import { InsightCard } from '@/components/leads/insight-card';
 import { TagPicker } from './tag-picker';
 import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
@@ -149,6 +150,9 @@ interface LeadDetailDrawerProps {
   /** Sem handler o botão "Arquivar" some — quem abre a ficha fora do Kanban
    *  (o chat) não tem o diálogo de confirmação de arquivamento. */
   onArchive?: (leadId: string) => void;
+  /** Só o chat tem composer: com o handler o card "Inteligência" mostra "Usar"
+   *  (joga a sugestão na caixa de texto); sem ele, mostra "Copiar". */
+  onUsarMensagem?: (texto: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +165,7 @@ export function LeadDetailDrawer({
   onClose,
   activePipelineId,
   onArchive,
+  onUsarMensagem,
 }: LeadDetailDrawerProps) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
@@ -418,6 +423,11 @@ export function LeadDetailDrawer({
               value="principal"
               className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4"
             >
+              {/* Topo do corpo: é a leitura de contexto que o vendedor faz
+                  antes de mexer em qualquer campo. Colapsável para não
+                  empurrar o formulário pra baixo em quem não usa. */}
+              {leadId && <InsightCard leadId={leadId} onUsarMensagem={onUsarMensagem} enabled={open} />}
+
               <FieldGroupList
                 schema={schema}
                 escopo="LEAD"
