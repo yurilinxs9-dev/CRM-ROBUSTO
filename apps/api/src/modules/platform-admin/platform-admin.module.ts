@@ -5,6 +5,7 @@ import { PlatformAdminController } from './platform-admin.controller';
 import { AnnouncementsController } from './announcements.controller';
 import { PlatformAdminService } from './platform-admin.service';
 import { PlatformAdminGuard } from './platform-admin.guard';
+import { BillingReminderService } from './billing-reminder.service';
 import { HistorySyncModule } from '../webhooks/history-sync.module';
 
 /**
@@ -22,6 +23,6 @@ import { HistorySyncModule } from '../webhooks/history-sync.module';
     HistorySyncModule,
   ],
   controllers: [PlatformAdminController, AnnouncementsController],
-  providers: [PlatformAdminService, PlatformAdminGuard],
+  providers: [PlatformAdminService, PlatformAdminGuard, BillingReminderService],
 })
 export class PlatformAdminModule {}
