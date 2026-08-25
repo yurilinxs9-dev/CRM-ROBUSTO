@@ -120,6 +120,20 @@ export default function ChatDetailPage() {
 
   const currentUser = useAuthStore((s) => s.user);
 
+  /**
+   * "Usar" do card Inteligência: joga a sugestão no composer e fecha o drawer
+   * (senão a caixa de texto fica escondida atrás dele).
+   * O `null` antes do texto é de propósito: o ChatComposer aplica `initialText`
+   * num efeito que só dispara quando o VALOR muda — usar a mesma sugestão duas
+   * vezes (depois de enviar e limpar a caixa) não faria nada. Zerar num render
+   * e setar no seguinte garante a troca de valor.
+   */
+  const usarMensagemSugerida = useCallback((texto: string) => {
+    setDetailsOpen(false);
+    setFollowupComposerText(null);
+    window.setTimeout(() => setFollowupComposerText(texto), 0);
+  }, []);
+
   // --- Queries ---
   const { data: currentLead } = useQuery<ChatLead>({
     queryKey: ['lead', leadId],
@@ -1069,6 +1083,7 @@ export default function ChatDetailPage() {
         leadId={leadId}
         open={detailsOpen}
         onClose={() => setDetailsOpen(false)}
+        onUsarMensagem={usarMensagemSugerida}
       />
 
       <Dialog
