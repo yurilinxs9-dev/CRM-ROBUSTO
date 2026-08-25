@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone } from 'lucide-react';
+import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -23,6 +23,9 @@ export const NAV_ITEMS: NavEntry[] = [
   // Vizinho do Kanban de propósito: são a MESMA view de leads vista de dois
   // jeitos, e o toggle da ViewBar leva de um para o outro.
   { href: '/leads', label: 'Leads', icon: List },
+  // Depois do par Kanban/Leads (que a ViewBar amarra) e antes de Conversas:
+  // o Radar é a fila que manda o vendedor PARA a conversa.
+  { href: '/radar', label: 'Radar', icon: Radar },
   { href: '/chat', label: 'Conversas', icon: MessageSquare },
   { href: '/followup', label: 'Follow-up IA', icon: Megaphone },
   { href: '/agenda', label: 'Agenda', icon: CalendarDays },
