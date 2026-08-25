@@ -92,6 +92,11 @@ services:
     container_name: ollama
     restart: unless-stopped
     networks: [crm-network]
+    environment:
+      # Default (2k/4k) trunca o prompt de 40 mensagens pelo INICIO e come o
+      # system prompt — o modelo passa a responder prosa em vez de JSON.
+      # 8192 cobre o prompt do insight; KV cache do 3B q4 cabe no limite de 3g.
+      - OLLAMA_CONTEXT_LENGTH=8192
     volumes:
       - ollama-data:/root/.ollama
     deploy:
