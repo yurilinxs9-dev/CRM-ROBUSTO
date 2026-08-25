@@ -34,7 +34,15 @@ export const SORTABLE_FIELDS = [
   'proximo_followup',
 ] as const;
 
-/** Colunas de relação/derivadas que a tabela sabe renderizar além dos campos de ficha. */
+/**
+ * Colunas de relação/derivadas que a tabela sabe renderizar além dos campos de ficha.
+ *
+ * Precisa espelhar o catálogo `PSEUDO_CAMPOS` do front (`/leads`): chave que o
+ * menu de colunas oferece mas que não estiver aqui é descartada no save, e o
+ * usuário vê a coluna sumir depois do toast de sucesso. As três últimas são
+ * derivadas que o `mapRow` da listagem calcula — só de leitura, e por isso NÃO
+ * entram em `SORTABLE_FIELDS`.
+ */
 const PSEUDO_COLUNAS = [
   'estagio',
   'responsavel',
@@ -42,6 +50,9 @@ const PSEUDO_COLUNAS = [
   'created_at',
   'ultima_interacao',
   'telefone',
+  'ultimo_mensagem',
+  'mensagens_nao_lidas',
+  'pending_tasks_count',
 ] as const;
 
 /** Quem pode mexer em view sem dono — ela é da equipe inteira. */

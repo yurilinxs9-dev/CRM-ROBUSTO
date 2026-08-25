@@ -192,6 +192,44 @@ describe('LeadViewsService', () => {
       expect(data.card_fields).toEqual(['telefone']);
     });
 
+    /**
+     * O menu de colunas do front oferece as derivadas do `mapRow` (ultima
+     * mensagem, nao lidas, tarefas pendentes). Se a whitelist do backend nao
+     * conhecer essas chaves, o save responde 200 e devolve a config sem elas —
+     * a coluna some sozinha depois do toast de sucesso.
+     */
+    it('mantem as pseudo-colunas derivadas da listagem em colunas e card_fields', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, {
+        nome: 'Derivadas',
+        colunas: [
+          { key: 'ultimo_mensagem', width: 300 },
+          { key: 'mensagens_nao_lidas' },
+          { key: 'pending_tasks_count' },
+        ],
+        card_fields: ['pending_tasks_count'],
+      });
+
+      const data = prisma.leadView.create.mock.calls[0][0].data;
+      expect(data.colunas).toEqual([
+        { key: 'ultimo_mensagem', width: 300 },
+        { key: 'mensagens_nao_lidas' },
+        { key: 'pending_tasks_count' },
+      ]);
+      expect(data.card_fields).toEqual(['pending_tasks_count']);
+    });
+
+    /** Renderizar a derivada e uma coisa; ordenar por ela o Prisma nao sabe fazer. */
+    it('nao aceita pseudo-coluna derivada como campo de ordenacao', async () => {
+      const { service, prisma } = makeService();
+      await service.create(gerente, {
+        nome: 'Sort derivado',
+        sort: { campo: 'mensagens_nao_lidas', dir: 'desc' },
+      });
+
+      expect(prisma.leadView.create.mock.calls[0][0].data.sort).toEqual({});
+    });
+
     /** Chave repetida vira key duplicada no React depois; a primeira ocorrencia manda. */
     it('descarta chave repetida em colunas e card_fields', async () => {
       const { service, prisma } = makeService();
