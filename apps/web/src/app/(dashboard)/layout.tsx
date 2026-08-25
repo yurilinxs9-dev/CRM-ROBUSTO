@@ -8,7 +8,7 @@ import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { TaskNotifications } from '@/components/layout/task-notifications';
 import { NotificationPrompt } from '@/components/notification-prompt';
-import { CommandPalette } from '@/components/command-palette';
+import { CommandPalette } from '@/components/layout/command-palette';
 import { AnnouncementBanner } from '@/components/layout/announcement-banner';
 import { ImpersonationBanner } from '@/components/layout/impersonation-banner';
 import { connectSocket, disconnectSocket, reconnectSocket } from '@/lib/socket';
