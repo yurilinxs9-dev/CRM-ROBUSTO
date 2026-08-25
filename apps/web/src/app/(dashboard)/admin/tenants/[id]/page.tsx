@@ -1,14 +1,18 @@
 'use client';
 
+import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowLeft, LogIn, Smartphone, Users, Contact, MessageSquare, Ban, Trash2, ShieldCheck, Power } from 'lucide-react';
+import { ArrowLeft, LogIn, Smartphone, Users, Contact, MessageSquare, Ban, Trash2, ShieldCheck, Power, BadgeCheck } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CopyId } from '@/components/ui/copy-id';
+import { BillingBadge, DeleteTenantDialog, moneyFmt, type BillingInfo } from '../billing-ui';
 
 interface TenantUser {
   id: string; nome: string; email: string; role: string; ativo: boolean; is_platform_admin: boolean;
@@ -16,6 +20,8 @@ interface TenantUser {
 interface TenantInstance { id: string; nome: string; status: string; telefone?: string | null }
 interface TenantDetail {
   id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; created_at: string;
+  billing_value: number | null; billing_cycle_months: number | null; billing_paid_until: string | null;
+  suspended_at: string | null;
   owner: { id: string; nome: string; email: string } | null;
   users: TenantUser[];
   instances: TenantInstance[];
@@ -25,12 +31,23 @@ interface TenantDetail {
 const numberFmt = new Intl.NumberFormat('pt-BR');
 const liveStatus = (s: string) => ['open', 'connected', 'connecting'].includes(s);
 
+// Mesma régua do backend (billing-status.ts): <0 vencido, ≤3 vence em breve.
+function deriveClient(t: { billing_value: number | null; billing_paid_until: string | null }): BillingInfo {
+  if (t.billing_value == null || !t.billing_paid_until) return { status: 'sem_cobranca', dias: 0 };
+  const day = (x: Date) => Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
+  const diff = Math.round((day(new Date(t.billing_paid_until)) - day(new Date())) / 86_400_000);
+  if (diff < 0) return { status: 'vencido', dias: -diff };
+  if (diff <= 3) return { status: 'vence_em_breve', dias: diff };
+  return { status: 'em_dia', dias: diff };
+}
+
 export default function AdminTenantDetailPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
   const qc = useQueryClient();
   const startImpersonation = useAuthStore((s) => s.startImpersonation);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data, isLoading } = useQuery<TenantDetail>({
     queryKey: ['admin-tenant', id],
@@ -77,7 +94,9 @@ export default function AdminTenantDetailPage() {
     return <div className="space-y-3"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full rounded-xl" /></div>;
   }
 
-  const suspended = data.users.length > 0 && data.users.every((u) => !u.ativo);
+  // suspended_at é a fonte nova; fallback users-inativos cobre tenants suspensos
+  // antes do campo existir (backfill pode não ter rodado em todos).
+  const suspended = data.suspended_at != null || (data.users.length > 0 && data.users.every((u) => !u.ativo));
   const ownerId = data.owner?.id;
 
   const stat = (icon: typeof Users, label: string, value: number) => (
@@ -98,6 +117,7 @@ export default function AdminTenantDetailPage() {
         <div>
           <h3 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
             {data.nome}
+            <BillingBadge billing={deriveClient(data)} />
             {suspended && <span className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>SUSPENSO</span>}
           </h3>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -126,16 +146,7 @@ export default function AdminTenantDetailPage() {
             variant="outline"
             className="h-8 text-xs border-red-500/40 text-red-500 hover:bg-red-500/10"
             disabled={deleteTenant.isPending}
-            onClick={() => {
-              const typed = window.prompt(
-                `EXCLUSÃO TOTAL e irreversível de "${data.nome}":\n` +
-                  `${numberFmt.format(data.counts.users)} usuário(s), ${numberFmt.format(data.counts.leads)} lead(s), ${numberFmt.format(data.counts.messages)} mensagem(ns) e ${data.instances.length} instância(s) serão apagados.\n\n` +
-                  `Para confirmar, digite o nome do cliente:`,
-              );
-              if (typed === null) return;
-              if (typed.trim() !== data.nome.trim()) { toast.error('Nome não confere — exclusão cancelada'); return; }
-              deleteTenant.mutate();
-            }}
+            onClick={() => setDeleteOpen(true)}
           >
             <Trash2 className="mr-1 h-3.5 w-3.5" /> Excluir cliente
           </Button>
@@ -148,6 +159,14 @@ export default function AdminTenantDetailPage() {
         {stat(MessageSquare, 'mensagens', data.counts.messages)}
         {stat(Smartphone, 'instâncias', data.instances.length)}
       </div>
+
+      {/* Cobrança */}
+      <BillingCard
+        key={`${data.billing_value}-${data.billing_cycle_months}-${data.billing_paid_until}`}
+        tenantId={id}
+        billing={data}
+        onChanged={invalidate}
+      />
 
       {/* Equipe */}
       <div>
@@ -217,6 +236,94 @@ export default function AdminTenantDetailPage() {
           </div>
         </div>
       )}
+
+      <DeleteTenantDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        nome={data.nome}
+        counts={{ users: data.counts.users, leads: data.counts.leads, instances: data.instances.length }}
+        pending={deleteTenant.isPending}
+        onConfirm={() => deleteTenant.mutate()}
+      />
+    </div>
+  );
+}
+
+function BillingCard({
+  tenantId, billing, onChanged,
+}: {
+  tenantId: string;
+  billing: { billing_value: number | null; billing_cycle_months: number | null; billing_paid_until: string | null };
+  onChanged: () => void;
+}) {
+  const [valor, setValor] = useState(billing.billing_value != null ? String(billing.billing_value / 100) : '');
+  const [ciclo, setCiclo] = useState(String(billing.billing_cycle_months ?? 1));
+  const [pagoAte, setPagoAte] = useState(billing.billing_paid_until ? billing.billing_paid_until.slice(0, 10) : '');
+
+  const save = useMutation({
+    mutationFn: async () =>
+      api.patch(`/api/platform-admin/tenants/${tenantId}/billing`, {
+        billing_value: valor.trim() ? Math.round(Number(valor.replace(',', '.')) * 100) : null,
+        billing_cycle_months: valor.trim() ? Number(ciclo) : null,
+        billing_paid_until: pagoAte ? new Date(`${pagoAte}T12:00:00Z`).toISOString() : null,
+      }),
+    onSuccess: () => { toast.success('Cobrança salva'); onChanged(); },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao salvar cobrança'),
+  });
+
+  const markPaid = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ ok: boolean; paid_until: string }>(`/api/platform-admin/tenants/${tenantId}/billing/mark-paid`)).data,
+    onSuccess: (res) => {
+      toast.success(`Pago até ${new Date(res.paid_until).toLocaleDateString('pt-BR', { timeZone: 'UTC' })}`);
+      onChanged();
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao marcar pago'),
+  });
+
+  return (
+    <div className="rounded-xl border p-4 space-y-3" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-2)' }}>
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Cobrança</h4>
+        {billing.billing_value != null && (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            {moneyFmt(billing.billing_value)} a cada {billing.billing_cycle_months ?? 1} mês(es)
+          </span>
+        )}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto_auto] sm:items-end">
+        <div>
+          <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Valor (R$)</label>
+          <Input value={valor} onChange={(e) => setValor(e.target.value)} placeholder="300,00" inputMode="decimal" className="h-9" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Ciclo</label>
+          <Select value={ciclo} onValueChange={setCiclo}>
+            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1">Mensal</SelectItem>
+              <SelectItem value="3">Trimestral</SelectItem>
+              <SelectItem value="6">Semestral</SelectItem>
+              <SelectItem value="12">Anual</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Pago até</label>
+          <Input type="date" value={pagoAte} onChange={(e) => setPagoAte(e.target.value)} className="h-9" />
+        </div>
+        <Button size="sm" className="h-9" disabled={save.isPending} onClick={() => save.mutate()}>
+          Salvar cobrança
+        </Button>
+        <Button
+          size="sm" variant="outline" className="h-9"
+          disabled={markPaid.isPending || billing.billing_cycle_months == null}
+          title={billing.billing_cycle_months == null ? 'Defina valor e ciclo antes' : undefined}
+          onClick={() => markPaid.mutate()}
+        >
+          <BadgeCheck className="mr-1 h-3.5 w-3.5 text-emerald-500" /> Marcar pago (+ciclo)
+        </Button>
+      </div>
     </div>
   );
 }

@@ -216,6 +216,10 @@ export class PlatformAdminService {
         pool_enabled: true,
         prefix_enabled: true,
         created_at: true,
+        billing_value: true,
+        billing_cycle_months: true,
+        billing_paid_until: true,
+        suspended_at: true,
         owner: { select: { id: true, nome: true, email: true } },
         users: {
           select: { id: true, nome: true, email: true, role: true, ativo: true, is_platform_admin: true, created_at: true },
