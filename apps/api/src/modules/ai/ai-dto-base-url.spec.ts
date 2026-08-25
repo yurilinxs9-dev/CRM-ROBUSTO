@@ -107,6 +107,17 @@ describe('ai.dto — hosts internos http (LLM local)', () => {
     expect(isValidBaseUrl('http://redis:6379')).toBe(false);
   });
 
+  it('recusa sufixo disfarcado de host interno (ollama.evil.com)', () => {
+    // A checagem e match exato, nao `endsWith`: dominio externo terminando em
+    // "ollama..." nao herda a permissao de http.
+    expect(isValidBaseUrl('http://ollama.evil.com/v1')).toBe(false);
+  });
+
+  it('recusa userinfo disfarcado de host interno (ollama@evil.com)', () => {
+    // `ollama` aqui e usuario, nao host: o hostname da URL e evil.com.
+    expect(isValidBaseUrl('http://ollama@evil.com/v1')).toBe(false);
+  });
+
   it('mantem https com whitelist externa', () => {
     expect(isValidBaseUrl('https://api.anthropic.com/v1')).toBe(true);
     expect(isValidBaseUrl('https://evil.example.com')).toBe(false);

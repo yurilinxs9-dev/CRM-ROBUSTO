@@ -21,6 +21,14 @@ export interface InsightContexto {
   mensagens: Array<{ de: 'cliente' | 'equipe'; texto: string; em: Date }>;
 }
 
+/** Compra que o PROPRIO CLIENTE citou na conversa (nunca inferida). */
+export interface CompraCitada {
+  descricao: string;
+  valor: number | null;
+  /** Como o cliente datou a compra ("mes passado", "2026-07"); vazio se nao disse. */
+  quando: string;
+}
+
 /** Insight ja saneado, pronto para persistir. */
 export interface InsightGerado {
   resumo: string;
@@ -29,6 +37,11 @@ export interface InsightGerado {
   proxima_acao_em_dias: number;
   proxima_acao_motivo: string;
   msg_sugerida: string;
+  /** Nota do ATENDENTE, inteiro de 0 a 10; null quando o modelo nao avaliou. */
+  nota_atendimento: number | null;
+  nota_ponto_forte: string;
+  nota_ponto_melhoria: string;
+  ultima_compra: CompraCitada | null;
 }
 
 const LIMITE_RESUMO = 800;
@@ -41,22 +54,36 @@ const MAX_MEMORIA = 30;
 const DIAS_MIN = 1;
 const DIAS_MAX = 30;
 const DIAS_DEFAULT = 7;
+const LIMITE_PONTO = 200;
+const LIMITE_COMPRA_DESCRICAO = 200;
+const LIMITE_COMPRA_QUANDO = 60;
+const NOTA_MIN = 0;
+const NOTA_MAX = 10;
 /** Cada mensagem entra no prompt truncada — modelo local tem contexto curto. */
 const LIMITE_TEXTO_MENSAGEM = 1000;
 
+/**
+ * Modelo pequeno copia o shape: por isso `ultima_compra` aparece aqui como `null`
+ * (o padrao seguro) e o formato preenchido fica so na regra textual — shape com compra
+ * de exemplo ensinaria justamente a inventar a compra que a regra proibe.
+ */
 const SHAPE_JSON = `{
   "resumo": "string",
   "memoria_novos_fatos": [{ "fato": "string", "quando_dito": "AAAA-MM-DD" }],
   "proxima_acao_em_dias": 3,
   "proxima_acao_motivo": "string",
-  "msg_sugerida": "string"
+  "msg_sugerida": "string",
+  "nota_atendimento": 7,
+  "nota_ponto_forte": "string",
+  "nota_ponto_melhoria": "string",
+  "ultima_compra": null
 }`;
 
 const SYSTEM_PROMPT = `Voce e um assistente de analise comercial de um CRM de WhatsApp em portugues do Brasil.
 Voce le a conversa entre a equipe de atendimento e o cliente e devolve uma ficha do lead.
 
 Responda APENAS com o objeto JSON abaixo, sem texto antes ou depois, sem markdown, sem crase.
-Use exatamente estas 5 chaves:
+Use exatamente estas 9 chaves:
 ${SHAPE_JSON}
 
 Regras de cada campo:
@@ -65,6 +92,10 @@ Regras de cada campo:
 - "proxima_acao_em_dias": inteiro de 1 a 30, quantos dias esperar ate o proximo contato, coerente com o ritmo da conversa (conversa quente = poucos dias; cliente pediu prazo longo = mais dias).
 - "proxima_acao_motivo": uma frase curta dizendo por que voltar a falar nesse prazo.
 - "msg_sugerida": mensagem curta, natural e educada que o ATENDENTE HUMANO poderia enviar, na primeira pessoa de quem atende. Sem "sou uma IA", sem se apresentar como robo, sem emoji em excesso.
+- "nota_atendimento": inteiro de 0 a 10 avaliando o ATENDENTE (nao o cliente): rapidez das respostas, clareza das explicacoes e conducao da negociacao (perguntou o que faltava, ofereceu o proximo passo). Se a conversa nao tiver mensagens da equipe suficientes para avaliar, use null.
+- "nota_ponto_forte": UMA linha dizendo o que o atendente fez bem.
+- "nota_ponto_melhoria": UMA linha dizendo o que o atendente poderia melhorar.
+- "ultima_compra": o padrao e null. Troque por um objeto APENAS se o CLIENTE citou na conversa uma compra ou fechamento ja feito ("comprei", "levei", "fechamos", "paguei"); nesse caso use o formato { "descricao": "o que ele disse ter comprado", "valor": 1234.56, "quando": "mes passado" }, com "valor" numerico so se ele falou o valor (senao null) e "quando" como ele datou (senao ""). Nunca invente compra, valor ou data: sem mencao explicita do cliente, mantenha null. Orcamento, cotacao ou intencao de compra NAO contam.
 
 Restricoes absolutas:
 - Voce NUNCA responde pelo cliente e NUNCA envia nada: apenas sugere para o atendente humano decidir.
@@ -86,12 +117,32 @@ function comoTexto(valor: unknown, limite: number): string {
   return truncar(valor.trim(), limite);
 }
 
+/**
+ * Numero solto (aceita string numerica que o modelo local costuma devolver).
+ * Prompt em pt-BR faz o modelo escrever decimal com virgula ("8,5", "4200,50"):
+ * uma virgula unica sem ponto e tratada como separador decimal. Formato misto
+ * ("4.200,00") continua sendo recusado — ambiguo demais para adivinhar.
+ */
+function comoNumero(valor: unknown): number | null {
+  if (typeof valor === 'number' && Number.isFinite(valor)) return valor;
+  if (typeof valor !== 'string') return null;
+  const texto = valor.trim();
+  if (texto === '') return null;
+  const normalizado = /^-?\d+,\d+$/.test(texto) ? texto.replace(',', '.') : texto;
+  return Number.isFinite(Number(normalizado)) ? Number(normalizado) : null;
+}
+
 function comoDias(valor: unknown): number {
-  let n: number | null = null;
-  if (typeof valor === 'number' && Number.isFinite(valor)) n = valor;
-  else if (typeof valor === 'string' && valor.trim() !== '' && Number.isFinite(Number(valor))) n = Number(valor);
+  const n = comoNumero(valor);
   if (n === null) return DIAS_DEFAULT;
   return Math.min(DIAS_MAX, Math.max(DIAS_MIN, Math.round(n)));
+}
+
+/** Nota do atendente: inteiro arredondado e clampado em 0..10; qualquer lixo vira null. */
+function comoNota(valor: unknown): number | null {
+  const n = comoNumero(valor);
+  if (n === null) return null;
+  return Math.min(NOTA_MAX, Math.max(NOTA_MIN, Math.round(n)));
 }
 
 function ehObjeto(valor: unknown): valor is Record<string, unknown> {
@@ -109,6 +160,22 @@ function comoMemoria(valor: unknown): MemoriaFato[] {
     if (saida.length >= MAX_FATOS_NOVOS) break;
   }
   return saida;
+}
+
+/**
+ * Compra citada: so vale objeto com descricao util. String solta ("comprou algo"),
+ * numero ou objeto sem descricao viram null — melhor ficha sem compra do que compra inventada.
+ */
+function comoCompra(valor: unknown): CompraCitada | null {
+  if (!ehObjeto(valor)) return null;
+  const descricao = comoTexto(valor.descricao, LIMITE_COMPRA_DESCRICAO);
+  if (descricao === '') return null;
+  const bruto = comoNumero(valor.valor);
+  return {
+    descricao,
+    valor: bruto !== null && bruto >= 0 ? bruto : null,
+    quando: comoTexto(valor.quando, LIMITE_COMPRA_QUANDO),
+  };
 }
 
 /**
@@ -160,9 +227,18 @@ const CHAVES_INSIGHT = [
   'proxima_acao_em_dias',
   'proxima_acao_motivo',
   'msg_sugerida',
+  // As 4 chaves da ficha 360 entram na deteccao de candidato porque um objeto que so
+  // as traga ainda e um fragmento de insight vindo do modelo (e nao ruido tipo
+  // {"thinking":...}). Fragmento sem resumo nao rouba a vez do JSON completo (a escolha
+  // em extrairInsight prefere resumo nao-vazio) nem gera ficha em branco no banco: quem
+  // persiste (worker) guarda contra resumo vazio antes de sobrescrever a ficha boa.
+  'nota_atendimento',
+  'nota_ponto_forte',
+  'nota_ponto_melhoria',
+  'ultima_compra',
 ] as const;
 
-/** Objeto so conta como insight se trouxer ao menos uma das 5 chaves do contrato. */
+/** Objeto so conta como insight se trouxer ao menos uma das chaves do contrato. */
 function pareceInsight(obj: Record<string, unknown>): boolean {
   return CHAVES_INSIGHT.some((chave) => chave in obj);
 }
@@ -172,9 +248,16 @@ function pareceInsight(obj: Record<string, unknown>): boolean {
  * markdown e conversa). Nunca lanca.
  * Contrato: `null` significa "nao veio JSON utilizavel" — o chamador deve tratar como
  * falha (retry / manter o insight anterior), nunca sobrescrever ficha boa com brancos.
+ *
+ * Entre os candidatos aceitos vence o PRIMEIRO com `resumo` nao-vazio: sem isso um
+ * fragmento solto no inicio da resposta (ex.: `{"nota_atendimento": 8}` antes do JSON
+ * completo) roubaria a vez e jogaria fora o insight real da mesma resposta.
  */
 export function extrairInsight(textoModelo: string): InsightGerado | null {
   if (typeof textoModelo !== 'string' || textoModelo.trim() === '') return null;
+
+  let escolhido: Record<string, unknown> | null = null;
+  let primeiroAceito: Record<string, unknown> | null = null;
 
   for (const candidato of candidatosJson(textoModelo)) {
     let bruto: unknown;
@@ -183,17 +266,31 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
     } catch {
       continue;
     }
-    // Objeto sem nenhuma das 5 chaves e ruido (ex.: {"thinking":...}): tenta o proximo.
+    // Objeto sem nenhuma das chaves do contrato e ruido (ex.: {"thinking":...}): ignora.
     if (!ehObjeto(bruto) || !pareceInsight(bruto)) continue;
-    return {
-      resumo: comoTexto(bruto.resumo, LIMITE_RESUMO),
-      memoria_novos_fatos: comoMemoria(bruto.memoria_novos_fatos),
-      proxima_acao_em_dias: comoDias(bruto.proxima_acao_em_dias),
-      proxima_acao_motivo: comoTexto(bruto.proxima_acao_motivo, LIMITE_MOTIVO),
-      msg_sugerida: comoTexto(bruto.msg_sugerida, LIMITE_MSG),
-    };
+    if (primeiroAceito === null) primeiroAceito = bruto;
+    if (comoTexto(bruto.resumo, LIMITE_RESUMO) !== '') {
+      escolhido = bruto;
+      break;
+    }
   }
-  return null;
+
+  // Fallback: nenhum candidato trouxe resumo — mantem o comportamento antigo de
+  // sanear o primeiro aceito (quem persiste e que barra ficha sem resumo).
+  const alvo = escolhido ?? primeiroAceito;
+  if (alvo === null) return null;
+
+  return {
+    resumo: comoTexto(alvo.resumo, LIMITE_RESUMO),
+    memoria_novos_fatos: comoMemoria(alvo.memoria_novos_fatos),
+    proxima_acao_em_dias: comoDias(alvo.proxima_acao_em_dias),
+    proxima_acao_motivo: comoTexto(alvo.proxima_acao_motivo, LIMITE_MOTIVO),
+    msg_sugerida: comoTexto(alvo.msg_sugerida, LIMITE_MSG),
+    nota_atendimento: comoNota(alvo.nota_atendimento),
+    nota_ponto_forte: comoTexto(alvo.nota_ponto_forte, LIMITE_PONTO),
+    nota_ponto_melhoria: comoTexto(alvo.nota_ponto_melhoria, LIMITE_PONTO),
+    ultima_compra: comoCompra(alvo.ultima_compra),
+  };
 }
 
 function normalizarFato(fato: string): string {
@@ -265,7 +362,7 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     '## Conversa (mais antiga primeiro)',
     blocoMensagens,
     '',
-    'Analise a conversa acima e responda apenas com o objeto JSON das 5 chaves.',
+    'Analise a conversa acima e responda apenas com o objeto JSON das 9 chaves.',
   ].join('\n');
 
   return [

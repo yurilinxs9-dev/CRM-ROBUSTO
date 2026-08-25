@@ -38,8 +38,9 @@ function allowedAiHosts(): string[] {
  * Hosts internos da rede docker autorizados a usar http (LLM local, ex.: Ollama).
  * http só é aceito para ESTES hosts; todo host externo continua exigindo https.
  * AI_ALLOWED_INTERNAL_HOSTS (env, csv) SUBSTITUI esta lista, igual a
- * AI_ALLOWED_HOSTS — inclusive para esvaziá-la (`AI_ALLOWED_INTERNAL_HOSTS=` a
- * vazio mantém o padrão; com valor, só os hosts listados passam).
+ * AI_ALLOWED_HOSTS: vazia/ausente mantém o padrão; com valor, só os hosts
+ * listados passam. Para não permitir http em host nenhum, use `=,` (só
+ * separadores), que vira lista vazia depois do filtro.
  */
 export const DEFAULT_INTERNAL_AI_HOSTS = ['ollama'];
 

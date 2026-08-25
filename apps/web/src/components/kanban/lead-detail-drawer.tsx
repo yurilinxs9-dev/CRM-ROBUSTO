@@ -45,7 +45,7 @@ import { FieldGroupList } from '@/components/fields/field-group-list';
 import { FieldEditor } from '@/components/fields/field-editor';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
-import { InsightCard } from '@/components/leads/insight-card';
+import { Ficha360 } from '@/components/leads/ficha-360';
 import { TagPicker } from './tag-picker';
 import { groupFields, flattenFields, initialValues, buildPayload } from '@/lib/field-render';
 
@@ -100,9 +100,55 @@ type LeadDetail = {
   lead_tags?: { tag: Tag }[];
   pipeline_id: string;
   estagio_id: string;
+  // `GET /api/leads/:id` já traz o estágio inteiro e a última interação — a
+  // Ficha 360 lê os dois daqui em vez de disparar um fetch próprio.
+  estagio?: { nome: string } | null;
+  ultima_interacao?: string | null;
   dados_custom?: Record<string, unknown> | null;
   lead_contacts?: LeadContactLink[];
 };
+
+/** `valor_estimado` é Decimal(12,2): chega como string do Nest. */
+function lerValorEstimado(valor: string | null | undefined): number | null {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = Number(valor);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * O CRM tem DOIS estoques de tag e a precedência é a MESMA do backend
+ * (`tagsDoLead` do radar) e da tabela de leads: a relação `lead_tags` ganha
+ * quando existe; a coluna Json `tags` é o fallback legado. Coalescer por
+ * nullish (`lead.tags ?? relação`) não funciona — `Lead.tags` é Json com
+ * default `[]`, então quase nunca é nullish e o fallback nunca rodaria: lead
+ * vindo da public API mostraria tags no Radar e nenhuma aqui.
+ */
+function tagsDoLead(lead: LeadDetail): string[] {
+  const daRelacao = lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
+  if (daRelacao.length > 0) return daRelacao;
+  return tagsDoJson(lead);
+}
+
+/** Json cru: nada no banco impede número, null ou objeto no meio da lista. */
+function tagsDoJson(lead: LeadDetail): string[] {
+  if (!Array.isArray(lead.tags)) return [];
+  return lead.tags.filter((t) => typeof t === 'string' && t.trim() !== '');
+}
+
+/**
+ * O que o TagPicker recebe ao abrir a ficha: a UNIÃO dos dois estoques, não a
+ * precedência da exibição.
+ *
+ * Os dois estoques DESSINCRONIZAM: a public API grava na relação `lead_tags`, o
+ * picker grava só o Json `tags`. Exibir relação-first é certo (é a fonte mais
+ * confiável quando existe), mas SEEDAR relação-first poda: lead com relação
+ * ['A'] e Json ['A','B'] entraria no editor como ['A'], e o Salvar PATCHa
+ * `tags: ['A']` — 'B' some do Json de vez, e o card do Kanban lê só o Json.
+ * União no editor: nada é apagado por ter sido gravado no outro estoque.
+ */
+function tagsParaEditar(lead: LeadDetail): string[] {
+  return [...new Set([...(lead.lead_tags?.map((lt) => lt.tag.nome) ?? []), ...tagsDoJson(lead)])];
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -237,8 +283,9 @@ export function LeadDetailDrawer({
     // Lead no pool vem com responsavel_id null — o estado do Select é string,
     // e mandar null no PATCH derrubava o save inteiro com "Campos inválidos".
     setResponsavelId(lead.responsavel_id ?? '');
-    const existingTags: string[] = lead.tags ?? lead.lead_tags?.map((lt) => lt.tag.nome) ?? [];
-    setTags(existingTags);
+    // União dos dois estoques (ver `tagsParaEditar`): seedar com a precedência
+    // da exibição poda tag em qualquer uma das direções no Salvar.
+    setTags(tagsParaEditar(lead));
     setDirty(false);
   }, [lead, schema]);
 
@@ -424,9 +471,30 @@ export function LeadDetailDrawer({
               className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4"
             >
               {/* Topo do corpo: é a leitura de contexto que o vendedor faz
-                  antes de mexer em qualquer campo. Colapsável para não
-                  empurrar o formulário pra baixo em quem não usa. */}
-              {leadId && <InsightCard leadId={leadId} onUsarMensagem={onUsarMensagem} enabled={open} />}
+                  antes de mexer em qualquer campo. Colapsável porque a ficha é
+                  alta e o Sheet tem 448px — quem não usa não pode ficar com o
+                  formulário empurrado pra fora da tela. */}
+              {leadId && lead && (
+                <Ficha360
+                  leadId={leadId}
+                  lead={{
+                    nome: lead.nome,
+                    telefone: lead.telefone,
+                    etapa: lead.estagio?.nome ?? '',
+                    temperatura: lead.temperatura,
+                    valor_estimado: lerValorEstimado(lead.valor_estimado),
+                    ultima_interacao: lead.ultima_interacao ?? null,
+                    responsavel: lead.responsavel?.nome ?? null,
+                    tags: tagsDoLead(lead),
+                  }}
+                  onUsarMensagem={onUsarMensagem}
+                  enabled={open}
+                  // O cabeçalho do Sheet já mostra avatar, nome e telefone —
+                  // repetir aqui seria a mesma identidade duas vezes na tela.
+                  mostrarCabecalho={false}
+                  colapsavel
+                />
+              )}
 
               <FieldGroupList
                 schema={schema}

@@ -1,16 +1,24 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Copy, MessageSquare, PhoneCall, RefreshCw } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  MessageSquare,
+  PhoneCall,
+  RefreshCw,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TEMP_BADGE, TEMP_LABELS, formatPhone } from '@/components/kanban/lead-card';
+import { Ficha360 } from '@/components/leads/ficha-360';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
@@ -32,6 +40,10 @@ export interface RadarItem {
   motivo: string;
   msg_sugerida: string;
   proxima_acao_at: string | null;
+  /** Nome de quem responde pelo lead. `null` = lead sem dono (pool). */
+  responsavel: string | null;
+  /** Nomes das tags, achatados pelo backend (relação + Json legado). */
+  tags: string[];
 }
 
 export interface RadarResposta {
@@ -48,6 +60,12 @@ function texto(valor: unknown): string {
 
 function textoOuNulo(valor: unknown): string | null {
   return typeof valor === 'string' && valor !== '' ? valor : null;
+}
+
+/** Backend antigo nao manda `tags`; Json cru pode ter numero/null no meio. */
+function lerTags(valor: unknown): string[] {
+  if (!Array.isArray(valor)) return [];
+  return valor.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
 }
 
 /**
@@ -73,6 +91,8 @@ function lerItens(valor: unknown): RadarItem[] {
       motivo: texto(registro.motivo),
       msg_sugerida: texto(registro.msg_sugerida),
       proxima_acao_at: textoOuNulo(registro.proxima_acao_at),
+      responsavel: textoOuNulo(registro.responsavel),
+      tags: lerTags(registro.tags),
     });
   }
   return saida;
@@ -169,6 +189,9 @@ const SECOES: Secao[] = [
 
 interface CardProps {
   item: RadarItem;
+  /** Um por vez: a pagina guarda o id expandido. */
+  expandido: boolean;
+  onAlternar: () => void;
   onCopiar: (valor: string) => void;
   onAbrir: (leadId: string) => void;
 }
@@ -179,10 +202,45 @@ interface CardProps {
  * `dangerouslySetInnerHTML` nem markdown, senao o cliente injeta HTML na tela
  * do vendedor.
  */
-function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
+function RadarCard({ item, expandido, onAlternar, onCopiar, onAbrir }: CardProps) {
   const acaoEm = formatarData(item.proxima_acao_at);
   const msg = item.msg_sugerida.trim();
   const temperatura = rotuloTemperatura(item.temperatura).trim();
+
+  // Expandido a Ficha 360 TOMA o lugar do resumo do card: ela ja tem cabecalho,
+  // etapa, temperatura e a mensagem sugerida. Manter os dois seria a mesma
+  // informacao duas vezes, uma em cima da outra.
+  if (expandido) {
+    return (
+      <article className="flex animate-in flex-col gap-2 fade-in-0 slide-in-from-top-1 duration-200">
+        <Ficha360
+          leadId={item.lead_id}
+          lead={{
+            nome: item.nome,
+            telefone: item.telefone || null,
+            etapa: item.etapa,
+            temperatura: item.temperatura,
+            // O radar nao carrega valor estimado — a linha some sozinha.
+            valor_estimado: null,
+            ultima_interacao: item.ultima_interacao,
+            responsavel: item.responsavel,
+            tags: item.tags,
+            proxima_acao_at: item.proxima_acao_at,
+          }}
+        />
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" className="flex-1" onClick={() => onAbrir(item.lead_id)}>
+            <MessageSquare className="mr-1.5 h-4 w-4" />
+            Abrir conversa
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onAlternar} aria-expanded>
+            <ChevronUp className="mr-1.5 h-4 w-4" />
+            Fechar ficha
+          </Button>
+        </div>
+      </article>
+    );
+  }
 
   return (
     <article className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
@@ -221,7 +279,27 @@ function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
       <p className="text-xs text-muted-foreground">
         {rotuloSemContato(item.ultima_interacao)}
         {acaoEm ? ` · ação marcada para ${acaoEm}` : ''}
+        {item.responsavel ? ` · ${item.responsavel}` : ''}
       </p>
+
+      {/* Tags do lead: contexto que decide a abordagem antes de abrir a ficha. */}
+      {item.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {item.tags.slice(0, 4).map((tag, i) => (
+            <span
+              key={`${i}-${tag}`}
+              className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+            >
+              {tag}
+            </span>
+          ))}
+          {item.tags.length > 4 && (
+            <span className="px-1 py-0.5 text-[11px] text-muted-foreground">
+              +{item.tags.length - 4}
+            </span>
+          )}
+        </div>
+      )}
 
       {item.motivo && <p className="text-sm">{item.motivo}</p>}
 
@@ -246,15 +324,18 @@ function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
         </div>
       )}
 
-      <Button
-        size="sm"
-        variant="outline"
-        className="mt-auto w-full"
-        onClick={() => onAbrir(item.lead_id)}
-      >
-        <MessageSquare className="mr-1.5 h-4 w-4" />
-        Abrir conversa
-      </Button>
+      <div className="mt-auto flex gap-2">
+        <Button size="sm" variant="outline" className="flex-1" onClick={() => onAbrir(item.lead_id)}>
+          <MessageSquare className="mr-1.5 h-4 w-4" />
+          Abrir conversa
+        </Button>
+        {/* A ficha so busca o insight depois deste clique (`enabled`): abrir o
+            radar com 90 cards nao dispara 90 requisicoes. */}
+        <Button size="sm" variant="ghost" onClick={onAlternar} aria-expanded={false}>
+          <ChevronDown className="mr-1.5 h-4 w-4" />
+          Ver ficha completa
+        </Button>
+      </div>
     </article>
   );
 }
@@ -265,6 +346,8 @@ function RadarCard({ item, onCopiar, onAbrir }: CardProps) {
 
 export default function RadarPage() {
   const router = useRouter();
+  /** Um card expandido por vez — `null` = todos recolhidos. */
+  const [expandidoId, setExpandidoId] = useState<string | null>(null);
 
   const { data, isLoading, isError, isFetching, refetch } = useQuery<RadarResposta>({
     queryKey: ['radar'],
@@ -369,11 +452,15 @@ export default function RadarPage() {
               ) : itens.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{secao.vazio}</p>
               ) : (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {itens.map((item) => (
                     <RadarCard
                       key={item.lead_id}
                       item={item}
+                      expandido={expandidoId === item.lead_id}
+                      onAlternar={() =>
+                        setExpandidoId((atual) => (atual === item.lead_id ? null : item.lead_id))
+                      }
                       onCopiar={copiar}
                       onAbrir={(leadId) => router.push(`/chat/${leadId}`)}
                     />

@@ -1,5 +1,5 @@
 import { HttpException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { AiProviderService } from '../ai/ai-provider.service';
@@ -73,6 +73,29 @@ const RESPOSTA_OK = JSON.stringify({
   proxima_acao_motivo: 'Confirmar a proposta enviada.',
   msg_sugerida: 'Oi! Conseguiu ver a proposta que mandei?',
 });
+
+/** Resposta completa da ficha 360: as 9 chaves, com nota e compra citada. */
+function resposta360(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    resumo: 'Cliente pediu proposta de 10 portas e vai decidir apos a obra.',
+    memoria_novos_fatos: [],
+    proxima_acao_em_dias: 1,
+    proxima_acao_motivo: 'Confirmar a proposta enviada.',
+    msg_sugerida: 'Oi! Conseguiu ver a proposta que mandei?',
+    nota_atendimento: 8,
+    nota_ponto_forte: 'Respondeu rapido e explicou o prazo.',
+    nota_ponto_melhoria: 'Faltou oferecer o proximo passo.',
+    ultima_compra: { descricao: '2 janelas de aluminio', valor: 1200, quando: 'mes passado' },
+    ...overrides,
+  });
+}
+
+/** Compra ja gravada na ficha anterior (volta do banco como Json solto). */
+const COMPRA_ANTERIOR = {
+  descricao: '1 porta de correr',
+  valor: 800,
+  quando: 'junho',
+};
 
 describe('LeadInsightsService.enfileirarSeElegivel', () => {
   it('enfileira com >=5 mensagens novas desde o watermark', async () => {
@@ -377,6 +400,165 @@ describe('LeadInsightsService.gerarInsight', () => {
     expect(conteudo.split('\n').filter((l) => l.startsWith('## Dados do lead'))).toHaveLength(1);
   });
 
+  /** Argumento unico do upsert, tipado uma vez so para os testes da ficha 360. */
+  function argsUpsert(upsert: jest.Mock) {
+    const [args] = upsert.mock.calls[0] as [
+      {
+        where: { lead_id: string };
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      },
+    ];
+    return args;
+  }
+
+  it('grava nota do atendimento e compra citada vindas do modelo', async () => {
+    const m = prepararFeliz();
+    m.ai.chat.mockResolvedValue({ text: resposta360(), tokensIn: 1, tokensOut: 1 });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = argsUpsert(m.leadInsight.upsert);
+    expect(args.update.nota_atendimento).toBe(8);
+    expect(args.update.nota_ponto_forte).toBe('Respondeu rapido e explicou o prazo.');
+    expect(args.update.nota_ponto_melhoria).toBe('Faltou oferecer o proximo passo.');
+    expect(args.update.ultima_compra).toEqual({
+      descricao: '2 janelas de aluminio',
+      valor: 1200,
+      quando: 'mes passado',
+    });
+    // create e update saem do MESMO bloco de campos: ficha nova nasce igual.
+    expect(args.create.nota_atendimento).toBe(8);
+    expect(args.create.ultima_compra).toEqual(args.update.ultima_compra);
+  });
+
+  it('compra nova do modelo substitui a compra ja gravada', async () => {
+    const m = prepararFeliz();
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: COMPRA_ANTERIOR,
+    });
+    m.ai.chat.mockResolvedValue({ text: resposta360(), tokensIn: 1, tokensOut: 1 });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toEqual({
+      descricao: '2 janelas de aluminio',
+      valor: 1200,
+      quando: 'mes passado',
+    });
+  });
+
+  it('modelo sem compra NAO apaga a compra ja gravada: regrava a anterior', async () => {
+    // A compra e historico: o cliente cita uma vez e nunca mais. Toda geracao
+    // seguinte devolve null e apagaria o dado se o null fosse gravado.
+    const m = prepararFeliz();
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: COMPRA_ANTERIOR,
+    });
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({ ultima_compra: null }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toEqual(COMPRA_ANTERIOR);
+  });
+
+  it('sem compra nova nem anterior grava Prisma.DbNull (SQL NULL, nao JSON null)', async () => {
+    const m = prepararFeliz();
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: null,
+    });
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({ ultima_compra: null }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = argsUpsert(m.leadInsight.upsert);
+    // `null` cru estoura no client e `Prisma.JsonNull` gravaria o literal JSON
+    // null na coluna — a coluna e nullable, o vazio dela e SQL NULL.
+    expect(args.update.ultima_compra).toBe(Prisma.DbNull);
+    expect(args.create.ultima_compra).toBe(Prisma.DbNull);
+  });
+
+  it('compra anterior com lixo no lugar da descricao vira DbNull', async () => {
+    // Ficha antiga / escrita a mao: nao pode virar objeto quebrado no banco.
+    const m = prepararFeliz();
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: 'comprou algo',
+    });
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({ ultima_compra: null }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toBe(Prisma.DbNull);
+  });
+
+  it('valor da compra e arredondado em 2 casas (reais com centavos)', async () => {
+    const m = prepararFeliz();
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({
+        ultima_compra: { descricao: '3 janelas', valor: 1234.5678, quando: '' },
+      }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toEqual({
+      descricao: '3 janelas',
+      valor: 1234.57,
+      quando: '',
+    });
+  });
+
+  it('valor absurdo (estoura no arredondamento) vira null, nunca Infinity', async () => {
+    // 1e308 e finito, mas `* 100` estoura para Infinity — que a coluna nao aceita.
+    const m = prepararFeliz();
+    m.ai.chat.mockResolvedValue({
+      text: resposta360({
+        ultima_compra: { descricao: '3 janelas', valor: 1e308, quando: '' },
+      }),
+      tokensIn: 1,
+      tokensOut: 1,
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(argsUpsert(m.leadInsight.upsert).update.ultima_compra).toEqual({
+      descricao: '3 janelas',
+      valor: null,
+      quando: '',
+    });
+  });
+
+  it('pede 900 tokens ao modelo (a resposta agora tem 9 chaves)', async () => {
+    const m = prepararFeliz();
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const [req] = m.ai.chat.mock.calls[0] as [{ opts: { maxTokens: number } }];
+    expect(req.opts.maxTokens).toBe(900);
+  });
+
   it('lead de outro tenant nao gera nada', async () => {
     const m = montar();
     m.lead.findFirst.mockResolvedValue(null);
@@ -431,6 +613,25 @@ describe('LeadInsightsService.obter', () => {
 
     await expect(m.service.obter('lead-1', usuario)).resolves.toEqual({ resumo: 'ficha' });
     expect(m.leads.findOne).toHaveBeenCalledWith('lead-1', usuario);
+  });
+
+  it('devolve a linha inteira: os campos da ficha 360 chegam na UI', async () => {
+    // Sem `select` no findUnique e sem DTO no controller — se alguem filtrar a
+    // linha um dia, a nota e a compra sumiriam da tela sem erro nenhum.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    const ficha = {
+      resumo: 'ficha',
+      nota_atendimento: 9,
+      nota_ponto_forte: 'ok',
+      nota_ponto_melhoria: 'ok',
+      ultima_compra: { descricao: '1 porta', valor: 800, quando: 'junho' },
+    };
+    m.leadInsight.findUnique.mockResolvedValue(ficha);
+
+    await expect(m.service.obter('lead-1', usuario)).resolves.toEqual(ficha);
+    const [args] = m.leadInsight.findUnique.mock.calls[0] as [Record<string, unknown>];
+    expect(args.select).toBeUndefined();
   });
 
   it('lead sem ficha devolve null (nao 404)', async () => {
