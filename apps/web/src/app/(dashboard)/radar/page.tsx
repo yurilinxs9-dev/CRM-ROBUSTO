@@ -191,8 +191,13 @@ function normalizar(corpo: unknown): RadarResposta {
 interface Pipeline {
   id: string;
   nome: string;
+  arquivado?: boolean;
 }
 
+/**
+ * Funil arquivado nao entra no seletor: ele some do kanban, entao oferecer o
+ * filtro aqui so entrega uma lista vazia sem explicacao.
+ */
 function lerPipelines(valor: unknown): Pipeline[] {
   if (!Array.isArray(valor)) return [];
   const saida: Pipeline[] = [];
@@ -201,7 +206,9 @@ function lerPipelines(valor: unknown): Pipeline[] {
     const registro = bruto as Record<string, unknown>;
     const id = texto(registro.id);
     if (id === '') continue;
-    saida.push({ id, nome: texto(registro.nome) || 'Funil sem nome' });
+    const arquivado = registro.arquivado === true;
+    if (arquivado) continue;
+    saida.push({ id, nome: texto(registro.nome) || 'Funil sem nome', arquivado });
   }
   return saida;
 }
@@ -497,15 +504,24 @@ function RadarCard({ item, expandido, destaque, onAlternar, onCopiar, onAbrir }:
 
       {/* Na fila "Esperando você" o relógio é a informação principal do card. */}
       {espera ? (
-        <p
-          className={cn(
-            'inline-flex w-fit items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-            espera.classe,
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+          <span
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+              espera.classe,
+            )}
+          >
+            <Clock className="h-3 w-3" />
+            {espera.rotulo}
+          </span>
+          {/* Multi-operador: saber de quem e o lead sem abrir a ficha decide se
+              o vendedor responde ou deixa pro dono. */}
+          {item.responsavel && (
+            <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+              · {item.responsavel}
+            </span>
           )}
-        >
-          <Clock className="h-3 w-3" />
-          {espera.rotulo}
-        </p>
+        </div>
       ) : (
         <p className="text-xs text-muted-foreground">
           {rotuloSemContato(item.ultima_interacao)}
@@ -733,6 +749,10 @@ export default function RadarPage() {
     filtradas.promissores.length +
     filtradas.esfriando.length;
 
+  const buscando = termo !== '';
+  /** Busca ativa e nenhuma seção com resultado: um aviso só, no topo. */
+  const buscaSemResultado = buscando && totalFiltrado === 0;
+
   const copiar = (valor: string) => {
     navigator.clipboard.writeText(valor).then(
       () => toast.success('Mensagem copiada'),
@@ -817,7 +837,7 @@ export default function RadarPage() {
         </div>
       ) : (
         <>
-          {!isLoading && termo !== '' && totalFiltrado === 0 && (
+          {!isLoading && buscaSemResultado && (
             <p className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
               Nenhum lead do radar bate com “{busca.trim()}”.
             </p>
@@ -825,6 +845,7 @@ export default function RadarPage() {
 
           {SECOES.map((secao) => {
             const itens = filtradas[secao.chave];
+            const total = radar[secao.chave].length;
             const aberta = !fechadas.includes(secao.chave);
             const destaque = secao.chave === 'esperando_voce';
 
@@ -837,30 +858,42 @@ export default function RadarPage() {
                     'rounded-xl border-l-4 border-amber-500/70 bg-amber-500/[0.03] py-3 pl-4 pr-3 dark:bg-amber-500/[0.05]',
                 )}
               >
+                {/* Padrao accordion: o <h3> envolve o gatilho para o leitor de
+                    tela pular de seção em seção pela lista de headings. */}
                 <div className="flex items-start gap-2">
-                  <button
-                    type="button"
-                    onClick={() => alternarSecao(secao.chave)}
-                    aria-expanded={aberta}
-                    className="group flex min-w-0 flex-1 items-start gap-1.5 text-left"
-                  >
-                    <ChevronRight
-                      className={cn(
-                        'mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform',
-                        aberta && 'rotate-90',
-                      )}
-                    />
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight group-hover:underline">
-                        {destaque && <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400" />}
-                        {secao.titulo}
-                        {!isLoading && (
-                          <span className="font-normal text-muted-foreground">({itens.length})</span>
+                  <h3 className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => alternarSecao(secao.chave)}
+                      aria-expanded={aberta}
+                      className="group flex w-full min-w-0 items-start gap-1.5 text-left"
+                    >
+                      <ChevronRight
+                        className={cn(
+                          'mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform',
+                          aberta && 'rotate-90',
                         )}
+                      />
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight group-hover:underline">
+                          {destaque && (
+                            <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                          )}
+                          {secao.titulo}
+                          {!isLoading && (
+                            <span className="font-normal text-muted-foreground">
+                              {/* Com busca ativa o contador diz "filtrados de
+                                  totais", senao ele contradiria o cabecalho. */}
+                              {buscando ? `(${itens.length} de ${total})` : `(${total})`}
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {secao.descricao}
+                        </span>
                       </span>
-                      <span className="block text-xs text-muted-foreground">{secao.descricao}</span>
-                    </span>
-                  </button>
+                    </button>
+                  </h3>
                   <AjudaSecao titulo={secao.titulo} texto={secao.ajuda} />
                 </div>
 
@@ -872,9 +905,13 @@ export default function RadarPage() {
                       ))}
                     </div>
                   ) : itens.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      {termo !== '' ? 'Nenhum resultado nesta seção.' : secao.vazio}
-                    </p>
+                    // Busca que nao achou NADA ja tem o aviso unico la em cima:
+                    // repetir aqui encheria a tela com quatro "nada encontrado".
+                    buscaSemResultado ? null : (
+                      <p className="text-sm text-muted-foreground">
+                        {buscando ? 'Nenhum resultado nesta seção.' : secao.vazio}
+                      </p>
+                    )
                   ) : (
                     <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {itens.map((item) => (
