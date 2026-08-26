@@ -868,6 +868,8 @@ export class LeadInsightsService {
         // Decimal do Prisma nao serializa como numero sozinho.
         valor_estimado: lead.valor_estimado === null ? null : lead.valor_estimado.toNumber(),
         ultima_interacao: lead.ultima_interacao,
+        // TODO(Task 3): carregar as etapas do pipeline do lead (exceto a atual).
+        etapas_disponiveis: [],
       },
       insightAnterior: anterior
         ? { resumo: anterior.resumo, memoria: lerMemoria(anterior.memoria) }

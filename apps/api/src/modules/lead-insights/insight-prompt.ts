@@ -15,6 +15,11 @@ export interface InsightContexto {
     temperatura: string;
     valor_estimado: number | null;
     ultima_interacao: Date | null;
+    /**
+     * Nomes das etapas do pipeline do lead EXCETO a atual — o chamador monta.
+     * Lista vazia = nada a sugerir (o prompt pede `etapa_sugerida: null`).
+     */
+    etapas_disponiveis: string[];
   };
   insightAnterior: { resumo: string; memoria: MemoriaFato[] } | null;
   /** Ja limitadas a 40 pelo chamador, em ordem cronologica. */
@@ -29,6 +34,10 @@ export interface CompraCitada {
   quando: string;
 }
 
+/** Temperaturas que o modelo pode sugerir (as mesmas do funil). */
+export const TEMPERATURAS = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'] as const;
+export type TemperaturaSugerida = (typeof TEMPERATURAS)[number];
+
 /** Insight ja saneado, pronto para persistir. */
 export interface InsightGerado {
   resumo: string;
@@ -42,6 +51,14 @@ export interface InsightGerado {
   nota_ponto_forte: string;
   nota_ponto_melhoria: string;
   ultima_compra: CompraCitada | null;
+  /** Nova temperatura sugerida; `null` = manter a atual (o padrao). */
+  temperatura_sugerida: TemperaturaSugerida | null;
+  /** So preenchida quando ha temperatura sugerida; caso contrario "". */
+  temperatura_justificativa: string;
+  /** Nome da etapa sugerida; `null` = manter a atual (o padrao). */
+  etapa_sugerida: string | null;
+  /** So preenchido quando ha etapa sugerida; caso contrario "". */
+  etapa_sugerida_motivo: string;
 }
 
 const LIMITE_RESUMO = 800;
@@ -59,6 +76,9 @@ const LIMITE_COMPRA_DESCRICAO = 200;
 const LIMITE_COMPRA_QUANDO = 60;
 const NOTA_MIN = 0;
 const NOTA_MAX = 10;
+const LIMITE_JUSTIFICATIVA = 200;
+const LIMITE_ETAPA = 60;
+const LIMITE_ETAPA_MOTIVO = 200;
 /** Cada mensagem entra no prompt truncada — modelo local tem contexto curto. */
 const LIMITE_TEXTO_MENSAGEM = 1000;
 
@@ -66,6 +86,8 @@ const LIMITE_TEXTO_MENSAGEM = 1000;
  * Modelo pequeno copia o shape: por isso `ultima_compra` aparece aqui como `null`
  * (o padrao seguro) e o formato preenchido fica so na regra textual — shape com compra
  * de exemplo ensinaria justamente a inventar a compra que a regra proibe.
+ * Mesma logica para `temperatura_sugerida` e `etapa_sugerida`: o padrao delas tambem e
+ * "nao mexer", e um exemplo tipo "QUENTE" no shape viraria sugestao em toda ficha.
  */
 const SHAPE_JSON = `{
   "resumo": "string",
@@ -76,14 +98,18 @@ const SHAPE_JSON = `{
   "nota_atendimento": 7,
   "nota_ponto_forte": "string",
   "nota_ponto_melhoria": "string",
-  "ultima_compra": null
+  "ultima_compra": null,
+  "temperatura_sugerida": null,
+  "temperatura_justificativa": "string",
+  "etapa_sugerida": null,
+  "etapa_sugerida_motivo": "string"
 }`;
 
 const SYSTEM_PROMPT = `Voce e um assistente de analise comercial de um CRM de WhatsApp em portugues do Brasil.
 Voce le a conversa entre a equipe de atendimento e o cliente e devolve uma ficha do lead.
 
 Responda APENAS com o objeto JSON abaixo, sem texto antes ou depois, sem markdown, sem crase.
-Use exatamente estas 9 chaves:
+Use exatamente estas 13 chaves:
 ${SHAPE_JSON}
 
 Regras de cada campo:
@@ -96,6 +122,10 @@ Regras de cada campo:
 - "nota_ponto_forte": UMA linha dizendo o que o atendente fez bem.
 - "nota_ponto_melhoria": UMA linha dizendo o que o atendente poderia melhorar.
 - "ultima_compra": o padrao e null. Troque por um objeto APENAS se o CLIENTE citou na conversa uma compra ou fechamento ja feito ("comprei", "levei", "fechamos", "paguei"); nesse caso use o formato { "descricao": "o que ele disse ter comprado", "valor": 1234.56, "quando": "mes passado" }, com "valor" numerico so se ele falou o valor (senao null) e "quando" como ele datou (senao ""). Nunca invente compra, valor ou data: sem mencao explicita do cliente, mantenha null. Orcamento, cotacao ou intencao de compra NAO contam.
+- "temperatura_sugerida": o padrão é null (= manter a temperatura atual). Troque por "FRIO", "MORNO", "QUENTE" ou "MUITO_QUENTE" APENAS se a conversa mostrar claramente que a temperatura atual está errada (ex.: cliente pediu orçamento e prazo = mais quente; cliente sumiu há semanas ou disse que desistiu = mais frio). Nunca sugira a temperatura que o lead já tem.
+- "temperatura_justificativa": UMA frase citando o que na conversa justifica a mudança; "" quando temperatura_sugerida for null.
+- "etapa_sugerida": o padrão é null. Troque pelo NOME EXATO de uma das etapas listadas em "Etapas disponíveis" APENAS se a conversa mostrar que o lead já passou da etapa atual (ex.: proposta enviada e cliente analisando = etapa de negociação). Você apenas sugere: quem move é o atendente.
+- "etapa_sugerida_motivo": UMA frase explicando; "" quando etapa_sugerida for null.
 
 Restricoes absolutas:
 - Voce NUNCA responde pelo cliente e NUNCA envia nada: apenas sugere para o atendente humano decidir.
@@ -143,6 +173,17 @@ function comoNota(valor: unknown): number | null {
   const n = comoNumero(valor);
   if (n === null) return null;
   return Math.min(NOTA_MAX, Math.max(NOTA_MIN, Math.round(n)));
+}
+
+/**
+ * Temperatura sugerida: o modelo local escreve "quente" ou "muito quente" mesmo com o
+ * enum em caixa alta no prompt, entao normaliza caixa e troca espacos por `_`. Qualquer
+ * coisa fora da lista (numero, "MORNINHO", "MUITO QUENTE!!") vira null = manter a atual.
+ */
+function comoTemperatura(valor: unknown): TemperaturaSugerida | null {
+  if (typeof valor !== 'string') return null;
+  const normalizado = valor.trim().toUpperCase().replace(/\s+/g, '_');
+  return TEMPERATURAS.find((t) => t === normalizado) ?? null;
 }
 
 function ehObjeto(valor: unknown): valor is Record<string, unknown> {
@@ -280,6 +321,11 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
   const alvo = escolhido ?? primeiroAceito;
   if (alvo === null) return null;
 
+  // Justificativa/motivo so existem acompanhados da sugestao: texto solto viraria
+  // "por que mudar" sem mudanca nenhuma na tela do atendente.
+  const temperaturaSugerida = comoTemperatura(alvo.temperatura_sugerida);
+  const etapaSugerida = comoTexto(alvo.etapa_sugerida, LIMITE_ETAPA) || null;
+
   return {
     resumo: comoTexto(alvo.resumo, LIMITE_RESUMO),
     memoria_novos_fatos: comoMemoria(alvo.memoria_novos_fatos),
@@ -290,6 +336,12 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
     nota_ponto_forte: comoTexto(alvo.nota_ponto_forte, LIMITE_PONTO),
     nota_ponto_melhoria: comoTexto(alvo.nota_ponto_melhoria, LIMITE_PONTO),
     ultima_compra: comoCompra(alvo.ultima_compra),
+    temperatura_sugerida: temperaturaSugerida,
+    temperatura_justificativa:
+      temperaturaSugerida === null ? '' : comoTexto(alvo.temperatura_justificativa, LIMITE_JUSTIFICATIVA),
+    etapa_sugerida: etapaSugerida,
+    etapa_sugerida_motivo:
+      etapaSugerida === null ? '' : comoTexto(alvo.etapa_sugerida_motivo, LIMITE_ETAPA_MOTIVO),
   };
 }
 
@@ -335,6 +387,14 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     `Ultima interacao: ${formatarData(lead.ultima_interacao)}`,
   ].join('\n');
 
+  // A etapa atual nao entra na lista (quem monta o contexto ja a removeu): oferecer a
+  // etapa em que o lead ja esta so convidaria o modelo a "sugerir" o que nao muda nada.
+  const etapas = (lead.etapas_disponiveis ?? []).map((nome) => comoTexto(nome, LIMITE_ETAPA)).filter((nome) => nome !== '');
+  const blocoEtapas =
+    etapas.length > 0
+      ? [`Etapas disponíveis para sugestão (etapa atual: ${lead.etapa}):`, ...etapas.map((nome) => `- ${nome}`)].join('\n')
+      : 'Nenhuma etapa disponível: devolva etapa_sugerida null.';
+
   const blocoAnterior = insightAnterior
     ? [
         '## Ficha anterior deste lead',
@@ -357,12 +417,14 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     '## Dados do lead',
     linhasLead,
     '',
+    blocoEtapas,
+    '',
     blocoAnterior,
     '',
     '## Conversa (mais antiga primeiro)',
     blocoMensagens,
     '',
-    'Analise a conversa acima e responda apenas com o objeto JSON das 9 chaves.',
+    'Analise a conversa acima e responda apenas com o objeto JSON das 13 chaves.',
   ].join('\n');
 
   return [
