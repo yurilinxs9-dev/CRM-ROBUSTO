@@ -7,6 +7,7 @@ import { normalizeAckUpdates, extractAck } from './ack-normalizer';
 import { extractFromEvolution } from './message-extractor';
 import { messageTs } from './history-sync';
 import { HistorySyncService } from './history-sync.service';
+import { LogThrottle, INSTANCIA_DESCONHECIDA_JANELA_MS } from './log-throttle';
 
 /**
  * Handlers dos eventos Evolution API v2 (messages.upsert/update,
@@ -16,6 +17,8 @@ import { HistorySyncService } from './history-sync.service';
 @Injectable()
 export class EvolutionEventsHandler {
   private readonly logger = new Logger(EvolutionEventsHandler.name);
+  /** Um aviso por instância órfã a cada 10min (ver avisarInstanciaDesconhecida). */
+  private readonly avisoInstancia = new LogThrottle(INSTANCIA_DESCONHECIDA_JANELA_MS);
 
   constructor(
     private prisma: PrismaService,
@@ -24,6 +27,25 @@ export class EvolutionEventsHandler {
     private inbound: InboundMessageService,
     private historySync: HistorySyncService,
   ) {}
+
+  /**
+   * Webhook de instância que o CRM não conhece é condição ESPERADA, não erro:
+   * alguém conectou uma instância direto no Evolution, o tenant foi deletado
+   * ou está suspenso (o finder devolve null de propósito). Antes isso era um
+   * `throw`: a BullMQ tentava 3x — retry que não pode dar certo, porque a
+   * instância não aparece por insistir — e cuspia stack de `error` a CADA
+   * mensagem, inundando o log pra sempre. Agora descarta com UM warn por
+   * instância a cada 10min e o job completa.
+   */
+  private avisarInstanciaDesconhecida(evento: string, instanceName: string | undefined): void {
+    const nome = instanceName ?? '(sem nome)';
+    if (!this.avisoInstancia.deveLogar(nome)) return;
+    this.logger.warn(
+      `${evento}: mensagem descartada: instancia Evolution '${nome}' nao mapeada no CRM ` +
+        `(tenant removido/suspenso ou conexao criada fora do CRM) — ` +
+        `proximos avisos desta instancia suprimidos por 10min`,
+    );
+  }
   /**
    * Resolve o telefone REAL do contato a partir da `key` Evolution/Baileys.
    *
@@ -78,7 +100,8 @@ export class EvolutionEventsHandler {
 
     const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
     if (!instance) {
-      throw new Error(`Evolution instancia desconhecida: ${instanceName}`);
+      this.avisarInstanciaDesconhecida('messages.upsert', instanceName);
+      return;
     }
 
     const messageId = key?.id as string | undefined;
@@ -219,7 +242,10 @@ export class EvolutionEventsHandler {
     const status = stateMap[rawState] ?? rawState;
 
     const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
-    if (!instance) return;
+    if (!instance) {
+      this.avisarInstanciaDesconhecida('connection.update', instanceName);
+      return;
+    }
     await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
       data: { status, ultimo_check: new Date() },
@@ -249,9 +275,7 @@ export class EvolutionEventsHandler {
     const instanceName = data?.instance as string | undefined;
     const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
     if (!instance) {
-      this.logger.warn(
-        `contacts.upsert ignorado — instancia desconhecida: ${instanceName}`,
-      );
+      this.avisarInstanciaDesconhecida('contacts.upsert', instanceName);
       return;
     }
 
@@ -294,7 +318,10 @@ export class EvolutionEventsHandler {
   async handleChatsUpdate(data: Obj) {
     const instanceName = data?.instance as string | undefined;
     const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
-    if (!instance) return;
+    if (!instance) {
+      this.avisarInstanciaDesconhecida('chats.update', instanceName);
+      return;
+    }
 
     const raw = data?.data;
     const chats = (Array.isArray(raw) ? raw : [raw]) as Array<Obj | undefined>;

@@ -5,6 +5,11 @@ import { InboundMessageService, type Obj } from './inbound-message.service';
 import { extractFromUazapi, extractFromWpp, synthesizeMessageId } from './message-extractor';
 import { messageTs, resolveUazapiPhone } from './history-sync';
 import { HistorySyncService } from './history-sync.service';
+import {
+  LogThrottle,
+  INSTANCIA_DESCONHECIDA_JANELA_MS,
+  mascararToken,
+} from './log-throttle';
 
 /**
  * Handlers dos eventos UazAPI (messages, message_ack, connection, chats) e do
@@ -14,6 +19,8 @@ import { HistorySyncService } from './history-sync.service';
 @Injectable()
 export class UazapiEventsHandler {
   private readonly logger = new Logger(UazapiEventsHandler.name);
+  /** Um aviso por instância/token órfão a cada 10min (ver o handler Evolution). */
+  private readonly avisoInstancia = new LogThrottle(INSTANCIA_DESCONHECIDA_JANELA_MS);
 
   constructor(
     private prisma: PrismaService,
@@ -21,6 +28,21 @@ export class UazapiEventsHandler {
     private inbound: InboundMessageService,
     private historySync: HistorySyncService,
   ) {}
+
+  /**
+   * Mesma condição esperada do handler Evolution (ver
+   * `EvolutionEventsHandler.avisarInstanciaDesconhecida`): instância/token que
+   * o CRM não conhece — ou tenant suspenso, que faz o finder devolver null de
+   * propósito. Era `throw` → 3 retries inúteis + stack de `error` por mensagem.
+   */
+  private avisarInstanciaDesconhecida(evento: string, identificacao: string): void {
+    if (!this.avisoInstancia.deveLogar(identificacao)) return;
+    this.logger.warn(
+      `${evento}: mensagem descartada: instancia ${identificacao} nao mapeada no CRM ` +
+        `(tenant removido/suspenso ou conexao criada fora do CRM) — ` +
+        `proximos avisos desta instancia suprimidos por 10min`,
+    );
+  }
   // ── WPPConnect handlers ──────────────────────────────────────────────────────
 
   async handleWppMessage(payload: Obj) {
@@ -40,8 +62,8 @@ export class UazapiEventsHandler {
 
     const instance = await this.inbound.findInstanceByName(instanceName);
     if (!instance) {
-      // Throw — triggers BullMQ retry (instance may be creating)
-      throw new Error(`WPP instancia desconhecida: ${instanceName}`);
+      this.avisarInstanciaDesconhecida('onmessage', `WPP '${instanceName ?? '(sem nome)'}'`);
+      return;
     }
 
     const phone = from.replace('@c.us', '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
@@ -126,7 +148,8 @@ export class UazapiEventsHandler {
     const token = payload.token as string | undefined;
     const instance = await this.inbound.findInstanceByUazapiToken(token);
     if (!instance) {
-      throw new Error(`UazAPI token desconhecido`);
+      this.avisarInstanciaDesconhecida('uazapi.messages', `UazAPI token ${mascararToken(token)}`);
+      return;
     }
 
     const extracted = extractFromUazapi(message);
