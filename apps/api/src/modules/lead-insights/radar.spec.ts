@@ -78,12 +78,15 @@ interface WhereRadar {
   pipeline_id?: string;
   responsavel_id?: string;
   OR?: unknown[];
-  estagio?: { is_won: boolean; is_lost: boolean };
+  // `unknown` de proposito nas duas chaves que as filas novas reescrevem com
+  // outra forma (`estagio: { is_lost }` em compraram, `lead_insight: { isNot }`
+  // em melhores): um tipo fechado aqui so obrigaria cast nos testes.
+  estagio?: unknown;
   temperatura?: { in: string[] };
   ultima_interacao?: { lte: Date };
   last_customer_message_at?: { not: null; gte: Date };
   AND?: unknown[];
-  lead_insight?: { proxima_acao_at: { lte: Date } };
+  lead_insight?: unknown;
 }
 interface ArgsRadar {
   where: WhereRadar;
@@ -106,18 +109,37 @@ const IDX_VENCIDOS = 0;
 const IDX_QUENTES = 1;
 const IDX_PARADOS = 2;
 const IDX_ESPERANDO = 3;
+/** As 4 filas que participam do dedupe por precedencia. */
 const TODAS_AS_FILAS = 4;
+/**
+ * As duas filas da fase 2 vem DEPOIS das 4 antigas na ordem das consultas (e
+ * nao antes) so para nao renumerar os indices que os testes da fase 1 usam.
+ * Elas ficam FORA do dedupe: `melhores` e um ranking transversal e `compraram`
+ * e um universo disjunto (etapa ganha), entao nao entram em `TODAS_AS_FILAS`.
+ */
+const IDX_MELHORES = 4;
+const IDX_COMPRARAM = 5;
+const TOTAL_CONSULTAS = 6;
 
-/** Mocka as 4 chamadas do radar na ordem em que o service as dispara. */
+/** Mocka as 6 chamadas do radar na ordem em que o service as dispara. */
 function mockRadar(
   lead: { findMany: jest.Mock },
-  filas: { vencidos?: unknown[]; quentes?: unknown[]; parados?: unknown[]; esperando?: unknown[] },
+  filas: {
+    vencidos?: unknown[];
+    quentes?: unknown[];
+    parados?: unknown[];
+    esperando?: unknown[];
+    melhores?: unknown[];
+    compraram?: unknown[];
+  },
 ): void {
   lead.findMany
     .mockResolvedValueOnce(filas.vencidos ?? [])
     .mockResolvedValueOnce(filas.quentes ?? [])
     .mockResolvedValueOnce(filas.parados ?? [])
-    .mockResolvedValueOnce(filas.esperando ?? []);
+    .mockResolvedValueOnce(filas.esperando ?? [])
+    .mockResolvedValueOnce(filas.melhores ?? [])
+    .mockResolvedValueOnce(filas.compraram ?? []);
 }
 
 function linha(over: Record<string, unknown> = {}) {
@@ -199,6 +221,11 @@ describe('LeadInsightsService.radar', () => {
       tags: ['Orcamento', 'VIP'],
       // So a fila esperando_voce preenche este campo.
       esperando_desde: null,
+      // Campos da fase 2: presentes em TODA fila (o card e um so), nulos quando
+      // o lead nao tem valor nem ficha com nota/compra.
+      valor_estimado: null,
+      nota_atendimento: null,
+      compra: null,
     });
   });
 
@@ -280,14 +307,14 @@ describe('LeadInsightsService.radar', () => {
     expect(radar.chamar_hoje[0].tags).toEqual([]);
   });
 
-  it('as 4 secoes pedem responsavel e tags ao banco', async () => {
+  it('as 6 secoes pedem responsavel e tags ao banco', async () => {
     // O mock devolve o que quiser: sem conferir o `select`, a UI ficaria sem
     // dono e sem tag em producao com a suite verde.
     const m = montar();
 
     await m.service.radar(operador);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       const { select } = argsDe(m.lead, i);
       expect(select.responsavel).toEqual({ select: { nome: true } });
       expect(select.lead_tags).toEqual({
@@ -302,6 +329,18 @@ describe('LeadInsightsService.radar', () => {
       // a tela sem dado em producao.
       expect(select.last_customer_message_at).toBe(true);
       expect(select.valor_estimado).toBe(true);
+      // Fase 2: os dois campos novos do card saem da ficha. Sem eles no select,
+      // `nota_atendimento`/`compra` chegariam sempre nulos em producao — e o
+      // score de `melhores` cairia no default de nota para TODO mundo.
+      expect(select.lead_insight).toEqual({
+        select: {
+          proxima_acao_at: true,
+          proxima_acao_motivo: true,
+          msg_sugerida: true,
+          nota_atendimento: true,
+          ultima_compra: true,
+        },
+      });
     }
   });
 
@@ -378,8 +417,11 @@ describe('LeadInsightsService.radar', () => {
 
     await m.service.radar(operador);
 
-    expect(m.lead.findMany).toHaveBeenCalledTimes(TODAS_AS_FILAS);
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    expect(m.lead.findMany).toHaveBeenCalledTimes(TOTAL_CONSULTAS);
+    // `compraram` e a excecao proposital (etapa ganha E o universo dela), por
+    // isso o loop para nas filas de trabalho.
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
+      if (i === IDX_COMPRARAM) continue;
       expect(argsDe(m.lead, i).where.estagio).toEqual({ is_won: false, is_lost: false });
       expect(argsDe(m.lead, i).where.tenant_id).toBe('t1');
     }
@@ -390,12 +432,12 @@ describe('LeadInsightsService.radar', () => {
 
     await m.service.radar(operador);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       expect(argsDe(m.lead, i).where.responsavel_id).toBe('u1');
     }
   });
 
-  it('modo compartilhado: o OR do pool sobrevive nas 4 secoes, ao lado do filtro da secao', async () => {
+  it('modo compartilhado: o OR do pool sobrevive nas 6 secoes, ao lado do filtro da secao', async () => {
     // O `where` trafega como Record<string, unknown>: nada de tipo impede uma
     // secao futura de trazer o proprio `OR` e comer o da visibilidade em
     // silencio — o que vazaria lead de outro operador com a suite verde.
@@ -405,7 +447,7 @@ describe('LeadInsightsService.radar', () => {
     await m.service.radar(operador);
 
     const orDoPool = [{ responsavel_id: null, is_private: false }, { responsavel_id: 'u1' }];
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       const args = argsDe(m.lead, i);
       expect(args.where.OR).toEqual(orDoPool);
       // No pool, o vinculo e pelo OR: amarrar responsavel_id esconderia o pool.
@@ -444,7 +486,7 @@ describe('LeadInsightsService.radar', () => {
 
     await m.service.radar(gerente);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       expect(argsDe(m.lead, i).where.responsavel_id).toBeUndefined();
     }
   });
@@ -465,7 +507,7 @@ describe('LeadInsightsService.radar', () => {
     expect(radar.esfriando).toHaveLength(0);
   });
 
-  it('as 4 filas pedem folga ao banco: cap 30 nao pode virar o take da consulta', async () => {
+  it('as filas pedem folga ao banco: cap 30 nao pode virar o take da consulta', async () => {
     // Com `take: 30`, uma fila de baixo pode render VAZIA tendo dezenas de leads
     // elegiveis logo abaixo do corte: as filas de cima levam ate 30 ids cada uma,
     // e a de baixo so recebeu 30 linhas para comecar. Pior: o `resumo` novo
@@ -476,7 +518,7 @@ describe('LeadInsightsService.radar', () => {
 
     await m.service.radar(operador);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) expect(argsDe(m.lead, i).take).toBe(120);
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) expect(argsDe(m.lead, i).take).toBe(120);
   });
 
   it('lead nao roubado pela fila de cima continua aparecendo na de baixo', async () => {
@@ -658,12 +700,12 @@ describe('LeadInsightsService.radar — filtro por funil', () => {
   });
   afterEach(() => jest.useRealTimers());
 
-  it('com pipeline_id, as 4 filas filtram pelo funil', async () => {
+  it('com pipeline_id, as 6 filas filtram pelo funil', async () => {
     const m = montar();
 
     await m.service.radar(operador, 'pipe-1');
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       expect(argsDe(m.lead, i).where.pipeline_id).toBe('pipe-1');
     }
   });
@@ -673,7 +715,7 @@ describe('LeadInsightsService.radar — filtro por funil', () => {
 
     await m.service.radar(operador);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       expect(argsDe(m.lead, i).where.pipeline_id).toBeUndefined();
     }
   });
@@ -684,7 +726,7 @@ describe('LeadInsightsService.radar — filtro por funil', () => {
 
     await m.service.radar(operador, 'pipe-1');
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) {
+    for (let i = 0; i < TOTAL_CONSULTAS; i++) {
       expect(argsDe(m.lead, i).where.OR).toEqual([
         { responsavel_id: null, is_private: false },
         { responsavel_id: 'u1' },
@@ -780,6 +822,593 @@ describe('LeadInsightsService.radar — resumo do dia', () => {
     expect(radar.resumo.valor_chamar_hoje).toBe(0);
     expect(radar.resumo.lembrete_destaque).toBeNull();
     expect(radar.resumo.esperando).toBe(1);
+  });
+});
+
+describe('LeadInsightsService.radar — campos novos do card', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(AGORA);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  it('valor_estimado sai como numero (Decimal nao serializa sozinho)', async () => {
+    // `JSON.stringify(Decimal)` devolve `"1500.5"` (string) — a UI faria
+    // `toLocaleString` numa string e mostraria NaN ou o texto cru.
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-caro', valor_estimado: new Prisma.Decimal('1500.50') })],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].valor_estimado).toBe(1500.5);
+  });
+
+  it('nota_atendimento vem da ficha e sobrevive ao card', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [
+        linha({
+          id: 'lead-nota',
+          lead_insight: {
+            proxima_acao_at: null,
+            proxima_acao_motivo: 'x',
+            msg_sugerida: '',
+            nota_atendimento: 7,
+            ultima_compra: null,
+          },
+        }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].nota_atendimento).toBe(7);
+  });
+
+  it('lead sem ficha nenhuma: os dois campos novos viram null, sem crash', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-sem-ficha', lead_insight: null, valor_estimado: null })],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje[0].valor_estimado).toBeNull();
+    expect(radar.chamar_hoje[0].nota_atendimento).toBeNull();
+    expect(radar.chamar_hoje[0].compra).toBeNull();
+  });
+});
+
+/**
+ * Fila `melhores` (Foco do dia). O que estes testes protegem e a FORMULA: ela
+ * roda no app (nao da para ordenar por soma ponderada de 5 sinais no Prisma) e
+ * um peso trocado nao quebra nada visivelmente — a lista so fica burra.
+ *
+ * Os pesos privilegiam SINAIS AUTOMATICOS (a agenda da ficha e a atividade real
+ * da conversa) porque `temperatura` e campo manual: na pratica quase ninguem
+ * preenche, e num tenant onde todo lead ficou FRIO uma formula ancorada nela
+ * achataria o ranking inteiro em empate.
+ */
+describe('LeadInsightsService.radar — fila melhores (foco do dia)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(AGORA);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  /**
+   * Candidato com os 5 ingredientes do score explicitos.
+   * `acaoEmDias`: dias ate a proxima acao da ficha (negativo = ja venceu,
+   * `null` = ficha sem agenda).
+   */
+  function candidato(
+    id: string,
+    p: {
+      temperatura: string;
+      valor: string | null;
+      nota: number | null;
+      parado: number;
+      acaoEmDias?: number | null;
+    },
+  ) {
+    const acao = p.acaoEmDias ?? null;
+    return linha({
+      id,
+      temperatura: p.temperatura,
+      valor_estimado: p.valor === null ? null : new Prisma.Decimal(p.valor),
+      ultima_interacao: new Date(AGORA.getTime() - p.parado * DIA),
+      lead_insight: {
+        proxima_acao_at: acao === null ? null : new Date(AGORA.getTime() + acao * DIA),
+        proxima_acao_motivo: 'Ficha existe.',
+        msg_sugerida: 'Oi!',
+        nota_atendimento: p.nota,
+        ultima_compra: null,
+      },
+    });
+  }
+
+  it('so entram leads COM ficha, e o banco filtra isso (nao a memoria)', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const args = argsDe(m.lead, IDX_MELHORES);
+    // Sem ficha nao ha agenda nem nota: metade do score seria chute, e o card do
+    // foco do dia ficaria mudo (sem motivo, sem mensagem sugerida).
+    expect(args.where.lead_insight).toEqual({ isNot: null });
+    // Etapa ativa: a base de trabalho, igual as filas da fase 1.
+    expect(args.where.estagio).toEqual({ is_won: false, is_lost: false });
+    // Quem ordena e o score no app; o banco so entrega um lote grande e recente.
+    expect(args.orderBy).toEqual({ ultima_interacao: 'desc' });
+  });
+
+  it('o score composto ordena: temperatura nao decide sozinha', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      // Ordem de entrada embaralhada de proposito.
+      melhores: [
+        // 0 + 0 + 0 + 2 + 0 = 2.0
+        candidato('lead-ultimo', { temperatura: 'FRIO', valor: null, nota: null, parado: 40 }),
+        // 0 + 2.5 + 3 + 3.2 + 3 = 11.7
+        candidato('lead-segundo', {
+          temperatura: 'MUITO_QUENTE',
+          valor: '5000',
+          nota: 8,
+          parado: 1,
+          acaoEmDias: 10,
+        }),
+        // 1 + 1.5 + 0.6 + 2 + 1 = 6.1
+        candidato('lead-terceiro', {
+          temperatura: 'MORNO',
+          valor: '1000',
+          nota: 5,
+          parado: 5,
+          acaoEmDias: 3,
+        }),
+        // 3 + 2.5 + 6 + 4 + 0 = 15.5 — um lead FRIO na frente do MUITO_QUENTE,
+        // que e exatamente o ponto: quem manda sao os sinais automaticos.
+        candidato('lead-topo', {
+          temperatura: 'FRIO',
+          valor: '20000',
+          nota: 10,
+          parado: 0,
+          acaoEmDias: -1,
+        }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual([
+      'lead-topo',
+      'lead-segundo',
+      'lead-terceiro',
+      'lead-ultimo',
+    ]);
+  });
+
+  it('tenant com TODO lead FRIO ainda tem ranking (o caso real que motivou os pesos)', async () => {
+    // Temperatura e preenchida a mao e quase ninguem preenche: a maioria dos
+    // tenants tem 100% FRIO. Com a temperatura pesando demais, esta lista sairia
+    // toda empatada — ou seja, na ordem crua do banco, sem foco nenhum.
+    const m = montar();
+    mockRadar(m.lead, {
+      melhores: [
+        // 0 + 0 + 0 + 0.4 + 0 = 0.4
+        candidato('frio-d', { temperatura: 'FRIO', valor: null, nota: 1, parado: 60 }),
+        // 0 + 0.5 + 0 + 2 + 0 = 2.5
+        candidato('frio-c', { temperatura: 'FRIO', valor: null, nota: null, parado: 20 }),
+        // 3 + 2.5 + 1.8 + 3.6 + 0 = 10.9
+        candidato('frio-a', {
+          temperatura: 'FRIO',
+          valor: '3000',
+          nota: 9,
+          parado: 1,
+          acaoEmDias: -2,
+        }),
+        // 1 + 1.5 + 1.2 + 2.8 + 0 = 6.5
+        candidato('frio-b', {
+          temperatura: 'FRIO',
+          valor: '2000',
+          nota: 7,
+          parado: 5,
+          acaoEmDias: 5,
+        }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['frio-a', 'frio-b', 'frio-c', 'frio-d']);
+  });
+
+  it('a agenda da ficha da degrau: 48h, 7 dias e depois nada', async () => {
+    const m = montar();
+    const base = { temperatura: 'MORNO' as const, valor: null, nota: 5, parado: 3 };
+    mockRadar(m.lead, {
+      melhores: [
+        // 0 + 1.5 + 0 + 2 + 1 = 4.5
+        candidato('acao-longe', { ...base, acaoEmDias: 20 }),
+        // 3 + 1.5 + 0 + 2 + 1 = 7.5 — 48h exatos ainda contam como "e agora".
+        candidato('acao-48h', { ...base, acaoEmDias: 2 }),
+        // 1 + 1.5 + 0 + 2 + 1 = 5.5
+        candidato('acao-semana', { ...base, acaoEmDias: 6 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual([
+      'acao-48h',
+      'acao-semana',
+      'acao-longe',
+    ]);
+  });
+
+  it('acao ja vencida pontua como a de hoje (atrasado nao vira menos urgente)', async () => {
+    const m = montar();
+    const base = { temperatura: 'MORNO' as const, valor: null, nota: 5, parado: 3 };
+    mockRadar(m.lead, {
+      melhores: [
+        candidato('acao-semana', { ...base, acaoEmDias: 6 }),
+        candidato('acao-vencida', { ...base, acaoEmDias: -9 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['acao-vencida', 'acao-semana']);
+  });
+
+  it('ficha sem agenda nao pontua nesse sinal, mas continua na lista', async () => {
+    const m = montar();
+    const base = { temperatura: 'MORNO' as const, valor: null, nota: 5, parado: 3 };
+    mockRadar(m.lead, {
+      melhores: [
+        candidato('sem-agenda', { ...base, acaoEmDias: null }),
+        candidato('com-agenda', { ...base, acaoEmDias: 1 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['com-agenda', 'sem-agenda']);
+  });
+
+  it('recencia da degrau: 2 dias, 7 dias, 30 dias e depois nada', async () => {
+    const m = montar();
+    const base = { temperatura: 'MORNO' as const, valor: null, nota: 5 };
+    mockRadar(m.lead, {
+      melhores: [
+        candidato('lead-antigao', { ...base, parado: 40 }),
+        candidato('lead-mes', { ...base, parado: 20 }),
+        candidato('lead-ontem', { ...base, parado: 1 }),
+        candidato('lead-semana', { ...base, parado: 5 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual([
+      'lead-ontem',
+      'lead-semana',
+      'lead-mes',
+      'lead-antigao',
+    ]);
+  });
+
+  it('valor tem teto: negocio de R$ 1 milhao nao atropela o resto da formula', async () => {
+    // Sem `min(valor/1000, 10)` o lead de 1M pontuaria 600 e a lista viraria um
+    // ranking so de valor — que e o kanban, nao o foco do dia.
+    const m = montar();
+    mockRadar(m.lead, {
+      melhores: [
+        // 0 + 0 + 6 (teto) + 0 + 0 = 6.0
+        candidato('lead-caro-frio', {
+          temperatura: 'FRIO',
+          valor: '1000000',
+          nota: 0,
+          parado: 40,
+        }),
+        // 3 + 2.5 + 0 + 2 + 1 = 8.5
+        candidato('lead-morno-ativo', {
+          temperatura: 'MORNO',
+          valor: null,
+          nota: null,
+          parado: 1,
+          acaoEmDias: 1,
+        }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['lead-morno-ativo', 'lead-caro-frio']);
+  });
+
+  it('ficha sem nota vale 5 (neutro), nao zero', async () => {
+    // Nota e opcional na ficha; tratar ausencia como zero puniria o lead por um
+    // campo que o modelo simplesmente nao preencheu.
+    const m = montar();
+    mockRadar(m.lead, {
+      melhores: [
+        candidato('lead-nota-zero', { temperatura: 'MORNO', valor: null, nota: 0, parado: 40 }),
+        candidato('lead-sem-nota', { temperatura: 'MORNO', valor: null, nota: null, parado: 40 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['lead-sem-nota', 'lead-nota-zero']);
+  });
+
+  it('lead sem interacao registrada nao quebra o score (recencia zero)', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      melhores: [
+        linha({
+          id: 'lead-sem-interacao',
+          ultima_interacao: null,
+          lead_insight: {
+            proxima_acao_at: null,
+            proxima_acao_motivo: 'x',
+            msg_sugerida: '',
+            nota_atendimento: null,
+            ultima_compra: null,
+          },
+        }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['lead-sem-interacao']);
+  });
+
+  it('top 10: a secao e uma lista de trabalho do dia, nao um relatorio', async () => {
+    const m = montar();
+    // Score decrescente pelo valor (todos abaixo do teto de 10k): lead-0 e o
+    // mais caro.
+    const muitos = Array.from({ length: 12 }, (_, i) =>
+      candidato(`lead-${i}`, {
+        temperatura: 'MORNO',
+        valor: String((12 - i) * 800),
+        nota: 5,
+        parado: 1,
+      }),
+    );
+    mockRadar(m.lead, { melhores: muitos });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores).toHaveLength(10);
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `lead-${i}`),
+    );
+  });
+
+  it('o score NAO vai no payload: a UI nunca mostra numero de IA', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      melhores: [candidato('lead-1', { temperatura: 'QUENTE', valor: '1000', nota: 9, parado: 1 })],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.melhores[0]).not.toHaveProperty('score');
+    // O card e o MESMO das outras filas — nada de shape especial.
+    expect(radar.melhores[0].motivo).toBe('Ficha existe.');
+  });
+
+  it('ranking transversal: o mesmo lead PODE estar em melhores e em outra fila', async () => {
+    // De proposito, ao contrario das 4 filas de trabalho: "foco do dia" nao e
+    // uma quinta caixa de tarefas, e uma leitura por cima das mesmas pessoas.
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-1' })],
+      esperando: [esperandoLinha('lead-2', '2026-08-24T08:00:00Z')],
+      melhores: [
+        candidato('lead-1', { temperatura: 'QUENTE', valor: '9000', nota: 9, parado: 1 }),
+        candidato('lead-2', { temperatura: 'MORNO', valor: '100', nota: 5, parado: 3 }),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje.map((i) => i.lead_id)).toEqual(['lead-1']);
+    expect(radar.esperando_voce.map((i) => i.lead_id)).toEqual(['lead-2']);
+    expect(radar.melhores.map((i) => i.lead_id)).toEqual(['lead-1', 'lead-2']);
+  });
+
+  it('melhores nao rouba lead das filas de trabalho (fica fora do dedupe)', async () => {
+    // A consulta de melhores roda ANTES do dedupe na ordem do Promise.all: se
+    // ela alimentasse o Set de vistos, esvaziaria as filas da fase 1.
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-1' })],
+      melhores: [candidato('lead-1', { temperatura: 'QUENTE', valor: '9000', nota: 9, parado: 1 })],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje.map((i) => i.lead_id)).toEqual(['lead-1']);
+  });
+});
+
+/**
+ * Fila `compraram` (pos-venda). Universo disjunto do resto do radar: aqui a
+ * etapa GANHA e o que interessa, e a base do radar exclui exatamente ela.
+ */
+describe('LeadInsightsService.radar — fila compraram', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(AGORA);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  const COMPRA = { descricao: 'Mesa Requinte', valor: 3990, quando: 'mes passado' };
+
+  function comprador(id: string, compra: unknown = COMPRA, over: Record<string, unknown> = {}) {
+    return linha({
+      id,
+      lead_insight: {
+        proxima_acao_at: null,
+        proxima_acao_motivo: 'Perguntar se chegou tudo certo.',
+        msg_sugerida: 'Oi! A mesa chegou bem?',
+        nota_atendimento: 9,
+        ultima_compra: compra,
+      },
+      ...over,
+    });
+  }
+
+  it('entra quem fechou OU quem citou compra na conversa — e o banco resolve o OU', async () => {
+    // Filtrar em memoria seria furado do mesmo jeito da fila esperando_voce: o
+    // lote vem cortado por `take` e a secao apareceria vazia com o banco cheio.
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const { where } = argsDe(m.lead, IDX_COMPRARAM);
+    // Perdido continua fora (negocio morto nao e pos-venda), mas GANHO e
+    // justamente o que esta fila procura.
+    expect(where.estagio).toEqual({ is_lost: false });
+    // O OU vai aninhado em AND para nao comer o OR da visibilidade (mesma
+    // armadilha da fila esperando_voce).
+    expect(where.AND).toEqual([
+      {
+        OR: [
+          { estagio: { is_won: true } },
+          { lead_insight: { ultima_compra: { not: Prisma.DbNull } } },
+        ],
+      },
+    ]);
+    expect(where.tenant_id).toBe('t1');
+  });
+
+  it('qualquer recencia: cliente que comprou ano passado continua sendo pos-venda', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const { where, orderBy } = argsDe(m.lead, IDX_COMPRARAM);
+    expect(where.ultima_interacao).toBeUndefined();
+    // Do contato mais recente para o mais antigo (ao contrario das filas de
+    // trabalho, onde o mais parado e o mais urgente).
+    expect(orderBy).toEqual({ ultima_interacao: 'desc' });
+  });
+
+  it('a compra chega tipada no card', async () => {
+    const m = montar();
+    mockRadar(m.lead, { compraram: [comprador('lead-comprou')] });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.compraram[0].compra).toEqual({
+      descricao: 'Mesa Requinte',
+      valor: 3990,
+      quando: 'mes passado',
+    });
+  });
+
+  it('Json quebrado na ficha vira compra null, nao card quebrado', async () => {
+    // A coluna e Json cru: ficha antiga, string solta ou objeto sem descricao.
+    const m = montar();
+    mockRadar(m.lead, {
+      compraram: [
+        comprador('lead-string', 'comprou uma mesa'),
+        comprador('lead-sem-descricao', { valor: 100, quando: 'ontem' }),
+        comprador('lead-descricao-vazia', { descricao: '   ', valor: 100, quando: 'ontem' }),
+        comprador('lead-nulo', null),
+      ],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.compraram.map((i) => i.compra)).toEqual([null, null, null, null]);
+  });
+
+  it('compra sem valor ou sem data ainda vale (o cliente nem sempre diz)', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      compraram: [comprador('lead-parcial', { descricao: 'Sofa Bali' })],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.compraram[0].compra).toEqual({
+      descricao: 'Sofa Bali',
+      valor: null,
+      quando: '',
+    });
+  });
+
+  it('lead ganho sem compra estruturada entra assim mesmo (a etapa ja diz)', async () => {
+    const m = montar();
+    mockRadar(m.lead, { compraram: [linha({ id: 'lead-ganho', lead_insight: null })] });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.compraram.map((i) => i.lead_id)).toEqual(['lead-ganho']);
+    expect(radar.compraram[0].compra).toBeNull();
+  });
+
+  it('cap de 30 cards', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      compraram: Array.from({ length: 40 }, (_, i) => comprador(`lead-${i}`)),
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.compraram).toHaveLength(30);
+  });
+
+  it('sem dedupe: cliente que comprou e segue em conversa aparece nas duas filas', async () => {
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-1' })],
+      compraram: [comprador('lead-1')],
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.chamar_hoje.map((i) => i.lead_id)).toEqual(['lead-1']);
+    expect(radar.compraram.map((i) => i.lead_id)).toEqual(['lead-1']);
+  });
+});
+
+describe('LeadInsightsService.radar — resumo nao muda com as filas da fase 2', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(AGORA);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  it('melhores e compraram nao entram na conta nem na soma do dia', async () => {
+    // O resumo e o header "o que fazer hoje": pos-venda e ranking transversal
+    // inflariam um numero que a lista abaixo dele nao mostra.
+    const m = montar();
+    mockRadar(m.lead, {
+      vencidos: [linha({ id: 'lead-1', valor_estimado: new Prisma.Decimal('100') })],
+      melhores: Array.from({ length: 5 }, (_, i) =>
+        linha({ id: `lead-m-${i}`, valor_estimado: new Prisma.Decimal('900') }),
+      ),
+      compraram: Array.from({ length: 7 }, (_, i) =>
+        linha({ id: `lead-c-${i}`, valor_estimado: new Prisma.Decimal('900') }),
+      ),
+    });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.resumo).toEqual({
+      esperando: 0,
+      chamar_hoje: 1,
+      valor_chamar_hoje: 100,
+      lembrete_destaque: { nome: 'Cliente Teste', motivo: 'Confirmar a proposta enviada.' },
+    });
   });
 });
 

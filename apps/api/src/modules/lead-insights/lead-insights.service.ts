@@ -49,6 +49,11 @@ const CRON_MIN_MSGS_PRIMEIRA = 5;
 
 /** Radar: teto por secao. Lista maior que isso ninguem trabalha num dia. */
 const RADAR_CAP = 30;
+/**
+ * Quantas filas disputam o dedupe por precedencia — NAO e o numero de consultas
+ * (sao 6). `melhores` e `compraram` ficam de fora do dedupe de proposito (ver
+ * `radar()`), entao nao entram nesta conta e nao aumentam o `take`.
+ */
 const RADAR_FILAS = 4;
 /**
  * Quantas linhas cada fila pede ao banco — NAO e o teto de cards, que continua
@@ -74,6 +79,65 @@ const RADAR_TEMPERATURAS_QUENTES: LeadTemperatura[] = [
   LeadTemperatura.QUENTE,
   LeadTemperatura.MUITO_QUENTE,
 ];
+
+/** "Foco do dia": quantos cards a secao mostra. Lista de trabalho, nao relatorio. */
+const RADAR_FOCO = 10;
+/**
+ * Candidato ao foco do dia precisa de ficha: sem ela nao ha agenda nem nota
+ * (dois dos cinco sinais do score seriam chute) e o card sairia mudo, sem
+ * motivo e sem mensagem sugerida.
+ *
+ * Tipado como `Prisma.LeadWhereInput` e nao inline: o `where` do radar trafega
+ * como `Record<string, unknown>`, entao `{ isNull: true }` (que nao existe)
+ * passaria pelo compilador E pelos testes, com o Prisma mockado, e so quebraria
+ * em producao.
+ */
+const RADAR_COM_FICHA: Prisma.LeadWhereInput = { lead_insight: { isNot: null } };
+/** Ficha sem nota nao e ficha ruim: 5 e o meio da escala 0-10. */
+const RADAR_NOTA_NEUTRA = 5;
+/** Teto do sinal de valor: R$ 10.000 ja vale o maximo (ver `pontosValor`). */
+const RADAR_VALOR_TETO_MIL = 10;
+
+/*
+ * ---------------------------------------------------------------------------
+ * Score do "foco do dia" (fila `melhores`)
+ * ---------------------------------------------------------------------------
+ * Soma ponderada de 5 sinais, calculada NO APP: nao da para ordenar por isso no
+ * Prisma (sao colunas de duas tabelas com faixas e tetos).
+ *
+ * A ponderacao privilegia de proposito os sinais AUTOMATICOS — a agenda que a
+ * ficha do LLM escreveu e a atividade real da conversa. `temperatura` e campo
+ * MANUAL: na pratica quase ninguem preenche, e existe tenant com 100% dos leads
+ * em FRIO. Ancorar o ranking nela deixaria essas bases inteiras empatadas, ou
+ * seja, sem foco nenhum — o oposto do que a secao existe para fazer.
+ *
+ * Faixa total: 0 (lead morto, sem ficha util) a ~16,5 (acao vencida, conversa de
+ * ontem, negocio caro, atendimento nota 10 e muito quente).
+ *
+ * O score NAO vai no payload: e ranking interno. A UI mostra a ordem, nunca o
+ * numero — nota de IA na tela e exatamente a "cara de IA" que o produto evita.
+ */
+
+/** Peso de cada temperatura. Manual, entao o peso do sinal e o menor (x1). */
+const PESO_TEMPERATURA: Record<LeadTemperatura, number> = {
+  [LeadTemperatura.FRIO]: 0,
+  [LeadTemperatura.MORNO]: 1,
+  [LeadTemperatura.QUENTE]: 2,
+  [LeadTemperatura.MUITO_QUENTE]: 3,
+};
+const PESO_VALOR = 0.6;
+const PESO_NOTA = 0.4;
+/** Ate 48h (ou ja vencida) a acao e "para agora"; ate 7 dias, e a semana. */
+const FOCO_ACAO_AGORA_DIAS = 2;
+const FOCO_ACAO_SEMANA_DIAS = 7;
+const FOCO_ACAO_AGORA_PONTOS = 3;
+const FOCO_ACAO_SEMANA_PONTOS = 1;
+const FOCO_RECENCIA_QUENTE_DIAS = 2;
+const FOCO_RECENCIA_SEMANA_DIAS = 7;
+const FOCO_RECENCIA_MES_DIAS = 30;
+const FOCO_RECENCIA_QUENTE_PONTOS = 2.5;
+const FOCO_RECENCIA_SEMANA_PONTOS = 1.5;
+const FOCO_RECENCIA_MES_PONTOS = 0.5;
 
 const TIMEZONE = 'America/Sao_Paulo';
 /** Teto da busca pela proxima hora dentro da janela do tenant. */
@@ -211,6 +275,16 @@ export interface RadarItem {
    * (o lead pode estar respondido) e viraria "esperando ha 3 dias" mentiroso.
    */
   esperando_desde: string | null;
+  /** Decimal do Prisma nao serializa como numero: sai convertido daqui. */
+  valor_estimado: number | null;
+  /** Nota do atendimento (0-10) que a ficha deu. `null` = ficha sem nota. */
+  nota_atendimento: number | null;
+  /**
+   * Compra que o cliente citou na conversa, como a ficha gravou. Vai em TODA
+   * fila (o card e um so), mas so a secao "Compraram" a usa — nas outras a
+   * informacao existe e simplesmente nao e desenhada.
+   */
+  compra: CompraCitada | null;
 }
 
 /** Os numeros do dia, para o header narrativo do radar. Zero query extra. */
@@ -229,6 +303,14 @@ export interface RadarResultado {
   chamar_hoje: RadarItem[];
   promissores: RadarItem[];
   esfriando: RadarItem[];
+  /**
+   * "Foco do dia": os 10 melhores leads pelo score composto. Ranking
+   * TRANSVERSAL — o mesmo lead pode (e costuma) aparecer tambem numa das filas
+   * de trabalho acima. Nao e uma quinta caixa de tarefas.
+   */
+  melhores: RadarItem[];
+  /** Pos-venda: quem fechou ou citou uma compra. Universo disjunto do resto. */
+  compraram: RadarItem[];
 }
 
 const RADAR_SELECT = {
@@ -250,7 +332,15 @@ const RADAR_SELECT = {
   // Fonte legada de tag (ver `tagsDoLead`). Coluna da mesma linha: custo zero.
   tags: true,
   lead_insight: {
-    select: { proxima_acao_at: true, proxima_acao_motivo: true, msg_sugerida: true },
+    select: {
+      proxima_acao_at: true,
+      proxima_acao_motivo: true,
+      msg_sugerida: true,
+      // Fase 2: `nota_atendimento` vira campo do card E entra no score do foco
+      // do dia; `ultima_compra` e a compra em destaque no pos-venda.
+      nota_atendimento: true,
+      ultima_compra: true,
+    },
   },
 } as const;
 
@@ -334,7 +424,62 @@ function montarRadarItem(linha: LinhaRadar, agora: number, esperando: boolean): 
       esperando && linha.last_customer_message_at !== null
         ? linha.last_customer_message_at.toISOString()
         : null,
+    valor_estimado: linha.valor_estimado?.toNumber() ?? null,
+    nota_atendimento: linha.lead_insight?.nota_atendimento ?? null,
+    // Json cru do banco: type guard, nunca cast (ficha antiga guarda string
+    // solta e objeto sem descricao — um `as` deixaria isso chegar na tela).
+    compra: lerCompra(linha.lead_insight?.ultima_compra),
   };
+}
+
+/**
+ * Sinal da agenda: a ficha marcou uma acao que ja venceu ou vence nas proximas
+ * 48h? Vencida pontua igual a de hoje — atraso nao torna o retorno menos
+ * urgente, torna mais. Ficha sem agenda nao pontua (e nao e penalizada: os
+ * outros 4 sinais seguem valendo).
+ */
+function pontosAgenda(proxima: Date | null, agora: number): number {
+  if (proxima === null) return 0;
+  const faltam = proxima.getTime() - agora;
+  if (faltam <= FOCO_ACAO_AGORA_DIAS * DIA) return FOCO_ACAO_AGORA_PONTOS;
+  if (faltam <= FOCO_ACAO_SEMANA_DIAS * DIA) return FOCO_ACAO_SEMANA_PONTOS;
+  return 0;
+}
+
+/**
+ * Sinal de atividade: conversa viva pontua mais. Em degraus (2 / 7 / 30 dias) e
+ * nao continuo de proposito — o dado e ruidoso e degrau nao finge precisao.
+ */
+function pontosRecencia(ultima: Date | null, agora: number): number {
+  if (ultima === null) return 0;
+  const parado = agora - ultima.getTime();
+  if (parado <= FOCO_RECENCIA_QUENTE_DIAS * DIA) return FOCO_RECENCIA_QUENTE_PONTOS;
+  if (parado <= FOCO_RECENCIA_SEMANA_DIAS * DIA) return FOCO_RECENCIA_SEMANA_PONTOS;
+  if (parado <= FOCO_RECENCIA_MES_DIAS * DIA) return FOCO_RECENCIA_MES_PONTOS;
+  return 0;
+}
+
+/**
+ * Sinal de valor, com TETO: R$ 10.000 ja vale o maximo. Sem o teto, um negocio
+ * de R$ 1 milhao pontuaria 600 e a secao viraria um ranking so de valor — que e
+ * o que o kanban ja faz. Negativo (digitacao errada) conta como zero.
+ */
+function pontosValor(valor: Prisma.Decimal | null): number {
+  const reais = Math.max(valor?.toNumber() ?? 0, 0);
+  return Math.min(reais / 1000, RADAR_VALOR_TETO_MIL) * PESO_VALOR;
+}
+
+/** O score composto do foco do dia. Ver o bloco de comentario dos pesos. */
+function scoreFoco(linha: LinhaRadar, agora: number): number {
+  return (
+    pontosAgenda(linha.lead_insight?.proxima_acao_at ?? null, agora) +
+    pontosRecencia(linha.ultima_interacao, agora) +
+    pontosValor(linha.valor_estimado) +
+    (linha.lead_insight?.nota_atendimento ?? RADAR_NOTA_NEUTRA) * PESO_NOTA +
+    // Sem `?? 0`: se o enum ganhar uma temperatura nova, o compilador cobra o
+    // peso dela aqui em vez de trata-la como zero em silencio.
+    PESO_TEMPERATURA[linha.temperatura]
+  );
 }
 
 /**
@@ -437,12 +582,17 @@ export class LeadInsightsService {
   }
 
   /**
-   * Radar comercial: a fila de trabalho do vendedor em 4 secoes.
+   * Radar comercial: a fila de trabalho do vendedor em 4 secoes, mais duas
+   * leituras que NAO sao fila de tarefa.
    * - esperando_voce: o cliente falou por ultimo e ninguem respondeu.
    * - chamar_hoje: a ficha marcou uma proxima acao que ja venceu.
    * - promissores: lead quente que parou de conversar.
    * - esfriando: qualquer lead ativo parado ha uma semana.
-   * Um lead aparece UMA vez so, na secao mais urgente
+   * - melhores: os 10 melhores do dia pelo score composto (ranking transversal
+   *   sobre as MESMAS pessoas — fora do dedupe de proposito).
+   * - compraram: pos-venda (etapa ganha ou compra citada) — universo disjunto,
+   *   tambem fora do dedupe.
+   * Nas 4 primeiras um lead aparece UMA vez so, na secao mais urgente
    * (esperando_voce > chamar_hoje > promissores > esfriando) — a mesma pessoa
    * em quatro listas seria trabalho repetido, e cliente sem resposta e sempre a
    * pendencia mais urgente que existe. Estagio ganho/perdido nunca entra:
@@ -454,24 +604,30 @@ export class LeadInsightsService {
       where: { id: user.tenantId },
       select: { pool_enabled: true },
     });
-    const base: Record<string, unknown> = {
-      tenant_id: user.tenantId,
-      estagio: { is_won: false, is_lost: false },
-    };
+    // O que TODA fila compartilha: tenant, funil e visibilidade. A etapa fica
+    // de fora daqui porque a fila `compraram` precisa do oposto das outras
+    // (etapa ganha) — sem essa separacao ela herdaria `is_won: false` e viria
+    // sempre vazia.
+    const baseComum: Record<string, unknown> = { tenant_id: user.tenantId };
     // Chave disjunta da visibilidade (que so escreve `OR`/`responsavel_id`):
-    // o funil recorta as 4 filas sem nunca comer o recorte de quem ve o que.
-    if (pipelineId !== undefined) base.pipeline_id = pipelineId;
+    // o funil recorta todas as filas sem nunca comer o recorte de quem ve o que.
+    if (pipelineId !== undefined) baseComum.pipeline_id = pipelineId;
     Object.assign(
-      base,
+      baseComum,
       buildVisibilityWhere({
         userId: user.id,
         role: user.role as UserRole,
         poolEnabled: Boolean(tenant?.pool_enabled),
       }),
     );
+    // Base das filas de trabalho: negocio fechado ou morto nao e tarefa.
+    const base: Record<string, unknown> = {
+      ...baseComum,
+      estagio: { is_won: false, is_lost: false },
+    };
 
     const agora = Date.now();
-    const [vencidos, quentes, parados, esperandoAgora] = await Promise.all([
+    const [vencidos, quentes, parados, esperandoAgora, candidatosFoco, clientes] = await Promise.all([
       this.buscarRadar(
         { ...base, lead_insight: { proxima_acao_at: { lte: new Date(agora) } } },
         // Mais atrasado primeiro: a acao vencida ha mais tempo e a mais urgente.
@@ -494,6 +650,13 @@ export class LeadInsightsService {
         // Quem espera ha mais tempo primeiro.
         { last_customer_message_at: 'asc' },
       ),
+      // Foco do dia: candidatos com ficha. Quem ordena e o `scoreFoco` no app —
+      // o banco so entrega um lote grande, e do mais recente para o mais antigo
+      // (se o lote precisar cortar, corta pelo lead mais parado).
+      this.buscarRadar({ ...base, ...RADAR_COM_FICHA }, { ultima_interacao: 'desc' }),
+      // Pos-venda: do contato mais recente para o mais antigo — ao contrario
+      // das filas de trabalho, onde o mais parado e o mais urgente.
+      this.buscarRadar(this.filtroCompraram(baseComum), { ultima_interacao: 'desc' }),
     ]);
 
     // Dedupe por precedencia: cada lead vira card UMA vez, na fila mais urgente
@@ -521,6 +684,19 @@ export class LeadInsightsService {
     const esperando_voce = linhasEsperando.map((l) => montarRadarItem(l, agora, true));
     const chamar_hoje = linhasChamarHoje.map((l) => montarRadarItem(l, agora, false));
 
+    // As duas filas da fase 2 NAO passam por `selecionar`: ficam fora do dedupe
+    // de proposito. `melhores` e um ranking transversal (o mesmo lead aparece
+    // aqui e na fila de trabalho dele — sao leituras diferentes das mesmas
+    // pessoas) e `compraram` e um universo disjunto (etapa ganha). Se
+    // participassem, alem de perder cards elas roubariam leads das filas da
+    // fase 1, que rodam depois no dedupe.
+    const melhores = candidatosFoco
+      .map((linha) => ({ linha, score: scoreFoco(linha, agora) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, RADAR_FOCO)
+      // O score morre aqui: e ranking interno, nao dado de tela.
+      .map(({ linha }) => montarRadarItem(linha, agora, false));
+
     return {
       // Contado do que a UI de fato recebe (pos-dedupe, pos-cap), nunca do que
       // o banco devolveu: numero do header que nao bate com a lista abaixo dele
@@ -539,6 +715,41 @@ export class LeadInsightsService {
       chamar_hoje,
       promissores: linhasPromissores.map((l) => montarRadarItem(l, agora, false)),
       esfriando: linhasEsfriando.map((l) => montarRadarItem(l, agora, false)),
+      melhores,
+      compraram: clientes.slice(0, RADAR_CAP).map((l) => montarRadarItem(l, agora, false)),
+    };
+  }
+
+  /**
+   * Recorte da fila "compraram" (pos-venda), inteiro no BANCO pelo mesmo motivo
+   * da fila esperando_voce: filtrar depois, sobre um lote com `take`, deixaria a
+   * secao vazia com clientes de verdade no banco.
+   *
+   * Duas portas de entrada, porque as duas existem na base real: o lead que a
+   * equipe moveu para uma etapa ganha, e o lead que CONTOU na conversa que
+   * comprou (a ficha do LLM grava isso em `ultima_compra`) sem nunca ter sido
+   * movido de etapa — sao centenas, e sem a segunda porta ficariam invisiveis.
+   *
+   * Perdido continua fora: negocio morto nao e pos-venda. Ganho, ao contrario
+   * das outras filas, e justamente o que se procura aqui — por isso esta fila
+   * parte de `baseComum` e nao da `base` das filas de trabalho.
+   *
+   * O `OR` vai aninhado em `AND` (via `acrescentarAnd`) pela mesma razao da
+   * fila esperando_voce: escrito no topo, comeria em silencio o `OR` da
+   * visibilidade e vazaria lead de outro operador com a suite verde.
+   */
+  private filtroCompraram(baseComum: Record<string, unknown>): Record<string, unknown> {
+    return {
+      ...baseComum,
+      estagio: { is_lost: false },
+      AND: acrescentarAnd(baseComum, {
+        OR: [
+          { estagio: { is_won: true } },
+          // Coluna Json nullable: `Prisma.DbNull` e a forma que o client aceita
+          // para "SQL NULL" — `null` cru nao compila aqui.
+          { lead_insight: { ultima_compra: { not: Prisma.DbNull } } },
+        ],
+      }),
     };
   }
 

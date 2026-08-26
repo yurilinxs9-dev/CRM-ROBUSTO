@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
+  Banknote,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -14,6 +15,8 @@ import {
   MessageSquare,
   RefreshCw,
   Search,
+  ShoppingBag,
+  Target,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -38,8 +41,17 @@ import { cn } from '@/lib/cn';
 // Contrato da API
 // ---------------------------------------------------------------------------
 
+/** A compra que o cliente citou na conversa, extraida pela ficha do lead. */
+export interface RadarCompra {
+  descricao: string;
+  /** `null` quando o cliente falou da compra mas nao do preco. */
+  valor: number | null;
+  /** Texto livre da ficha ("mês passado") ou uma data ISO. */
+  quando: string;
+}
+
 /**
- * `GET /api/insights/radar?pipeline_id=<uuid opcional>` devolve as quatro filas
+ * `GET /api/insights/radar?pipeline_id=<uuid opcional>` devolve as seis filas
  * do dia mais o `resumo` que alimenta o cabeçalho. As datas saem do Nest já
  * serializadas em ISO (ou `null`), por isso aqui elas sao `string | null`.
  */
@@ -59,6 +71,12 @@ export interface RadarItem {
   tags: string[];
   /** Quando o cliente mandou a mensagem que ainda nao foi respondida. */
   esperando_desde: string | null;
+  /** Valor da negociacao. `null` = ninguem preencheu ainda (nao e zero). */
+  valor_estimado: number | null;
+  /** Nota de 0 a 10 que a ficha deu ao atendimento. `null` = nao avaliado. */
+  nota_atendimento: number | null;
+  /** `null` em todo mundo que ainda nao comprou. */
+  compra: RadarCompra | null;
 }
 
 export interface RadarResumo {
@@ -74,10 +92,24 @@ export interface RadarResposta {
   chamar_hoje: RadarItem[];
   promissores: RadarItem[];
   esfriando: RadarItem[];
+  /**
+   * Ranking transversal do dia (top 10). O MESMO lead pode aparecer aqui e em
+   * outra fila — e de proposito: isto e um recorte, nao uma quinta caixa de
+   * pendencias. O score que ordena fica no servidor e NAO vem no payload.
+   */
+  melhores: RadarItem[];
+  /** Quem ja fechou (etapa de ganho ou compra na ficha), ate 30. */
+  compraram: RadarItem[];
 }
 
 /** Chaves que guardam filas — o `resumo` fica de fora de proposito. */
-type ChaveFila = 'esperando_voce' | 'chamar_hoje' | 'promissores' | 'esfriando';
+type ChaveFila =
+  | 'esperando_voce'
+  | 'chamar_hoje'
+  | 'promissores'
+  | 'esfriando'
+  | 'melhores'
+  | 'compraram';
 
 const RESUMO_ZERADO: RadarResumo = {
   esperando: 0,
@@ -92,6 +124,8 @@ const VAZIO: RadarResposta = {
   chamar_hoje: [],
   promissores: [],
   esfriando: [],
+  melhores: [],
+  compraram: [],
 };
 
 function texto(valor: unknown): string {
@@ -105,6 +139,33 @@ function textoOuNulo(valor: unknown): string | null {
 /** `NaN`/`Infinity` viram 0: numero quebrado no cabecalho e pior que zero. */
 function numero(valor: unknown): number {
   return typeof valor === 'number' && Number.isFinite(valor) ? valor : 0;
+}
+
+/**
+ * `valor_estimado` e Decimal no Prisma. O backend serializa em number, mas um
+ * Decimal cru chega como string — aceita os dois e recusa o resto. `null`
+ * (ninguem preencheu) e diferente de `0` (negociacao de graca), por isso este
+ * helper existe em vez do `numero()` acima.
+ */
+function numeroOuNulo(valor: unknown): number | null {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : null;
+  if (typeof valor === 'string' && valor.trim() !== '') {
+    const convertido = Number(valor);
+    return Number.isFinite(convertido) ? convertido : null;
+  }
+  return null;
+}
+
+/** Compra vazia (`{}` de ficha antiga) nao e compra: vira `null` e o card cai
+ *  no texto generico em vez de mostrar "Comprou:" sem nada depois. */
+function lerCompra(valor: unknown): RadarCompra | null {
+  if (typeof valor !== 'object' || valor === null || Array.isArray(valor)) return null;
+  const registro = valor as Record<string, unknown>;
+  const descricao = texto(registro.descricao).trim();
+  const preco = numeroOuNulo(registro.valor);
+  const quando = texto(registro.quando).trim();
+  if (descricao === '' && preco === null && quando === '') return null;
+  return { descricao, valor: preco, quando };
 }
 
 /** Backend antigo nao manda `tags`; Json cru pode ter numero/null no meio. */
@@ -139,6 +200,11 @@ function lerItens(valor: unknown): RadarItem[] {
       responsavel: textoOuNulo(registro.responsavel),
       tags: lerTags(registro.tags),
       esperando_desde: textoOuNulo(registro.esperando_desde),
+      // Campos da Fase 2: backend antigo nao manda nenhum dos tres e cada um
+      // cai no `null`, que ja e o estado "a linha some do card".
+      valor_estimado: numeroOuNulo(registro.valor_estimado),
+      nota_atendimento: numeroOuNulo(registro.nota_atendimento),
+      compra: lerCompra(registro.compra),
     });
   }
   return saida;
@@ -183,6 +249,10 @@ function normalizar(corpo: unknown): RadarResposta {
     chamar_hoje: lerItens(registro.chamar_hoje),
     promissores: lerItens(registro.promissores),
     esfriando: lerItens(registro.esfriando),
+    // Backend anterior a Fase 2 nao tem estas duas chaves: viram lista vazia e
+    // as secoes novas simplesmente nao aparecem.
+    melhores: lerItens(registro.melhores),
+    compraram: lerItens(registro.compraram),
   };
   return { ...filas, resumo: lerResumo(registro.resumo, filas) };
 }
@@ -279,6 +349,34 @@ function lerEspera(iso: string | null): Espera | null {
   return { rotulo, classe: 'border-border bg-muted/50 text-muted-foreground' };
 }
 
+const ISO_DATA = new RegExp('^\\d{4}-\\d{2}-\\d{2}');
+
+/**
+ * `compra.quando` e texto livre da ficha ("mês passado", "na semana do Natal").
+ * So formata quando o modelo devolveu uma data de verdade — o resto passa como
+ * veio, que e justamente a frase que o cliente disse.
+ */
+function rotuloQuando(valor: string): string {
+  const bruto = valor.trim();
+  if (bruto === '' || !ISO_DATA.test(bruto)) return bruto;
+  const data = new Date(bruto);
+  if (Number.isNaN(data.getTime())) return bruto;
+  return data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+/** "Comprou: Mesa Requinte · R$ 3.990 · mês passado". */
+function linhaCompra(compra: RadarCompra | null): string {
+  // Lead que veio pela etapa de ganho, sem compra descrita na conversa.
+  if (compra === null) return 'Cliente fechado';
+  const descricao = compra.descricao.trim();
+  const partes: string[] = [descricao === '' ? 'Comprou' : `Comprou: ${descricao}`];
+  // Compra de R$ 0 e ruido de extracao: melhor omitir do que anunciar zero.
+  if (compra.valor !== null && compra.valor > 0) partes.push(BRL.format(compra.valor));
+  const quando = rotuloQuando(compra.quando);
+  if (quando !== '') partes.push(quando);
+  return partes.join(' · ');
+}
+
 function formatarData(iso: string | null): string | null {
   if (!iso) return null;
   const data = new Date(iso);
@@ -321,6 +419,43 @@ function combina(item: RadarItem, termo: string): boolean {
   const digitos = termo.replace(/\D/g, '');
   if (digitos !== '' && item.telefone.replace(/\D/g, '').includes(digitos)) return true;
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Onde esta o dinheiro — agrupamento por etapa
+// ---------------------------------------------------------------------------
+
+interface GrupoEtapa {
+  etapa: string;
+  total: number;
+  /** Soma de `valor_estimado`. `0` = ninguem preencheu valor nessa etapa. */
+  valor: number;
+}
+
+const SEM_ETAPA = 'Sem etapa';
+
+/** Lead sem etapa vira um grupo proprio em vez de sumir da conta. */
+function etapaDe(item: RadarItem): string {
+  return item.etapa.trim() === '' ? SEM_ETAPA : item.etapa.trim();
+}
+
+/**
+ * `Map` e nao objeto literal: nome de etapa e texto que o usuario escolhe, e
+ * `"constructor"` como chave de objeto devolveria uma funcao no lugar do grupo.
+ */
+function agruparPorEtapa(itens: RadarItem[]): GrupoEtapa[] {
+  const mapa = new Map<string, GrupoEtapa>();
+  for (const item of itens) {
+    const etapa = etapaDe(item);
+    const grupo = mapa.get(etapa) ?? { etapa, total: 0, valor: 0 };
+    grupo.total += 1;
+    grupo.valor += item.valor_estimado ?? 0;
+    mapa.set(etapa, grupo);
+  }
+  // Maior bolo primeiro — a pergunta da secao e "onde esta o dinheiro".
+  return [...mapa.values()].sort(
+    (a, b) => b.valor - a.valor || b.total - a.total || a.etapa.localeCompare(b.etapa, 'pt-BR'),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +507,27 @@ const SECOES: Secao[] = [
   },
 ];
 
+/** Textos das tres experiencias da Fase 2 (fora de `SECOES`: elas nao sao
+ *  listas de card padrao — cada uma tem corpo proprio). */
+const AJUDA_DINHEIRO =
+  'Os leads de "Promissores" agrupados pela etapa em que estão. O valor é a soma do valor estimado de cada um; etapa em que ninguém preencheu valor aparece com um traço. Clique numa etapa para ver só os leads dela e clique de novo para voltar à lista inteira.';
+
+/** O subtitulo diz de ONDE vem a escolha (a analise das conversas) e QUAIS
+ *  sinais pesam. Nunca um numero de score: placar na tela vira cara de robo. */
+const FOCO_DESCRICAO =
+  'Escolhidos pela análise das conversas: o retorno que você marcou, a atividade recente, o valor e o atendimento';
+
+const AJUDA_FOCO =
+  'Uma lista curta com os leads que mais merecem sua atenção hoje. A escolha sai da análise das fichas — do que foi conversado com cada cliente. O que pesa mais é o retorno que você mesmo marcou na agenda; depois vêm há quanto tempo vocês trocaram mensagem, o quanto o lead está quente, o valor estimado da negociação e a nota do atendimento. Um lead daqui pode aparecer também nas outras seções: é de propósito, esta é uma vitrine, não mais uma fila de pendências.';
+
+const AJUDA_COMPRARAM =
+  'Clientes que já fecharam: leads em etapa de ganho ou com uma compra registrada na ficha. Serve para o pós-venda — agradecer, pedir indicação ou oferecer o próximo produto. Mostra os mais recentes primeiro.';
+
 const CHAVE_COLAPSO = 'radar:secoes-fechadas';
+/** Chave propria: "Compraram" nasce FECHADA, e a lista de `CHAVE_COLAPSO`
+ *  guarda so o que esta fechado — a semantica invertida nao caberia la sem
+ *  migrar o que ja esta no navegador de todo mundo. */
+const CHAVE_POS_VENDA = 'radar:compraram-aberta';
 
 function AjudaSecao({ titulo, texto: conteudo }: { titulo: string; texto: string }) {
   return (
@@ -394,9 +549,84 @@ function AjudaSecao({ titulo, texto: conteudo }: { titulo: string; texto: string
   );
 }
 
+interface CabecalhoProps {
+  titulo: string;
+  descricao: string;
+  ajuda: string;
+  /** Ja formatado ("(3 de 12)"). `null` esconde o contador (carregando). */
+  contagem: string | null;
+  aberta: boolean;
+  onAlternar: () => void;
+  icone?: ReactNode;
+}
+
+/**
+ * Padrao accordion: o `<h3>` envolve o gatilho para o leitor de tela pular de
+ * seção em seção pela lista de headings.
+ */
+function CabecalhoSecao({
+  titulo,
+  descricao,
+  ajuda,
+  contagem,
+  aberta,
+  onAlternar,
+  icone,
+}: CabecalhoProps) {
+  return (
+    <div className="flex items-start gap-2">
+      <h3 className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={onAlternar}
+          aria-expanded={aberta}
+          className="group flex w-full min-w-0 items-start gap-1.5 text-left"
+        >
+          <ChevronRight
+            className={cn(
+              'mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform',
+              aberta && 'rotate-90',
+            )}
+          />
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight group-hover:underline">
+              {icone}
+              {titulo}
+              {contagem && <span className="font-normal text-muted-foreground">{contagem}</span>}
+            </span>
+            <span className="block text-xs text-muted-foreground">{descricao}</span>
+          </span>
+        </button>
+      </h3>
+      <AjudaSecao titulo={titulo} texto={ajuda} />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Card
 // ---------------------------------------------------------------------------
+
+/**
+ * O bloco da mensagem pronta. Truncado na tela; o botao copia o texto inteiro.
+ * Texto de LLM — renderiza SO como texto React (ver `RadarCard`).
+ */
+function MensagemSugerida({ msg, onCopiar }: { msg: string; onCopiar: (valor: string) => void }) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-2.5">
+      <p className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+        Mensagem sugerida
+      </p>
+      <p className="line-clamp-2 text-sm" title={msg}>
+        {msg}
+      </p>
+      <Button size="sm" variant="ghost" className="mt-1.5 h-7 px-2 text-xs" onClick={() => onCopiar(msg)}>
+        <Copy className="mr-1 h-3.5 w-3.5" />
+        Copiar
+      </Button>
+    </div>
+  );
+}
 
 interface CardProps {
   item: RadarItem;
@@ -434,8 +664,7 @@ function RadarCard({ item, expandido, destaque, onAlternar, onCopiar, onAbrir }:
             telefone: item.telefone || null,
             etapa: item.etapa,
             temperatura: item.temperatura,
-            // O radar nao carrega valor estimado — a linha some sozinha.
-            valor_estimado: null,
+            valor_estimado: item.valor_estimado,
             ultima_interacao: item.ultima_interacao,
             responsavel: item.responsavel,
             tags: item.tags,
@@ -551,26 +780,7 @@ function RadarCard({ item, expandido, destaque, onAlternar, onCopiar, onAbrir }:
 
       {item.motivo && <p className="text-sm">{item.motivo}</p>}
 
-      {msg && (
-        <div className="rounded-lg border border-border bg-muted/30 p-2.5">
-          <p className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-            Mensagem sugerida
-          </p>
-          {/* Truncada na tela; o botão copia o texto inteiro. */}
-          <p className="line-clamp-2 text-sm" title={msg}>
-            {msg}
-          </p>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="mt-1.5 h-7 px-2 text-xs"
-            onClick={() => onCopiar(msg)}
-          >
-            <Copy className="mr-1 h-3.5 w-3.5" />
-            Copiar
-          </Button>
-        </div>
-      )}
+      {msg && <MensagemSugerida msg={msg} onCopiar={onCopiar} />}
 
       <div className="mt-auto flex gap-2">
         <Button
@@ -584,6 +794,243 @@ function RadarCard({ item, expandido, destaque, onAlternar, onCopiar, onAbrir }:
         </Button>
         {/* A ficha so busca o insight depois deste clique (`enabled`): abrir o
             radar com 90 cards nao dispara 90 requisicoes. */}
+        <Button size="sm" variant="ghost" onClick={onAlternar} aria-expanded={false}>
+          <ChevronDown className="mr-1.5 h-4 w-4" />
+          Ver ficha completa
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Onde esta o dinheiro
+// ---------------------------------------------------------------------------
+
+interface BlocoDinheiroProps {
+  grupos: GrupoEtapa[];
+  /** Etapa selecionada, ou `null` com a lista de promissores inteira. */
+  etapaAtiva: string | null;
+  onSelecionar: (etapa: string) => void;
+}
+
+/**
+ * Bloco compacto de leitura de gestor: quanto tem parado em cada etapa. Nao
+ * repete card nenhum — cada pilula e um atalho que recorta a seção Promissores.
+ */
+function BlocoDinheiro({ grupos, etapaAtiva, onSelecionar }: BlocoDinheiroProps) {
+  const leads = grupos.reduce((soma, g) => soma + g.total, 0);
+  const total = grupos.reduce((soma, g) => soma + g.valor, 0);
+
+  return (
+    <section className="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.04] p-4 dark:bg-emerald-500/[0.07]">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold tracking-tight">
+            <Banknote className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            Onde está o dinheiro
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {leads} {leads === 1 ? 'lead promissor' : 'leads promissores'}
+            {total > 0 ? (
+              <>
+                {' '}
+                somando <span className="font-medium text-foreground">{BRL.format(total)}</span>
+              </>
+            ) : (
+              ' — nenhum valor estimado preenchido ainda'
+            )}
+            . Clique numa etapa para ver só ela.
+          </p>
+        </div>
+        <AjudaSecao titulo="Onde está o dinheiro" texto={AJUDA_DINHEIRO} />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {grupos.map((grupo) => {
+          const ativa = grupo.etapa === etapaAtiva;
+          return (
+            <button
+              key={grupo.etapa}
+              type="button"
+              aria-pressed={ativa}
+              onClick={() => onSelecionar(grupo.etapa)}
+              className={cn(
+                'rounded-full border px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                ativa
+                  ? 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-500 dark:text-emerald-950'
+                  : 'border-border bg-card hover:border-emerald-500/50 hover:bg-emerald-500/10',
+              )}
+            >
+              <span className="font-medium">{grupo.etapa}</span>
+              {/* `opacity` no lugar de `text-muted-foreground`: a pilula ativa
+                  tem fundo cheio e o cinza do tema sumiria dentro dele. */}
+              <span className="opacity-70">
+                {' · '}
+                {grupo.total} {grupo.total === 1 ? 'lead' : 'leads'}
+                {' · '}
+              </span>
+              {/* Etapa sem nenhum valor preenchido mostra traço, nao "R$ 0". */}
+              <span className="font-semibold">{grupo.valor > 0 ? BRL.format(grupo.valor) : '—'}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Foco do dia
+// ---------------------------------------------------------------------------
+
+/**
+ * Card enxuto do ranking: nome, etapa, temperatura, valor e uma linha de
+ * contexto. NAO mostra numero de score em lugar nenhum — a ordem ja e a
+ * informacao, e um "8,4" na tela so pareceria placar de robo.
+ */
+function CardFoco({ item, onAbrir }: { item: RadarItem; onAbrir: (leadId: string) => void }) {
+  const temperatura = rotuloTemperatura(item.temperatura).trim();
+  const contexto = item.motivo.trim() || item.msg_sugerida.trim();
+  const valor = item.valor_estimado !== null && item.valor_estimado > 0 ? item.valor_estimado : null;
+
+  return (
+    <article className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <Link
+          href={`/chat/${item.lead_id}`}
+          className="min-w-0 truncate text-sm font-medium hover:underline"
+        >
+          {item.nome}
+        </Link>
+        {temperatura && (
+          <span
+            className={cn(
+              'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+              classeTemperatura(item.temperatura),
+            )}
+          >
+            {temperatura}
+          </span>
+        )}
+      </div>
+
+      {(item.etapa || valor !== null) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {item.etapa && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+              {item.etapa}
+            </span>
+          )}
+          {valor !== null && <span className="text-[11px] font-semibold">{BRL.format(valor)}</span>}
+        </div>
+      )}
+
+      {contexto && (
+        <p className="line-clamp-2 text-xs text-muted-foreground" title={contexto}>
+          {contexto}
+        </p>
+      )}
+
+      <Button
+        size="sm"
+        variant="outline"
+        className="mt-auto h-8 w-full text-xs"
+        onClick={() => onAbrir(item.lead_id)}
+      >
+        <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+        Abrir conversa
+      </Button>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Compraram
+// ---------------------------------------------------------------------------
+
+interface CardCompraProps {
+  item: RadarItem;
+  expandido: boolean;
+  onAlternar: () => void;
+  onCopiar: (valor: string) => void;
+  onAbrir: (leadId: string) => void;
+}
+
+/** A compra em destaque verde é o motivo do card existir: o vendedor precisa
+ *  saber o que a pessoa levou antes de escrever qualquer coisa. */
+function CardCompra({ item, expandido, onAlternar, onCopiar, onAbrir }: CardCompraProps) {
+  const msg = item.msg_sugerida.trim();
+
+  if (expandido) {
+    return (
+      <article className="flex animate-in flex-col gap-2 fade-in-0 slide-in-from-top-1 duration-200">
+        <Ficha360
+          leadId={item.lead_id}
+          lead={{
+            nome: item.nome,
+            telefone: item.telefone || null,
+            etapa: item.etapa,
+            temperatura: item.temperatura,
+            valor_estimado: item.valor_estimado,
+            ultima_interacao: item.ultima_interacao,
+            responsavel: item.responsavel,
+            tags: item.tags,
+            proxima_acao_at: item.proxima_acao_at,
+          }}
+        />
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" className="flex-1" onClick={() => onAbrir(item.lead_id)}>
+            <MessageSquare className="mr-1.5 h-4 w-4" />
+            Abrir conversa
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onAlternar} aria-expanded>
+            <ChevronUp className="mr-1.5 h-4 w-4" />
+            Fechar ficha
+          </Button>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article className="flex flex-col gap-3 rounded-xl border border-emerald-500/30 bg-card p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <Link
+            href={`/chat/${item.lead_id}`}
+            className="block truncate text-sm font-medium hover:underline"
+          >
+            {item.nome}
+          </Link>
+          <p className="truncate text-xs text-muted-foreground">
+            {item.telefone ? formatPhone(item.telefone) : 'Sem telefone'}
+          </p>
+        </div>
+        {item.etapa && (
+          <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+            {item.etapa}
+          </span>
+        )}
+      </div>
+
+      <p className="flex items-start gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2.5 text-sm font-medium text-emerald-800 dark:text-emerald-300">
+        <ShoppingBag className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0">{linhaCompra(item.compra)}</span>
+      </p>
+
+      <p className="text-xs text-muted-foreground">
+        {rotuloSemContato(item.ultima_interacao)}
+        {item.responsavel ? ` · ${item.responsavel}` : ''}
+      </p>
+
+      {msg && <MensagemSugerida msg={msg} onCopiar={onCopiar} />}
+
+      <div className="mt-auto flex gap-2">
+        <Button size="sm" variant="outline" className="flex-1" onClick={() => onAbrir(item.lead_id)}>
+          <MessageSquare className="mr-1.5 h-4 w-4" />
+          Abrir conversa
+        </Button>
         <Button size="sm" variant="ghost" onClick={onAlternar} aria-expanded={false}>
           <ChevronDown className="mr-1.5 h-4 w-4" />
           Ver ficha completa
@@ -679,6 +1126,10 @@ export default function RadarPage() {
   const [busca, setBusca] = useState('');
   /** Guarda so o que esta FECHADO: seção nova nasce aberta sem migração. */
   const [fechadas, setFechadas] = useState<string[]>([]);
+  /** Etapa escolhida em "Onde está o dinheiro" — recorta os Promissores. */
+  const [etapaFiltro, setEtapaFiltro] = useState<string | null>(null);
+  /** "Compraram" e a unica que nasce fechada: e consulta, nao pendencia. */
+  const [posVendaAberta, setPosVendaAberta] = useState(false);
 
   // localStorage so existe no cliente. Ler no primeiro render (mesmo com guard)
   // faria o HTML do servidor divergir do cliente — por isso o efeito.
@@ -691,7 +1142,24 @@ export default function RadarPage() {
     } catch {
       /* modo privado / JSON corrompido: segue com tudo aberto. */
     }
+    try {
+      setPosVendaAberta(window.localStorage.getItem(CHAVE_POS_VENDA) === 'true');
+    } catch {
+      /* sem localStorage a seção segue fechada, que e o padrao. */
+    }
   }, []);
+
+  const alternarPosVenda = () => {
+    setPosVendaAberta((atual) => {
+      const proxima = !atual;
+      try {
+        window.localStorage.setItem(CHAVE_POS_VENDA, proxima ? 'true' : 'false');
+      } catch {
+        /* sem persistencia nao e motivo pra travar o clique. */
+      }
+      return proxima;
+    });
+  };
 
   const alternarSecao = (chave: string) => {
     setFechadas((atual) => {
@@ -732,26 +1200,70 @@ export default function RadarPage() {
   const radar = data ?? VAZIO;
   const termo = achatar(busca.trim());
 
-  /** Um filtro por render, reaproveitado pelas quatro seções. */
-  const filtradas = useMemo<Record<ChaveFila, RadarItem[]>>(
+  /** Um filtro por render, reaproveitado pelas seis seções. */
+  const porBusca = useMemo<Record<ChaveFila, RadarItem[]>>(
     () => ({
       esperando_voce: radar.esperando_voce.filter((i) => combina(i, termo)),
       chamar_hoje: radar.chamar_hoje.filter((i) => combina(i, termo)),
       promissores: radar.promissores.filter((i) => combina(i, termo)),
       esfriando: radar.esfriando.filter((i) => combina(i, termo)),
+      melhores: radar.melhores.filter((i) => combina(i, termo)),
+      compraram: radar.compraram.filter((i) => combina(i, termo)),
     }),
     [radar, termo],
   );
 
+  // Os grupos saem do que a BUSCA deixou passar, nunca do recorte por etapa —
+  // senao clicar numa pilula apagaria todas as outras da tela.
+  const grupos = useMemo(() => agruparPorEtapa(porBusca.promissores), [porBusca.promissores]);
+
+  /**
+   * Se a busca mudou e a etapa escolhida sumiu dos grupos, o filtro se desfaz
+   * sozinho — sem isso a seção ficaria vazia sem nada clicavel pra desfazer.
+   */
+  const etapaAtiva = grupos.some((g) => g.etapa === etapaFiltro) ? etapaFiltro : null;
+
+  const filtradas = useMemo<Record<ChaveFila, RadarItem[]>>(
+    () => ({
+      ...porBusca,
+      promissores:
+        etapaAtiva === null
+          ? porBusca.promissores
+          : porBusca.promissores.filter((i) => etapaDe(i) === etapaAtiva),
+    }),
+    [porBusca, etapaAtiva],
+  );
+
+  // Conta o resultado da BUSCA (nao o do recorte por etapa): o aviso la em cima
+  // fala sobre o termo digitado.
   const totalFiltrado =
-    filtradas.esperando_voce.length +
-    filtradas.chamar_hoje.length +
-    filtradas.promissores.length +
-    filtradas.esfriando.length;
+    porBusca.esperando_voce.length +
+    porBusca.chamar_hoje.length +
+    porBusca.promissores.length +
+    porBusca.esfriando.length +
+    porBusca.melhores.length +
+    porBusca.compraram.length;
 
   const buscando = termo !== '';
   /** Busca ativa e nenhuma seção com resultado: um aviso só, no topo. */
   const buscaSemResultado = buscando && totalFiltrado === 0;
+
+  /** O termo bate SO em "Compraram" — que nasce fechada. Sem abrir, a busca
+   *  entrega uma pagina em branco e nenhum aviso (o "nada encontrado" nao vale,
+   *  pois tem resultado). */
+  const soNosCompradores =
+    buscando && porBusca.compraram.length > 0 && porBusca.compraram.length === totalFiltrado;
+
+  // `soNosCompradores` e a UNICA dependencia de proposito: se `posVendaAberta`
+  // entrasse aqui, fechar a seção com a busca ainda ativa a reabriria na hora.
+  // Nao persiste no localStorage — abertura automatica nao e escolha do usuario.
+  useEffect(() => {
+    if (soNosCompradores) setPosVendaAberta(true);
+  }, [soNosCompradores]);
+
+  /** Card expandido e identificado por seção + lead: o mesmo lead pode estar em
+   *  duas filas, e sem o prefixo as duas fichas abririam de uma vez. */
+  const chaveCard = (secao: ChaveFila, leadId: string) => `${secao}:${leadId}`;
 
   const copiar = (valor: string) => {
     navigator.clipboard.writeText(valor).then(
@@ -780,7 +1292,7 @@ export default function RadarPage() {
     <div className="space-y-5 p-4 sm:p-6">
       <PageHeader
         title="Radar"
-        subtitle="A central do dia: quem está esperando, quem chamar e quem está esfriando"
+        subtitle="A central do dia: quem está esperando, onde está o dinheiro e quem já comprou"
         actions={
           <Button variant="outline" size="sm" disabled={isFetching} onClick={atualizar}>
             <RefreshCw className={cn('mr-1.5 h-4 w-4', isFetching && 'animate-spin')} />
@@ -848,54 +1360,50 @@ export default function RadarPage() {
             const total = radar[secao.chave].length;
             const aberta = !fechadas.includes(secao.chave);
             const destaque = secao.chave === 'esperando_voce';
+            // Promissores tambem "filtra" pela pilula de etapa — o contador
+            // precisa dizer "N de total" nos dois casos, nao so na busca.
+            const recortada =
+              buscando || (secao.chave === 'promissores' && etapaAtiva !== null);
 
-            return (
+            const bloco = (
               <section
-                key={secao.chave}
                 className={cn(
                   'space-y-3',
                   destaque &&
                     'rounded-xl border-l-4 border-amber-500/70 bg-amber-500/[0.03] py-3 pl-4 pr-3 dark:bg-amber-500/[0.05]',
                 )}
               >
-                {/* Padrao accordion: o <h3> envolve o gatilho para o leitor de
-                    tela pular de seção em seção pela lista de headings. */}
-                <div className="flex items-start gap-2">
-                  <h3 className="min-w-0 flex-1">
+                <CabecalhoSecao
+                  titulo={secao.titulo}
+                  descricao={secao.descricao}
+                  ajuda={secao.ajuda}
+                  contagem={
+                    isLoading ? null : recortada ? `(${itens.length} de ${total})` : `(${total})`
+                  }
+                  aberta={aberta}
+                  onAlternar={() => alternarSecao(secao.chave)}
+                  icone={
+                    destaque ? (
+                      <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    ) : undefined
+                  }
+                />
+
+                {/* Recorte por etapa vindo de "Onde está o dinheiro": a saida
+                    fica AQUI, colada na lista que ele encolheu. */}
+                {aberta && secao.chave === 'promissores' && etapaAtiva !== null && (
+                  <p className="text-xs text-muted-foreground">
+                    Mostrando só a etapa{' '}
+                    <span className="font-medium text-foreground">{etapaAtiva}</span>.{' '}
                     <button
                       type="button"
-                      onClick={() => alternarSecao(secao.chave)}
-                      aria-expanded={aberta}
-                      className="group flex w-full min-w-0 items-start gap-1.5 text-left"
+                      onClick={() => setEtapaFiltro(null)}
+                      className="underline underline-offset-2 hover:text-foreground"
                     >
-                      <ChevronRight
-                        className={cn(
-                          'mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform',
-                          aberta && 'rotate-90',
-                        )}
-                      />
-                      <span className="min-w-0">
-                        <span className="flex items-center gap-1.5 text-sm font-semibold tracking-tight group-hover:underline">
-                          {destaque && (
-                            <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                          )}
-                          {secao.titulo}
-                          {!isLoading && (
-                            <span className="font-normal text-muted-foreground">
-                              {/* Com busca ativa o contador diz "filtrados de
-                                  totais", senao ele contradiria o cabecalho. */}
-                              {buscando ? `(${itens.length} de ${total})` : `(${total})`}
-                            </span>
-                          )}
-                        </span>
-                        <span className="block text-xs text-muted-foreground">
-                          {secao.descricao}
-                        </span>
-                      </span>
+                      Ver todas
                     </button>
-                  </h3>
-                  <AjudaSecao titulo={secao.titulo} texto={secao.ajuda} />
-                </div>
+                  </p>
+                )}
 
                 {aberta &&
                   (isLoading ? (
@@ -919,11 +1427,12 @@ export default function RadarPage() {
                           key={item.lead_id}
                           item={item}
                           destaque={destaque}
-                          expandido={expandidoId === item.lead_id}
+                          expandido={expandidoId === chaveCard(secao.chave, item.lead_id)}
                           onAlternar={() =>
-                            setExpandidoId((atual) =>
-                              atual === item.lead_id ? null : item.lead_id,
-                            )
+                            setExpandidoId((atual) => {
+                              const alvo = chaveCard(secao.chave, item.lead_id);
+                              return atual === alvo ? null : alvo;
+                            })
                           }
                           onCopiar={copiar}
                           onAbrir={(leadId) => router.push(`/chat/${leadId}`)}
@@ -933,7 +1442,115 @@ export default function RadarPage() {
                   ))}
               </section>
             );
+
+            // As duas experiencias de gestor entram DEPOIS da urgencia: quem
+            // abre o radar resolve primeiro quem esta esperando, e so entao
+            // olha o funil e o foco do dia.
+            if (secao.chave !== 'esperando_voce') {
+              return <Fragment key={secao.chave}>{bloco}</Fragment>;
+            }
+
+            return (
+              <Fragment key={secao.chave}>
+                {bloco}
+
+                {!isLoading && grupos.length > 0 && (
+                  <BlocoDinheiro
+                    grupos={grupos}
+                    etapaAtiva={etapaAtiva}
+                    onSelecionar={(etapa) =>
+                      setEtapaFiltro((atual) => (atual === etapa ? null : etapa))
+                    }
+                  />
+                )}
+
+                {/* Backend anterior a Fase 2 devolve `melhores` vazia: a seção
+                    inteira some em vez de mostrar um vazio sem explicacao. */}
+                {!isLoading && radar.melhores.length > 0 && (
+                  <section className="space-y-3">
+                    <CabecalhoSecao
+                      titulo="Foco do dia"
+                      descricao={FOCO_DESCRICAO}
+                      ajuda={AJUDA_FOCO}
+                      contagem={
+                        buscando
+                          ? `(${filtradas.melhores.length} de ${radar.melhores.length})`
+                          : `(${radar.melhores.length})`
+                      }
+                      aberta={!fechadas.includes('melhores')}
+                      onAlternar={() => alternarSecao('melhores')}
+                      icone={<Target className="h-4 w-4 text-muted-foreground" />}
+                    />
+
+                    {!fechadas.includes('melhores') &&
+                      (filtradas.melhores.length === 0 ? (
+                        buscaSemResultado ? null : (
+                          <p className="text-sm text-muted-foreground">
+                            Nenhum resultado nesta seção.
+                          </p>
+                        )
+                      ) : (
+                        <div className="grid items-start gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                          {filtradas.melhores.map((item) => (
+                            <CardFoco
+                              key={item.lead_id}
+                              item={item}
+                              onAbrir={(leadId) => router.push(`/chat/${leadId}`)}
+                            />
+                          ))}
+                        </div>
+                      ))}
+                  </section>
+                )}
+              </Fragment>
+            );
           })}
+
+          {/* Pos-venda fecha a pagina: e consulta, nao pendencia do dia. */}
+          {!isLoading && radar.compraram.length > 0 && (
+            <section className="space-y-3">
+              <CabecalhoSecao
+                titulo="Compraram"
+                descricao="Clientes que já fecharam — hora do pós-venda"
+                ajuda={AJUDA_COMPRARAM}
+                contagem={
+                  buscando
+                    ? `(${filtradas.compraram.length} de ${radar.compraram.length})`
+                    : `(${radar.compraram.length})`
+                }
+                aberta={posVendaAberta}
+                onAlternar={alternarPosVenda}
+                icone={
+                  <ShoppingBag className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                }
+              />
+
+              {posVendaAberta &&
+                (filtradas.compraram.length === 0 ? (
+                  buscaSemResultado ? null : (
+                    <p className="text-sm text-muted-foreground">Nenhum resultado nesta seção.</p>
+                  )
+                ) : (
+                  <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {filtradas.compraram.map((item) => (
+                      <CardCompra
+                        key={item.lead_id}
+                        item={item}
+                        expandido={expandidoId === chaveCard('compraram', item.lead_id)}
+                        onAlternar={() =>
+                          setExpandidoId((atual) => {
+                            const alvo = chaveCard('compraram', item.lead_id);
+                            return atual === alvo ? null : alvo;
+                          })
+                        }
+                        onCopiar={copiar}
+                        onAbrir={(leadId) => router.push(`/chat/${leadId}`)}
+                      />
+                    ))}
+                  </div>
+                ))}
+            </section>
+          )}
         </>
       )}
     </div>
