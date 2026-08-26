@@ -4,7 +4,7 @@ import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { AiProviderService } from '../ai/ai-provider.service';
 import type { LeadsService } from '../leads/leads.service';
 import type { AuthUser } from '../../common/types/auth-user';
-import { LeadInsightsService } from './lead-insights.service';
+import { LeadInsightsService, acrescentarAnd } from './lead-insights.service';
 import { RadarController, radarQuerySchema } from './lead-insights.controller';
 import type { GerarInsightJobData } from './lead-insights.queue';
 
@@ -457,13 +457,46 @@ describe('LeadInsightsService.radar', () => {
 
     const radar = await m.service.radar(operador);
 
-    for (let i = 0; i < TODAS_AS_FILAS; i++) expect(argsDe(m.lead, i).take).toBe(30);
     // Precedencia: esperando_voce serve primeiro e leva os 30.
     expect(radar.esperando_voce).toHaveLength(30);
     // As outras secoes recebem os mesmos ids: o dedupe come o resto.
     expect(radar.chamar_hoje).toHaveLength(10);
     expect(radar.promissores).toHaveLength(0);
     expect(radar.esfriando).toHaveLength(0);
+  });
+
+  it('as 4 filas pedem folga ao banco: cap 30 nao pode virar o take da consulta', async () => {
+    // Com `take: 30`, uma fila de baixo pode render VAZIA tendo dezenas de leads
+    // elegiveis logo abaixo do corte: as filas de cima levam ate 30 ids cada uma,
+    // e a de baixo so recebeu 30 linhas para comecar. Pior: o `resumo` novo
+    // anunciaria "0 retornos hoje" com o banco cheio deles. A ultima fila pode
+    // perder ate 90 ids (3 x 30) para as anteriores, entao 30 * 4 e o piso que
+    // garante 30 sobreviventes em qualquer uma delas.
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    for (let i = 0; i < TODAS_AS_FILAS; i++) expect(argsDe(m.lead, i).take).toBe(120);
+  });
+
+  it('lead nao roubado pela fila de cima continua aparecendo na de baixo', async () => {
+    const m = montar();
+    // 35 esperando: a fila corta em 30, entao lead-30..34 NAO entram no dedupe.
+    const esperando = Array.from({ length: 35 }, (_, i) =>
+      esperandoLinha(`lead-${i}`, '2026-08-24T08:00:00Z'),
+    );
+    // chamar_hoje repete os 30 roubados e traz 10 que ninguem levou.
+    const vencidos = Array.from({ length: 40 }, (_, i) => linha({ id: `lead-${i}` }));
+    mockRadar(m.lead, { vencidos, esperando });
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.esperando_voce).toHaveLength(30);
+    // Os 10 nao roubados sobrevivem — e o resumo do dia enxerga os 10.
+    expect(radar.chamar_hoje.map((i) => i.lead_id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `lead-${30 + i}`),
+    );
+    expect(radar.resumo.chamar_hoje).toBe(10);
   });
 });
 
@@ -522,12 +555,12 @@ describe('LeadInsightsService.radar — fila esperando_voce', () => {
     ]);
   });
 
-  it('a fila nova pede ao banco so os 30 cards, nao um lote para filtrar depois', async () => {
+  it('a fila nova pede folga ao banco para o dedupe (cap * numero de filas)', async () => {
     const m = montar();
 
     await m.service.radar(operador);
 
-    expect(argsDe(m.lead, IDX_ESPERANDO).take).toBe(30);
+    expect(argsDe(m.lead, IDX_ESPERANDO).take).toBe(120);
   });
 
   it('equipe nunca respondeu (last_agent_message_at null) e um lead esperando', async () => {
@@ -590,6 +623,31 @@ describe('LeadInsightsService.radar — fila esperando_voce', () => {
 
     expect(argsDe(m.lead, IDX_ESPERANDO).where.estagio).toEqual({ is_won: false, is_lost: false });
     expect(argsDe(m.lead, IDX_ESPERANDO).where.tenant_id).toBe('t1');
+  });
+});
+
+describe('acrescentarAnd', () => {
+  // Testado direto, e nao pelo `radar()`: hoje o `base` do radar nunca carrega
+  // `AND`, entao uma assercao pelo endpoint passaria com ou sem o fix — seria
+  // tautologica. Quem protege contra a regressao futura e este teste.
+  const condicao = { OR: [{ last_agent_message_at: null }] };
+
+  it('sem AND no base, vira um array so com a condicao da secao', () => {
+    expect(acrescentarAnd({ tenant_id: 't1' }, condicao)).toEqual([condicao]);
+  });
+
+  it('com AND em array no base, a condicao da secao e ACRESCENTADA, nao substitui', () => {
+    // O caso real que vem por ai: `mergeSearchCondition` (lead-visibility.ts)
+    // mescla busca textual justamente em AND.
+    const busca = { OR: [{ nome: { contains: 'maria' } }] };
+
+    expect(acrescentarAnd({ AND: [busca] }, condicao)).toEqual([busca, condicao]);
+  });
+
+  it('com AND objeto unico no base (forma que o Prisma tambem aceita), nada se perde', () => {
+    const busca = { OR: [{ nome: { contains: 'maria' } }] };
+
+    expect(acrescentarAnd({ AND: busca }, condicao)).toEqual([busca, condicao]);
   });
 });
 

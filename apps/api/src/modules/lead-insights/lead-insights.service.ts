@@ -49,6 +49,17 @@ const CRON_MIN_MSGS_PRIMEIRA = 5;
 
 /** Radar: teto por secao. Lista maior que isso ninguem trabalha num dia. */
 const RADAR_CAP = 30;
+const RADAR_FILAS = 4;
+/**
+ * Quantas linhas cada fila pede ao banco — NAO e o teto de cards, que continua
+ * sendo `RADAR_CAP` no dedupe. Pedir 30 quebra as filas de baixo: as de cima
+ * levam ate 30 ids cada uma, e a ultima pode perder 90 (3 x 30) para elas. Com
+ * `take: 30` ela renderiza VAZIA tendo dezenas de leads elegiveis logo abaixo
+ * do corte — e o `resumo` anunciaria "0 retornos hoje" com o banco cheio deles.
+ * `RADAR_CAP * RADAR_FILAS` e o piso que garante 30 sobreviventes em qualquer
+ * uma das filas.
+ */
+const RADAR_BUSCA = RADAR_CAP * RADAR_FILAS;
 /** Lead quente parado a partir daqui ja e oportunidade esfriando na mao. */
 const RADAR_PROMISSOR_DIAS = 2;
 const RADAR_ESFRIANDO_DIAS = 7;
@@ -279,6 +290,28 @@ function motivoDerivado(dias: number | null, quente: boolean): string {
   return `${prefixo}sem contato ha ${dias} dia${dias === 1 ? '' : 's'}`;
 }
 
+/**
+ * Acrescenta a condicao de uma secao ao `AND` do where base, sem apagar o que
+ * ja estiver la. Hoje o `base` do radar nunca traz `AND` — mas o where trafega
+ * como `Record<string, unknown>` e um spread `{ ...base, ...secao }` o
+ * sobrescreveria em silencio no dia em que trouxer. E vai trazer: o precedente
+ * e `mergeSearchCondition` (lead-visibility.ts), que mescla busca textual
+ * justamente em `AND` para nao furar a visibilidade.
+ *
+ * O Prisma aceita `AND` como array ou como objeto unico; os dois casos entram.
+ */
+export function acrescentarAnd(
+  base: Record<string, unknown>,
+  condicao: Prisma.LeadWhereInput,
+): Prisma.LeadWhereInput[] {
+  const atual = base.AND;
+  // Casts pontuais: `base` e Record<string, unknown> por causa do contrato de
+  // `buildVisibilityWhere`, entao nao ha tipo a estreitar — so a forma.
+  if (Array.isArray(atual)) return [...(atual as Prisma.LeadWhereInput[]), condicao];
+  if (ehRegistro(atual)) return [atual as Prisma.LeadWhereInput, condicao];
+  return [condicao];
+}
+
 function montarRadarItem(linha: LinhaRadar, agora: number, esperando: boolean): RadarItem {
   const quente = RADAR_TEMPERATURAS_QUENTES.includes(linha.temperatura);
   const motivoFicha = linha.lead_insight?.proxima_acao_motivo.trim() ?? '';
@@ -457,14 +490,16 @@ export class LeadInsightsService {
         { ultima_interacao: 'asc' },
       ),
       this.buscarRadar(
-        { ...base, ...this.filtroEsperando(agora) },
+        { ...base, ...this.filtroEsperando(agora, base) },
         // Quem espera ha mais tempo primeiro.
         { last_customer_message_at: 'asc' },
       ),
     ]);
 
-    // O dedupe so marca quem VIROU card: um candidato descartado pelo filtro em
-    // memoria nao pode roubar a vaga do proprio lead em chamar_hoje.
+    // Dedupe por precedencia: cada lead vira card UMA vez, na fila mais urgente
+    // em que aparece. Quem ja foi servido por uma fila anterior e pulado aqui,
+    // e o corte em `RADAR_CAP` e o teto de cards por secao — as consultas
+    // trazem `RADAR_BUSCA` justamente para sobrar linha depois deste roubo.
     const vistos = new Set<string>();
     const selecionar = (linhas: LinhaRadar[]): LinhaRadar[] => {
       const saida: LinhaRadar[] = [];
@@ -522,7 +557,9 @@ export class LeadInsightsService {
    * O `OR` da secao vai aninhado dentro de `AND` de proposito: escrito no topo,
    * ele sobrescreveria em silencio o `OR` de visibilidade que
    * `buildVisibilityWhere` espalha no `base` — vazando lead de outro operador
-   * com a suite verde. `AND` e uma chave que a visibilidade nunca escreve.
+   * com a suite verde. E o `AND` e composto por `acrescentarAnd`, nao escrito
+   * por cima, para que a proxima condicao que chegar ao `base` (busca textual,
+   * por exemplo) nao caia no mesmo buraco na outra direcao.
    *
    * `last_agent_message_at: null` precisa estar explicito: em SQL,
    * `null < data` e null, nao verdadeiro — sem esse ramo, o lead que a equipe
@@ -536,20 +573,18 @@ export class LeadInsightsService {
    * errado passaria pelo compilador E pelos testes (o Prisma e mockado) e so
    * quebraria em producao. Aqui o compilador confere coluna e formato.
    */
-  private filtroEsperando(agora: number): Prisma.LeadWhereInput {
+  private filtroEsperando(agora: number, base: Record<string, unknown>): Prisma.LeadWhereInput {
     return {
       last_customer_message_at: {
         not: null,
         gte: new Date(agora - RADAR_ESPERANDO_JANELA_DIAS * DIA),
       },
-      AND: [
-        {
-          OR: [
-            { last_agent_message_at: null },
-            { last_agent_message_at: { lt: this.prisma.lead.fields.last_customer_message_at } },
-          ],
-        },
-      ],
+      AND: acrescentarAnd(base, {
+        OR: [
+          { last_agent_message_at: null },
+          { last_agent_message_at: { lt: this.prisma.lead.fields.last_customer_message_at } },
+        ],
+      }),
     };
   }
 
@@ -557,7 +592,7 @@ export class LeadInsightsService {
     where: Record<string, unknown>,
     orderBy: Prisma.LeadOrderByWithRelationInput,
   ): Promise<LinhaRadar[]> {
-    return this.prisma.lead.findMany({ where, select: RADAR_SELECT, orderBy, take: RADAR_CAP });
+    return this.prisma.lead.findMany({ where, select: RADAR_SELECT, orderBy, take: RADAR_BUSCA });
   }
 
   private podarRefresh(agora: number): void {
