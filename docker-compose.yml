@@ -37,6 +37,8 @@ services:
       # Allowlist de hosts de IA. SUBSTITUI a lista default do codigo — mantida
       # completa aqui + api.z.ai (GLM-5, saldo pago do Yuri, 2026-08-26).
       - AI_ALLOWED_HOSTS=api.anthropic.com,api.openai.com,openrouter.ai,api.groq.com,api.deepseek.com,api.mistral.ai,api.x.ai,api.together.xyz,generativelanguage.googleapis.com,api.z.ai
+      # Paralelismo do worker de fichas: 1 p/ modelo local; 10 p/ API remota.
+      - LEAD_INSIGHTS_CONCURRENCY=${LEAD_INSIGHTS_CONCURRENCY:-1}
       - WEBHOOK_PUBLIC_URL=${WEBHOOK_PUBLIC_URL}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}

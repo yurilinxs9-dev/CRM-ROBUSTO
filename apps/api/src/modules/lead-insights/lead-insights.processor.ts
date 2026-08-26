@@ -5,10 +5,17 @@ import { LeadInsightsService } from './lead-insights.service';
 import { LEAD_INSIGHTS_QUEUE, type GerarInsightJobData } from './lead-insights.queue';
 
 /**
- * Concorrencia 1 de proposito: o modelo que gera a ficha e local (uma GPU/CPU
- * so). Dois jobs em paralelo nao geram mais fichas — geram duas filas lentas.
+ * Concorrencia padrao 1 de proposito: com modelo LOCAL (uma CPU so), dois jobs
+ * em paralelo nao geram mais fichas — geram duas filas lentas. Com provedor de
+ * API remoto (DeepSeek etc.), LEAD_INSIGHTS_CONCURRENCY sobe o paralelismo
+ * (ex.: 10) — lido uma vez no boot do worker.
  */
-@Processor(LEAD_INSIGHTS_QUEUE, { concurrency: 1 })
+const CONCORRENCIA = Math.max(
+  1,
+  Math.min(20, Number(process.env.LEAD_INSIGHTS_CONCURRENCY) || 1),
+);
+
+@Processor(LEAD_INSIGHTS_QUEUE, { concurrency: CONCORRENCIA })
 export class LeadInsightsProcessor extends WorkerHost {
   private readonly logger = new Logger(LeadInsightsProcessor.name);
 
