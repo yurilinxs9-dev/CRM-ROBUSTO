@@ -136,6 +136,7 @@ model Tenant {
   companies           Company[]
   custom_field_groups CustomFieldGroup[]
   lead_insights       LeadInsight[]
+  lead_lembretes      LeadLembrete[]
 
   @@index([owner_id])
 }
@@ -399,6 +400,8 @@ model Lead {
   attribution   LeadAttribution?
   // Idem: a FK vive em LeadInsight (ficha inteligente). Nenhum ALTER em "Lead".
   lead_insight  LeadInsight?
+  // Idem: a FK vive em LeadLembrete (lembretes temporais). Nenhum ALTER em "Lead".
+  lembretes     LeadLembrete[]
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
@@ -719,6 +722,28 @@ model LeadInsight {
 
   @@index([tenant_id])
   @@index([tenant_id, proxima_acao_at])
+}
+
+// Fase 3 (lembretes temporais): marco dito pelo cliente ("volto dia 10", "minha
+// CNH vence em marco") vira um aviso agendado na data. origem 'ia' | 'manual';
+// status 'pendente' | 'feito' | 'descartado'.
+model LeadLembrete {
+  id         String   @id @default(uuid())
+  tenant_id  String
+  tenant     Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  lead_id    String
+  lead       Lead     @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  motivo     String
+  // Quando o cliente falou o marco (ou quando a geracao o extraiu).
+  dito_em    DateTime @default(now())
+  avisar_em  DateTime
+  origem     String   @default("ia")
+  status     String   @default("pendente")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([tenant_id, status, avisar_em])
+  @@index([lead_id, status])
 }
 
 model WebhookLog {
