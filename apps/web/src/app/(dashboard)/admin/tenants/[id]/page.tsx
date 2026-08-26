@@ -12,7 +12,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CopyId } from '@/components/ui/copy-id';
-import { BillingBadge, DeleteTenantDialog, moneyFmt, type BillingInfo } from '../billing-ui';
+import {
+  BillingBadge, DeleteTenantDialog, moneyFmt, billingPhrase, diasLabel, BILLING_COLOR, type BillingInfo,
+} from '../billing-ui';
 
 interface TenantUser {
   id: string; nome: string; email: string; role: string; ativo: boolean; is_platform_admin: boolean;
@@ -31,11 +33,16 @@ interface TenantDetail {
 const numberFmt = new Intl.NumberFormat('pt-BR');
 const liveStatus = (s: string) => ['open', 'connected', 'connecting'].includes(s);
 
+// Dias inteiros entre hoje e a data de fim da cobertura (positivo = ainda falta).
+function diasAte(iso: string): number {
+  const day = (x: Date) => Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
+  return Math.round((day(new Date(iso)) - day(new Date())) / 86_400_000);
+}
+
 // Mesma régua do backend (billing-status.ts): <0 vencido, ≤3 vence em breve.
 function deriveClient(t: { billing_value: number | null; billing_paid_until: string | null }): BillingInfo {
   if (t.billing_value == null || !t.billing_paid_until) return { status: 'sem_cobranca', dias: 0 };
-  const day = (x: Date) => Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate());
-  const diff = Math.round((day(new Date(t.billing_paid_until)) - day(new Date())) / 86_400_000);
+  const diff = diasAte(t.billing_paid_until);
   if (diff < 0) return { status: 'vencido', dias: -diff };
   if (diff <= 3) return { status: 'vence_em_breve', dias: diff };
   return { status: 'em_dia', dias: diff };
@@ -117,7 +124,7 @@ export default function AdminTenantDetailPage() {
         <div>
           <h3 className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
             {data.nome}
-            <BillingBadge billing={deriveClient(data)} />
+            <BillingBadge billing={deriveClient(data)} title={billingPhrase(deriveClient(data), data.billing_paid_until)} />
             {suspended && <span className="text-[10px] rounded px-1.5 py-0.5" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}>SUSPENSO</span>}
           </h3>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -281,6 +288,24 @@ function BillingCard({
     onError: (e: unknown) => toast.error((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Falha ao marcar pago'),
   });
 
+  // Linha de status vem do valor SALVO (não do que está digitado no campo).
+  const info = deriveClient(billing);
+
+  // Data no passado quase sempre é o admin confundindo "Pago até" com "data do pagamento".
+  const onSalvar = () => {
+    if (pagoAte) {
+      const diff = diasAte(`${pagoAte}T12:00:00Z`);
+      if (diff < 0) {
+        const ok = window.confirm(
+          `Essa data já passou — o cliente ficará como VENCIDO há ${diasLabel(-diff)}. ` +
+          `Se você está registrando um pagamento, use "Marcar pago (+ciclo)". Salvar mesmo assim?`,
+        );
+        if (!ok) return;
+      }
+    }
+    save.mutate();
+  };
+
   return (
     <div className="rounded-xl border p-4 space-y-3" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-2)' }}>
       <div className="flex items-center justify-between">
@@ -291,6 +316,9 @@ function BillingCard({
           </span>
         )}
       </div>
+      <p className="text-sm font-medium" style={{ color: BILLING_COLOR[info.status] }}>
+        {billingPhrase(info, billing.billing_paid_until)}
+      </p>
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto_auto] sm:items-end">
         <div>
           <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Valor (R$)</label>
@@ -309,10 +337,16 @@ function BillingCard({
           </Select>
         </div>
         <div>
-          <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Pago até</label>
-          <Input type="date" value={pagoAte} onChange={(e) => setPagoAte(e.target.value)} className="h-9" />
+          <label className="mb-1 block text-xs" style={{ color: 'var(--text-muted)' }}>Pago até (fim da cobertura)</label>
+          <Input
+            type="date"
+            value={pagoAte}
+            onChange={(e) => setPagoAte(e.target.value)}
+            className="h-9"
+            title="Data em que a cobertura termina — não é a data em que o cliente pagou."
+          />
         </div>
-        <Button size="sm" className="h-9" disabled={save.isPending} onClick={() => save.mutate()}>
+        <Button size="sm" className="h-9" disabled={save.isPending} onClick={onSalvar}>
           Salvar cobrança
         </Button>
         <Button
@@ -324,6 +358,9 @@ function BillingCard({
           <BadgeCheck className="mr-1 h-3.5 w-3.5 text-emerald-500" /> Marcar pago (+ciclo)
         </Button>
       </div>
+      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        O acesso do cliente está pago até esta data. Prefira o botão “Marcar pago (+ciclo)” — ele avança a data em um ciclo automaticamente.
+      </p>
     </div>
   );
 }

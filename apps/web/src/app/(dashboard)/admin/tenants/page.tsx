@@ -11,7 +11,9 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { CopyId } from '@/components/ui/copy-id';
-import { BillingBadge, DeleteTenantDialog, moneyFmt, type BillingInfo } from './billing-ui';
+import {
+  BillingBadge, DeleteTenantDialog, moneyFmt, billingPhrase, billingDateFmt, type BillingInfo,
+} from './billing-ui';
 
 interface TenantRow {
   id: string;
@@ -196,7 +198,12 @@ export default function AdminTenantsPage() {
                       <div className="truncate max-w-[200px] text-xs text-muted-foreground">{t.owner?.email ?? ''}</div>
                     </td>
                     <td className="px-3 py-3" title={t.billing_value != null ? `${moneyFmt(t.billing_value)} / ${t.billing_cycle_months ?? 1} mês(es)` : undefined}>
-                      <BillingBadge billing={t.billing} />
+                      <BillingBadge billing={t.billing} title={billingPhrase(t.billing, t.billing_paid_until)} />
+                      {t.billing.status !== 'sem_cobranca' && t.billing_paid_until && (
+                        <div className="mt-0.5 text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                          {t.billing.status === 'vencido' ? 'venceu' : 'vence'} {billingDateFmt(t.billing_paid_until, true)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.users)}</td>
                     <td className="px-3 py-3 tabular-nums" style={{ color: 'var(--text-secondary)' }}>{numberFmt.format(t.leads)}</td>
