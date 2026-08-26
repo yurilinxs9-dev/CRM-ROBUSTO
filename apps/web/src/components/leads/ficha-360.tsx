@@ -557,24 +557,34 @@ export function Ficha360({
    * Aceitar a sugestao MOVE o lead de etapa. As invalidacoes sao as mesmas que
    * o kanban faz apos um arrastar (`['leads']` + `['lead-activities', id]`) e
    * as que o drawer faz apos qualquer mutacao da ficha (`['lead', id]` e
-   * `['chat','leads']`) — a ficha vive nos dois lugares e nao sabe em qual
-   * esta, entao invalida o conjunto.
+   * `['chat','leads']`) — a ficha vive nos TRES lugares e nao sabe em qual
+   * esta, entao invalida o conjunto. O radar entra pelo prefixo (a chave real
+   * carrega o funil) e e o caso mais visivel: `staleTime` de 60s deixaria a
+   * pilula de etapa mostrando a etapa velha logo depois do clique em "Mover".
    */
-  const invalidarAposMover = () => {
-    void queryClient.invalidateQueries({ queryKey: ['lead-insight', leadId] });
-    void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+  const invalidarAposMover = (id: string) => {
+    void queryClient.invalidateQueries({ queryKey: ['lead-insight', id] });
+    void queryClient.invalidateQueries({ queryKey: ['lead', id] });
     void queryClient.invalidateQueries({ queryKey: ['leads'] });
     void queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
-    void queryClient.invalidateQueries({ queryKey: ['lead-activities', leadId] });
+    void queryClient.invalidateQueries({ queryKey: ['lead-activities', id] });
+    void queryClient.invalidateQueries({ queryKey: ['radar'] });
   };
 
+  /**
+   * As duas mutacoes recebem o `leadId` como VARIAVEL (em vez de le-lo do
+   * closure) por um motivo so: o drawer reaproveita este componente entre leads
+   * sem remontar, entao o estado da mutacao sobrevive a troca. Com a variavel
+   * em maos da pra saber DE QUAL lead foi aquele sucesso — e a trava de duplo
+   * clique nao vaza para o proximo lead.
+   */
   const aceitarEtapa = useMutation({
-    mutationFn: async () => {
-      await api.post(`/api/leads/${leadId}/insight/etapa-sugerida/aceitar`);
+    mutationFn: async (id: string) => {
+      await api.post(`/api/leads/${id}/insight/etapa-sugerida/aceitar`);
     },
-    onSuccess: () => {
+    onSuccess: (_dados, id) => {
       toast.success('Lead movido');
-      invalidarAposMover();
+      invalidarAposMover(id);
     },
     onError: (err: unknown) => {
       if (statusDoErro(err) === 403) {
@@ -586,13 +596,13 @@ export function Ficha360({
   });
 
   const recusarEtapa = useMutation({
-    mutationFn: async () => {
-      await api.post(`/api/leads/${leadId}/insight/etapa-sugerida/recusar`);
+    mutationFn: async (id: string) => {
+      await api.post(`/api/leads/${id}/insight/etapa-sugerida/recusar`);
     },
-    onSuccess: () => {
+    onSuccess: (_dados, id) => {
       toast.success('Sugestão dispensada');
       // So a ficha muda: o lead continua exatamente onde estava.
-      void queryClient.invalidateQueries({ queryKey: ['lead-insight', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-insight', id] });
     },
     onError: (err: unknown) => {
       toast.error(mensagemDoErro(err) ?? 'Não foi possível dispensar a sugestão.');
@@ -667,6 +677,17 @@ export function Ficha360({
   const rotuloMover = etapaSugeridaNome !== '' ? `Mover para ${etapaSugeridaNome}` : 'Mover lead';
   const movendo = aceitarEtapa.isPending;
   const recusando = recusarEtapa.isPending;
+  /**
+   * Os dois botoes travam juntos, e continuam travados DEPOIS do sucesso: entre
+   * o fim da mutacao e o refetch que apaga o card existe uma janela de alguns
+   * centenas de ms em que o card ainda esta na tela — sem isto, um segundo
+   * clique dispararia um POST para uma sugestao que ja nao existe.
+   */
+  const decidido =
+    movendo ||
+    recusando ||
+    (aceitarEtapa.isSuccess && aceitarEtapa.variables === leadId) ||
+    (recusarEtapa.isSuccess && recusarEtapa.variables === leadId);
 
   /**
    * `undefined` = a tela nao sabe quem responde (nao passou o campo) e a linha
@@ -1018,8 +1039,8 @@ export function Ficha360({
                         size="sm"
                         variant="ghost"
                         className="h-8 px-2.5 text-xs text-blue-200/90 hover:bg-blue-500/15 hover:text-blue-100"
-                        disabled={movendo || recusando}
-                        onClick={() => recusarEtapa.mutate()}
+                        disabled={decidido}
+                        onClick={() => recusarEtapa.mutate(leadId)}
                       >
                         {recusando && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
                         {recusando ? 'Dispensando...' : 'Agora não'}
@@ -1027,8 +1048,8 @@ export function Ficha360({
                       <Button
                         size="sm"
                         className="h-8 bg-blue-500 px-3 text-xs font-semibold text-white hover:bg-blue-600"
-                        disabled={movendo || recusando}
-                        onClick={() => aceitarEtapa.mutate()}
+                        disabled={decidido}
+                        onClick={() => aceitarEtapa.mutate(leadId)}
                       >
                         {movendo ? (
                           <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

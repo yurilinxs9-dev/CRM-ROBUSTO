@@ -57,7 +57,8 @@ export function GeneralTab() {
   // O tipo `Tenant` do store ainda não declara este campo, mas o objeto vem do
   // mesmo payload que o PATCH devolve. Ausente (backend anterior) = ligado —
   // é o comportamento padrão, e um `undefined` não pode desligar o recurso.
-  const iaAjustaTemperatura = (tenant as TenantSettings).ia_ajusta_temperatura !== false;
+  const iaAjustaTemperatura =
+    (tenant as { ia_ajusta_temperatura?: boolean }).ia_ajusta_temperatura !== false;
 
   const handlePoolToggle = async (checked: boolean) => {
     setIsPending(true);
