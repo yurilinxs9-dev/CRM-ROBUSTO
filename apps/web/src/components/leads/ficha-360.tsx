@@ -456,12 +456,24 @@ function EsqueletoFicha() {
 // Lembretes do lead
 // ---------------------------------------------------------------------------
 
+/**
+ * Convencao selada com o backend: `avisar_em` chega como o instante ISO da
+ * MEIA-NOITE em Sao Paulo. O dia e sempre lido no fuso de SP, nunca no do
+ * navegador — senao um vendedor com o relogio em UTC veria a vespera.
+ */
+const FUSO = 'America/Sao_Paulo';
+
 /** Data sem hora: lembrete e compromisso de DIA, nao de horario. */
 function formatarDia(iso: string): string | null {
   if (iso.trim() === '') return null;
   const data = new Date(iso);
   if (Number.isNaN(data.getTime())) return null;
-  return data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return data.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: FUSO,
+  });
 }
 
 /**
@@ -549,9 +561,18 @@ function BlocoLembretes({ leadId, enabled }: { leadId: string; enabled: boolean 
         <ul className="mt-1.5 space-y-1.5">
           {pendentes.map((lembrete) => {
             const dia = formatarDia(lembrete.avisar_em);
-            // Trava por lembrete: resolver um nao pode desabilitar os outros.
+            /**
+             * Trava por lembrete: resolver um nao pode desabilitar os outros.
+             * Continua travado DEPOIS do sucesso (mesmo padrao da fase 4 aqui
+             * do arquivo) — entre o fim do POST e o refetch que tira a linha da
+             * lista existe uma janela em que ela ainda esta clicavel, e um
+             * segundo clique bateria num lembrete ja resolvido (404).
+             */
             const ocupado =
-              agir.isPending && agir.variables?.id === lembrete.id;
+              (agir.isPending || agir.isSuccess) && agir.variables?.id === lembrete.id;
+            /** Spinner e so enquanto o POST corre — a trava dura mais que ele. */
+            const enviando = (acao: 'concluir' | 'descartar') =>
+              agir.isPending && agir.variables?.id === lembrete.id && agir.variables?.acao === acao;
             return (
               <li
                 key={lembrete.id}
@@ -580,7 +601,7 @@ function BlocoLembretes({ leadId, enabled }: { leadId: string; enabled: boolean 
                     onClick={() => agir.mutate({ id: lembrete.id, acao: 'concluir' })}
                     className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-emerald-500/15 hover:text-emerald-300 disabled:pointer-events-none disabled:opacity-50"
                   >
-                    {ocupado && agir.variables?.acao === 'concluir' ? (
+                    {enviando('concluir') ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <Check className="h-3.5 w-3.5" />
@@ -594,7 +615,7 @@ function BlocoLembretes({ leadId, enabled }: { leadId: string; enabled: boolean 
                     onClick={() => agir.mutate({ id: lembrete.id, acao: 'descartar' })}
                     className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:pointer-events-none disabled:opacity-50"
                   >
-                    {ocupado && agir.variables?.acao === 'descartar' ? (
+                    {enviando('descartar') ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <X className="h-3.5 w-3.5" />
@@ -1142,11 +1163,17 @@ export function Ficha360({
                 <EsqueletoFicha />
               </div>
             ) : isError ? (
-              <p className="mt-4 text-xs text-muted-foreground">
-                Não foi possível carregar a leitura da IA
-                {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead acima
-                continuam válidos.
-              </p>
+              <>
+                <p className="mt-4 text-xs text-muted-foreground">
+                  Não foi possível carregar a leitura da IA
+                  {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead
+                  acima continuam válidos.
+                </p>
+
+                {/* A leitura da IA e os lembretes sao rotas diferentes: uma
+                    falhar nao e motivo para esconder a outra. */}
+                {blocoLembretes}
+              </>
             ) : !insight ? (
               <>
                 <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">

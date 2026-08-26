@@ -454,25 +454,37 @@ function linhaCompra(compra: RadarCompra | null): string {
   return partes.join(' · ');
 }
 
+/**
+ * Convencao selada com o backend: `avisar_em` chega como o instante ISO da
+ * MEIA-NOITE em Sao Paulo. Logo, o dia do lembrete e sempre lido no fuso de SP
+ * — nunca no do navegador. Vendedor em Lisboa (ou com o relogio do notebook em
+ * UTC) tem que ver a MESMA data que o cliente combinou.
+ */
+const FUSO = 'America/Sao_Paulo';
+
 /** "27/10" — a data curta que cabe dentro da frase do lembrete. */
 function diaMes(iso: string): string | null {
   if (iso.trim() === '') return null;
   const data = new Date(iso);
   if (Number.isNaN(data.getTime())) return null;
-  return data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  return data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: FUSO });
+}
+
+/** O dia-calendario em SP como "AAAA-MM-DD" — texto que ordena sozinho. */
+function diaEmSaoPaulo(data: Date): string {
+  return data.toLocaleDateString('en-CA', { timeZone: FUSO });
 }
 
 /**
- * O lembrete venceu antes de hoje. Compara DIA com DIA (o backend manda a data
- * de aviso como instante ISO): um lembrete de hoje de manha nao pode aparecer
- * em vermelho as 15h so porque a hora ja passou.
+ * O lembrete venceu antes de hoje. Compara DIA com DIA, os dois no fuso de SP:
+ * um lembrete de hoje de manha nao pode aparecer em vermelho as 15h so porque a
+ * hora ja passou, nem um lembrete de amanha ficar vermelho porque o navegador
+ * esta num fuso a frente.
  */
 function lembreteAtrasado(iso: string): boolean {
   const data = new Date(iso);
   if (Number.isNaN(data.getTime())) return false;
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-  return data.getTime() < hoje.getTime();
+  return diaEmSaoPaulo(data) < diaEmSaoPaulo(new Date());
 }
 
 /** Mensagem que o backend mandou no erro, quando ela existe. */
@@ -1202,15 +1214,21 @@ function CardLembrete({
       await api.post(`/api/lembretes/${id}/${acao}`);
     },
     onSuccess: (_dados, pedido) => {
-      setAdiarAberto(false);
       if (pedido.acao === 'concluir') toast.success('Lembrete concluído');
       else if (pedido.acao === 'descartar') toast.success('Lembrete descartado');
       else toast.success(`Lembrete adiado ${pedido.dias === 1 ? '1 dia' : `${pedido.dias} dias`}`);
       void queryClient.invalidateQueries({ queryKey: ['radar'] });
+      // A ficha 360 abre DENTRO do radar (card expandido) e mostra a mesma
+      // lista: sem esta invalidacao o lembrete resolvido aqui continuaria
+      // pendente la, na mesma tela.
+      void queryClient.invalidateQueries({ queryKey: ['lead-lembretes', item.lead_id] });
     },
     onError: (err: unknown) => {
       toast.error(mensagemDoErro(err) ?? 'Não foi possível atualizar o lembrete.');
     },
+    // Fecha o popover de adiar nos DOIS caminhos: no erro ele ficaria aberto
+    // por cima do toast, escondendo justamente a explicacao da falha.
+    onSettled: () => setAdiarAberto(false),
   });
 
   /**
