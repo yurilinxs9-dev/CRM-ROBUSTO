@@ -3,20 +3,29 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   Banknote,
+  CalendarClock,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Copy,
   HelpCircle,
   Clock,
+  Loader2,
   MessageSquare,
   RefreshCw,
   Search,
   ShoppingBag,
   Target,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -79,11 +88,28 @@ export interface RadarItem {
   compra: RadarCompra | null;
 }
 
+/**
+ * Um compromisso que o PROPRIO cliente deu na conversa ("me chama em outubro"):
+ * a ficha extraiu, o banco guardou e hoje e o dia de voltar a falar. `motivo` e
+ * `dito_em` sao o contexto original — e o que faz a mensagem do vendedor nao
+ * parecer robo. Fase 3: backend antigo nao manda a chave e a seção some.
+ */
+export interface RadarLembrete {
+  lembrete_id: string;
+  motivo: string;
+  dito_em: string;
+  avisar_em: string;
+  /** O lead inteiro, no mesmo formato das outras filas. */
+  lead: RadarItem;
+}
+
 export interface RadarResumo {
   esperando: number;
   chamar_hoje: number;
   valor_chamar_hoje: number;
   lembrete_destaque: { nome: string; motivo: string } | null;
+  /** Fase 3: quantos compromissos vencem hoje. `0` em backend antigo. */
+  lembretes_hoje: number;
 }
 
 export interface RadarResposta {
@@ -100,6 +126,12 @@ export interface RadarResposta {
   melhores: RadarItem[];
   /** Quem ja fechou (etapa de ganho ou compra na ficha), ate 30. */
   compraram: RadarItem[];
+  /**
+   * Fase 3. NAO e uma fila de `RadarItem`: cada linha carrega o lembrete (o que
+   * o cliente disse e quando) com o lead dentro — por isso fica fora de
+   * `ChaveFila` e tem filtro/contador proprios.
+   */
+  lembretes_hoje: RadarLembrete[];
 }
 
 /** Chaves que guardam filas — o `resumo` fica de fora de proposito. */
@@ -116,6 +148,7 @@ const RESUMO_ZERADO: RadarResumo = {
   chamar_hoje: 0,
   valor_chamar_hoje: 0,
   lembrete_destaque: null,
+  lembretes_hoje: 0,
 };
 
 const VAZIO: RadarResposta = {
@@ -126,6 +159,7 @@ const VAZIO: RadarResposta = {
   esfriando: [],
   melhores: [],
   compraram: [],
+  lembretes_hoje: [],
 };
 
 function texto(valor: unknown): string {
@@ -210,6 +244,33 @@ function lerItens(valor: unknown): RadarItem[] {
   return saida;
 }
 
+/**
+ * Lembretes de hoje. Cada linha so vale se tiver id, uma data de aviso e um
+ * lead legivel — reaproveita `lerItens` para o lead de dentro, que e o mesmo
+ * formato das outras filas. Linha quebrada e pulada em vez de derrubar a seção.
+ */
+function lerLembretes(valor: unknown): RadarLembrete[] {
+  if (!Array.isArray(valor)) return [];
+  const saida: RadarLembrete[] = [];
+  for (const bruto of valor) {
+    if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) continue;
+    const registro = bruto as Record<string, unknown>;
+    const id = texto(registro.lembrete_id);
+    const avisarEm = texto(registro.avisar_em);
+    if (id === '' || avisarEm === '') continue;
+    const [lead] = lerItens([registro.lead]);
+    if (!lead) continue;
+    saida.push({
+      lembrete_id: id,
+      motivo: texto(registro.motivo),
+      dito_em: texto(registro.dito_em),
+      avisar_em: avisarEm,
+      lead,
+    });
+  }
+  return saida;
+}
+
 function lerDestaque(valor: unknown): { nome: string; motivo: string } | null {
   if (typeof valor !== 'object' || valor === null || Array.isArray(valor)) return null;
   const registro = valor as Record<string, unknown>;
@@ -223,21 +284,31 @@ function lerDestaque(valor: unknown): { nome: string; motivo: string } | null {
  * zerar o cabecalho (que diria "tudo em dia" com a fila cheia na tela), conta
  * as proprias listas — o `resumo` do servidor so e usado quando existe.
  */
-function lerResumo(valor: unknown, filas: Record<ChaveFila, RadarItem[]>): RadarResumo {
+function lerResumo(
+  valor: unknown,
+  filas: Record<ChaveFila, RadarItem[]>,
+  lembretes: RadarLembrete[],
+): RadarResumo {
   if (typeof valor !== 'object' || valor === null || Array.isArray(valor)) {
     return {
       esperando: filas.esperando_voce.length,
       chamar_hoje: filas.chamar_hoje.length,
       valor_chamar_hoje: 0,
       lembrete_destaque: null,
+      lembretes_hoje: lembretes.length,
     };
   }
   const registro = valor as Record<string, unknown>;
+  const contagemLembretes = numero(registro.lembretes_hoje);
   return {
     esperando: numero(registro.esperando),
     chamar_hoje: numero(registro.chamar_hoje),
     valor_chamar_hoje: numero(registro.valor_chamar_hoje),
     lembrete_destaque: lerDestaque(registro.lembrete_destaque),
+    // Backend em versao intermediaria pode mandar a LISTA sem o contador no
+    // resumo: a frase do topo conta a lista em vez de dizer zero com a seção
+    // cheia logo abaixo.
+    lembretes_hoje: contagemLembretes > 0 ? contagemLembretes : lembretes.length,
   };
 }
 
@@ -254,7 +325,13 @@ function normalizar(corpo: unknown): RadarResposta {
     melhores: lerItens(registro.melhores),
     compraram: lerItens(registro.compraram),
   };
-  return { ...filas, resumo: lerResumo(registro.resumo, filas) };
+  // Fase 3: backend anterior nao tem a chave — lista vazia e a seção some.
+  const lembretes = lerLembretes(registro.lembretes_hoje);
+  return {
+    ...filas,
+    lembretes_hoje: lembretes,
+    resumo: lerResumo(registro.resumo, filas, lembretes),
+  };
 }
 
 /** So o minimo que o seletor precisa — o kanban usa o tipo completo. */
@@ -375,6 +452,33 @@ function linhaCompra(compra: RadarCompra | null): string {
   const quando = rotuloQuando(compra.quando);
   if (quando !== '') partes.push(quando);
   return partes.join(' · ');
+}
+
+/** "27/10" — a data curta que cabe dentro da frase do lembrete. */
+function diaMes(iso: string): string | null {
+  if (iso.trim() === '') return null;
+  const data = new Date(iso);
+  if (Number.isNaN(data.getTime())) return null;
+  return data.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+}
+
+/**
+ * O lembrete venceu antes de hoje. Compara DIA com DIA (o backend manda a data
+ * de aviso como instante ISO): um lembrete de hoje de manha nao pode aparecer
+ * em vermelho as 15h so porque a hora ja passou.
+ */
+function lembreteAtrasado(iso: string): boolean {
+  const data = new Date(iso);
+  if (Number.isNaN(data.getTime())) return false;
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  return data.getTime() < hoje.getTime();
+}
+
+/** Mensagem que o backend mandou no erro, quando ela existe. */
+function mensagemDoErro(err: unknown): string | undefined {
+  const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+  return typeof msg === 'string' && msg.trim() !== '' ? msg : undefined;
 }
 
 function formatarData(iso: string | null): string | null {
@@ -522,6 +626,11 @@ const AJUDA_FOCO =
 
 const AJUDA_COMPRARAM =
   'Clientes que já fecharam: leads em etapa de ganho ou com uma compra registrada na ficha. Serve para o pós-venda — agradecer, pedir indicação ou oferecer o próximo produto. Mostra os mais recentes primeiro.';
+
+const AJUDA_LEMBRETES =
+  'Compromissos que o próprio cliente deu na conversa — o CRM avisa na data certa.';
+
+const LEMBRETES_DESCRICAO = 'O cliente pediu para você voltar a falar hoje';
 
 const CHAVE_COLAPSO = 'radar:secoes-fechadas';
 /** Chave propria: "Compraram" nasce FECHADA, e a lista de `CHAVE_COLAPSO`
@@ -1041,6 +1150,199 @@ function CardCompra({ item, expandido, onAlternar, onCopiar, onAbrir }: CardComp
 }
 
 // ---------------------------------------------------------------------------
+// Lembretes de hoje
+// ---------------------------------------------------------------------------
+
+/** Os tres adiamentos oferecidos no popover — dias e rotulo juntos. */
+const ADIAMENTOS: { dias: number; rotulo: string }[] = [
+  { dias: 1, rotulo: '+1 dia' },
+  { dias: 7, rotulo: '+7 dias' },
+  { dias: 30, rotulo: '+30 dias' },
+];
+
+type AcaoLembrete = 'concluir' | 'adiar' | 'descartar';
+
+interface PedidoLembrete {
+  id: string;
+  acao: AcaoLembrete;
+  /** So em `adiar`. */
+  dias?: number;
+}
+
+/**
+ * Card do compromisso do dia. As mutacoes vivem AQUI dentro, uma instancia por
+ * card: e o que da a trava por lembrete — clicar em "Concluir" num card nao
+ * desabilita os botoes dos outros, e o card que acabou de resolver segue
+ * travado ate o refetch tirar ele da tela.
+ *
+ * `motivo` e a fala do cliente lida pela IA: renderiza SO como texto React.
+ */
+function CardLembrete({
+  lembrete,
+  onAbrir,
+}: {
+  lembrete: RadarLembrete;
+  onAbrir: (leadId: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [adiarAberto, setAdiarAberto] = useState(false);
+  const item = lembrete.lead;
+  const temperatura = rotuloTemperatura(item.temperatura).trim();
+  const ditoEm = diaMes(lembrete.dito_em);
+  const avisarEm = diaMes(lembrete.avisar_em);
+  const atrasado = lembreteAtrasado(lembrete.avisar_em);
+  const motivo = lembrete.motivo.trim();
+
+  const agir = useMutation<void, unknown, PedidoLembrete>({
+    mutationFn: async ({ id, acao, dias }) => {
+      if (acao === 'adiar') {
+        await api.post(`/api/lembretes/${id}/adiar`, { dias });
+        return;
+      }
+      await api.post(`/api/lembretes/${id}/${acao}`);
+    },
+    onSuccess: (_dados, pedido) => {
+      setAdiarAberto(false);
+      if (pedido.acao === 'concluir') toast.success('Lembrete concluído');
+      else if (pedido.acao === 'descartar') toast.success('Lembrete descartado');
+      else toast.success(`Lembrete adiado ${pedido.dias === 1 ? '1 dia' : `${pedido.dias} dias`}`);
+      void queryClient.invalidateQueries({ queryKey: ['radar'] });
+    },
+    onError: (err: unknown) => {
+      toast.error(mensagemDoErro(err) ?? 'Não foi possível atualizar o lembrete.');
+    },
+  });
+
+  /**
+   * Continua travado DEPOIS do sucesso: entre o fim do POST e o refetch que
+   * apaga o card existe uma janela em que ele ainda esta na tela — sem isto um
+   * segundo clique bateria num lembrete que ja foi resolvido (404).
+   */
+  const resolvido =
+    agir.isPending || (agir.isSuccess && agir.variables?.id === lembrete.lembrete_id);
+  const emAndamento = (acao: AcaoLembrete) => agir.isPending && agir.variables?.acao === acao;
+
+  return (
+    <article className="flex flex-col gap-3 rounded-xl border border-violet-500/40 bg-violet-500/[0.04] p-4 shadow-sm dark:bg-violet-500/[0.07]">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <Link
+            href={`/chat/${item.lead_id}`}
+            className="block truncate text-sm font-medium hover:underline"
+          >
+            {item.nome}
+          </Link>
+          <p className="truncate text-xs text-muted-foreground">
+            {item.telefone ? formatPhone(item.telefone) : 'Sem telefone'}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          {item.etapa && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+              {item.etapa}
+            </span>
+          )}
+          {temperatura && (
+            <span
+              className={cn(
+                'rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                classeTemperatura(item.temperatura),
+              )}
+            >
+              {temperatura}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* O contexto original e o motivo do card existir: sem a fala do cliente
+          o vendedor liga sem saber por que. */}
+      {motivo !== '' && (
+        <p className="rounded-lg border border-violet-500/40 bg-violet-500/10 p-2.5 text-sm leading-relaxed text-violet-900 dark:text-violet-200">
+          {ditoEm ? `Em ${ditoEm} ele disse: ` : 'Ele disse: '}
+          <span className="font-medium">{`"${motivo}"`}</span>
+        </p>
+      )}
+
+      {avisarEm && (
+        <p
+          className={cn(
+            'flex items-center gap-1.5 text-xs font-medium',
+            atrasado ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground',
+          )}
+        >
+          <CalendarClock className="h-3.5 w-3.5 shrink-0" />
+          Voltar a falar: {avisarEm}
+          {atrasado && ' (atrasado)'}
+        </p>
+      )}
+
+      <div className="mt-auto flex flex-wrap gap-2">
+        {/* Nao trava com `resolvido`: abrir a conversa e navegacao, nao mutacao
+            — quem acabou de concluir ainda pode querer mandar a mensagem. */}
+        <Button size="sm" className="flex-1" onClick={() => onAbrir(item.lead_id)}>
+          <MessageSquare className="mr-1.5 h-4 w-4" />
+          Abrir conversa
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={resolvido}
+          onClick={() => agir.mutate({ id: lembrete.lembrete_id, acao: 'concluir' })}
+        >
+          {emAndamento('concluir') ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <Check className="mr-1.5 h-4 w-4" />
+          )}
+          Concluir
+        </Button>
+        <Popover open={adiarAberto} onOpenChange={setAdiarAberto}>
+          <PopoverTrigger asChild>
+            <Button size="sm" variant="outline" disabled={resolvido}>
+              {emAndamento('adiar') ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <CalendarClock className="mr-1.5 h-4 w-4" />
+              )}
+              Adiar
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-40 p-1">
+            {ADIAMENTOS.map((opcao) => (
+              <button
+                key={opcao.dias}
+                type="button"
+                disabled={resolvido}
+                onClick={() =>
+                  agir.mutate({ id: lembrete.lembrete_id, acao: 'adiar', dias: opcao.dias })
+                }
+                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+              >
+                {opcao.rotulo}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={resolvido}
+          onClick={() => agir.mutate({ id: lembrete.lembrete_id, acao: 'descartar' })}
+        >
+          {emAndamento('descartar') ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <X className="mr-1.5 h-4 w-4" />
+          )}
+          Descartar
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Cabecalho narrativo
 // ---------------------------------------------------------------------------
 
@@ -1052,6 +1354,9 @@ function saudacaoDaHora(hora: number): string {
 
 const DESTAQUE = 'font-semibold text-amber-700 dark:text-amber-400';
 
+/** Mesmo roxo da seção de lembretes: a frase e a seção falam do mesmo assunto. */
+const DESTAQUE_LEMBRETE = 'font-semibold text-violet-700 dark:text-violet-400';
+
 /**
  * O primeiro paragrafo do dia. Le como frase, nao como painel de numeros — o
  * vendedor precisa saber o que fazer, nao interpretar KPI.
@@ -1062,7 +1367,12 @@ function ResumoNarrativo({ resumo }: { resumo: RadarResumo }) {
   const [saudacao, setSaudacao] = useState<string | null>(null);
   useEffect(() => setSaudacao(saudacaoDaHora(new Date().getHours())), []);
 
-  const temPendencia = resumo.esperando > 0 || resumo.chamar_hoje > 0;
+  // Lembrete de hoje TAMBEM e pendencia: sem isto a frase diria "tudo em dia"
+  // com a seção roxa cheia logo abaixo.
+  const temPendencia =
+    resumo.esperando > 0 || resumo.chamar_hoje > 0 || resumo.lembretes_hoje > 0;
+  /** Ha algo antes do trecho dos lembretes? Decide o " · " de ligacao. */
+  const antesDoLembrete = resumo.esperando > 0 || resumo.chamar_hoje > 0;
 
   return (
     <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
@@ -1090,6 +1400,16 @@ function ResumoNarrativo({ resumo }: { resumo: RadarResumo }) {
                     <span className="font-semibold">{BRL.format(resumo.valor_chamar_hoje)}</span>
                   </>
                 )}
+              </>
+            )}
+            {resumo.lembretes_hoje > 0 && (
+              <>
+                {antesDoLembrete && ' · '}
+                <span className={DESTAQUE_LEMBRETE}>
+                  {resumo.lembretes_hoje}{' '}
+                  {resumo.lembretes_hoje === 1 ? 'lembrete' : 'lembretes'}
+                </span>{' '}
+                que o cliente pediu para hoje
               </>
             )}
             .
@@ -1213,6 +1533,14 @@ export default function RadarPage() {
     [radar, termo],
   );
 
+  /** Lembretes ficam fora de `porBusca` (tipo proprio), mas obedecem a MESMA
+   *  busca — pelo lead de dentro — e o mesmo seletor de funil (que ja recorta
+   *  no servidor, via `queryKey`). */
+  const lembretesFiltrados = useMemo(
+    () => radar.lembretes_hoje.filter((l) => combina(l.lead, termo)),
+    [radar.lembretes_hoje, termo],
+  );
+
   // Os grupos saem do que a BUSCA deixou passar, nunca do recorte por etapa —
   // senao clicar numa pilula apagaria todas as outras da tela.
   const grupos = useMemo(() => agruparPorEtapa(porBusca.promissores), [porBusca.promissores]);
@@ -1242,7 +1570,8 @@ export default function RadarPage() {
     porBusca.promissores.length +
     porBusca.esfriando.length +
     porBusca.melhores.length +
-    porBusca.compraram.length;
+    porBusca.compraram.length +
+    lembretesFiltrados.length;
 
   const buscando = termo !== '';
   /** Busca ativa e nenhuma seção com resultado: um aviso só, no topo. */
@@ -1453,6 +1782,48 @@ export default function RadarPage() {
             return (
               <Fragment key={secao.chave}>
                 {bloco}
+
+                {/* Lembretes vem logo depois de quem esta esperando: os dois
+                    sao hora marcada. Backend anterior a Fase 3 devolve a chave
+                    ausente — a lista fica vazia e a seção inteira some. */}
+                {!isLoading && radar.lembretes_hoje.length > 0 && (
+                  <section className="space-y-3 rounded-xl border-l-4 border-violet-500/70 bg-violet-500/[0.03] py-3 pl-4 pr-3 dark:bg-violet-500/[0.05]">
+                    <CabecalhoSecao
+                      titulo="Lembretes de hoje"
+                      descricao={LEMBRETES_DESCRICAO}
+                      ajuda={AJUDA_LEMBRETES}
+                      contagem={
+                        buscando
+                          ? `(${lembretesFiltrados.length} de ${radar.lembretes_hoje.length})`
+                          : `(${radar.lembretes_hoje.length})`
+                      }
+                      aberta={!fechadas.includes('lembretes_hoje')}
+                      onAlternar={() => alternarSecao('lembretes_hoje')}
+                      icone={
+                        <CalendarClock className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                      }
+                    />
+
+                    {!fechadas.includes('lembretes_hoje') &&
+                      (lembretesFiltrados.length === 0 ? (
+                        buscaSemResultado ? null : (
+                          <p className="text-sm text-muted-foreground">
+                            Nenhum resultado nesta seção.
+                          </p>
+                        )
+                      ) : (
+                        <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {lembretesFiltrados.map((lembrete) => (
+                            <CardLembrete
+                              key={lembrete.lembrete_id}
+                              lembrete={lembrete}
+                              onAbrir={(leadId) => router.push(`/chat/${leadId}`)}
+                            />
+                          ))}
+                        </div>
+                      ))}
+                  </section>
+                )}
 
                 {!isLoading && grupos.length > 0 && (
                   <BlocoDinheiro
