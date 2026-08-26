@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; ia_ajusta_temperatura?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
 
 const DIAS = [
   { iso: 1, label: 'Seg' },
@@ -54,6 +54,11 @@ export function GeneralTab() {
   );
   const inconsistent = tenant.pool_enabled && distinctOwners.size > 1;
 
+  // O tipo `Tenant` do store ainda não declara este campo, mas o objeto vem do
+  // mesmo payload que o PATCH devolve. Ausente (backend anterior) = ligado —
+  // é o comportamento padrão, e um `undefined` não pode desligar o recurso.
+  const iaAjustaTemperatura = (tenant as TenantSettings).ia_ajusta_temperatura !== false;
+
   const handlePoolToggle = async (checked: boolean) => {
     setIsPending(true);
     try {
@@ -86,6 +91,26 @@ export function GeneralTab() {
         checked
           ? 'Distribuição automática (round-robin) ativada.'
           : 'Distribuição automática desativada.',
+      );
+    } catch {
+      toast.error('Erro ao salvar configuração.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleIaTemperaturaToggle = async (checked: boolean) => {
+    setIsPending(true);
+    try {
+      const { data } = await api.patch<TenantSettings>(
+        '/api/tenants/settings',
+        { ia_ajusta_temperatura: checked },
+      );
+      setTenant(data);
+      toast.success(
+        checked
+          ? 'A ficha inteligente passa a ajustar a temperatura sozinha.'
+          : 'A temperatura volta a ser só manual.',
       );
     } catch {
       toast.error('Erro ao salvar configuração.');
@@ -255,6 +280,25 @@ export function GeneralTab() {
           onCheckedChange={handleShareHistoryToggle}
           disabled={isPending}
           aria-label="Compartilhar histórico na transferência"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">
+            IA ajusta a temperatura dos leads
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Quando ligado, a ficha inteligente atualiza a temperatura (frio,
+            morno, quente) sozinha conforme a conversa evolui — cada mudança
+            fica registrada na timeline do lead.
+          </p>
+        </div>
+        <Switch
+          checked={iaAjustaTemperatura}
+          onCheckedChange={handleIaTemperaturaToggle}
+          disabled={isPending}
+          aria-label="IA ajusta a temperatura dos leads"
         />
       </div>
 
