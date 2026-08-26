@@ -34,6 +34,16 @@ export interface CompraCitada {
   quando: string;
 }
 
+/**
+ * Marco temporal que o CLIENTE deu na conversa ("me chama em outubro").
+ * `quando` ja veio validado como `AAAA-MM-DD` de data real; se e futuro ou passado
+ * quem decide e o worker, que sabe que dia e hoje — esta lib e pura e sem relogio.
+ */
+export interface LembreteExtraido {
+  motivo: string;
+  quando: string;
+}
+
 /** Temperaturas que o modelo pode sugerir (as mesmas do funil). */
 export const TEMPERATURAS = ['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE'] as const;
 export type TemperaturaSugerida = (typeof TEMPERATURAS)[number];
@@ -59,6 +69,8 @@ export interface InsightGerado {
   etapa_sugerida: string | null;
   /** So preenchido quando ha etapa sugerida; caso contrario "". */
   etapa_sugerida_motivo: string;
+  /** Marcos temporais ditos pelo cliente; `[]` = nada a lembrar (o padrao). */
+  lembretes: LembreteExtraido[];
 }
 
 const LIMITE_RESUMO = 800;
@@ -79,6 +91,9 @@ const NOTA_MAX = 10;
 const LIMITE_JUSTIFICATIVA = 200;
 const LIMITE_ETAPA = 60;
 const LIMITE_ETAPA_MOTIVO = 200;
+const LIMITE_LEMBRETE_MOTIVO = 200;
+/** Tres lembretes ja e mais do que um atendente consegue acompanhar por lead. */
+const MAX_LEMBRETES = 3;
 /** Cada mensagem entra no prompt truncada — modelo local tem contexto curto. */
 const LIMITE_TEXTO_MENSAGEM = 1000;
 
@@ -88,6 +103,8 @@ const LIMITE_TEXTO_MENSAGEM = 1000;
  * de exemplo ensinaria justamente a inventar a compra que a regra proibe.
  * Mesma logica para `temperatura_sugerida` e `etapa_sugerida`: o padrao delas tambem e
  * "nao mexer", e um exemplo tipo "QUENTE" no shape viraria sugestao em toda ficha.
+ * `lembretes` aparece como lista VAZIA pelo mesmo motivo: um item de exemplo com data
+ * viraria lembrete inventado em toda conversa sem marco temporal nenhum.
  */
 const SHAPE_JSON = `{
   "resumo": "string",
@@ -102,14 +119,15 @@ const SHAPE_JSON = `{
   "temperatura_sugerida": null,
   "temperatura_justificativa": "string",
   "etapa_sugerida": null,
-  "etapa_sugerida_motivo": "string"
+  "etapa_sugerida_motivo": "string",
+  "lembretes": []
 }`;
 
 const SYSTEM_PROMPT = `Voce e um assistente de analise comercial de um CRM de WhatsApp em portugues do Brasil.
 Voce le a conversa entre a equipe de atendimento e o cliente e devolve uma ficha do lead.
 
 Responda APENAS com o objeto JSON abaixo, sem texto antes ou depois, sem markdown, sem crase.
-Use exatamente estas 13 chaves:
+Use exatamente estas 14 chaves:
 ${SHAPE_JSON}
 
 Regras de cada campo:
@@ -126,6 +144,7 @@ Regras de cada campo:
 - "temperatura_justificativa": UMA frase citando o que na conversa justifica a mudança; "" quando temperatura_sugerida for null.
 - "etapa_sugerida": o padrão é null. Troque pelo NOME EXATO de uma das etapas listadas em "Etapas disponíveis" APENAS se a conversa mostrar que o lead já passou da etapa atual (ex.: proposta enviada e cliente analisando = etapa de negociação). Você apenas sugere: quem move é o atendente.
 - "etapa_sugerida_motivo": UMA frase explicando; "" quando etapa_sugerida for null.
+- "lembretes": o padrão é []. Adicione um item APENAS quando o CLIENTE deu um marco temporal explícito ou fortemente implícito para ser procurado de novo ("me chama em outubro", "só depois da reforma, uns 2 meses", "volto do exterior dia 10"). "quando" = data futura no formato AAAA-MM-DD, calculada a partir da DATA DA MENSAGEM em que ele disse (não de hoje; cada mensagem da conversa vem datada em [AAAA-MM-DD HH:mm UTC]). "motivo" = UMA frase com a fala/contexto original. Nunca invente; sem marco temporal claro, deixe [].
 
 Restricoes absolutas:
 - Voce NUNCA responde pelo cliente e NUNCA envia nada: apenas sugere para o atendente humano decidir.
@@ -217,6 +236,41 @@ function comoCompra(valor: unknown): CompraCitada | null {
     valor: bruto !== null && bruto >= 0 ? bruto : null,
     quando: comoTexto(valor.quando, LIMITE_COMPRA_QUANDO),
   };
+}
+
+/**
+ * Data-calendario real em `AAAA-MM-DD`. O regex sozinho aceita "2026-13-45", e `new Date`
+ * sozinho transborda ("2026-02-30" viraria 02 de marco): so passa quando os tres numeros
+ * voltam iguais do calendario UTC.
+ */
+function ehDataIso(texto: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(texto)) return false;
+  const ano = Number(texto.slice(0, 4));
+  const mes = Number(texto.slice(5, 7));
+  const dia = Number(texto.slice(8, 10));
+  const data = new Date(Date.UTC(ano, mes - 1, dia));
+  return data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia;
+}
+
+/**
+ * Lembretes: valida so a FORMA (data de calendario + motivo util), nunca o calendario
+ * contra "hoje" — a lib e pura e sem relogio, e futuro-ou-passado e decisao de quem agenda.
+ * Item malformado sai fora em silencio: lembrete errado no painel custa mais que lembrete a menos.
+ */
+function comoLembretes(valor: unknown): LembreteExtraido[] {
+  if (!Array.isArray(valor)) return [];
+  const saida: LembreteExtraido[] = [];
+  for (const item of valor) {
+    if (!ehObjeto(item)) continue;
+    // Sem truncar: cortar em 10 faria "2026-10-15T00:00:00Z" passar como se fosse data pura.
+    const quando = typeof item.quando === 'string' ? item.quando.trim() : '';
+    if (!ehDataIso(quando)) continue;
+    const motivo = comoTexto(item.motivo, LIMITE_LEMBRETE_MOTIVO);
+    if (motivo === '') continue;
+    saida.push({ motivo, quando });
+    if (saida.length >= MAX_LEMBRETES) break;
+  }
+  return saida;
 }
 
 /**
@@ -342,6 +396,7 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
     etapa_sugerida: etapaSugerida,
     etapa_sugerida_motivo:
       etapaSugerida === null ? '' : comoTexto(alvo.etapa_sugerida_motivo, LIMITE_ETAPA_MOTIVO),
+    lembretes: comoLembretes(alvo.lembretes),
   };
 }
 
@@ -424,7 +479,7 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     '## Conversa (mais antiga primeiro)',
     blocoMensagens,
     '',
-    'Analise a conversa acima e responda apenas com o objeto JSON das 13 chaves.',
+    'Analise a conversa acima e responda apenas com o objeto JSON das 14 chaves.',
   ].join('\n');
 
   return [

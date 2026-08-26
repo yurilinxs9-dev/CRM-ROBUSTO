@@ -268,18 +268,18 @@ describe('sugestao de temperatura e etapa', () => {
     expect(user).not.toMatch(/Etapas disponíveis para sugestão/);
   });
 
-  it('system pede 13 chaves e explica as regras novas', () => {
+  it('system pede as chaves do contrato atual e explica as regras novas', () => {
     const system = montarPromptInsight(ctxMinimo())[0].content;
-    expect(system).toMatch(/13 chaves/);
-    expect(system).not.toMatch(/9 chaves/);
+    expect(system).toMatch(/14 chaves/);
+    expect(system).not.toMatch(/(9|13) chaves/);
     expect(system).toMatch(/temperatura_sugerida/);
     expect(system).toMatch(/temperatura_justificativa/);
     expect(system).toMatch(/etapa_sugerida/);
     expect(system).toMatch(/etapa_sugerida_motivo/);
     expect(system).toMatch(/MUITO_QUENTE/);
     const user = montarPromptInsight(ctxMinimo())[1].content;
-    expect(user).toMatch(/13 chaves/);
-    expect(user).not.toMatch(/9 chaves/);
+    expect(user).toMatch(/14 chaves/);
+    expect(user).not.toMatch(/(9|13) chaves/);
   });
 
   it('shape do prompt mantem null nos campos de sugestao (anti copy-the-shape)', () => {
@@ -288,6 +288,90 @@ describe('sugestao de temperatura e etapa', () => {
     expect(shape).toMatch(/"temperatura_sugerida":\s*null/);
     expect(shape).toMatch(/"etapa_sugerida":\s*null/);
     expect(shape).not.toMatch(/"QUENTE"/); // temperatura de exemplo so na regra textual
+  });
+});
+
+describe('lembretes temporais', () => {
+  /** Contrato de 13 chaves (fase 4), usado como base para acrescentar `lembretes`. */
+  const base13 = {
+    resumo: 'Cliente pediu prazo.',
+    memoria_novos_fatos: [],
+    proxima_acao_em_dias: 3,
+    proxima_acao_motivo: 'confirmar metragem',
+    msg_sugerida: 'Oi!',
+    nota_atendimento: 8,
+    nota_ponto_forte: 'respondeu rápido',
+    nota_ponto_melhoria: 'não confirmou o prazo',
+    ultima_compra: null,
+    temperatura_sugerida: null,
+    temperatura_justificativa: '',
+    etapa_sugerida: null,
+    etapa_sugerida_motivo: '',
+  };
+
+  it('lembrete bem formado passa saneado', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base13,
+      lembretes: [{ motivo: 'pediu para chamar em outubro', quando: '2026-10-15' }],
+    }));
+    expect(r?.lembretes).toEqual([{ motivo: 'pediu para chamar em outubro', quando: '2026-10-15' }]);
+  });
+
+  it('motivo trunca em 200', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base13,
+      lembretes: [{ motivo: 'm'.repeat(500), quando: '2026-10-15' }],
+    }));
+    expect(r?.lembretes[0].motivo.length).toBe(200);
+  });
+
+  it('cap de 3 lembretes: 5 itens viram 3, na ordem', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base13,
+      lembretes: [1, 2, 3, 4, 5].map((n) => ({ motivo: `lembrete ${n}`, quando: `2026-10-0${n}` })),
+    }));
+    expect(r?.lembretes).toHaveLength(3);
+    expect(r?.lembretes.map((l) => l.motivo)).toEqual(['lembrete 1', 'lembrete 2', 'lembrete 3']);
+  });
+
+  it('data ilegivel ou impossivel derruba o item', () => {
+    for (const quando of ['outubro', '15/10/2026', '2026-10', '2026-10-15T00:00:00Z', 42, null, '2026-13-45', '2026-02-30']) {
+      const r = extrairInsight(JSON.stringify({ ...base13, lembretes: [{ motivo: 'chamar depois', quando }] }));
+      expect(r?.lembretes).toEqual([]);
+    }
+  });
+
+  it('motivo vazio, item nao-objeto e lembretes nao-array somem', () => {
+    const sujo = extrairInsight(JSON.stringify({
+      ...base13,
+      lembretes: [42, 'em outubro', { quando: '2026-10-15' }, { motivo: '   ', quando: '2026-10-15' }, { motivo: 'ok', quando: '2026-10-15' }],
+    }));
+    expect(sujo?.lembretes).toEqual([{ motivo: 'ok', quando: '2026-10-15' }]);
+    for (const lixo of ['2026-10-15', 42, { motivo: 'ok', quando: '2026-10-15' }, null]) {
+      expect(extrairInsight(JSON.stringify({ ...base13, lembretes: lixo }))?.lembretes).toEqual([]);
+    }
+  });
+
+  it('resposta no contrato de 13 chaves segue valida: lembretes vira [] (retrocompat)', () => {
+    const r = extrairInsight(JSON.stringify(base13));
+    expect(r?.resumo).toContain('prazo');
+    expect(r?.lembretes).toEqual([]);
+  });
+
+  it('shape do prompt traz lembretes VAZIO (anti copy-the-shape)', () => {
+    const shape = montarPromptInsight(ctxMinimo())[0].content.split('Regras de cada campo')[0];
+    expect(shape).toMatch(/"lembretes":\s*\[\s*\]/);
+    expect(shape).not.toMatch(/"motivo"/); // exemplo preenchido so na regra textual
+  });
+
+  it('system explica a regra: so marco temporal do cliente, data da mensagem, nunca inventar', () => {
+    const regras = montarPromptInsight(ctxMinimo())[0].content.split('Regras de cada campo')[1];
+    expect(regras).toMatch(/"lembretes"/);
+    expect(regras).toMatch(/o padrão é \[\]/);
+    expect(regras).toMatch(/CLIENTE/);
+    expect(regras).toMatch(/AAAA-MM-DD/);
+    expect(regras).toMatch(/DATA DA MENSAGEM/);
+    expect(regras).toMatch(/[nN]unca invente/);
   });
 });
 
