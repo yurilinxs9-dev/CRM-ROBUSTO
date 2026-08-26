@@ -4,6 +4,7 @@ import type { Queue } from 'bullmq';
 import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { AiProviderService } from '../ai/ai-provider.service';
 import type { LeadsService } from '../leads/leads.service';
+import type { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import { LeadInsightsService } from './lead-insights.service';
 import type { GerarInsightJobData } from './lead-insights.queue';
@@ -17,19 +18,23 @@ import type { GerarInsightJobData } from './lead-insights.queue';
 function montar() {
   const leadInsight = { findUnique: jest.fn(), upsert: jest.fn() };
   const message = { count: jest.fn(), findMany: jest.fn() };
-  const lead = { findFirst: jest.fn(), findMany: jest.fn() };
-  const prisma = { leadInsight, message, lead };
+  const lead = { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() };
+  const stage = { findMany: jest.fn().mockResolvedValue([]) };
+  const leadActivity = { create: jest.fn() };
+  const prisma = { leadInsight, message, lead, stage, leadActivity };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn() };
+  const gateway = { emitLeadUpdated: jest.fn() };
 
   const service = new LeadInsightsService(
     prisma as unknown as PrismaService,
     queue as unknown as Queue<GerarInsightJobData>,
     ai as unknown as AiProviderService,
     leads as unknown as LeadsService,
+    gateway as unknown as CrmGateway,
   );
-  return { service, leadInsight, message, lead, queue, ai, leads };
+  return { service, leadInsight, message, lead, stage, leadActivity, queue, ai, leads, gateway };
 }
 
 const HORA = 60 * 60 * 1000;
@@ -50,6 +55,8 @@ const tenantComercial = {
   broadcast_window_start: 9,
   broadcast_window_end: 18,
   broadcast_window_days: [1, 2, 3, 4, 5],
+  // Fase 4: toggle do tenant. Default do schema e `true`.
+  ia_ajusta_temperatura: true,
 };
 
 function leadCompleto(overrides: Record<string, unknown> = {}) {
@@ -61,10 +68,20 @@ function leadCompleto(overrides: Record<string, unknown> = {}) {
     valor_estimado: decimal(1500),
     ultima_interacao: new Date('2026-08-07T12:00:00Z'),
     estagio: { nome: 'Proposta' },
+    estagio_id: 'st-proposta',
+    pipeline_id: 'pipe-1',
     tenant: tenantComercial,
     ...overrides,
   };
 }
+
+/** Pipeline do lead: a etapa atual e "Proposta" (`st-proposta`). */
+const ETAPAS_PIPELINE = [
+  { id: 'st-novo', nome: 'Novo' },
+  { id: 'st-proposta', nome: 'Proposta' },
+  { id: 'st-negociacao', nome: 'Negociação' },
+  { id: 'st-ganho', nome: 'Ganho' },
+];
 
 const RESPOSTA_OK = JSON.stringify({
   resumo: 'Cliente pediu proposta de 10 portas e vai decidir apos a obra.',
@@ -579,6 +596,303 @@ describe('LeadInsightsService.gerarInsight', () => {
 
     expect(m.ai.chat).not.toHaveBeenCalled();
     expect(m.leadInsight.upsert).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Fase 4 do Radar 2.0: a ficha passa a sugerir temperatura e etapa. A
+ * temperatura pode ser APLICADA no lead (toggle do tenant); a etapa nunca e
+ * aplicada sozinha — so persiste como sugestao para o atendente decidir.
+ */
+describe('LeadInsightsService.gerarInsight (fase 4: temperatura e etapa)', () => {
+  const mensagens = [
+    {
+      direction: 'INCOMING',
+      type: 'TEXT',
+      content: 'quero fechar essa semana',
+      created_at: new Date('2026-08-07T10:00:00Z'),
+    },
+  ];
+
+  /** Cenario base: pipeline com 4 etapas, ficha anterior sem recusa nenhuma. */
+  function preparar(
+    resposta: Record<string, unknown> = {},
+    opcoes: { lead?: Record<string, unknown>; anterior?: Record<string, unknown> } = {},
+  ) {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto(opcoes.lead));
+    m.stage.findMany.mockResolvedValue(ETAPAS_PIPELINE);
+    m.message.findMany.mockResolvedValue([...mensagens].reverse());
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: null,
+      etapa_recusas: [],
+      ...opcoes.anterior,
+    });
+    m.ai.chat.mockResolvedValue({ text: resposta360(resposta), tokensIn: 1, tokensOut: 1 });
+    m.message.count.mockResolvedValue(0);
+    return m;
+  }
+
+  function fichaGravada(upsert: jest.Mock) {
+    const [args] = upsert.mock.calls[0] as [
+      { create: Record<string, unknown>; update: Record<string, unknown> },
+    ];
+    return args;
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-07T13:00:00Z'));
+  });
+  afterEach(() => jest.useRealTimers());
+
+  // (a)
+  it('toggle ON: sugestao diferente da atual aplica no lead, registra activity e emite', async () => {
+    const m = preparar({
+      temperatura_sugerida: 'QUENTE',
+      temperatura_justificativa: 'Cliente pediu prazo de fechamento.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.lead.update).toHaveBeenCalledTimes(1);
+    const [upd] = m.lead.update.mock.calls[0] as [
+      { where: { id: string }; data: { temperatura: string } },
+    ];
+    expect(upd.where).toEqual({ id: 'lead-1' });
+    expect(upd.data).toEqual({ temperatura: 'QUENTE' });
+
+    expect(m.leadActivity.create).toHaveBeenCalledTimes(1);
+    const [act] = m.leadActivity.create.mock.calls[0] as [
+      {
+        data: {
+          lead_id: string;
+          tenant_id: string;
+          user_id: string | null;
+          tipo: string;
+          descricao: string;
+          dados_antes: unknown;
+          dados_depois: unknown;
+        };
+      },
+    ];
+    expect(act.data.lead_id).toBe('lead-1');
+    expect(act.data.tenant_id).toBe('t1');
+    // Quem mudou foi a IA, nao uma pessoa: sem user_id na timeline.
+    expect(act.data.user_id).toBeNull();
+    expect(act.data.tipo).toBe('ia_temperatura');
+    expect(act.data.descricao).toContain('MORNO → QUENTE');
+    expect(act.data.descricao).toContain('Cliente pediu prazo de fechamento.');
+    expect(act.data.dados_antes).toEqual({ temperatura: 'MORNO' });
+    expect(act.data.dados_depois).toEqual({ temperatura: 'QUENTE' });
+
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith(
+      'lead-1',
+      { temperatura: 'QUENTE' },
+      't1',
+    );
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.temperatura_sugerida).toBe('QUENTE');
+    expect(args.update.temperatura_justificativa).toBe('Cliente pediu prazo de fechamento.');
+    expect(args.create.temperatura_sugerida).toBe('QUENTE');
+  });
+
+  // (b)
+  it('toggle OFF: nao mexe no lead, mas a ficha guarda a sugestao para o front', async () => {
+    const m = preparar(
+      {
+        temperatura_sugerida: 'QUENTE',
+        temperatura_justificativa: 'Cliente pediu prazo de fechamento.',
+      },
+      { lead: { tenant: { ...tenantComercial, ia_ajusta_temperatura: false } } },
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.lead.update).not.toHaveBeenCalled();
+    expect(m.leadActivity.create).not.toHaveBeenCalled();
+    expect(m.gateway.emitLeadUpdated).not.toHaveBeenCalled();
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.temperatura_sugerida).toBe('QUENTE');
+    expect(args.update.temperatura_justificativa).toBe('Cliente pediu prazo de fechamento.');
+  });
+
+  // (c)
+  it('sugestao igual a temperatura atual nao e sugestao: ficha guarda null', async () => {
+    const m = preparar({
+      temperatura_sugerida: 'MORNO',
+      temperatura_justificativa: 'Segue morno.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.lead.update).not.toHaveBeenCalled();
+    expect(m.leadActivity.create).not.toHaveBeenCalled();
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.temperatura_sugerida).toBeNull();
+    expect(args.update.temperatura_justificativa).toBe('');
+  });
+
+  // (d)
+  it('sem sugestao de temperatura a geracao nova limpa a sugestao velha', async () => {
+    const m = preparar({ temperatura_sugerida: null, temperatura_justificativa: '' });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.lead.update).not.toHaveBeenCalled();
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.temperatura_sugerida).toBeNull();
+    expect(args.update.temperatura_justificativa).toBe('');
+    expect(args.create.temperatura_sugerida).toBeNull();
+  });
+
+  // (e)
+  it('etapa sugerida sem acento e em caixa baixa casa com a etapa real do pipeline', async () => {
+    const m = preparar({
+      etapa_sugerida: 'negociacao',
+      etapa_sugerida_motivo: 'Proposta enviada e cliente analisando.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_sugerida_id).toBe('st-negociacao');
+    expect(args.update.etapa_sugerida_motivo).toBe('Proposta enviada e cliente analisando.');
+    // Sugerir etapa NUNCA move o lead: quem move e o atendente.
+    expect(m.lead.update).not.toHaveBeenCalled();
+  });
+
+  // (e)
+  it('etapa inventada pelo modelo nao vira id: ficha guarda null', async () => {
+    const m = preparar({
+      etapa_sugerida: 'Pos-venda VIP',
+      etapa_sugerida_motivo: 'Inventou.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_sugerida_id).toBeNull();
+    expect(args.update.etapa_sugerida_motivo).toBe('');
+  });
+
+  // (e)
+  it('sugerir a etapa ATUAL nao e sugestao: ficha guarda null', async () => {
+    const m = preparar({
+      etapa_sugerida: 'Proposta',
+      etapa_sugerida_motivo: 'Segue na proposta.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_sugerida_id).toBeNull();
+    expect(args.update.etapa_sugerida_motivo).toBe('');
+  });
+
+  // (f)
+  it('recusa de 3 dias suprime a mesma sugestao de etapa', async () => {
+    const m = preparar(
+      { etapa_sugerida: 'Negociação', etapa_sugerida_motivo: 'Cliente pediu condicoes.' },
+      {
+        anterior: {
+          etapa_recusas: [{ estagio_id: 'st-negociacao', em: '2026-08-04T13:00:00.000Z' }],
+        },
+      },
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_sugerida_id).toBeNull();
+    expect(args.update.etapa_sugerida_motivo).toBe('');
+  });
+
+  // (f)
+  it('recusa de 10 dias ja expirou: a sugestao volta a valer', async () => {
+    const m = preparar(
+      { etapa_sugerida: 'Negociação', etapa_sugerida_motivo: 'Cliente pediu condicoes.' },
+      {
+        anterior: {
+          etapa_recusas: [{ estagio_id: 'st-negociacao', em: '2026-07-28T13:00:00.000Z' }],
+        },
+      },
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(fichaGravada(m.leadInsight.upsert).update.etapa_sugerida_id).toBe('st-negociacao');
+  });
+
+  // (f)
+  it('recusa malformada no Json nao derruba a geracao nem suprime a sugestao', async () => {
+    // Coluna Json sem validacao no banco: ficha antiga / escrita a mao.
+    const m = preparar(
+      { etapa_sugerida: 'Negociação', etapa_sugerida_motivo: 'Cliente pediu condicoes.' },
+      { anterior: { etapa_recusas: ['st-negociacao', { estagio_id: 42 }, null, { em: 'x' }] } },
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(fichaGravada(m.leadInsight.upsert).update.etapa_sugerida_id).toBe('st-negociacao');
+  });
+
+  // (f)
+  it('recusa de OUTRA etapa nao suprime a sugestao desta', async () => {
+    const m = preparar(
+      { etapa_sugerida: 'Negociação', etapa_sugerida_motivo: 'Cliente pediu condicoes.' },
+      {
+        anterior: {
+          etapa_recusas: [{ estagio_id: 'st-ganho', em: '2026-08-06T13:00:00.000Z' }],
+        },
+      },
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(fichaGravada(m.leadInsight.upsert).update.etapa_sugerida_id).toBe('st-negociacao');
+  });
+
+  // (g)
+  it('falha ao aplicar a temperatura NAO derruba a ficha (ficha vale mais que o ajuste)', async () => {
+    const m = preparar({
+      temperatura_sugerida: 'QUENTE',
+      temperatura_justificativa: 'Cliente pediu prazo.',
+    });
+    m.lead.update.mockRejectedValue(new Error('deadlock'));
+
+    await expect(m.service.gerarInsight('lead-1', 't1')).resolves.toBeUndefined();
+
+    expect(m.lead.update).toHaveBeenCalledTimes(1);
+    expect(m.leadInsight.upsert).toHaveBeenCalledTimes(1);
+    expect(fichaGravada(m.leadInsight.upsert).update.temperatura_sugerida).toBe('QUENTE');
+  });
+
+  // (h)
+  it('prompt recebe as etapas do pipeline do lead MENOS a atual (won/lost incluidas)', async () => {
+    const m = preparar();
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const [busca] = m.stage.findMany.mock.calls[0] as [
+      { where: { pipeline_id: string; tenant_id: string } },
+    ];
+    expect(busca.where).toEqual({ pipeline_id: 'pipe-1', tenant_id: 't1' });
+
+    const [req] = m.ai.chat.mock.calls[0] as [
+      { messages: Array<{ role: string; content: string }> },
+    ];
+    const linhas = req.messages[1].content.split('\n');
+    expect(linhas).toContain('- Novo');
+    expect(linhas).toContain('- Negociação');
+    // Etapa ganha entra: sugerir fechamento e valido (mover continua sendo humano).
+    expect(linhas).toContain('- Ganho');
+    // A etapa ATUAL nunca e oferecida.
+    expect(linhas).not.toContain('- Proposta');
   });
 });
 

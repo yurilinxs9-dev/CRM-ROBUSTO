@@ -7,6 +7,7 @@ import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
 import { LeadsService } from '../leads/leads.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
 import { buildVisibilityWhere } from '../leads/lead-visibility';
 import { isWithinBroadcastWindow } from '../broadcasts/broadcast-window';
 import { UserRole } from '@/common/types/roles';
@@ -21,6 +22,7 @@ import {
   type InsightContexto,
   type InsightGerado,
   type MemoriaFato,
+  type TemperaturaSugerida,
 } from './insight-prompt';
 
 const MINUTO = 60 * 1000;
@@ -216,6 +218,79 @@ function compraParaPersistir(
     valor: arredondarValor(compra.valor),
     quando: compra.quando,
   };
+}
+
+/**
+ * Transicao de etapa que o atendente recusou. Quem ESCREVE em `etapa_recusas`
+ * sao os endpoints de aceitar/recusar; o worker so le.
+ */
+interface EtapaRecusa {
+  estagio_id: string;
+  /** ISO de quando foi recusada. */
+  em: string;
+}
+
+/** Janela em que uma etapa recusada nao volta a ser sugerida. */
+const RECUSA_JANELA_MS = 7 * DIA;
+
+/**
+ * Json cru do banco -> recusas tipadas. A coluna nao tem validacao nenhuma no
+ * banco (Json), entao entrada malformada e simplesmente ignorada — recusa
+ * quebrada nao pode cegar a sugestao nem derrubar a geracao da ficha.
+ */
+export function lerRecusas(valor: unknown): EtapaRecusa[] {
+  if (!Array.isArray(valor)) return [];
+  const saida: EtapaRecusa[] = [];
+  for (const item of valor) {
+    if (!ehRegistro(item)) continue;
+    if (typeof item.estagio_id !== 'string' || item.estagio_id.trim() === '') continue;
+    if (typeof item.em !== 'string') continue;
+    saida.push({ estagio_id: item.estagio_id, em: item.em });
+  }
+  return saida;
+}
+
+/** Mesma tecnica de `normalizarFato`: NFD sem acento, minusculo, aparado. */
+function normalizarNome(nome: string): string {
+  return nome
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * O modelo devolve o NOME da etapa (e local, escreve "negociacao" sem acento e
+ * em caixa baixa): so vira id se casar com uma etapa real do pipeline do lead.
+ * Nome inventado = `null`, nunca FK quebrada no banco.
+ */
+export function resolverEtapaSugerida(
+  sugerida: string | null,
+  etapas: Array<{ id: string; nome: string }>,
+  estagioAtualId: string,
+): string | null {
+  if (sugerida === null) return null;
+  const alvo = normalizarNome(sugerida);
+  if (alvo === '') return null;
+  const etapa = etapas.find((e) => normalizarNome(e.nome) === alvo);
+  if (etapa === undefined) return null;
+  // Defesa em profundidade: a etapa atual ja fica de fora de `etapas_disponiveis`,
+  // mas o modelo pode devolve-la assim mesmo — e "mover para onde ja esta" nao e
+  // sugestao, e um card de sugestao inutil na tela do atendente.
+  if (etapa.id === estagioAtualId) return null;
+  return etapa.id;
+}
+
+/**
+ * Etapa recusada nos ultimos 7 dias nao volta. Data ilegivel conta como NAO
+ * recusada: melhor re-sugerir do que engolir a sugestao por lixo no Json.
+ */
+function recusadaRecente(recusas: EtapaRecusa[], estagioId: string, agora: number): boolean {
+  return recusas.some((recusa) => {
+    if (recusa.estagio_id !== estagioId) return false;
+    const em = new Date(recusa.em).getTime();
+    return Number.isFinite(em) && agora - em < RECUSA_JANELA_MS;
+  });
 }
 
 /** Json do banco -> memoria tipada. Tolera lixo (ficha antiga, escrita a mao). */
@@ -508,6 +583,7 @@ export class LeadInsightsService {
     @InjectQueue(LEAD_INSIGHTS_QUEUE) private readonly queue: Queue<GerarInsightJobData>,
     private readonly ai: AiProviderService,
     private readonly leads: LeadsService,
+    private readonly gateway: CrmGateway,
   ) {}
 
   /**
@@ -828,12 +904,18 @@ export class LeadInsightsService {
         temperatura: true,
         valor_estimado: true,
         ultima_interacao: true,
+        // Fase 4: a etapa atual sai da lista oferecida ao modelo e o pipeline
+        // define quais etapas existem para sugerir.
+        estagio_id: true,
+        pipeline_id: true,
         estagio: { select: { nome: true } },
         tenant: {
           select: {
             broadcast_window_start: true,
             broadcast_window_end: true,
             broadcast_window_days: true,
+            // Toggle do tenant: sem ele a sugestao de temperatura so e exibida.
+            ia_ajusta_temperatura: true,
           },
         },
       },
@@ -855,8 +937,17 @@ export class LeadInsightsService {
     const anterior = await this.prisma.leadInsight.findUnique({
       where: { lead_id: leadId },
       // `ultima_compra` entra no select porque a ficha anterior e a fonte quando o
-      // modelo nao cita compra nenhuma nesta geracao.
-      select: { resumo: true, memoria: true, ultima_compra: true },
+      // modelo nao cita compra nenhuma nesta geracao. `etapa_recusas` e so LEITURA
+      // aqui: quem escreve nela sao os endpoints de aceitar/recusar a sugestao.
+      select: { resumo: true, memoria: true, ultima_compra: true, etapa_recusas: true },
+    });
+
+    // Etapas do pipeline DO LEAD. Ganha/perdida entram de proposito: sugerir
+    // fechamento e uma leitura valida da conversa — mover continua sendo humano.
+    const etapas = await this.prisma.stage.findMany({
+      where: { pipeline_id: lead.pipeline_id, tenant_id: tenantId },
+      select: { id: true, nome: true },
+      orderBy: { ordem: 'asc' },
     });
 
     const contexto: InsightContexto = {
@@ -868,8 +959,9 @@ export class LeadInsightsService {
         // Decimal do Prisma nao serializa como numero sozinho.
         valor_estimado: lead.valor_estimado === null ? null : lead.valor_estimado.toNumber(),
         ultima_interacao: lead.ultima_interacao,
-        // TODO(Task 3): carregar as etapas do pipeline do lead (exceto a atual).
-        etapas_disponiveis: [],
+        // A etapa atual fica de fora: oferecer a etapa em que o lead ja esta so
+        // convidaria o modelo a "sugerir" o que nao muda nada.
+        etapas_disponiveis: etapas.filter((e) => e.id !== lead.estagio_id).map((e) => e.nome),
       },
       insightAnterior: anterior
         ? { resumo: anterior.resumo, memoria: lerMemoria(anterior.memoria) }
@@ -907,6 +999,21 @@ export class LeadInsightsService {
     );
     const watermark = mensagens[mensagens.length - 1].created_at;
 
+    // Sugerir a temperatura que o lead JA tem nao e sugestao: vira card mudo na
+    // ficha e, com o toggle ligado, um update que nao muda nada.
+    const temperaturaAtual = String(lead.temperatura);
+    const temperaturaSugerida: TemperaturaSugerida | null =
+      insight.temperatura_sugerida !== null && insight.temperatura_sugerida !== temperaturaAtual
+        ? insight.temperatura_sugerida
+        : null;
+
+    const etapaResolvida = resolverEtapaSugerida(insight.etapa_sugerida, etapas, lead.estagio_id);
+    const etapaSugeridaId =
+      etapaResolvida !== null &&
+      !recusadaRecente(lerRecusas(anterior?.etapa_recusas), etapaResolvida, Date.now())
+        ? etapaResolvida
+        : null;
+
     const campos = {
       resumo: insight.resumo,
       memoria: memoria as unknown as Prisma.InputJsonValue,
@@ -917,6 +1024,14 @@ export class LeadInsightsService {
       nota_ponto_forte: insight.nota_ponto_forte,
       nota_ponto_melhoria: insight.nota_ponto_melhoria,
       ultima_compra: compraParaPersistir(insight.ultima_compra, anterior?.ultima_compra),
+      // Sugestao SEMPRE gravada (com toggle ligado ou nao): a ficha e o que a
+      // tela mostra. Sem sugestao valida vai null/"" — geracao nova limpa a
+      // sugestao velha, senao o atendente veria um card de dias atras.
+      temperatura_sugerida: temperaturaSugerida,
+      temperatura_justificativa:
+        temperaturaSugerida === null ? '' : insight.temperatura_justificativa,
+      etapa_sugerida_id: etapaSugeridaId,
+      etapa_sugerida_motivo: etapaSugeridaId === null ? '' : insight.etapa_sugerida_motivo,
       ultima_msg_processada_at: watermark,
     };
 
@@ -928,7 +1043,55 @@ export class LeadInsightsService {
       update: { ...campos, geracoes: { increment: 1 } },
     });
 
+    // Depois do upsert e de proposito: a ficha vale mais que o ajuste. Se a
+    // aplicacao falhar, a sugestao ja esta gravada e o atendente a ve na tela.
+    if (temperaturaSugerida !== null && lead.tenant.ia_ajusta_temperatura) {
+      await this.aplicarTemperatura(
+        leadId,
+        tenantId,
+        temperaturaAtual,
+        temperaturaSugerida,
+        insight.temperatura_justificativa,
+      );
+    }
+
     await this.rechecarNovidade(leadId, tenantId, watermark);
+  }
+
+  /**
+   * Aplica no lead a temperatura que a ficha sugeriu (toggle `ia_ajusta_temperatura`).
+   * Nunca lanca: um deadlock no update nao pode derrubar o job — a ficha ja foi
+   * gravada e a sugestao continua visivel.
+   * A activity vai com `user_id: null` porque quem mudou foi a IA, nao uma pessoa.
+   */
+  private async aplicarTemperatura(
+    leadId: string,
+    tenantId: string,
+    atual: string,
+    nova: TemperaturaSugerida,
+    justificativa: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.lead.update({ where: { id: leadId }, data: { temperatura: nova } });
+      const motivo = justificativa.trim();
+      await this.prisma.leadActivity.create({
+        data: {
+          lead_id: leadId,
+          user_id: null,
+          tipo: 'ia_temperatura',
+          descricao: `IA: ${atual} → ${nova}${motivo === '' ? '' : ` — ${motivo}`}`,
+          dados_antes: { temperatura: atual },
+          dados_depois: { temperatura: nova },
+          tenant_id: tenantId,
+        },
+      });
+      // Regra 8 do projeto: mutacao de lead sempre emite para o Kanban/Chat.
+      this.gateway.emitLeadUpdated(leadId, { temperatura: nova }, tenantId);
+    } catch (err) {
+      this.logger.warn(
+        `Temperatura sugerida do lead ${leadId} nao foi aplicada (ficha gravada): ${String(err)}`,
+      );
+    }
   }
 
   /**

@@ -3,6 +3,7 @@ import type { Queue } from 'bullmq';
 import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { AiProviderService } from '../ai/ai-provider.service';
 import type { LeadsService } from '../leads/leads.service';
+import type { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import { LeadInsightsService, acrescentarAnd } from './lead-insights.service';
 import { RadarController, radarQuerySchema } from './lead-insights.controller';
@@ -46,12 +47,15 @@ function montar() {
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn() };
+  // O radar nao emite nada; o gateway entra so para satisfazer o construtor.
+  const gateway = { emitLeadUpdated: jest.fn() };
 
   const service = new LeadInsightsService(
     prisma as unknown as PrismaService,
     queue as unknown as Queue<GerarInsightJobData>,
     ai as unknown as AiProviderService,
     leads as unknown as LeadsService,
+    gateway as unknown as CrmGateway,
   );
   // Modo individual por padrao (o mais restritivo).
   tenant.findUnique.mockResolvedValue({ pool_enabled: false });
