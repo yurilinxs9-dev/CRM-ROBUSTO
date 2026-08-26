@@ -1231,6 +1231,11 @@ export class LeadInsightsService {
           tenant_id: tenantId,
         },
       });
+      // Cache ANTES do WS (mesmo padrao do inbound-message.service): o front
+      // reage ao evento com um refetch, e a lista de leads fica em cache por
+      // 10s — dentro dessa janela ele receberia a versao velha e o card
+      // voltaria para a temperatura anterior sozinho.
+      await this.leads.invalidateLeadsCache(tenantId);
       // Regra 8 do projeto: mutacao de lead sempre emite para o Kanban/Chat.
       this.gateway.emitLeadUpdated(leadId, { temperatura: nova }, tenantId);
     } catch (err) {
@@ -1284,9 +1289,10 @@ export class LeadInsightsService {
       messages,
       tenantId,
       leadId,
-      // 900 (era 700): a resposta agora tem 9 chaves — com nota, os dois pontos do
-      // atendimento e a compra, 700 tokens cortavam o JSON no meio.
-      opts: { temperature: 0.4, maxTokens: 900 },
+      // 1100 (era 900, antes 700): o contrato chegou a 13 chaves. A justificativa
+      // da temperatura e o motivo da etapa somam ate ~400 chars de texto livre,
+      // e JSON truncado nao e JSON — a geracao inteira cai em `extrairInsight`.
+      opts: { temperature: 0.4, maxTokens: 1100 },
     });
     return extrairInsight(resposta.text);
   }

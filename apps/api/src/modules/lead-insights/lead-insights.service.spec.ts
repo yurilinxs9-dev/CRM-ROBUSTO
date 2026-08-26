@@ -24,7 +24,7 @@ function montar() {
   const prisma = { leadInsight, message, lead, stage, leadActivity };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
-  const leads = { findOne: jest.fn(), updateStage: jest.fn() };
+  const leads = { findOne: jest.fn(), updateStage: jest.fn(), invalidateLeadsCache: jest.fn() };
   const gateway = { emitLeadUpdated: jest.fn() };
 
   const service = new LeadInsightsService(
@@ -567,13 +567,15 @@ describe('LeadInsightsService.gerarInsight', () => {
     });
   });
 
-  it('pede 900 tokens ao modelo (a resposta agora tem 9 chaves)', async () => {
+  it('pede 1100 tokens ao modelo (o contrato tem 13 chaves)', async () => {
+    // Teto curto demais trunca o JSON e a geracao inteira se perde: a
+    // justificativa da temperatura e o motivo da etapa sao texto livre.
     const m = prepararFeliz();
 
     await m.service.gerarInsight('lead-1', 't1');
 
     const [req] = m.ai.chat.mock.calls[0] as [{ opts: { maxTokens: number } }];
-    expect(req.opts.maxTokens).toBe(900);
+    expect(req.opts.maxTokens).toBe(1100);
   });
 
   it('lead de outro tenant nao gera nada', async () => {
@@ -692,6 +694,12 @@ describe('LeadInsightsService.gerarInsight (fase 4: temperatura e etapa)', () =>
       'lead-1',
       { temperatura: 'QUENTE' },
       't1',
+    );
+    // Cache ANTES do WS: o front refaz o fetch ao receber o evento e a lista
+    // fica 10s em cache — na ordem inversa o card voltaria ao valor antigo.
+    expect(m.leads.invalidateLeadsCache).toHaveBeenCalledWith('t1');
+    expect(m.leads.invalidateLeadsCache.mock.invocationCallOrder[0]).toBeLessThan(
+      m.gateway.emitLeadUpdated.mock.invocationCallOrder[0],
     );
 
     const args = fichaGravada(m.leadInsight.upsert);
