@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  ArrowRight,
   Brain,
   ChevronDown,
   ChevronRight,
@@ -55,6 +56,22 @@ export interface LeadInsight {
   nota_ponto_forte: string;
   nota_ponto_melhoria: string;
   ultima_compra: InsightCompra | null;
+  /**
+   * Temperatura que a IA leu da conversa. `null` quando o modelo nao avaliou
+   * ou quando o backend ainda nao tem as colunas (versao anterior a fase 4).
+   */
+  temperatura_sugerida: string | null;
+  /** Por que a IA leu essa temperatura. `''` quando nao ha leitura. */
+  temperatura_justificativa: string;
+  /** Etapa que a IA acha que o lead ja merece. `null` = sem sugestao aberta. */
+  etapa_sugerida_id: string | null;
+  etapa_sugerida_motivo: string;
+  /**
+   * Nome da etapa sugerida, vindo da relacao `etapa_sugerida: { nome }` do GET.
+   * `''` quando o backend nao inclui a relacao — o card cai para "a proxima
+   * etapa" em vez de mostrar um id cru.
+   */
+  etapa_sugerida_nome: string;
   geracoes: number;
   updated_at: string;
 }
@@ -102,6 +119,25 @@ function lerNota(valor: unknown): number | null {
   return inteiro;
 }
 
+/**
+ * Campo de texto que so vale preenchido: string vazia (ou qualquer outra
+ * coisa) vira `null`. Usado nos campos novos da fase 4, que simplesmente NAO
+ * EXISTEM no corpo devolvido por um backend anterior.
+ */
+function textoOuNulo(valor: unknown): string | null {
+  const limpo = texto(valor).trim();
+  return limpo === '' ? null : limpo;
+}
+
+/**
+ * Nome da etapa sugerida a partir da relacao `etapa_sugerida: { nome }`. Se o
+ * GET nao incluir a relacao (ou vier `null`), devolve `''` — nunca o id.
+ */
+function lerEtapaSugeridaNome(valor: unknown): string {
+  if (typeof valor !== 'object' || valor === null || Array.isArray(valor)) return '';
+  return texto((valor as Record<string, unknown>).nome).trim();
+}
+
 /** Corpo cru -> ficha tipada, ou `null` quando ainda nao existe ficha. */
 function normalizar(corpo: unknown): LeadInsight | null {
   if (typeof corpo !== 'object' || corpo === null || Array.isArray(corpo)) return null;
@@ -113,9 +149,13 @@ function normalizar(corpo: unknown): LeadInsight | null {
   const compra = lerCompra(registro.ultima_compra);
   const pontoForte = texto(registro.nota_ponto_forte);
   const pontoMelhoria = texto(registro.nota_ponto_melhoria);
+  const temperaturaJustificativa = texto(registro.temperatura_justificativa).trim();
+  const etapaSugeridaId = textoOuNulo(registro.etapa_sugerida_id);
   // Linha existe mas o worker ainda nao escreveu nada de util: para o usuario
   // isso e o mesmo que "ainda nao gerado". Nota e compra entram na conta —
-  // uma ficha que so avaliou o atendimento ainda tem o que mostrar.
+  // uma ficha que so avaliou o atendimento ainda tem o que mostrar. Idem para
+  // a leitura de temperatura e a sugestao de etapa: cada uma sozinha ja e
+  // conteudo na tela.
   const vazia =
     resumo.trim() === '' &&
     memoria.length === 0 &&
@@ -123,7 +163,9 @@ function normalizar(corpo: unknown): LeadInsight | null {
     nota === null &&
     compra === null &&
     pontoForte.trim() === '' &&
-    pontoMelhoria.trim() === '';
+    pontoMelhoria.trim() === '' &&
+    temperaturaJustificativa === '' &&
+    etapaSugeridaId === null;
   if (vazia) return null;
   return {
     resumo,
@@ -136,6 +178,11 @@ function normalizar(corpo: unknown): LeadInsight | null {
     nota_ponto_forte: pontoForte,
     nota_ponto_melhoria: pontoMelhoria,
     ultima_compra: compra,
+    temperatura_sugerida: textoOuNulo(registro.temperatura_sugerida),
+    temperatura_justificativa: temperaturaJustificativa,
+    etapa_sugerida_id: etapaSugeridaId,
+    etapa_sugerida_motivo: texto(registro.etapa_sugerida_motivo).trim(),
+    etapa_sugerida_nome: lerEtapaSugeridaNome(registro.etapa_sugerida),
     geracoes: typeof registro.geracoes === 'number' ? registro.geracoes : 0,
     updated_at: texto(registro.updated_at),
   };
@@ -179,6 +226,18 @@ const TEMPERATURAS_QUENTES = ['QUENTE', 'MUITO_QUENTE'];
 
 /** A partir daqui "sem contato" vira alerta ambar na linha k/v. */
 const DIAS_ALERTA = 7;
+
+/**
+ * Rotulos da temperatura DENTRO DE UMA FRASE. Nao reaproveita `TEMP_LABELS` do
+ * kanban de proposito: la `MUITO_QUENTE` e "Fogo", que funciona como badge mas
+ * nao como texto corrido ("sugere temperatura Fogo").
+ */
+const ROTULO_TEMPERATURA: Record<string, string> = {
+  FRIO: 'Frio',
+  MORNO: 'Morno',
+  QUENTE: 'Quente',
+  MUITO_QUENTE: 'Muito quente',
+};
 
 const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 
@@ -494,6 +553,62 @@ export function Ficha360({
     },
   });
 
+  /**
+   * Aceitar a sugestao MOVE o lead de etapa. As invalidacoes sao as mesmas que
+   * o kanban faz apos um arrastar (`['leads']` + `['lead-activities', id]`) e
+   * as que o drawer faz apos qualquer mutacao da ficha (`['lead', id]` e
+   * `['chat','leads']`) — a ficha vive nos TRES lugares e nao sabe em qual
+   * esta, entao invalida o conjunto. O radar entra pelo prefixo (a chave real
+   * carrega o funil) e e o caso mais visivel: `staleTime` de 60s deixaria a
+   * pilula de etapa mostrando a etapa velha logo depois do clique em "Mover".
+   */
+  const invalidarAposMover = (id: string) => {
+    void queryClient.invalidateQueries({ queryKey: ['lead-insight', id] });
+    void queryClient.invalidateQueries({ queryKey: ['lead', id] });
+    void queryClient.invalidateQueries({ queryKey: ['leads'] });
+    void queryClient.invalidateQueries({ queryKey: ['chat', 'leads'] });
+    void queryClient.invalidateQueries({ queryKey: ['lead-activities', id] });
+    void queryClient.invalidateQueries({ queryKey: ['radar'] });
+  };
+
+  /**
+   * As duas mutacoes recebem o `leadId` como VARIAVEL (em vez de le-lo do
+   * closure) por um motivo so: o drawer reaproveita este componente entre leads
+   * sem remontar, entao o estado da mutacao sobrevive a troca. Com a variavel
+   * em maos da pra saber DE QUAL lead foi aquele sucesso — e a trava de duplo
+   * clique nao vaza para o proximo lead.
+   */
+  const aceitarEtapa = useMutation({
+    mutationFn: async (id: string) => {
+      await api.post(`/api/leads/${id}/insight/etapa-sugerida/aceitar`);
+    },
+    onSuccess: (_dados, id) => {
+      toast.success('Lead movido');
+      invalidarAposMover(id);
+    },
+    onError: (err: unknown) => {
+      if (statusDoErro(err) === 403) {
+        toast.error('Você não tem permissão para mover este lead.');
+        return;
+      }
+      toast.error(mensagemDoErro(err) ?? 'Não foi possível mover o lead.');
+    },
+  });
+
+  const recusarEtapa = useMutation({
+    mutationFn: async (id: string) => {
+      await api.post(`/api/leads/${id}/insight/etapa-sugerida/recusar`);
+    },
+    onSuccess: (_dados, id) => {
+      toast.success('Sugestão dispensada');
+      // So a ficha muda: o lead continua exatamente onde estava.
+      void queryClient.invalidateQueries({ queryKey: ['lead-insight', id] });
+    },
+    onError: (err: unknown) => {
+      toast.error(mensagemDoErro(err) ?? 'Não foi possível dispensar a sugestão.');
+    },
+  });
+
   const bloqueado = bloqueadoAte > Date.now();
   const pedindo = regerar.isPending;
 
@@ -532,6 +647,47 @@ export function Ficha360({
   const temperaturaRotulo = buscarTexto(TEMP_LABELS, lead.temperatura) ?? lead.temperatura.trim();
   const temperaturaClasse =
     buscarTexto(TEMP_BADGE, lead.temperatura) ?? buscarTexto(TEMP_BADGE, '_DEFAULT') ?? '';
+
+  /**
+   * Uma frase so sobre a temperatura, em portugues de gente. Tres casos:
+   * - o lead JA esta na temperatura que a IA leu → ela mesma ajustou (toggle
+   *   ligado): "ajustada automaticamente";
+   * - esta em outra → a leitura ficou como sugestao (toggle desligado), e quem
+   *   aplica e o vendedor editando o lead — caminho que ja existe;
+   * - nao da pra provar a diferenca (o lead nao tem temperatura na tela, ou a
+   *   ficha nao registrou qual temperatura sugeriu) → so a leitura, sem
+   *   afirmar que houve ajuste nem que ha sugestao pendente.
+   */
+  const textoTemperaturaIA = useMemo(() => {
+    const justificativa = insight?.temperatura_justificativa.trim() ?? '';
+    if (justificativa === '') return '';
+    const atual = lead.temperatura.trim();
+    const sugerida = insight?.temperatura_sugerida?.trim() ?? '';
+    if (atual === '' || sugerida === '') return `Temperatura: ${justificativa}`;
+    if (atual === sugerida) return `Temperatura ajustada automaticamente: ${justificativa}`;
+    const rotulo = buscarTexto(ROTULO_TEMPERATURA, sugerida) ?? sugerida;
+    return `A ficha sugere temperatura ${rotulo} — ${justificativa}`;
+  }, [insight?.temperatura_justificativa, insight?.temperatura_sugerida, lead.temperatura]);
+
+  const etapaSugeridaId = insight?.etapa_sugerida_id ?? null;
+  const etapaSugeridaNome = insight?.etapa_sugerida_nome ?? '';
+  const etapaSugeridaMotivo = insight?.etapa_sugerida_motivo ?? '';
+  /** Sem a relacao no GET nao ha nome — a frase e o botao falam da "etapa". */
+  const alvoEtapa = etapaSugeridaNome !== '' ? `"${etapaSugeridaNome}"` : 'a próxima etapa';
+  const rotuloMover = etapaSugeridaNome !== '' ? `Mover para ${etapaSugeridaNome}` : 'Mover lead';
+  const movendo = aceitarEtapa.isPending;
+  const recusando = recusarEtapa.isPending;
+  /**
+   * Os dois botoes travam juntos, e continuam travados DEPOIS do sucesso: entre
+   * o fim da mutacao e o refetch que apaga o card existe uma janela de alguns
+   * centenas de ms em que o card ainda esta na tela — sem isto, um segundo
+   * clique dispararia um POST para uma sugestao que ja nao existe.
+   */
+  const decidido =
+    movendo ||
+    recusando ||
+    (aceitarEtapa.isSuccess && aceitarEtapa.variables === leadId) ||
+    (recusarEtapa.isSuccess && recusarEtapa.variables === leadId);
 
   /**
    * `undefined` = a tela nao sabe quem responde (nao passou o campo) e a linha
@@ -660,15 +816,26 @@ export function Ficha360({
           <dl className="px-4">
             <Linha rotulo="Responsável">{responsavel}</Linha>
             <Linha rotulo="Temperatura">
-              {temperaturaRotulo !== '' && (
-                <span
-                  className={cn(
-                    'rounded-full border px-2 py-0.5 text-[11px] font-semibold',
-                    temperaturaClasse,
+              {(temperaturaRotulo !== '' || textoTemperaturaIA !== '') && (
+                <>
+                  {temperaturaRotulo !== '' && (
+                    <span
+                      className={cn(
+                        'rounded-full border px-2 py-0.5 text-[11px] font-semibold',
+                        temperaturaClasse,
+                      )}
+                    >
+                      {temperaturaRotulo}
+                    </span>
                   )}
-                >
-                  {temperaturaRotulo}
-                </span>
+                  {/* Texto da IA: renderizado como texto React puro, nunca como
+                      HTML — sai de uma conversa escrita pelo cliente. */}
+                  {textoTemperaturaIA !== '' && (
+                    <span className="mt-1 block break-words text-xs font-normal leading-relaxed text-muted-foreground">
+                      {textoTemperaturaIA}
+                    </span>
+                  )}
+                </>
               )}
             </Linha>
             <Linha rotulo="Valor estimado">
@@ -851,6 +1018,47 @@ export function Ficha360({
                         <span className="mt-0.5 text-[10px] font-medium opacity-70">/10</span>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* ---------------- Sugestao de etapa ----------------
+                    Mesmo desenho do bloco laranja da mensagem sugerida, em
+                    azul: la e "o que dizer", aqui e "onde o lead ja esta". As
+                    duas cores separam sugestao de texto de sugestao de acao. */}
+                {etapaSugeridaId !== null && (
+                  <div className="mt-4 rounded-xl border border-blue-500/40 bg-gradient-to-br from-blue-500/20 to-blue-600/10 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-300/90">
+                      Mover para...
+                    </p>
+                    <p className="mt-2 break-words text-sm font-medium leading-relaxed text-blue-200">
+                      {`Parece pronto para ${alvoEtapa}`}
+                      {etapaSugeridaMotivo !== '' && ` — ${etapaSugeridaMotivo}`}
+                    </p>
+                    <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 px-2.5 text-xs text-blue-200/90 hover:bg-blue-500/15 hover:text-blue-100"
+                        disabled={decidido}
+                        onClick={() => recusarEtapa.mutate(leadId)}
+                      >
+                        {recusando && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                        {recusando ? 'Dispensando...' : 'Agora não'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8 bg-blue-500 px-3 text-xs font-semibold text-white hover:bg-blue-600"
+                        disabled={decidido}
+                        onClick={() => aceitarEtapa.mutate(leadId)}
+                      >
+                        {movendo ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <ArrowRight className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {movendo ? 'Movendo...' : rotuloMover}
+                      </Button>
+                    </div>
                   </div>
                 )}
 

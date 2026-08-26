@@ -12,6 +12,9 @@ const updateSettingsSchema = z.object({
   prefix_enabled: z.boolean().optional(),
   round_robin_enabled: z.boolean().optional(),
   share_history_enabled: z.boolean().optional(),
+  // Fase 4: quando false, a IA so SUGERE a temperatura na ficha; quando true,
+  // ela aplica sozinha no lead.
+  ia_ajusta_temperatura: z.boolean().optional(),
   // Janela de disparo do follow-up. `end` aceita 24 porque o limite superior é
   // exclusivo: 0–24 significa o dia inteiro. A coerência (start < end) é
   // validada no service, que enxerga também o valor já gravado.

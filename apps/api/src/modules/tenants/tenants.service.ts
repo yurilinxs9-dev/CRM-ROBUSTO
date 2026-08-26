@@ -13,6 +13,7 @@ export class TenantsService {
       prefix_enabled?: boolean;
       round_robin_enabled?: boolean;
       share_history_enabled?: boolean;
+      ia_ajusta_temperatura?: boolean;
       broadcast_window_start?: number;
       broadcast_window_end?: number;
       broadcast_window_days?: number[];
@@ -23,6 +24,9 @@ export class TenantsService {
     if (dto.prefix_enabled !== undefined) data.prefix_enabled = dto.prefix_enabled;
     if (dto.round_robin_enabled !== undefined) data.round_robin_enabled = dto.round_robin_enabled;
     if (dto.share_history_enabled !== undefined) data.share_history_enabled = dto.share_history_enabled;
+    // `!== undefined` e nao truthiness: desligar (false) e justamente a decisao
+    // que o gerente vem tomar aqui.
+    if (dto.ia_ajusta_temperatura !== undefined) data.ia_ajusta_temperatura = dto.ia_ajusta_temperatura;
 
     if (dto.broadcast_window_days !== undefined) {
       if (dto.broadcast_window_days.length === 0) {
@@ -62,6 +66,7 @@ export class TenantsService {
         prefix_enabled: true,
         round_robin_enabled: true,
         share_history_enabled: true,
+        ia_ajusta_temperatura: true,
         broadcast_window_start: true,
         broadcast_window_end: true,
         broadcast_window_days: true,

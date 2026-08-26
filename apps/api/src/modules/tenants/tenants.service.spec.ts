@@ -59,3 +59,26 @@ describe('TenantsService.updateSettings — janela do follow-up', () => {
     expect(data).toEqual({ pool_enabled: true });
   });
 });
+
+describe('TenantsService.updateSettings — ia_ajusta_temperatura', () => {
+  it('grava false (desligar é a decisão que importa) e devolve o campo', async () => {
+    // `if (dto.x)` engoliria o `false` — o gerente desligaria o ajuste
+    // automático e a IA continuaria mexendo na temperatura dos leads.
+    const { svc, prisma } = makeService();
+    await svc.updateSettings(CALLER, { ia_ajusta_temperatura: false });
+
+    const args = prisma.tenant.update.mock.calls[0][0];
+    expect(args.data).toEqual({ ia_ajusta_temperatura: false });
+    // Sem o campo no select, a tela não sabe o estado real depois de salvar e
+    // o switch volta sozinho para ligado.
+    expect(args.select.ia_ajusta_temperatura).toBe(true);
+  });
+
+  it('ausente no payload: não toca no campo', async () => {
+    const { svc, prisma } = makeService();
+    await svc.updateSettings(CALLER, { pool_enabled: true });
+
+    const data = prisma.tenant.update.mock.calls[0][0].data;
+    expect(data.ia_ajusta_temperatura).toBeUndefined();
+  });
+});

@@ -81,23 +81,26 @@ model Tenant {
   updated_at DateTime @updatedAt
 
   prefixo_profissional      String?
-  pool_enabled              Boolean @default(false)
-  prefix_enabled            Boolean @default(true)
-  notification_lead_minutes Int     @default(15)
+  pool_enabled              Boolean   @default(false)
+  prefix_enabled            Boolean   @default(true)
+  notification_lead_minutes Int       @default(15)
   // F-02: opt-in por tenant. Só quando true (E pool_enabled) os leads novos
   // entram no rodízio round-robin por setor. Default false = comportamento atual
   // preservado (lead no pool fica sem dono).
-  round_robin_enabled       Boolean @default(false)
+  round_robin_enabled       Boolean   @default(false)
   // Opt-in por tenant: quando true, transferência de lead (claim/reassign/
   // round-robin de setor) NÃO esconde o histórico anterior — o novo
   // responsável vê a conversa inteira pra ter contexto. Default false =
   // privacidade atual preservada (histórico corta em assumed_at).
-  share_history_enabled     Boolean @default(false)
+  share_history_enabled     Boolean   @default(false)
+  // Fase 4 (IA que decide): quando true, a IA pode ajustar a temperatura do lead
+  // sozinha; quando false, a sugestao so aparece na ficha pra decisao humana.
+  ia_ajusta_temperatura     Boolean   @default(true)
   // Janela em que o follow-up pode disparar, no fuso America/Sao_Paulo.
   // start inclusivo, end exclusivo. days em ISO-8601: 1=segunda ... 7=domingo.
-  broadcast_window_start    Int     @default(9)
-  broadcast_window_end      Int     @default(18)
-  broadcast_window_days     Int[]   @default([1, 2, 3, 4, 5])
+  broadcast_window_start    Int       @default(9)
+  broadcast_window_end      Int       @default(18)
+  broadcast_window_days     Int[]     @default([1, 2, 3, 4, 5])
   // Cobrança manual (painel admin). Valor em centavos; ciclo 1/3/6/12 meses.
   // billing_paid_until É a data de vencimento (fonte única).
   billing_value             Int?
@@ -325,8 +328,10 @@ model Stage {
   on_entry_config       Json? // { createTask, sendInitialMessage, assignResponsible }
   cadence_config        Json? // Array de degraus de cadência
 
-  created_at DateTime @default(now())
-  leads      Lead[]
+  created_at              DateTime      @default(now())
+  leads                   Lead[]
+  // Fase 4: lado inverso da etapa sugerida pela IA na ficha do lead.
+  lead_insights_sugeridos LeadInsight[]
 
   @@index([pipeline_id, ordem])
   @@index([tenant_id])
@@ -684,25 +689,33 @@ model LeadView {
 // Ficha inteligente do lead (spec 2026-08-25-lead-insights). Gerada por LLM
 // local em fila; memoria e acumulativa entre geracoes.
 model LeadInsight {
-  id                       String    @id @default(uuid())
-  tenant_id                String
-  tenant                   Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  lead_id                  String    @unique
-  lead                     Lead      @relation(fields: [lead_id], references: [id], onDelete: Cascade)
-  resumo                   String    @default("")
-  memoria                  Json      @default("[]") // [{ fato: string, quando_dito: string }]
-  proxima_acao_at          DateTime?
-  proxima_acao_motivo      String    @default("")
-  msg_sugerida             String    @default("")
+  id                        String           @id @default(uuid())
+  tenant_id                 String
+  tenant                    Tenant           @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  lead_id                   String           @unique
+  lead                      Lead             @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  resumo                    String           @default("")
+  memoria                   Json             @default("[]") // [{ fato: string, quando_dito: string }]
+  proxima_acao_at           DateTime?
+  proxima_acao_motivo       String           @default("")
+  msg_sugerida              String           @default("")
   // Ficha 360 (spec 2026-08-25-ficha-360): avaliacao do atendimento e compra citada.
-  nota_atendimento         Int?
-  nota_ponto_forte         String    @default("")
-  nota_ponto_melhoria      String    @default("")
-  ultima_compra            Json? // { descricao, valor, quando } | null
-  ultima_msg_processada_at DateTime?
-  geracoes                 Int       @default(0)
-  created_at               DateTime  @default(now())
-  updated_at               DateTime  @updatedAt
+  nota_atendimento          Int?
+  nota_ponto_forte          String           @default("")
+  nota_ponto_melhoria       String           @default("")
+  ultima_compra             Json? // { descricao, valor, quando } | null
+  // Fase 4 (IA que decide): sugestao aplicada/exibida conforme toggle do tenant.
+  temperatura_sugerida      LeadTemperatura?
+  temperatura_justificativa String           @default("")
+  etapa_sugerida            Stage?           @relation(fields: [etapa_sugerida_id], references: [id], onDelete: SetNull)
+  etapa_sugerida_id         String?
+  etapa_sugerida_motivo     String           @default("")
+  // [{ estagio_id, em }] — transicao recusada nao re-sugerida por 7 dias.
+  etapa_recusas             Json             @default("[]")
+  ultima_msg_processada_at  DateTime?
+  geracoes                  Int              @default(0)
+  created_at                DateTime         @default(now())
+  updated_at                DateTime         @updatedAt
 
   @@index([tenant_id])
   @@index([tenant_id, proxima_acao_at])

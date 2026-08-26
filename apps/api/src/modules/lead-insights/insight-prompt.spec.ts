@@ -92,7 +92,15 @@ describe('mesclarMemoria', () => {
 /** Contexto minimo reutilizavel nos testes de prompt. */
 function ctxMinimo(): InsightContexto {
   return {
-    lead: { nome: 'Ana', telefone: '55999', etapa: 'Consulta', temperatura: 'MORNO', valor_estimado: 1500, ultima_interacao: new Date('2026-08-20') },
+    lead: {
+      nome: 'Ana',
+      telefone: '55999',
+      etapa: 'Consulta',
+      temperatura: 'MORNO',
+      valor_estimado: 1500,
+      ultima_interacao: new Date('2026-08-20'),
+      etapas_disponiveis: [],
+    },
     insightAnterior: { resumo: 'antigo', memoria: [{ fato: 'gripe', quando_dito: '2026-08-10' }] },
     mensagens: [{ de: 'cliente', texto: 'quero orçamento', em: new Date('2026-08-20') }],
   };
@@ -166,6 +174,120 @@ describe('nota do atendimento e ultima compra', () => {
     }));
     expect(r?.nota_atendimento).toBe(9);
     expect(r?.ultima_compra?.valor).toBe(4200.5);
+  });
+});
+
+describe('sugestao de temperatura e etapa', () => {
+  /** Contrato antigo (9 chaves), usado como base para acrescentar as 4 novas. */
+  const base9 = {
+    resumo: 'Cliente pediu prazo.',
+    memoria_novos_fatos: [],
+    proxima_acao_em_dias: 3,
+    proxima_acao_motivo: 'confirmar metragem',
+    msg_sugerida: 'Oi!',
+    nota_atendimento: 8,
+    nota_ponto_forte: 'respondeu rápido',
+    nota_ponto_melhoria: 'não confirmou o prazo',
+    ultima_compra: null,
+  };
+
+  it('resposta com as 13 chaves: temperatura valida passa e justificativa trunca em 200', () => {
+    const r = extrairInsight(JSON.stringify({
+      ...base9,
+      temperatura_sugerida: 'QUENTE',
+      temperatura_justificativa: 'j'.repeat(500),
+      etapa_sugerida: null,
+      etapa_sugerida_motivo: '',
+    }));
+    expect(r?.temperatura_sugerida).toBe('QUENTE');
+    expect(r?.temperatura_justificativa.length).toBe(200);
+  });
+
+  it('temperatura aceita minuscula e com espaco no lugar do underscore', () => {
+    const comMinuscula = extrairInsight(JSON.stringify({ ...base9, temperatura_sugerida: '  quente ' }));
+    expect(comMinuscula?.temperatura_sugerida).toBe('QUENTE');
+    const comEspaco = extrairInsight(JSON.stringify({ ...base9, temperatura_sugerida: 'muito quente' }));
+    expect(comEspaco?.temperatura_sugerida).toBe('MUITO_QUENTE');
+    const canonica = extrairInsight(JSON.stringify({ ...base9, temperatura_sugerida: 'MUITO_QUENTE' }));
+    expect(canonica?.temperatura_sugerida).toBe('MUITO_QUENTE');
+  });
+
+  it('temperatura lixo vira null e derruba a justificativa (justificativa so vale acompanhada)', () => {
+    for (const lixo of ['MUITO QUENTE!!', 7, '', 'MORNINHO', null, { t: 'QUENTE' }]) {
+      const r = extrairInsight(JSON.stringify({
+        ...base9,
+        temperatura_sugerida: lixo,
+        temperatura_justificativa: 'cliente pediu orçamento',
+      }));
+      expect(r?.temperatura_sugerida).toBeNull();
+      expect(r?.temperatura_justificativa).toBe('');
+    }
+  });
+
+  it('etapa_sugerida: string util trunca em 60; vazia/numero vira null e derruba o motivo', () => {
+    const ok = extrairInsight(JSON.stringify({
+      ...base9,
+      etapa_sugerida: 'e'.repeat(120),
+      etapa_sugerida_motivo: 'm'.repeat(500),
+    }));
+    expect(ok?.etapa_sugerida?.length).toBe(60);
+    expect(ok?.etapa_sugerida_motivo.length).toBe(200);
+
+    for (const lixo of ['', '   ', 42, null, ['Proposta']]) {
+      const r = extrairInsight(JSON.stringify({
+        ...base9,
+        etapa_sugerida: lixo,
+        etapa_sugerida_motivo: 'proposta enviada',
+      }));
+      expect(r?.etapa_sugerida).toBeNull();
+      expect(r?.etapa_sugerida_motivo).toBe('');
+    }
+  });
+
+  it('resposta no contrato antigo (9 chaves) segue valida: campos novos null/vazio', () => {
+    const r = extrairInsight(JSON.stringify(base9));
+    expect(r?.resumo).toContain('prazo');
+    expect(r?.temperatura_sugerida).toBeNull();
+    expect(r?.temperatura_justificativa).toBe('');
+    expect(r?.etapa_sugerida).toBeNull();
+    expect(r?.etapa_sugerida_motivo).toBe('');
+  });
+
+  it('prompt lista as etapas disponiveis para sugestao', () => {
+    const ctx = ctxMinimo();
+    ctx.lead.etapas_disponiveis = ['Proposta', 'Negociação'];
+    const user = montarPromptInsight(ctx)[1].content;
+    expect(user).toMatch(/Etapas disponíveis para sugestão \(etapa atual: Consulta\)/);
+    expect(user).toContain('- Proposta');
+    expect(user).toContain('- Negociação');
+  });
+
+  it('sem etapas disponiveis o prompt manda devolver etapa_sugerida null', () => {
+    const user = montarPromptInsight(ctxMinimo())[1].content;
+    expect(user).toContain('Nenhuma etapa disponível: devolva etapa_sugerida null.');
+    expect(user).not.toMatch(/Etapas disponíveis para sugestão/);
+  });
+
+  it('system pede 13 chaves e explica as regras novas', () => {
+    const system = montarPromptInsight(ctxMinimo())[0].content;
+    expect(system).toMatch(/13 chaves/);
+    expect(system).not.toMatch(/9 chaves/);
+    expect(system).toMatch(/temperatura_sugerida/);
+    expect(system).toMatch(/temperatura_justificativa/);
+    expect(system).toMatch(/etapa_sugerida/);
+    expect(system).toMatch(/etapa_sugerida_motivo/);
+    expect(system).toMatch(/MUITO_QUENTE/);
+    const user = montarPromptInsight(ctxMinimo())[1].content;
+    expect(user).toMatch(/13 chaves/);
+    expect(user).not.toMatch(/9 chaves/);
+  });
+
+  it('shape do prompt mantem null nos campos de sugestao (anti copy-the-shape)', () => {
+    const shape = montarPromptInsight(ctxMinimo())[0].content.split('Regras de cada campo')[0];
+    expect(shape).toMatch(/"ultima_compra":\s*null/);
+    expect(shape).toMatch(/"temperatura_sugerida":\s*null/);
+    expect(shape).toMatch(/"etapa_sugerida":\s*null/);
+    expect(shape).not.toMatch(/"QUENTE"/); // temperatura de exemplo so na regra textual
   });
 });
 
