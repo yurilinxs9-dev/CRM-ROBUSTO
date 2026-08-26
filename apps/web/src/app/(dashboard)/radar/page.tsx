@@ -515,10 +515,10 @@ const AJUDA_DINHEIRO =
 /** O subtitulo diz de ONDE vem a escolha (a analise das conversas) e QUAIS
  *  sinais pesam. Nunca um numero de score: placar na tela vira cara de robo. */
 const FOCO_DESCRICAO =
-  'Os leads mais quentes para hoje, escolhidos pela análise das conversas: temperatura, valor, atendimento e atividade recente';
+  'Escolhidos pela análise das conversas: o retorno que você marcou, a atividade recente, o valor e o atendimento';
 
 const AJUDA_FOCO =
-  'Uma lista curta com os leads que mais merecem sua atenção hoje. A escolha sai da análise das fichas — do que foi conversado com cada cliente — e pesa quatro sinais juntos: o quanto o lead está quente, o valor estimado da negociação, a nota do atendimento e há quanto tempo vocês trocaram mensagem. Um lead daqui pode aparecer também nas outras seções: é de propósito, esta é uma vitrine, não mais uma fila de pendências.';
+  'Uma lista curta com os leads que mais merecem sua atenção hoje. A escolha sai da análise das fichas — do que foi conversado com cada cliente. O que pesa mais é o retorno que você mesmo marcou na agenda; depois vêm há quanto tempo vocês trocaram mensagem, o quanto o lead está quente, o valor estimado da negociação e a nota do atendimento. Um lead daqui pode aparecer também nas outras seções: é de propósito, esta é uma vitrine, não mais uma fila de pendências.';
 
 const AJUDA_COMPRARAM =
   'Clientes que já fecharam: leads em etapa de ganho ou com uma compra registrada na ficha. Serve para o pós-venda — agradecer, pedir indicação ou oferecer o próximo produto. Mostra os mais recentes primeiro.';
@@ -1247,6 +1247,19 @@ export default function RadarPage() {
   const buscando = termo !== '';
   /** Busca ativa e nenhuma seção com resultado: um aviso só, no topo. */
   const buscaSemResultado = buscando && totalFiltrado === 0;
+
+  /** O termo bate SO em "Compraram" — que nasce fechada. Sem abrir, a busca
+   *  entrega uma pagina em branco e nenhum aviso (o "nada encontrado" nao vale,
+   *  pois tem resultado). */
+  const soNosCompradores =
+    buscando && porBusca.compraram.length > 0 && porBusca.compraram.length === totalFiltrado;
+
+  // `soNosCompradores` e a UNICA dependencia de proposito: se `posVendaAberta`
+  // entrasse aqui, fechar a seção com a busca ainda ativa a reabriria na hora.
+  // Nao persiste no localStorage — abertura automatica nao e escolha do usuario.
+  useEffect(() => {
+    if (soNosCompradores) setPosVendaAberta(true);
+  }, [soNosCompradores]);
 
   /** Card expandido e identificado por seção + lead: o mesmo lead pode estar em
    *  duas filas, e sem o prefixo as duas fichas abririam de uma vez. */
