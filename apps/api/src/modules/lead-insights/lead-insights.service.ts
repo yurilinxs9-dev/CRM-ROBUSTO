@@ -52,6 +52,12 @@ const RADAR_CAP = 30;
 /** Lead quente parado a partir daqui ja e oportunidade esfriando na mao. */
 const RADAR_PROMISSOR_DIAS = 2;
 const RADAR_ESFRIANDO_DIAS = 7;
+/**
+ * "Esperando voce": ate onde o banco procura candidatos. Cliente que mandou
+ * mensagem ha mais de 30 dias e nunca foi respondido nao e uma pendencia do
+ * dia — e a mesma janela de atividade que o cron de fichas usa.
+ */
+const RADAR_ESPERANDO_JANELA_DIAS = 30;
 /** Tipado pelo enum: rename no schema quebra aqui, nao em producao. */
 const RADAR_TEMPERATURAS_QUENTES: LeadTemperatura[] = [
   LeadTemperatura.QUENTE,
@@ -188,9 +194,27 @@ export interface RadarItem {
   responsavel: string | null;
   /** Nomes das tags, achatados: a UI so pinta chip, nao navega relacao. */
   tags: string[];
+  /**
+   * ISO de quando o cliente mandou a mensagem que segue sem resposta. So a fila
+   * `esperando_voce` preenche — nas outras secoes o dado nao significa nada
+   * (o lead pode estar respondido) e viraria "esperando ha 3 dias" mentiroso.
+   */
+  esperando_desde: string | null;
+}
+
+/** Os numeros do dia, para o header narrativo do radar. Zero query extra. */
+export interface ResumoDia {
+  esperando: number;
+  chamar_hoje: number;
+  /** Soma de `valor_estimado` dos cards de chamar_hoje. Sem valor conta 0. */
+  valor_chamar_hoje: number;
+  /** O retorno mais atrasado de hoje. `null` quando nao ha nenhum. */
+  lembrete_destaque: { nome: string; motivo: string } | null;
 }
 
 export interface RadarResultado {
+  resumo: ResumoDia;
+  esperando_voce: RadarItem[];
   chamar_hoje: RadarItem[];
   promissores: RadarItem[];
   esfriando: RadarItem[];
@@ -202,6 +226,12 @@ const RADAR_SELECT = {
   telefone: true,
   temperatura: true,
   ultima_interacao: true,
+  // Vira `esperando_desde` na fila "esperando voce". A comparacao com
+  // `last_agent_message_at` fica toda no banco (ver `filtroEsperando`), por isso
+  // essa outra coluna nao precisa trafegar.
+  last_customer_message_at: true,
+  // Alimenta `resumo.valor_chamar_hoje` sem uma agregacao a mais no banco.
+  valor_estimado: true,
   estagio: { select: { nome: true } },
   responsavel: { select: { nome: true } },
   // Ordem alfabetica: sem orderBy os chips trocam de lugar entre requisicoes.
@@ -249,7 +279,7 @@ function motivoDerivado(dias: number | null, quente: boolean): string {
   return `${prefixo}sem contato ha ${dias} dia${dias === 1 ? '' : 's'}`;
 }
 
-function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
+function montarRadarItem(linha: LinhaRadar, agora: number, esperando: boolean): RadarItem {
   const quente = RADAR_TEMPERATURAS_QUENTES.includes(linha.temperatura);
   const motivoFicha = linha.lead_insight?.proxima_acao_motivo.trim() ?? '';
   return {
@@ -267,7 +297,21 @@ function montarRadarItem(linha: LinhaRadar, agora: number): RadarItem {
     proxima_acao_at: linha.lead_insight?.proxima_acao_at ?? null,
     responsavel: linha.responsavel?.nome ?? null,
     tags: tagsDoLead(linha.lead_tags, linha.tags),
+    esperando_desde:
+      esperando && linha.last_customer_message_at !== null
+        ? linha.last_customer_message_at.toISOString()
+        : null,
   };
+}
+
+/**
+ * Decimal do Prisma nao soma sozinho; lead sem valor conta zero. O arredondamento
+ * no fim e obrigatorio: a coluna guarda 2 casas, mas somar em float devolve
+ * 0.30000000000000004 para 0.10 + 0.20 — e esse numero chegaria cru na tela.
+ */
+function somarValor(linhas: LinhaRadar[]): number {
+  const total = linhas.reduce((soma, l) => soma + (l.valor_estimado?.toNumber() ?? 0), 0);
+  return Math.round(total * 100) / 100;
 }
 
 /**
@@ -360,16 +404,19 @@ export class LeadInsightsService {
   }
 
   /**
-   * Radar comercial: a fila de trabalho do vendedor em 3 secoes.
+   * Radar comercial: a fila de trabalho do vendedor em 4 secoes.
+   * - esperando_voce: o cliente falou por ultimo e ninguem respondeu.
    * - chamar_hoje: a ficha marcou uma proxima acao que ja venceu.
    * - promissores: lead quente que parou de conversar.
    * - esfriando: qualquer lead ativo parado ha uma semana.
    * Um lead aparece UMA vez so, na secao mais urgente
-   * (chamar_hoje > promissores > esfriando) — a mesma pessoa em tres listas
-   * seria trabalho repetido. Estagio ganho/perdido nunca entra: negocio
-   * fechado ou morto nao e tarefa.
+   * (esperando_voce > chamar_hoje > promissores > esfriando) — a mesma pessoa
+   * em quatro listas seria trabalho repetido, e cliente sem resposta e sempre a
+   * pendencia mais urgente que existe. Estagio ganho/perdido nunca entra:
+   * negocio fechado ou morto nao e tarefa.
+   * `pipelineId` opcional recorta TODAS as filas por funil (ausente = todos).
    */
-  async radar(user: AuthUser): Promise<RadarResultado> {
+  async radar(user: AuthUser, pipelineId?: string): Promise<RadarResultado> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: user.tenantId },
       select: { pool_enabled: true },
@@ -378,6 +425,9 @@ export class LeadInsightsService {
       tenant_id: user.tenantId,
       estagio: { is_won: false, is_lost: false },
     };
+    // Chave disjunta da visibilidade (que so escreve `OR`/`responsavel_id`):
+    // o funil recorta as 4 filas sem nunca comer o recorte de quem ve o que.
+    if (pipelineId !== undefined) base.pipeline_id = pipelineId;
     Object.assign(
       base,
       buildVisibilityWhere({
@@ -388,7 +438,7 @@ export class LeadInsightsService {
     );
 
     const agora = Date.now();
-    const [vencidos, quentes, parados] = await Promise.all([
+    const [vencidos, quentes, parados, esperandoAgora] = await Promise.all([
       this.buscarRadar(
         { ...base, lead_insight: { proxima_acao_at: { lte: new Date(agora) } } },
         // Mais atrasado primeiro: a acao vencida ha mais tempo e a mais urgente.
@@ -406,24 +456,100 @@ export class LeadInsightsService {
         { ...base, ultima_interacao: { lte: new Date(agora - RADAR_ESFRIANDO_DIAS * DIA) } },
         { ultima_interacao: 'asc' },
       ),
+      this.buscarRadar(
+        { ...base, ...this.filtroEsperando(agora) },
+        // Quem espera ha mais tempo primeiro.
+        { last_customer_message_at: 'asc' },
+      ),
     ]);
 
+    // O dedupe so marca quem VIROU card: um candidato descartado pelo filtro em
+    // memoria nao pode roubar a vaga do proprio lead em chamar_hoje.
     const vistos = new Set<string>();
-    const secao = (linhas: LinhaRadar[]): RadarItem[] => {
-      const saida: RadarItem[] = [];
+    const selecionar = (linhas: LinhaRadar[]): LinhaRadar[] => {
+      const saida: LinhaRadar[] = [];
       for (const linha of linhas) {
         if (saida.length >= RADAR_CAP) break;
         if (vistos.has(linha.id)) continue;
         vistos.add(linha.id);
-        saida.push(montarRadarItem(linha, agora));
+        saida.push(linha);
       }
       return saida;
     };
 
+    // Ordem das chamadas = precedencia do dedupe, nao a ordem das queries.
+    const linhasEsperando = selecionar(esperandoAgora);
+    const linhasChamarHoje = selecionar(vencidos);
+    const linhasPromissores = selecionar(quentes);
+    const linhasEsfriando = selecionar(parados);
+
+    const esperando_voce = linhasEsperando.map((l) => montarRadarItem(l, agora, true));
+    const chamar_hoje = linhasChamarHoje.map((l) => montarRadarItem(l, agora, false));
+
     return {
-      chamar_hoje: secao(vencidos),
-      promissores: secao(quentes),
-      esfriando: secao(parados),
+      // Contado do que a UI de fato recebe (pos-dedupe, pos-cap), nunca do que
+      // o banco devolveu: numero do header que nao bate com a lista abaixo dele
+      // e pior do que nao ter header.
+      resumo: {
+        esperando: esperando_voce.length,
+        chamar_hoje: chamar_hoje.length,
+        valor_chamar_hoje: somarValor(linhasChamarHoje),
+        // O mais atrasado da fila e o lembrete que o vendedor precisa ver.
+        lembrete_destaque:
+          chamar_hoje.length > 0
+            ? { nome: chamar_hoje[0].nome, motivo: chamar_hoje[0].motivo }
+            : null,
+      },
+      esperando_voce,
+      chamar_hoje,
+      promissores: linhasPromissores.map((l) => montarRadarItem(l, agora, false)),
+      esfriando: linhasEsfriando.map((l) => montarRadarItem(l, agora, false)),
+    };
+  }
+
+  /**
+   * Recorte da fila "esperando voce", inteiro no BANCO: o cliente mandou
+   * mensagem recente e a equipe ainda nao respondeu.
+   *
+   * "Ainda nao respondeu" compara COLUNA COM COLUNA, e isso se resolve com
+   * field reference do Prisma (`prisma.lead.fields.*`, disponivel desde a 4.5).
+   * A alternativa que parece obvia — buscar um lote e filtrar em memoria — e
+   * furada e nao apenas lenta: o lote vem ordenado por quem espera ha mais
+   * tempo, ou seja, pelos candidatos com MAIS chance de ja terem sido
+   * respondidos. Num tenant com movimento normal o lote inteiro seria descartado
+   * e a fila apareceria vazia com clientes esperando de verdade no banco.
+   *
+   * O `OR` da secao vai aninhado dentro de `AND` de proposito: escrito no topo,
+   * ele sobrescreveria em silencio o `OR` de visibilidade que
+   * `buildVisibilityWhere` espalha no `base` — vazando lead de outro operador
+   * com a suite verde. `AND` e uma chave que a visibilidade nunca escreve.
+   *
+   * `last_agent_message_at: null` precisa estar explicito: em SQL,
+   * `null < data` e null, nao verdadeiro — sem esse ramo, o lead que a equipe
+   * NUNCA respondeu (o mais urgente que existe) ficaria de fora.
+   *
+   * Empate no milissegundo conta como respondido (`lt`, nao `lte`): fila de
+   * trabalho erra melhor para menos do que cobrando retorno ja dado.
+   *
+   * Tipado como `Prisma.LeadWhereInput`, e nao inline no `findMany`: o `where`
+   * do radar trafega como `Record<string, unknown>`, entao um nome de coluna
+   * errado passaria pelo compilador E pelos testes (o Prisma e mockado) e so
+   * quebraria em producao. Aqui o compilador confere coluna e formato.
+   */
+  private filtroEsperando(agora: number): Prisma.LeadWhereInput {
+    return {
+      last_customer_message_at: {
+        not: null,
+        gte: new Date(agora - RADAR_ESPERANDO_JANELA_DIAS * DIA),
+      },
+      AND: [
+        {
+          OR: [
+            { last_agent_message_at: null },
+            { last_agent_message_at: { lt: this.prisma.lead.fields.last_customer_message_at } },
+          ],
+        },
+      ],
     };
   }
 
