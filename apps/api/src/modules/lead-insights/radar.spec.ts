@@ -43,7 +43,10 @@ function montar() {
     fields: { last_customer_message_at: REF_CLIENTE },
   };
   const tenant = { findUnique: jest.fn() };
-  const prisma = { leadInsight, message, lead, tenant };
+  // Fase 3: a fila `lembretes_hoje` sai de uma consulta propria (nao e uma
+  // sétima consulta de Lead), entao os indices das 6 filas nao mudam.
+  const leadLembrete = { findMany: jest.fn() };
+  const prisma = { leadInsight, message, lead, tenant, leadLembrete };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn() };
@@ -60,7 +63,8 @@ function montar() {
   // Modo individual por padrao (o mais restritivo).
   tenant.findUnique.mockResolvedValue({ pool_enabled: false });
   lead.findMany.mockResolvedValue([]);
-  return { service, lead, tenant, prisma };
+  leadLembrete.findMany.mockResolvedValue([]);
+  return { service, lead, tenant, leadLembrete, prisma };
 }
 
 const DIA = 24 * 60 * 60 * 1000;
@@ -779,6 +783,7 @@ describe('LeadInsightsService.radar — resumo do dia', () => {
       valor_chamar_hoje: 1600,
       // Destaque = o primeiro de chamar_hoje, que e o mais atrasado.
       lembrete_destaque: { nome: 'Cliente Caro', motivo: 'Retomar o orcamento.' },
+      lembretes_hoje: 0,
     });
   });
 
@@ -809,6 +814,7 @@ describe('LeadInsightsService.radar — resumo do dia', () => {
       chamar_hoje: 0,
       valor_chamar_hoje: 0,
       lembrete_destaque: null,
+      lembretes_hoje: 0,
     });
   });
 
@@ -1412,7 +1418,215 @@ describe('LeadInsightsService.radar — resumo nao muda com as filas da fase 2',
       chamar_hoje: 1,
       valor_chamar_hoje: 100,
       lembrete_destaque: { nome: 'Cliente Teste', motivo: 'Confirmar a proposta enviada.' },
+      lembretes_hoje: 0,
     });
+  });
+});
+
+/**
+ * Fase 3: fila `lembretes_hoje`. Nao e uma consulta de Lead — sai direto de
+ * `leadLembrete.findMany`, com o lead junto. Por isso ela nao mexe nos indices
+ * das 6 filas nem entra no dedupe por precedencia: aviso datado que o CLIENTE
+ * pediu nao disputa espaco com fila de trabalho.
+ */
+describe('LeadInsightsService.radar — fila lembretes de hoje', () => {
+  /** 25/08 09:00 em Sao Paulo (-03): o dia acaba as 23:59:59.999 locais. */
+  const FIM_DO_DIA_SP = new Date('2026-08-26T02:59:59.999Z');
+  /** Comeco de AMANHA em Sao Paulo: o primeiro instante que a fila NAO pega. */
+  const AMANHA_SP = new Date('2026-08-26T03:00:00.000Z');
+
+  interface ArgsLembrete {
+    where: {
+      status?: string;
+      avisar_em?: { lte: Date };
+      lead?: { tenant_id?: string; pipeline_id?: string; responsavel_id?: string; OR?: unknown[] };
+    };
+    select: { lead?: unknown };
+    orderBy: Record<string, unknown>;
+    take: number;
+  }
+
+  function argsLembrete(leadLembrete: { findMany: jest.Mock }): ArgsLembrete {
+    const [args] = leadLembrete.findMany.mock.calls[0] as [ArgsLembrete];
+    return args;
+  }
+
+  function lembrete(over: Record<string, unknown> = {}) {
+    return {
+      id: 'lem-1',
+      motivo: 'Cliente pediu para chamar depois da reforma',
+      dito_em: new Date('2026-07-10T14:00:00Z'),
+      avisar_em: new Date('2026-08-25T03:00:00Z'),
+      lead: linha(),
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(AGORA);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  // (f)
+  it('lembrete de hoje e atrasado entram com o contexto e o lead montado', async () => {
+    const m = montar();
+    m.leadLembrete.findMany.mockResolvedValue([
+      lembrete({
+        id: 'lem-atrasado',
+        motivo: 'Disse que so depois da reforma',
+        avisar_em: new Date('2026-08-23T03:00:00Z'),
+        lead: linha({ id: 'lead-a', nome: 'Cliente Reforma' }),
+      }),
+      lembrete({ id: 'lem-hoje', lead: linha({ id: 'lead-b' }) }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.lembretes_hoje).toHaveLength(2);
+    expect(radar.lembretes_hoje[0]).toEqual({
+      lembrete_id: 'lem-atrasado',
+      motivo: 'Disse que so depois da reforma',
+      // Datas viajam como ISO: o contexto ("em 10/07 ele disse...") e a UI que
+      // formata, e Date cru viraria string dupla no JSON.
+      dito_em: '2026-07-10T14:00:00.000Z',
+      avisar_em: '2026-08-23T03:00:00.000Z',
+      // O card do lead e o MESMO das outras filas.
+      lead: expect.objectContaining({
+        lead_id: 'lead-a',
+        nome: 'Cliente Reforma',
+        etapa: 'Proposta',
+        msg_sugerida: 'Oi! Conseguiu ver a proposta?',
+        responsavel: 'Vendedor Um',
+        tags: ['Orcamento', 'VIP'],
+      }),
+    });
+    expect(radar.lembretes_hoje[1].lead.lead_id).toBe('lead-b');
+  });
+
+  it('o corte e o FIM do dia em Sao Paulo: o lembrete de amanha fica de fora', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const args = argsLembrete(m.leadLembrete);
+    expect(args.where.avisar_em).toEqual({ lte: FIM_DO_DIA_SP });
+    // Meia-noite UTC nao serve: as 21h de Sao Paulo o dia ainda nao acabou e o
+    // lembrete de hoje sumiria da tela do vendedor.
+    expect(args.where.avisar_em?.lte.getTime()).toBeGreaterThan(AGORA.getTime());
+    expect(args.where.avisar_em?.lte.getTime()).toBeLessThan(AMANHA_SP.getTime());
+  });
+
+  it('so pendente entra: feito e descartado o BANCO filtra', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    expect(argsLembrete(m.leadLembrete).where.status).toBe('pendente');
+  });
+
+  it('pede o lead com o mesmo select das outras filas, do mais antigo, cap 30', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const args = argsLembrete(m.leadLembrete);
+    // Sem isso o card do lembrete chegaria sem dono, sem tag e sem ficha.
+    expect(args.select.lead).toEqual({ select: argsDe(m.lead, IDX_VENCIDOS).select });
+    // Mais atrasado primeiro, como chamar_hoje.
+    expect(args.orderBy).toEqual({ avisar_em: 'asc' });
+    // Sem dedupe, nao ha o que roubar: o cap da secao ja e o take da consulta.
+    expect(args.take).toBe(30);
+  });
+
+  it('cap de 30 cards', async () => {
+    const m = montar();
+    m.leadLembrete.findMany.mockResolvedValue(
+      Array.from({ length: 40 }, (_, i) =>
+        lembrete({ id: `lem-${i}`, lead: linha({ id: `lead-${i}` }) }),
+      ),
+    );
+
+    const radar = await m.service.radar(operador);
+
+    // O mock ignora o `take`: o corte no app existe para que um banco que
+    // devolva mais (ou um take que alguem mexa) nao inunde a tela.
+    expect(radar.lembretes_hoje).toHaveLength(30);
+    expect(radar.resumo.lembretes_hoje).toBe(30);
+  });
+
+  // (g)
+  it('o OR do pool sobrevive no lead da consulta nova (visibilidade nao clobberada)', async () => {
+    const m = montar();
+    m.tenant.findUnique.mockResolvedValue({ pool_enabled: true });
+
+    await m.service.radar(operador);
+
+    const { lead } = argsLembrete(m.leadLembrete).where;
+    expect(lead?.tenant_id).toBe('t1');
+    expect(lead?.OR).toEqual([{ responsavel_id: null, is_private: false }, { responsavel_id: 'u1' }]);
+    // No pool o vinculo e pelo OR: amarrar responsavel_id esconderia o pool.
+    expect(lead?.responsavel_id).toBeUndefined();
+  });
+
+  it('modo individual: o lembrete de lead de outro operador nao entra', async () => {
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    expect(argsLembrete(m.leadLembrete).where.lead?.responsavel_id).toBe('u1');
+  });
+
+  // (h)
+  it('pipeline_id recorta a fila; sem ele, nenhum recorte de funil', async () => {
+    const m = montar();
+    await m.service.radar(operador, 'pipe-1');
+    expect(argsLembrete(m.leadLembrete).where.lead?.pipeline_id).toBe('pipe-1');
+
+    const outro = montar();
+    await outro.service.radar(operador);
+    expect(argsLembrete(outro.leadLembrete).where.lead?.pipeline_id).toBeUndefined();
+  });
+
+  // (i)
+  it('resumo.lembretes_hoje conta o que a UI recebe', async () => {
+    const m = montar();
+    m.leadLembrete.findMany.mockResolvedValue([
+      lembrete({ id: 'lem-1', lead: linha({ id: 'lead-a' }) }),
+      lembrete({ id: 'lem-2', lead: linha({ id: 'lead-b' }) }),
+      lembrete({ id: 'lem-3', lead: linha({ id: 'lead-c' }) }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.resumo.lembretes_hoje).toBe(3);
+    expect(radar.resumo.lembretes_hoje).toBe(radar.lembretes_hoje.length);
+  });
+
+  it('sem dedupe: o lead do lembrete continua aparecendo na fila de trabalho', async () => {
+    // Aviso datado que o cliente pediu nao compete com a fila de trabalho: sao
+    // duas leituras diferentes do mesmo lead, e sumir com uma delas esconderia
+    // justamente o contexto que faz o vendedor ligar.
+    const m = montar();
+    mockRadar(m.lead, { vencidos: [linha({ id: 'lead-1' })] });
+    m.leadLembrete.findMany.mockResolvedValue([lembrete({ lead: linha({ id: 'lead-1' }) })]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.lembretes_hoje.map((l) => l.lead.lead_id)).toEqual(['lead-1']);
+    expect(radar.chamar_hoje.map((i) => i.lead_id)).toEqual(['lead-1']);
+  });
+
+  it('lembrete de lead sem ficha nao quebra o card', async () => {
+    const m = montar();
+    m.leadLembrete.findMany.mockResolvedValue([
+      lembrete({ lead: linha({ id: 'lead-sem-ficha', lead_insight: null }) }),
+    ]);
+
+    const radar = await m.service.radar(operador);
+
+    expect(radar.lembretes_hoje[0].lead.msg_sugerida).toBe('');
+    expect(radar.lembretes_hoje[0].lead.proxima_acao_at).toBeNull();
   });
 });
 

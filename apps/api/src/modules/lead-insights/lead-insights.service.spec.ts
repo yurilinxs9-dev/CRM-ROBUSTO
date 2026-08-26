@@ -21,7 +21,10 @@ function montar() {
   const lead = { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() };
   const stage = { findMany: jest.fn().mockResolvedValue([]) };
   const leadActivity = { create: jest.fn() };
-  const prisma = { leadInsight, message, lead, stage, leadActivity };
+  // Fase 3: lembretes temporais. `findMany` ja devolve lista vazia porque a
+  // maioria dos testes nao tem marco temporal nenhum na conversa.
+  const leadLembrete = { findMany: jest.fn().mockResolvedValue([]), create: jest.fn() };
+  const prisma = { leadInsight, message, lead, stage, leadActivity, leadLembrete };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn(), updateStage: jest.fn(), invalidateLeadsCache: jest.fn() };
@@ -34,7 +37,19 @@ function montar() {
     leads as unknown as LeadsService,
     gateway as unknown as CrmGateway,
   );
-  return { service, leadInsight, message, lead, stage, leadActivity, queue, ai, leads, gateway };
+  return {
+    service,
+    leadInsight,
+    message,
+    lead,
+    stage,
+    leadActivity,
+    leadLembrete,
+    queue,
+    ai,
+    leads,
+    gateway,
+  };
 }
 
 const HORA = 60 * 60 * 1000;
@@ -961,6 +976,235 @@ describe('LeadInsightsService.gerarInsight (fase 4: temperatura e etapa)', () =>
     expect(linhas).toContain('- Ganho');
     // A etapa ATUAL nunca e oferecida.
     expect(linhas).not.toContain('- Proposta');
+  });
+});
+
+/**
+ * Fase 3 do Radar 2.0: a ficha extrai marcos temporais que o CLIENTE deu ("me
+ * chama depois da reforma", "so em outubro") e o worker os grava como
+ * `LeadLembrete` pendente. O calendario e decisao do worker — a lib do prompt e
+ * pura e so validou a FORMA da data.
+ */
+describe('LeadInsightsService.gerarInsight (fase 3: lembretes temporais)', () => {
+  const mensagens = [
+    {
+      direction: 'INCOMING',
+      type: 'TEXT',
+      content: 'agora nao da, me chama depois da reforma',
+      created_at: new Date('2026-08-26T10:00:00Z'),
+    },
+  ];
+
+  /** `pendentes` = o que o lead ja tem gravado (o que o dedupe/cap consultam). */
+  function preparar(
+    lembretes: Array<Record<string, unknown>>,
+    pendentes: Array<Record<string, unknown>> = [],
+  ) {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto());
+    m.stage.findMany.mockResolvedValue(ETAPAS_PIPELINE);
+    m.message.findMany.mockResolvedValue([...mensagens].reverse());
+    m.leadInsight.findUnique.mockResolvedValue({
+      resumo: 'resumo anterior',
+      memoria: [],
+      ultima_compra: null,
+      etapa_recusas: [],
+    });
+    m.ai.chat.mockResolvedValue({ text: resposta360({ lembretes }), tokensIn: 1, tokensOut: 1 });
+    m.message.count.mockResolvedValue(0);
+    m.leadLembrete.findMany.mockResolvedValue(pendentes);
+    return m;
+  }
+
+  function gravados(create: jest.Mock): Array<Record<string, unknown>> {
+    return create.mock.calls.map(([args]) => (args as { data: Record<string, unknown> }).data);
+  }
+
+  /** Pendente ja gravado, como o banco o devolve. */
+  function pendente(motivo: string, avisar: string, origem = 'ia') {
+    return { motivo, avisar_em: new Date(avisar), origem };
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // Quarta, 10:00 BRT — dentro da janela comercial do tenant de teste.
+    jest.setSystemTime(new Date('2026-08-26T13:00:00Z'));
+  });
+  afterEach(() => jest.useRealTimers());
+
+  // (a)
+  it('grava os marcos futuros com motivo, data, origem ia, tenant e lead certos', async () => {
+    const m = preparar([
+      { motivo: 'Reforma pronta', quando: '2026-10-15' },
+      { motivo: 'Volta de viagem', quando: '2026-09-01' },
+    ]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.create).toHaveBeenCalledTimes(2);
+    expect(gravados(m.leadLembrete.create)).toEqual([
+      {
+        tenant_id: 't1',
+        lead_id: 'lead-1',
+        motivo: 'Reforma pronta',
+        // Comeco do dia em Sao Paulo (-03), nao meia-noite UTC: guardar
+        // 2026-10-15T00:00Z faria o lembrete vencer ainda no dia 14 no Brasil.
+        avisar_em: new Date('2026-10-15T03:00:00Z'),
+        dito_em: new Date('2026-08-26T13:00:00Z'),
+        origem: 'ia',
+      },
+      {
+        tenant_id: 't1',
+        lead_id: 'lead-1',
+        motivo: 'Volta de viagem',
+        avisar_em: new Date('2026-09-01T03:00:00Z'),
+        dito_em: new Date('2026-08-26T13:00:00Z'),
+        origem: 'ia',
+      },
+    ]);
+  });
+
+  it('conversa sem marco temporal nao consulta nem grava lembrete', async () => {
+    const m = preparar([]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.findMany).not.toHaveBeenCalled();
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+  });
+
+  // (b) — passado
+  it('data passada (o modelo local erra o ano) nao vira lembrete', async () => {
+    const m = preparar([
+      { motivo: 'Reforma pronta', quando: '2025-10-15' },
+      // Hoje tambem nao: aviso datado e para o futuro — hoje a conversa esta
+      // acontecendo agora e o lembrete nasceria ja vencido.
+      { motivo: 'Ligar hoje', quando: '2026-08-26' },
+      { motivo: 'Volta de viagem', quando: '2026-09-01' },
+    ]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(gravados(m.leadLembrete.create).map((d) => d.motivo)).toEqual(['Volta de viagem']);
+  });
+
+  // (b) — clamp
+  it('data absurda e limitada a 12 meses (o modelo chuta 2030)', async () => {
+    const m = preparar([{ motivo: 'Trocar o portao', quando: '2030-01-10' }]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(gravados(m.leadLembrete.create)[0].avisar_em).toEqual(
+      new Date('2027-08-26T13:00:00Z'),
+    );
+  });
+
+  // (c) — dedupe contra pendente
+  it('pendente com o mesmo motivo (acento/caixa a parte) a 2 dias nao vira lembrete novo', async () => {
+    const m = preparar(
+      [{ motivo: 'Ligar quando a obra estiver concluida', quando: '2026-10-15' }],
+      [pendente('Ligar quando a obra estiver CONCLUÍDA', '2026-10-13T03:00:00Z')],
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+    // So PENDENTES do lead disputam o dedupe: um lembrete ja feito nao pode
+    // impedir o proximo ciclo do mesmo assunto.
+    const [consulta] = m.leadLembrete.findMany.mock.calls[0] as [
+      { where: { lead_id: string; status: string } },
+    ];
+    expect(consulta.where.lead_id).toBe('lead-1');
+    expect(consulta.where.status).toBe('pendente');
+  });
+
+  it('mesmo motivo a 5 dias do pendente e marco novo: os dois viram lembrete', async () => {
+    const m = preparar(
+      [
+        { motivo: 'Ligar quando a obra estiver concluida', quando: '2026-10-15' },
+        { motivo: 'Voltar depois das ferias', quando: '2026-12-01' },
+      ],
+      [pendente('Ligar quando a obra estiver concluida', '2026-10-10T03:00:00Z')],
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(gravados(m.leadLembrete.create).map((d) => d.motivo)).toEqual([
+      'Ligar quando a obra estiver concluida',
+      'Voltar depois das ferias',
+    ]);
+  });
+
+  it('dois itens identicos na MESMA geracao viram um lembrete so', async () => {
+    const m = preparar([
+      { motivo: 'Reforma pronta', quando: '2026-10-15' },
+      { motivo: 'reforma pronta', quando: '2026-10-16' },
+    ]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.create).toHaveBeenCalledTimes(1);
+    expect(gravados(m.leadLembrete.create)[0].motivo).toBe('Reforma pronta');
+  });
+
+  // (d)
+  it('cap de 5 pendentes da IA por lead: o excedente e descartado', async () => {
+    const m = preparar(
+      [
+        { motivo: 'Marco novo A', quando: '2026-10-15' },
+        { motivo: 'Marco novo B', quando: '2026-11-15' },
+      ],
+      [
+        pendente('Marco 1', '2026-09-01T03:00:00Z'),
+        pendente('Marco 2', '2026-09-02T03:00:00Z'),
+        pendente('Marco 3', '2026-09-03T03:00:00Z'),
+        pendente('Marco 4', '2026-09-04T03:00:00Z'),
+      ],
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    // A quinta vaga e do primeiro marco; o segundo fica de fora.
+    expect(gravados(m.leadLembrete.create).map((d) => d.motivo)).toEqual(['Marco novo A']);
+  });
+
+  it('lembrete manual do atendente nao gasta a cota da IA, mas ainda dedupa', async () => {
+    const m = preparar(
+      [{ motivo: 'Marco novo A', quando: '2026-10-15' }],
+      [
+        pendente('Marco 1', '2026-09-01T03:00:00Z', 'manual'),
+        pendente('Marco 2', '2026-09-02T03:00:00Z', 'manual'),
+        pendente('Marco 3', '2026-09-03T03:00:00Z', 'manual'),
+        pendente('Marco 4', '2026-09-04T03:00:00Z', 'manual'),
+        pendente('Marco 5', '2026-09-05T03:00:00Z', 'manual'),
+      ],
+    );
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.create).toHaveBeenCalledTimes(1);
+  });
+
+  // (e)
+  it('falha ao gravar lembrete NAO derruba a geracao (a ficha ja esta gravada)', async () => {
+    const m = preparar([{ motivo: 'Reforma pronta', quando: '2026-10-15' }]);
+    m.leadLembrete.create.mockRejectedValue(new Error('deadlock'));
+
+    await expect(m.service.gerarInsight('lead-1', 't1')).resolves.toBeUndefined();
+
+    expect(m.leadInsight.upsert).toHaveBeenCalledTimes(1);
+    // E o passo seguinte (recheque de novidade) continua rodando.
+    expect(m.message.count).toHaveBeenCalledTimes(1);
+  });
+
+  it('falha ao LER os pendentes tambem nao derruba a geracao', async () => {
+    const m = preparar([{ motivo: 'Reforma pronta', quando: '2026-10-15' }]);
+    m.leadLembrete.findMany.mockRejectedValue(new Error('timeout'));
+
+    await expect(m.service.gerarInsight('lead-1', 't1')).resolves.toBeUndefined();
+
+    expect(m.leadInsight.upsert).toHaveBeenCalledTimes(1);
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
   });
 });
 
