@@ -1127,11 +1127,15 @@ export class LeadInsightsService {
         : null;
 
     const etapaResolvida = resolverEtapaSugerida(insight.etapa_sugerida, etapas, lead.estagio_id);
-    const etapaSugeridaId =
-      etapaResolvida !== null &&
-      !recusadaRecente(lerRecusas(anterior?.etapa_recusas), etapaResolvida, Date.now())
-        ? etapaResolvida
-        : null;
+    let etapaSugeridaId: string | null = null;
+    if (etapaResolvida !== null) {
+      // Recusas RELIDAS, nao as do snapshot: `anterior` foi lido antes da
+      // chamada ao modelo, que leva de 30s a 2min. Recusar nessa janela e um
+      // clique perfeitamente normal do atendente, e sem a releitura o upsert
+      // ressuscitaria por um ciclo inteiro o card que ele acabou de dispensar.
+      const recusas = await this.recusasAtuais(leadId, anterior?.etapa_recusas);
+      if (!recusadaRecente(recusas, etapaResolvida, Date.now())) etapaSugeridaId = etapaResolvida;
+    }
 
     const campos = {
       resumo: insight.resumo,
@@ -1175,6 +1179,29 @@ export class LeadInsightsService {
     }
 
     await this.rechecarNovidade(leadId, tenantId, watermark);
+  }
+
+  /**
+   * Recusas mais frescas que existirem, lidas na hora de decidir a sugestao.
+   * So a coluna: a ficha inteira ja esta em maos.
+   *
+   * Falhar aqui nao pode derrubar a geracao — uma ficha boa vale mais que a
+   * chance de suprimir um card. O snapshot volta como fallback, que e
+   * exatamente o comportamento de antes desta releitura.
+   */
+  private async recusasAtuais(leadId: string, snapshot: unknown): Promise<EtapaRecusa[]> {
+    try {
+      const atual = await this.prisma.leadInsight.findUnique({
+        where: { lead_id: leadId },
+        select: { etapa_recusas: true },
+      });
+      return lerRecusas(atual?.etapa_recusas ?? snapshot);
+    } catch (err) {
+      this.logger.warn(
+        `Recusas do lead ${leadId} nao foram relidas antes do upsert (vale o snapshot): ${String(err)}`,
+      );
+      return lerRecusas(snapshot);
+    }
   }
 
   /**

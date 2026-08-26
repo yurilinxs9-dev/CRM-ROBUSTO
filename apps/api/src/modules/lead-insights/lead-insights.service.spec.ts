@@ -857,6 +857,66 @@ describe('LeadInsightsService.gerarInsight (fase 4: temperatura e etapa)', () =>
     expect(fichaGravada(m.leadInsight.upsert).update.etapa_sugerida_id).toBe('st-negociacao');
   });
 
+  // (f)
+  it('recusa gravada DURANTE a geracao suprime a sugestao (releitura antes do upsert)', async () => {
+    // A ficha anterior foi lida antes da chamada ao modelo, que leva de 30s a
+    // 2min. Se o atendente recusar nessa janela, o snapshot nao sabe — e o
+    // upsert ressuscitaria por um ciclo inteiro o card que ele acabou de
+    // dispensar.
+    const m = preparar({
+      etapa_sugerida: 'Negociação',
+      etapa_sugerida_motivo: 'Cliente pediu condicoes.',
+    });
+    m.leadInsight.findUnique
+      .mockResolvedValueOnce({ resumo: 'resumo anterior', memoria: [], ultima_compra: null, etapa_recusas: [] })
+      .mockResolvedValueOnce({
+        etapa_recusas: [{ estagio_id: 'st-negociacao', em: '2026-08-06T13:00:00.000Z' }],
+      });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_sugerida_id).toBeNull();
+    expect(args.update.etapa_sugerida_motivo).toBe('');
+    // A releitura pede SO a coluna das recusas: a ficha inteira ja esta em maos.
+    const [releitura] = m.leadInsight.findUnique.mock.calls[1] as [
+      { where: { lead_id: string }; select: Record<string, boolean> },
+    ];
+    expect(releitura.where).toEqual({ lead_id: 'lead-1' });
+    expect(releitura.select).toEqual({ etapa_recusas: true });
+  });
+
+  // (f)
+  it('falha na releitura das recusas nao derruba a geracao: vale o snapshot', async () => {
+    const m = preparar({
+      etapa_sugerida: 'Negociação',
+      etapa_sugerida_motivo: 'Cliente pediu condicoes.',
+    });
+    m.leadInsight.findUnique
+      .mockResolvedValueOnce({ resumo: 'resumo anterior', memoria: [], ultima_compra: null, etapa_recusas: [] })
+      .mockRejectedValueOnce(new Error('db down'));
+
+    await expect(m.service.gerarInsight('lead-1', 't1')).resolves.toBeUndefined();
+
+    expect(fichaGravada(m.leadInsight.upsert).update.etapa_sugerida_id).toBe('st-negociacao');
+  });
+
+  // (f)
+  it('o upsert da ficha nunca escreve em etapa_recusas', async () => {
+    // A coluna e do atendente: so os endpoints de aceitar/recusar escrevem
+    // nela. Um write aqui apagaria as recusas a cada geracao.
+    const m = preparar({
+      etapa_sugerida: 'Negociação',
+      etapa_sugerida_motivo: 'Cliente pediu condicoes.',
+    });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const args = fichaGravada(m.leadInsight.upsert);
+    expect(args.update.etapa_recusas).toBeUndefined();
+    expect(args.create.etapa_recusas).toBeUndefined();
+  });
+
   // (g)
   it('falha ao aplicar a temperatura NAO derruba a ficha (ficha vale mais que o ajuste)', async () => {
     const m = preparar({
@@ -989,7 +1049,12 @@ describe('LeadInsightsService — aceitar/recusar etapa sugerida', () => {
       { estagio_id: 'st-negociacao' },
       usuario,
     );
-    const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    const [args] = m.leadInsight.update.mock.calls[0] as [
+      { where: { lead_id: string }; data: Record<string, unknown> },
+    ];
+    // A ficha e endereçada por `lead_id` (a PK da tabela e outra): um `id` aqui
+    // limparia a sugestao da ficha errada.
+    expect(args.where).toEqual({ lead_id: 'lead-1' });
     expect(args.data.etapa_sugerida_id).toBeNull();
     expect(args.data.etapa_sugerida_motivo).toBe('');
     // Aceitar NAO e recusar: a lista de recusas nao pode ser tocada, senao a
