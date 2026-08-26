@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { fetchAllByCursor } from '../../common/prisma/fetch-all-by-cursor';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import {
   PIPELINE_AUTO_ACTIONS_QUEUE,
@@ -1745,26 +1746,39 @@ export class LeadsService {
       where.created_at = createdAt;
     }
 
-    const leads = await this.prisma.lead.findMany({
-      where,
-      select: {
-        id: true,
-        nome: true,
-        telefone: true,
-        email: true,
-        temperatura: true,
-        valor_estimado: true,
-        mensagens_nao_lidas: true,
-        ultima_interacao: true,
-        created_at: true,
-        tags: true,
-        pipeline: { select: { nome: true } },
-        estagio: { select: { nome: true } },
-        responsavel: { select: { nome: true } },
+    // Le TODOS os leads do filtro paginando por cursor. Antes era um unico
+    // findMany com take: 10000 — tenant acima disso baixava CSV incompleto
+    // sem nenhum aviso. `id` entra no orderBy como desempate estavel, exigido
+    // pela paginacao por cursor.
+    const leads = await fetchAllByCursor(
+      (page) =>
+        this.prisma.lead.findMany({
+          ...page,
+          where,
+          select: {
+            id: true,
+            nome: true,
+            telefone: true,
+            email: true,
+            temperatura: true,
+            valor_estimado: true,
+            mensagens_nao_lidas: true,
+            ultima_interacao: true,
+            created_at: true,
+            tags: true,
+            pipeline: { select: { nome: true } },
+            estagio: { select: { nome: true } },
+            responsavel: { select: { nome: true } },
+          },
+          orderBy: [{ created_at: 'desc' }, { id: 'asc' }],
+        }),
+      {
+        onMaxRows: (max) =>
+          this.logger.warn(
+            `exportCsv (leads) atingiu o teto de ${max} linhas para o tenant ${user.tenantId}; o CSV pode estar incompleto`,
+          ),
       },
-      orderBy: { created_at: 'desc' },
-      take: 10000,
-    });
+    );
 
     const headers = [
       'id',

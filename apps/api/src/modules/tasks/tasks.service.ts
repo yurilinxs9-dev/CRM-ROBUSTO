@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
 import type { Response } from 'express';
 import { toCsv } from '../../common/csv/csv.util';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { fetchAllByCursor } from '../../common/prisma/fetch-all-by-cursor';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -56,6 +57,8 @@ const taskInclude = {
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+
   constructor(
     private prisma: PrismaService,
     private gateway: CrmGateway,
@@ -213,24 +216,37 @@ export class TasksService {
     if (filters.lead_id) where.lead_id = filters.lead_id;
     if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
 
-    const tasks = await this.prisma.task.findMany({
-      where: this.scopeWhere(user, where),
-      select: {
-        id: true,
-        titulo: true,
-        tipo: true,
-        status: true,
-        prioridade: true,
-        scheduled_at: true,
-        completed_at: true,
-        duracao_min: true,
-        created_at: true,
-        lead: { select: { nome: true } },
-        responsavel: { select: { nome: true } },
+    // Le TODAS as tarefas do filtro paginando por cursor. Antes era um unico
+    // findMany com take: 10000 — teto silencioso que cortava o CSV.
+    // `id` entra no orderBy como desempate estavel para o cursor.
+    const scopedWhere = this.scopeWhere(user, where);
+    const tasks = await fetchAllByCursor(
+      (page) =>
+        this.prisma.task.findMany({
+          ...page,
+          where: scopedWhere,
+          select: {
+            id: true,
+            titulo: true,
+            tipo: true,
+            status: true,
+            prioridade: true,
+            scheduled_at: true,
+            completed_at: true,
+            duracao_min: true,
+            created_at: true,
+            lead: { select: { nome: true } },
+            responsavel: { select: { nome: true } },
+          },
+          orderBy: [{ scheduled_at: 'asc' }, { id: 'asc' }],
+        }),
+      {
+        onMaxRows: (max) =>
+          this.logger.warn(
+            `exportCsv (tasks) atingiu o teto de ${max} linhas para o tenant ${user.tenantId}; o CSV pode estar incompleto`,
+          ),
       },
-      orderBy: { scheduled_at: 'asc' },
-      take: 10000,
-    });
+    );
 
     const headers = [
       'id',
