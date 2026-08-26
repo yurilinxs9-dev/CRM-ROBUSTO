@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, NotFoundException } from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import type { PrismaService } from '../../common/prisma/prisma.service';
@@ -16,7 +16,7 @@ import type { GerarInsightJobData } from './lead-insights.queue';
  * vez so, no construtor.
  */
 function montar() {
-  const leadInsight = { findUnique: jest.fn(), upsert: jest.fn() };
+  const leadInsight = { findUnique: jest.fn(), upsert: jest.fn(), update: jest.fn() };
   const message = { count: jest.fn(), findMany: jest.fn() };
   const lead = { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() };
   const stage = { findMany: jest.fn().mockResolvedValue([]) };
@@ -24,7 +24,7 @@ function montar() {
   const prisma = { leadInsight, message, lead, stage, leadActivity };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
-  const leads = { findOne: jest.fn() };
+  const leads = { findOne: jest.fn(), updateStage: jest.fn() };
   const gateway = { emitLeadUpdated: jest.fn() };
 
   const service = new LeadInsightsService(
@@ -954,6 +954,160 @@ describe('LeadInsightsService.obter', () => {
     m.leadInsight.findUnique.mockResolvedValue(null);
 
     await expect(m.service.obter('lead-1', usuario)).resolves.toBeNull();
+  });
+
+  it('traz o nome da etapa sugerida junto da ficha', async () => {
+    // A ficha guarda so o id da etapa. Sem a relacao o card da sugestao sairia
+    // "Mover para undefined" — a tela nao tem de onde tirar o nome sozinha.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue({ resumo: 'ficha' });
+
+    await m.service.obter('lead-1', usuario);
+    const [args] = m.leadInsight.findUnique.mock.calls[0] as [Record<string, unknown>];
+    expect(args.include).toEqual({ etapa_sugerida: { select: { nome: true } } });
+  });
+});
+
+describe('LeadInsightsService — aceitar/recusar etapa sugerida', () => {
+  /** Ficha com sugestao pendente para `st-negociacao`. */
+  function fichaComSugestao(recusas: unknown = []) {
+    return { etapa_sugerida_id: 'st-negociacao', etapa_recusas: recusas };
+  }
+
+  it('aceitar move o lead pela porta do LeadsService e limpa a sugestao', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue(fichaComSugestao());
+
+    await expect(m.service.aceitarEtapaSugerida('lead-1', usuario)).resolves.toEqual({ ok: true });
+
+    // updateStage e o unico caminho que gera atividade `stage_change` com o
+    // usuario, emite WS e invalida o cache do Kanban.
+    expect(m.leads.updateStage).toHaveBeenCalledWith(
+      'lead-1',
+      { estagio_id: 'st-negociacao' },
+      usuario,
+    );
+    const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    expect(args.data.etapa_sugerida_id).toBeNull();
+    expect(args.data.etapa_sugerida_motivo).toBe('');
+    // Aceitar NAO e recusar: a lista de recusas nao pode ser tocada, senao a
+    // etapa que o atendente acabou de aprovar ficaria vetada por 7 dias.
+    expect(args.data.etapa_recusas).toBeUndefined();
+  });
+
+  it('aceitar segue em frente se a limpeza da ficha falhar depois do move', async () => {
+    // O lead JA mudou de etapa. Devolver erro faria o atendente clicar de novo
+    // num card que a UI ainda mostra — e mover o lead uma segunda vez.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue(fichaComSugestao());
+    m.leadInsight.update.mockRejectedValue(new Error('deadlock'));
+
+    await expect(m.service.aceitarEtapaSugerida('lead-1', usuario)).resolves.toEqual({ ok: true });
+    expect(m.leads.updateStage).toHaveBeenCalledTimes(1);
+  });
+
+  it('ficha sem sugestao: 404 nos dois, sem mover nada', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue({ etapa_sugerida_id: null, etapa_recusas: [] });
+
+    await expect(m.service.aceitarEtapaSugerida('lead-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.recusarEtapaSugerida('lead-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leads.updateStage).not.toHaveBeenCalled();
+    expect(m.leadInsight.update).not.toHaveBeenCalled();
+  });
+
+  it('lead sem ficha nenhuma: 404 nos dois', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue(null);
+
+    await expect(m.service.aceitarEtapaSugerida('lead-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.recusarEtapaSugerida('lead-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leads.updateStage).not.toHaveBeenCalled();
+  });
+
+  it('lead de outro tenant: 404 nos dois, antes de ler a ficha', async () => {
+    // Mesma authz do refresh: quem decide e o LeadsService.findOne (tenant,
+    // lead privado e visibilidade do OPERADOR por instancia).
+    const m = montar();
+    m.leads.findOne.mockRejectedValue(new NotFoundException());
+
+    await expect(m.service.aceitarEtapaSugerida('lead-x', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.recusarEtapaSugerida('lead-x', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leadInsight.findUnique).not.toHaveBeenCalled();
+    expect(m.leads.updateStage).not.toHaveBeenCalled();
+    expect(m.leadInsight.update).not.toHaveBeenCalled();
+  });
+
+  it('recusar grava a recusa com data ISO, limpa a sugestao e nao move o lead', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue(fichaComSugestao());
+
+    await expect(m.service.recusarEtapaSugerida('lead-1', usuario)).resolves.toEqual({ ok: true });
+
+    expect(m.leads.updateStage).not.toHaveBeenCalled();
+    const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    const recusas = args.data.etapa_recusas as Array<{ estagio_id: string; em: string }>;
+    expect(recusas).toHaveLength(1);
+    expect(recusas[0].estagio_id).toBe('st-negociacao');
+    expect(Number.isFinite(new Date(recusas[0].em).getTime())).toBe(true);
+    expect(args.data.etapa_sugerida_id).toBeNull();
+    expect(args.data.etapa_sugerida_motivo).toBe('');
+  });
+
+  it('recusar mantem no maximo 10 entradas: a mais antiga sai', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    // 10 recusas recentes, da mais antiga (`st-0`) para a mais nova.
+    const antigas = Array.from({ length: 10 }, (_, i) => ({
+      estagio_id: `st-${i}`,
+      em: new Date(Date.now() - (10 - i) * 60 * 60 * 1000).toISOString(),
+    }));
+    m.leadInsight.findUnique.mockResolvedValue(fichaComSugestao(antigas));
+
+    await m.service.recusarEtapaSugerida('lead-1', usuario);
+
+    const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    const recusas = args.data.etapa_recusas as Array<{ estagio_id: string }>;
+    expect(recusas).toHaveLength(10);
+    expect(recusas.map((r) => r.estagio_id)).not.toContain('st-0');
+    expect(recusas[recusas.length - 1].estagio_id).toBe('st-negociacao');
+  });
+
+  it('recusar poda entradas de mais de 30 dias e ignora lixo no Json', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadInsight.findUnique.mockResolvedValue(
+      fichaComSugestao([
+        { estagio_id: 'st-velho', em: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString() },
+        { estagio_id: 'st-recente', em: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() },
+        { estagio_id: 'st-lixo', em: 'nao e data' },
+        'string solta',
+      ]),
+    );
+
+    await m.service.recusarEtapaSugerida('lead-1', usuario);
+
+    const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    const ids = (args.data.etapa_recusas as Array<{ estagio_id: string }>).map((r) => r.estagio_id);
+    expect(ids).toEqual(['st-recente', 'st-negociacao']);
   });
 });
 

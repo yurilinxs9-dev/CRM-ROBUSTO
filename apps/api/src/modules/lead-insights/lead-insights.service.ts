@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Cron, CronExpression } from '@nestjs/schedule';
 // `Prisma` entra como VALOR (nao `type`): `Prisma.DbNull` e usado em tempo de execucao.
@@ -232,6 +232,35 @@ interface EtapaRecusa {
 
 /** Janela em que uma etapa recusada nao volta a ser sugerida. */
 const RECUSA_JANELA_MS = 7 * DIA;
+
+/**
+ * Por quanto tempo a recusa fica guardada. Bem maior que os 7 dias que ela
+ * bloqueia: a lista e o historico do que o atendente ja dispensou, e podar
+ * exatamente na janela apagaria o rastro no dia em que ele deixa de valer.
+ */
+const RECUSA_RETENCAO_MS = 30 * DIA;
+/**
+ * Teto de recusas guardadas por ficha. A coluna e Json na mesma linha da ficha:
+ * sem teto, um lead que passa meses no funil carrega uma lista que so cresce e
+ * viaja inteira em toda leitura da ficha.
+ */
+const RECUSAS_MAX = 10;
+
+/**
+ * Lista que vai para o banco depois de mais uma recusa: poda o que venceu,
+ * acrescenta a nova no fim (a lista e cronologica) e corta pelas mais recentes.
+ *
+ * Entrada com data ilegivel some aqui. `recusadaRecente` ja a ignora — ela nao
+ * bloqueia nada e nunca venceria, entao guardar e so ocupar uma das 10 vagas.
+ */
+function proximasRecusas(atuais: EtapaRecusa[], estagioId: string, agora: number): EtapaRecusa[] {
+  const vivas = atuais.filter((recusa) => {
+    const em = new Date(recusa.em).getTime();
+    return Number.isFinite(em) && agora - em < RECUSA_RETENCAO_MS;
+  });
+  vivas.push({ estagio_id: estagioId, em: new Date(agora).toISOString() });
+  return vivas.slice(-RECUSAS_MAX);
+}
 
 /**
  * Json cru do banco -> recusas tipadas. A coluna nao tem validacao nenhuma no
@@ -629,10 +658,100 @@ export class LeadInsightsService {
     );
   }
 
-  /** Ficha do lead para a UI. O acesso e o MESMO do detalhe do lead. */
+  /**
+   * Ficha do lead para a UI. O acesso e o MESMO do detalhe do lead.
+   * `include` (e nao `select`): a linha inteira continua indo para a tela, mais
+   * o NOME da etapa sugerida — a ficha so guarda o id, e sem a relacao o card
+   * da sugestao nao teria como escrever "Mover para Negociacao".
+   */
   async obter(leadId: string, user: AuthUser) {
     await this.leads.findOne(leadId, user);
-    return this.prisma.leadInsight.findUnique({ where: { lead_id: leadId } });
+    return this.prisma.leadInsight.findUnique({
+      where: { lead_id: leadId },
+      include: { etapa_sugerida: { select: { nome: true } } },
+    });
+  }
+
+  /**
+   * Ficha com sugestao de etapa pendente, ou 404. Duas causas, mesma resposta:
+   * lead que o usuario nao pode ver (quem decide e o LeadsService, exatamente
+   * como no `refrescar`) e ficha sem nada a decidir — o segundo caso e a corrida
+   * real de duas abas abertas, em que a outra ja aceitou ou recusou.
+   */
+  private async fichaComSugestao(
+    leadId: string,
+    user: AuthUser,
+  ): Promise<{ etapa_sugerida_id: string; etapa_recusas: unknown }> {
+    await this.leads.findOne(leadId, user);
+
+    const ficha = await this.prisma.leadInsight.findUnique({
+      where: { lead_id: leadId },
+      select: { etapa_sugerida_id: true, etapa_recusas: true },
+    });
+    if (ficha === null || ficha.etapa_sugerida_id === null) {
+      throw new NotFoundException('Esta ficha nao tem sugestao de etapa.');
+    }
+    return { etapa_sugerida_id: ficha.etapa_sugerida_id, etapa_recusas: ficha.etapa_recusas };
+  }
+
+  /**
+   * Atendente aceitou a etapa sugerida: move o lead e apaga a sugestao.
+   *
+   * O move vai pelo `LeadsService.updateStage` de proposito — e a porta que
+   * grava a atividade `stage_change` com o usuario que clicou, emite o WS e
+   * invalida o cache do Kanban. Um `lead.update` cru aqui moveria o card em
+   * silencio e o resto do CRM so descobriria no proximo refresh.
+   *
+   * `etapa_recusas` NAO e tocada: aceitar nao e recusar, e gravar a recusa aqui
+   * vetaria por 7 dias justamente a etapa que o atendente acabou de aprovar.
+   */
+  async aceitarEtapaSugerida(leadId: string, user: AuthUser): Promise<{ ok: true }> {
+    const ficha = await this.fichaComSugestao(leadId, user);
+
+    await this.leads.updateStage(leadId, { estagio_id: ficha.etapa_sugerida_id }, user);
+
+    // Sem transacao, e com o erro engolido: o lead JA mudou de etapa. Devolver
+    // 500 daqui faria o atendente clicar de novo no card que a tela ainda
+    // mostra — e mover o lead uma segunda vez. A sugestao velha, no pior caso,
+    // some sozinha na proxima geracao da ficha.
+    try {
+      await this.prisma.leadInsight.update({
+        where: { lead_id: leadId },
+        data: { etapa_sugerida_id: null, etapa_sugerida_motivo: '' },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Etapa sugerida do lead ${leadId} foi aceita (lead movido), mas a ficha nao foi limpa: ${String(err)}`,
+      );
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Atendente dispensou a sugestao: nada acontece com o lead, so a ficha muda.
+   * A recusa fica registrada para o worker nao re-sugerir a mesma etapa nos
+   * proximos 7 dias (`recusadaRecente`).
+   */
+  async recusarEtapaSugerida(leadId: string, user: AuthUser): Promise<{ ok: true }> {
+    const ficha = await this.fichaComSugestao(leadId, user);
+
+    const recusas = proximasRecusas(
+      lerRecusas(ficha.etapa_recusas),
+      ficha.etapa_sugerida_id,
+      Date.now(),
+    );
+
+    await this.prisma.leadInsight.update({
+      where: { lead_id: leadId },
+      data: {
+        etapa_recusas: recusas as unknown as Prisma.InputJsonValue,
+        etapa_sugerida_id: null,
+        etapa_sugerida_motivo: '',
+      },
+    });
+
+    return { ok: true };
   }
 
   /** Regeracao manual. Rate limit por lead: 1 a cada 5 minutos. */

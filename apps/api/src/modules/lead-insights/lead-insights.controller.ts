@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -27,6 +27,27 @@ export class LeadInsightsController {
   @Roles(UserRole.OPERADOR)
   refrescar(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.insights.refrescar(id, req.user as AuthUser);
+  }
+
+  /**
+   * Aceitar/recusar a etapa que a ficha sugeriu. Sem body: o que fazer esta na
+   * rota e a etapa vem da propria ficha — mandar o `estagio_id` pelo cliente
+   * abriria um segundo caminho para mover lead, sem sugestao nenhuma por tras.
+   *
+   * `@HttpCode(200)` porque nada e criado: as duas APAGAM a sugestao pendente.
+   */
+  @Post(':id/insight/etapa-sugerida/aceitar')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.OPERADOR)
+  aceitarEtapa(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.insights.aceitarEtapaSugerida(id, req.user as AuthUser);
+  }
+
+  @Post(':id/insight/etapa-sugerida/recusar')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.OPERADOR)
+  recusarEtapa(@Param('id') id: string, @Req() req: Record<string, unknown>) {
+    return this.insights.recusarEtapaSugerida(id, req.user as AuthUser);
   }
 }
 

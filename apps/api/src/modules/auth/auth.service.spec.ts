@@ -21,6 +21,7 @@ function makeMocks() {
       deleteMany: jest.fn(),
     },
     adminAuditLog: { create: jest.fn() },
+    tenant: { findUnique: jest.fn().mockResolvedValue({ id: 't1' }) },
     $transaction: jest.fn(async (arg: unknown) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return (arg as (tx: unknown) => unknown)(prisma);
@@ -284,5 +285,19 @@ describe('AuthService.forgotPassword', () => {
     const r = await service.forgotPassword('ghost@b.com');
     expect(r.message).toMatch(/Se o e-mail existir/);
     expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.getMe — settings do tenant', () => {
+  it('devolve ia_ajusta_temperatura junto do resto das settings', async () => {
+    // O front hidrata o switch de "IA ajusta a temperatura" a partir do /me.
+    // Sem o campo no select ele lê `undefined`, cai no default ligado e o
+    // gerente vê a opção voltar sozinha depois de recarregar a página.
+    const { service, prisma } = makeService();
+    prisma.user.findUnique.mockResolvedValue({ id: 'u1', nome: 'Vendedor' });
+
+    await service.getMe('u1', 't1');
+    const select = prisma.tenant.findUnique.mock.calls[0][0].select;
+    expect(select.ia_ajusta_temperatura).toBe(true);
   });
 });
