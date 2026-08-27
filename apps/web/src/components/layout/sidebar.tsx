@@ -1,6 +1,6 @@
 'use client';
 
-import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar } from 'lucide-react';
+import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -31,6 +31,10 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/agenda', label: 'Agenda', icon: CalendarDays },
   { href: '/instances', label: 'Instâncias', icon: Smartphone },
   { href: '/settings', label: 'Configurações', icon: Settings },
+  // Ultimo de propósito: é o manual das outras telas, não uma delas. Quem
+  // procura ajuda varre o menu de baixo para cima — e o rodapé é onde todo
+  // produto põe o "como funciona".
+  { href: '/ajuda', label: 'Como funciona', icon: HelpCircle },
 ];
 
 /**
