@@ -5,17 +5,22 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
   Brain,
+  CalendarClock,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
   Loader2,
+  Plus,
   RefreshCw,
   Send,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TEMP_BADGE, TEMP_LABELS, formatPhone } from '@/components/kanban/lead-card';
 import { api } from '@/lib/api';
@@ -186,6 +191,46 @@ function normalizar(corpo: unknown): LeadInsight | null {
     geracoes: typeof registro.geracoes === 'number' ? registro.geracoes : 0,
     updated_at: texto(registro.updated_at),
   };
+}
+
+/**
+ * `GET /api/leads/:id/lembretes` (Fase 3). Backend antigo nao tem a rota: o
+ * bloco inteiro some em silencio, sem mensagem de erro numa ficha que continua
+ * util. `origem`/`status` sao String livre no banco — tipa como string e
+ * compara com os valores conhecidos, em vez de fingir um enum que o servidor
+ * nao garante.
+ */
+export interface LeadLembrete {
+  id: string;
+  motivo: string;
+  dito_em: string;
+  avisar_em: string;
+  /** 'ia' | 'manual'. */
+  origem: string;
+  /** 'pendente' | 'feito' | 'descartado'. */
+  status: string;
+}
+
+function lerLembretes(corpo: unknown): LeadLembrete[] {
+  if (typeof corpo !== 'object' || corpo === null || Array.isArray(corpo)) return [];
+  const lista = (corpo as Record<string, unknown>).lembretes;
+  if (!Array.isArray(lista)) return [];
+  const saida: LeadLembrete[] = [];
+  for (const bruto of lista) {
+    if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) continue;
+    const registro = bruto as Record<string, unknown>;
+    const id = texto(registro.id);
+    if (id === '') continue;
+    saida.push({
+      id,
+      motivo: texto(registro.motivo),
+      dito_em: texto(registro.dito_em),
+      avisar_em: texto(registro.avisar_em),
+      origem: texto(registro.origem),
+      status: texto(registro.status),
+    });
+  }
+  return saida;
 }
 
 function statusDoErro(err: unknown): number | undefined {
@@ -404,6 +449,219 @@ function EsqueletoFicha() {
       </div>
       <Skeleton className="h-24 w-full rounded-xl" />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lembretes do lead
+// ---------------------------------------------------------------------------
+
+/**
+ * Convencao selada com o backend: `avisar_em` chega como o instante ISO da
+ * MEIA-NOITE em Sao Paulo. O dia e sempre lido no fuso de SP, nunca no do
+ * navegador — senao um vendedor com o relogio em UTC veria a vespera.
+ */
+const FUSO = 'America/Sao_Paulo';
+
+/** Data sem hora: lembrete e compromisso de DIA, nao de horario. */
+function formatarDia(iso: string): string | null {
+  if (iso.trim() === '') return null;
+  const data = new Date(iso);
+  if (Number.isNaN(data.getTime())) return null;
+  return data.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: FUSO,
+  });
+}
+
+/**
+ * Bloco de lembretes da ficha: o que o cliente pediu para ser lembrado, mais um
+ * formulario minimo para o vendedor marcar um compromisso na mao.
+ *
+ * O componente inteiro SOME quando a rota nao existe (backend anterior a Fase
+ * 3) ou quando a leitura falha — uma ficha sem este bloco continua completa, e
+ * um erro aqui nao vale um aviso vermelho no meio dela.
+ *
+ * `motivo` de lembrete 'ia' e texto gerado a partir do que o CLIENTE escreveu:
+ * so pode ser renderizado como texto React puro.
+ */
+function BlocoLembretes({ leadId, enabled }: { leadId: string; enabled: boolean }) {
+  const queryClient = useQueryClient();
+  const [motivo, setMotivo] = useState('');
+  const [quando, setQuando] = useState('');
+
+  const { data: lembretes, isError } = useQuery<LeadLembrete[]>({
+    queryKey: ['lead-lembretes', leadId],
+    queryFn: async () => lerLembretes((await api.get(`/api/leads/${leadId}/lembretes`)).data),
+    enabled: enabled && !!leadId,
+    retry: false,
+  });
+
+  // O drawer reaproveita a ficha entre leads sem remontar: sem isto o rascunho
+  // digitado num lead apareceria no formulario do proximo.
+  useEffect(() => {
+    setMotivo('');
+    setQuando('');
+  }, [leadId]);
+
+  /** A lista e o radar mudam juntos: um lembrete concluido some das duas telas. */
+  const invalidar = () => {
+    void queryClient.invalidateQueries({ queryKey: ['lead-lembretes', leadId] });
+    void queryClient.invalidateQueries({ queryKey: ['radar'] });
+  };
+
+  const criar = useMutation({
+    mutationFn: async (dados: { motivo: string; avisar_em: string }) => {
+      await api.post(`/api/leads/${leadId}/lembretes`, dados);
+    },
+    onSuccess: () => {
+      setMotivo('');
+      setQuando('');
+      toast.success('Lembrete criado');
+      invalidar();
+    },
+    onError: (err: unknown) => {
+      // Data no passado volta 400 com a frase do backend — mostra ela, que ja
+      // explica o problema melhor do que qualquer texto generico daqui.
+      toast.error(mensagemDoErro(err) ?? 'Não foi possível criar o lembrete.');
+    },
+  });
+
+  const agir = useMutation({
+    mutationFn: async (pedido: { id: string; acao: 'concluir' | 'descartar' }) => {
+      await api.post(`/api/lembretes/${pedido.id}/${pedido.acao}`);
+    },
+    onSuccess: (_dados, pedido) => {
+      toast.success(pedido.acao === 'concluir' ? 'Lembrete concluído' : 'Lembrete descartado');
+      invalidar();
+    },
+    onError: (err: unknown) => {
+      toast.error(mensagemDoErro(err) ?? 'Não foi possível atualizar o lembrete.');
+    },
+  });
+
+  // Rota inexistente/erro: o bloco some. `undefined` = ainda carregando.
+  if (isError || lembretes === undefined) return null;
+
+  const pendentes = lembretes.filter((l) => l.status === 'pendente');
+  const criando = criar.isPending;
+  const podeCriar = motivo.trim() !== '' && quando !== '' && !criando;
+
+  return (
+    <>
+      <Secao>Lembretes</Secao>
+
+      {pendentes.length === 0 ? (
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          Nenhum lembrete pendente. Marque abaixo quando voltar a falar.
+        </p>
+      ) : (
+        <ul className="mt-1.5 space-y-1.5">
+          {pendentes.map((lembrete) => {
+            const dia = formatarDia(lembrete.avisar_em);
+            /**
+             * Trava por lembrete: resolver um nao pode desabilitar os outros.
+             * Continua travado DEPOIS do sucesso (mesmo padrao da fase 4 aqui
+             * do arquivo) — entre o fim do POST e o refetch que tira a linha da
+             * lista existe uma janela em que ela ainda esta clicavel, e um
+             * segundo clique bateria num lembrete ja resolvido (404).
+             */
+            const ocupado =
+              (agir.isPending || agir.isSuccess) && agir.variables?.id === lembrete.id;
+            /** Spinner e so enquanto o POST corre — a trava dura mais que ele. */
+            const enviando = (acao: 'concluir' | 'descartar') =>
+              agir.isPending && agir.variables?.id === lembrete.id && agir.variables?.acao === acao;
+            return (
+              <li
+                key={lembrete.id}
+                className="flex items-start gap-2 rounded-lg border border-violet-500/30 bg-violet-500/[0.07] px-2.5 py-2"
+              >
+                <CalendarClock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-violet-200">
+                    {dia ?? 'Sem data'}
+                    {lembrete.origem === 'manual' && (
+                      <span className="ml-1.5 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        manual
+                      </span>
+                    )}
+                  </p>
+                  {lembrete.motivo.trim() !== '' && (
+                    <p className="mt-0.5 break-words text-sm leading-relaxed">{lembrete.motivo}</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-0.5">
+                  <button
+                    type="button"
+                    aria-label="Concluir lembrete"
+                    title="Concluir"
+                    disabled={ocupado}
+                    onClick={() => agir.mutate({ id: lembrete.id, acao: 'concluir' })}
+                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-emerald-500/15 hover:text-emerald-300 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {enviando('concluir') ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Check className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Descartar lembrete"
+                    title="Descartar"
+                    disabled={ocupado}
+                    onClick={() => agir.mutate({ id: lembrete.id, acao: 'descartar' })}
+                    className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-red-500/15 hover:text-red-300 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {enviando('descartar') ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <X className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* `<form>` de verdade: Enter no campo de motivo cria o lembrete. */}
+      <form
+        className="mt-2 flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!podeCriar) return;
+          criar.mutate({ motivo: motivo.trim(), avisar_em: quando });
+        }}
+      >
+        <Input
+          value={motivo}
+          onChange={(e) => setMotivo(e.target.value)}
+          maxLength={200}
+          placeholder="Voltar a falar sobre..."
+          aria-label="Motivo do lembrete"
+          className="h-8 min-w-[10rem] flex-1 text-sm"
+        />
+        <input
+          type="date"
+          value={quando}
+          onChange={(e) => setQuando(e.target.value)}
+          aria-label="Data do lembrete"
+          className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <Button type="submit" size="sm" className="h-8 text-xs" disabled={!podeCriar}>
+          {criando ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Plus className="mr-1 h-3.5 w-3.5" />
+          )}
+          {criando ? 'Criando...' : 'Criar lembrete'}
+        </Button>
+      </form>
+    </>
   );
 }
 
@@ -724,6 +982,14 @@ export function Ficha360({
       </>
     );
 
+  /**
+   * O MESMO elemento entra em dois ramos EXCLUSIVOS do render abaixo (ficha
+   * gerada e ficha ainda nao gerada): lembrete manual nao depende da IA ter
+   * lido a conversa, entao o bloco precisa existir nos dois casos — e so um
+   * deles renderiza por vez.
+   */
+  const blocoLembretes = <BlocoLembretes leadId={leadId} enabled={enabled} />;
+
   const botaoRegerar = podeRegerar && (
     <Button
       size="sm"
@@ -897,40 +1163,52 @@ export function Ficha360({
                 <EsqueletoFicha />
               </div>
             ) : isError ? (
-              <p className="mt-4 text-xs text-muted-foreground">
-                Não foi possível carregar a leitura da IA
-                {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead acima
-                continuam válidos.
-              </p>
-            ) : !insight ? (
-              <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">
-                <Sparkles aria-hidden className="mx-auto h-5 w-5 text-muted-foreground/70" />
-                <p className="mt-2 text-sm text-muted-foreground">
-                  A IA ainda não leu esta conversa. A ficha é montada sozinha conforme o cliente
-                  responde.
+              <>
+                <p className="mt-4 text-xs text-muted-foreground">
+                  Não foi possível carregar a leitura da IA
+                  {statusDoErro(error) ? ` (erro ${statusDoErro(error)})` : ''}. Os dados do lead
+                  acima continuam válidos.
                 </p>
-                {podeRegerar && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-3 h-8 text-xs"
-                    disabled={pedindo || bloqueado}
-                    title={
-                      bloqueado
-                        ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
-                        : undefined
-                    }
-                    onClick={() => regerar.mutate()}
-                  >
-                    {pedindo ? (
-                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Sparkles className="mr-1 h-3.5 w-3.5" />
-                    )}
-                    {pedindo ? 'Enviando...' : 'Gerar agora'}
-                  </Button>
-                )}
-              </div>
+
+                {/* A leitura da IA e os lembretes sao rotas diferentes: uma
+                    falhar nao e motivo para esconder a outra. */}
+                {blocoLembretes}
+              </>
+            ) : !insight ? (
+              <>
+                <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">
+                  <Sparkles aria-hidden className="mx-auto h-5 w-5 text-muted-foreground/70" />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    A IA ainda não leu esta conversa. A ficha é montada sozinha conforme o cliente
+                    responde.
+                  </p>
+                  {podeRegerar && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 h-8 text-xs"
+                      disabled={pedindo || bloqueado}
+                      title={
+                        bloqueado
+                          ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
+                          : undefined
+                      }
+                      onClick={() => regerar.mutate()}
+                    >
+                      {pedindo ? (
+                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="mr-1 h-3.5 w-3.5" />
+                      )}
+                      {pedindo ? 'Enviando...' : 'Gerar agora'}
+                    </Button>
+                  )}
+                </div>
+
+                {/* Lembrete manual nao depende da IA: mesmo sem ficha gerada o
+                    vendedor pode marcar quando voltar a falar. */}
+                {blocoLembretes}
+              </>
             ) : (
               <>
                 {insight.resumo.trim() !== '' && (
@@ -960,6 +1238,8 @@ export function Ficha360({
                     </p>
                   </>
                 )}
+
+                {blocoLembretes}
 
                 {compra && (
                   <>
