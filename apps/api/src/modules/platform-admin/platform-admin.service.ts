@@ -52,6 +52,40 @@ function anchorPaidUntil(iso: string): Date {
   return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 12));
 }
 
+/** Provider efetivo de uma instância, deduzido do `config` (Json). */
+export type InstanceProvider = 'uazapi' | 'evolution' | 'legado';
+
+export interface InstanceHealthRow {
+  tenant: string;
+  nome: string;
+  provider: InstanceProvider;
+  status: string;
+  ultimo_check: string | null;
+  caida_desde: string | null;
+}
+
+/** `config` é Json: pode ser null, string, número ou array. Guard, nunca cast. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function temTexto(cfg: Record<string, unknown>, chave: string): boolean {
+  const valor = cfg[chave];
+  return typeof valor === 'string' && valor.length > 0;
+}
+
+/**
+ * Mesma dedução do InstanceHealthService: quem tem token UazAPI é UazAPI, quem
+ * tem token Evolution é Evolution, e quem não tem token nenhum é o WPPConnect
+ * legado — sem gateway para perguntar, logo fora do monitor.
+ */
+function providerDaConfig(config: unknown): InstanceProvider {
+  if (!isRecord(config)) return 'legado';
+  if (temTexto(config, 'uazapi_token')) return 'uazapi';
+  if (temTexto(config, 'evolution_token')) return 'evolution';
+  return 'legado';
+}
+
 @Injectable()
 export class PlatformAdminService {
   private readonly logger = new Logger(PlatformAdminService.name);
@@ -341,6 +375,62 @@ export class PlatformAdminService {
       security_24h: { failed_logins: failedLogins24 },
       tips,
     };
+  }
+
+  /**
+   * Saúde das instâncias para o painel: o que o cron do InstanceHealthService
+   * já escreveu (`status`, `ultimo_check`) somado ao alerta em aberto.
+   *
+   * Tenant suspenso fica de fora — é a mesma regra do monitor: quem está
+   * suspenso não é checado, então mostrar a instância dele como "caída" só
+   * geraria ruído. O filtro de tenant protegido acompanha `logs`/`listTenants`:
+   * o admin restrito não descobre o tenant do master nem pela lista de
+   * instâncias.
+   */
+  async instancesHealth(admin: AuthUser): Promise<{ instancias: InstanceHealthRow[] }> {
+    const full = await this.hasFullScope(admin);
+    const hiddenTenants = full ? [] : await this.protectedTenantIds();
+
+    const rows = await this.prisma.whatsappInstance.findMany({
+      where: {
+        tenant: { suspended_at: null },
+        ...(hiddenTenants.length ? { tenant_id: { notIn: hiddenTenants } } : {}),
+      },
+      select: {
+        nome: true,
+        status: true,
+        ultimo_check: true,
+        config: true,
+        tenant: { select: { nome: true } },
+        alerts: {
+          where: { resolvido_em: null },
+          select: { aberto_em: true },
+          orderBy: { aberto_em: 'asc' },
+          take: 1,
+        },
+      },
+      orderBy: [{ tenant: { nome: 'asc' } }, { nome: 'asc' }],
+    });
+
+    const instancias: InstanceHealthRow[] = rows.map((r) => ({
+      tenant: r.tenant.nome,
+      nome: r.nome,
+      provider: providerDaConfig(r.config),
+      status: r.status,
+      ultimo_check: r.ultimo_check ? r.ultimo_check.toISOString() : null,
+      caida_desde: r.alerts[0] ? r.alerts[0].aberto_em.toISOString() : null,
+    }));
+
+    // Caídas no topo, a mais antiga primeiro (ISO compara igual a cronologia);
+    // o resto segue tenant/nome, a mesma ordem que veio do banco.
+    instancias.sort((a, b) => {
+      if (a.caida_desde && b.caida_desde) return a.caida_desde.localeCompare(b.caida_desde);
+      if (a.caida_desde) return -1;
+      if (b.caida_desde) return 1;
+      return a.tenant.localeCompare(b.tenant) || a.nome.localeCompare(b.nome);
+    });
+
+    return { instancias };
   }
 
   // ---- Ações em usuários/tenants --------------------------------------------

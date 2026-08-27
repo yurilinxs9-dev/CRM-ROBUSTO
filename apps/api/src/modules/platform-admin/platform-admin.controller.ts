@@ -75,6 +75,14 @@ export class PlatformAdminController {
     return this.svc.health();
   }
 
+  // Saúde das instâncias (monitor + alerta em aberto). Leitura de operação:
+  // acompanha o escopo do `health` acima.
+  @Get('instances-health')
+  @PlatformScopes('health')
+  instancesHealth(@Req() req: Request) {
+    return this.svc.instancesHealth(this.user(req));
+  }
+
   @Patch('users/:id/ban')
   @PlatformScopes('tenant_actions')
   banUser(@Param('id') id: string, @Body() body: unknown, @Req() req: Request) {

@@ -7,6 +7,7 @@ import { normalizeAckUpdates, extractAck } from './ack-normalizer';
 import { extractFromEvolution } from './message-extractor';
 import { messageTs } from './history-sync';
 import { HistorySyncService } from './history-sync.service';
+import { InstanceHealthService } from '../instances/instance-health.service';
 import { LogThrottle, INSTANCIA_DESCONHECIDA_JANELA_MS } from './log-throttle';
 
 /**
@@ -26,6 +27,7 @@ export class EvolutionEventsHandler {
     private gateway: CrmGateway,
     private inbound: InboundMessageService,
     private historySync: HistorySyncService,
+    private instanceHealth: InstanceHealthService,
   ) {}
 
   /**
@@ -260,6 +262,13 @@ export class EvolutionEventsHandler {
         .syncEvolutionInstance(instance.id, HistorySyncService.RECONNECT_WINDOW_MS)
         .catch((err) =>
           this.logger.warn(`history sync pós-reconexão (${instance.nome}): ${String(err)}`),
+        );
+      // Fecha o alerta do monitor na hora, sem esperar o próximo ciclo do cron.
+      // Best-effort: alerta é aviso, nunca motivo pra retry do webhook.
+      void this.instanceHealth
+        .resolverAlerta(instance.id)
+        .catch((err) =>
+          this.logger.warn(`resolver alerta pós-reconexão (${instance.nome}): ${String(err)}`),
         );
     }
   }

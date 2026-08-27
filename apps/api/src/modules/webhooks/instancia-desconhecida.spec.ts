@@ -35,7 +35,15 @@ function makeEvolution(instance: unknown) {
     saveIncomingMessage: jest.fn().mockResolvedValue(undefined),
   };
   const historySync: any = { syncEvolutionInstance: jest.fn().mockResolvedValue({}) };
-  const handler = new EvolutionEventsHandler(prisma, leadsService, gateway, inbound, historySync);
+  const instanceHealth: any = { resolverAlerta: jest.fn().mockResolvedValue(undefined) };
+  const handler = new EvolutionEventsHandler(
+    prisma,
+    leadsService,
+    gateway,
+    inbound,
+    historySync,
+    instanceHealth,
+  );
   const warn = jest.spyOn((handler as any).logger, 'warn').mockImplementation(() => undefined);
   const error = jest.spyOn((handler as any).logger, 'error').mockImplementation(() => undefined);
   return { handler, prisma, inbound, warn, error };
@@ -54,7 +62,8 @@ function makeUazapi(instance: unknown) {
     saveIncomingMessage: jest.fn().mockResolvedValue(undefined),
   };
   const historySync: any = { syncUazapiInstance: jest.fn().mockResolvedValue({}) };
-  const handler = new UazapiEventsHandler(prisma, gateway, inbound, historySync);
+  const instanceHealth: any = { resolverAlerta: jest.fn().mockResolvedValue(undefined) };
+  const handler = new UazapiEventsHandler(prisma, gateway, inbound, historySync, instanceHealth);
   const warn = jest.spyOn((handler as any).logger, 'warn').mockImplementation(() => undefined);
   return { handler, inbound, warn };
 }
