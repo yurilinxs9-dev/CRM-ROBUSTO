@@ -262,6 +262,20 @@ export function fimDoDiaLocal(instante: Date, timeZone: string): Date {
 }
 
 /**
+ * Ate onde no futuro um `avisar_em` pode valer: 12 meses, ancorado na meia-noite
+ * de Sao Paulo como todo o resto. UMA funcao para os dois caminhos de proposito,
+ * e nao a mesma conta copiada — o que muda entre eles e o que se FAZ ao
+ * estourar o teto, nao onde ele fica. O worker clampa (o modelo chutou 2030 e
+ * corrigir e obvio); a criacao manual devolve 400 (a pessoa digitou a data, e
+ * ajusta-la em silencio criaria um lembrete para um dia que ela nao escolheu).
+ */
+function tetoDoLembrete(agora: Date): Date {
+  const bruto = new Date(agora);
+  bruto.setUTCMonth(bruto.getUTCMonth() + LEMBRETE_CLAMP_MESES);
+  return diaLocalDeslocado(bruto, 0, TIMEZONE);
+}
+
+/**
  * `AAAA-MM-DD` da ficha -> instante do comeco daquele dia em Sao Paulo.
  * `null` = ilegivel ou data que nao existe no calendario. Defesa em
  * profundidade: `comoLembretes` (insight-prompt) ja valida a forma, mas quem
@@ -1001,15 +1015,18 @@ export class LeadInsightsService {
   ): Promise<{ lembretes: LembreteDaFicha[] }> {
     await this.leads.findOne(leadId, user);
 
+    // `tenant_id` nas duas: o `findOne` acima ja garantiu o acesso, mas o
+    // recorte de tenant nao pode viver so numa checagem anterior — mesma defesa
+    // em profundidade do `filtroLembretes` e das rotas de acao.
     const [pendentes, resolvidos] = await Promise.all([
       this.prisma.leadLembrete.findMany({
-        where: { lead_id: leadId, status: LEMBRETE_PENDENTE },
+        where: { tenant_id: user.tenantId, lead_id: leadId, status: LEMBRETE_PENDENTE },
         select: LEMBRETE_FICHA_SELECT,
         orderBy: { avisar_em: 'asc' },
         take: LEMBRETE_FICHA_CAP,
       }),
       this.prisma.leadLembrete.findMany({
-        where: { lead_id: leadId, status: { not: LEMBRETE_PENDENTE } },
+        where: { tenant_id: user.tenantId, lead_id: leadId, status: { not: LEMBRETE_PENDENTE } },
         // Resolvido nao tem urgencia: o que interessa e o que mudou por ultimo.
         orderBy: { updated_at: 'desc' },
         select: LEMBRETE_FICHA_SELECT,
@@ -1054,6 +1071,15 @@ export class LeadInsightsService {
     if (avisar.getTime() < diaLocalDeslocado(agora, 0, TIMEZONE).getTime()) {
       throw new BadRequestException('A data do lembrete nao pode estar no passado.');
     }
+    // Mesmo teto do worker, pela mesma funcao — mas aqui ele RECUSA em vez de
+    // clampar: quem digitou a data escolheu um dia, e mover esse dia em
+    // silencio esconderia o erro (um "2036" com um digito trocado viraria um
+    // lembrete perfeitamente plausivel para daqui a um ano).
+    if (avisar.getTime() > tetoDoLembrete(agora).getTime()) {
+      throw new BadRequestException(
+        `O lembrete pode ser marcado para no maximo ${LEMBRETE_CLAMP_MESES} meses a frente.`,
+      );
+    }
 
     await this.prisma.leadLembrete.create({
       data: {
@@ -1081,17 +1107,25 @@ export class LeadInsightsService {
   /**
    * Botao "adiar +N": empurra o aviso e o mantem PENDENTE — adiar nao resolve.
    *
-   * A conta parte do `avisar_em` do lembrete, nao de hoje: adiar "+1 dia" um
-   * marco de outubro leva para 16/10, nao para amanha. E anda em DIA local (ver
-   * `diaLocalDeslocado`), nao em `N * 24h`, senao a ancora de meia-noite
-   * derivaria a cada adiamento.
+   * A base e o MAIS TARDE entre a data do lembrete e agora:
+   * - lembrete no futuro (o caso comum) conta a partir dele — "+1 dia" num
+   *   marco de outubro leva para 16/10, nao para amanha, senao o botao viraria
+   *   um "reagendar para a semana que vem" disfarçado;
+   * - lembrete ATRASADO conta a partir de hoje. Somando sobre a data vencida,
+   *   "+1 dia" num lembrete atrasado ha 5 dias devolveria um atrasado ha 4: o
+   *   card continuaria no topo da fila de hoje e o clique nao teria feito nada
+   *   visivel. O botao existe justamente para tirar o card da fila.
+   *
+   * E anda em DIA local (ver `diaLocalDeslocado`), nao em `N * 24h`, senao a
+   * ancora de meia-noite derivaria a cada adiamento.
    */
   async adiarLembrete(lembreteId: string, user: AuthUser, dias: number): Promise<{ ok: true }> {
     const lembrete = await this.lembretePendente(lembreteId, user);
 
+    const base = new Date(Math.max(lembrete.avisar_em.getTime(), Date.now()));
     await this.prisma.leadLembrete.update({
       where: { id: lembrete.id },
-      data: { avisar_em: diaLocalDeslocado(lembrete.avisar_em, dias, TIMEZONE) },
+      data: { avisar_em: diaLocalDeslocado(base, dias, TIMEZONE) },
     });
     return { ok: true };
   }
@@ -1661,28 +1695,38 @@ export class LeadInsightsService {
     if (lembretes.length === 0) return;
     try {
       const agora = new Date();
-      const tetoBruto = new Date(agora);
-      tetoBruto.setUTCMonth(tetoBruto.getUTCMonth() + LEMBRETE_CLAMP_MESES);
-      // O teto tambem passa pela ancora: `avisar_em` e SEMPRE a meia-noite do
-      // dia em Sao Paulo. Sem isto, o unico lembrete com hora no meio do dia
-      // seria justamente o clampado — uma excecao silenciosa para o front, que
+      // O teto passa pela ancora: `avisar_em` e SEMPRE a meia-noite do dia em
+      // Sao Paulo. Sem isto, o unico lembrete com hora no meio do dia seria
+      // justamente o clampado — uma excecao silenciosa para o front, que
       // renderiza e compara por dia local.
-      const teto = diaLocalDeslocado(tetoBruto, 0, TIMEZONE);
+      const teto = tetoDoLembrete(agora);
 
-      const pendentes = await this.prisma.leadLembrete.findMany({
-        where: { lead_id: leadId, status: LEMBRETE_PENDENTE },
-        select: { motivo: true, avisar_em: true, origem: true },
-        // Leitura limitada (ver `LEMBRETE_PENDENTES_LOTE`): sem `take` a lista
-        // de pendentes de um lead antigo entra inteira no worker.
-        orderBy: { avisar_em: 'asc' },
-        take: LEMBRETE_PENDENTES_LOTE,
-      });
+      // Duas leituras com papeis diferentes, de proposito:
+      // - o LOTE alimenta o dedupe, e por isso pode (e precisa) ser limitado;
+      // - a COTA da IA e contada no banco, sem teto de linhas. Derivar a cota do
+      //   lote seria errado justamente onde ela importa: o lote traz os
+      //   pendentes mais PROXIMOS, entao um lead com dezenas de manuais nas
+      //   proximas semanas encheria as 50 vagas e a conta daria "0 da IA", com
+      //   5 lembretes de IA vivos mais adiante no calendario. O cap de 5 seria
+      //   burlado em silencio, uma vez por geracao.
+      const [pendentes, usadasPelaIa] = await Promise.all([
+        this.prisma.leadLembrete.findMany({
+          where: { lead_id: leadId, status: LEMBRETE_PENDENTE },
+          select: { motivo: true, avisar_em: true, origem: true },
+          // Leitura limitada (ver `LEMBRETE_PENDENTES_LOTE`): sem `take` a lista
+          // de pendentes de um lead antigo entra inteira no worker.
+          orderBy: { avisar_em: 'asc' },
+          take: LEMBRETE_PENDENTES_LOTE,
+        }),
+        this.prisma.leadLembrete.count({
+          where: { lead_id: leadId, status: LEMBRETE_PENDENTE, origem: LEMBRETE_ORIGEM_IA },
+        }),
+      ]);
       const ocupados = pendentes.map((p) => ({
         chave: normalizarNome(p.motivo),
         em: p.avisar_em.getTime(),
       }));
-      let vagas =
-        LEMBRETE_IA_MAX - pendentes.filter((p) => p.origem === LEMBRETE_ORIGEM_IA).length;
+      let vagas = LEMBRETE_IA_MAX - usadasPelaIa;
 
       for (const item of lembretes) {
         if (vagas <= 0) {

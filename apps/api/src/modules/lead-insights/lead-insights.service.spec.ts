@@ -32,6 +32,8 @@ function montar() {
   const leadLembrete = {
     findMany: jest.fn().mockResolvedValue([]),
     findFirst: jest.fn(),
+    // A cota da IA e contada NO BANCO, nao derivada do lote lido para o dedupe.
+    count: jest.fn().mockResolvedValue(0),
     create: jest.fn(),
     update: jest.fn(),
   };
@@ -1024,6 +1026,10 @@ describe('LeadInsightsService.gerarInsight (fase 3: lembretes temporais)', () =>
     m.ai.chat.mockResolvedValue({ text: resposta360({ lembretes }), tokensIn: 1, tokensOut: 1 });
     m.message.count.mockResolvedValue(0);
     m.leadLembrete.findMany.mockResolvedValue(pendentes);
+    // O `count` do banco e o que decide a cota; aqui ele acompanha o cenario.
+    m.leadLembrete.count.mockResolvedValue(
+      pendentes.filter((p) => p.origem === 'ia').length,
+    );
     return m;
   }
 
@@ -1186,6 +1192,28 @@ describe('LeadInsightsService.gerarInsight (fase 3: lembretes temporais)', () =>
 
     // A quinta vaga e do primeiro marco; o segundo fica de fora.
     expect(gravados(m.leadLembrete.create).map((d) => d.motivo)).toEqual(['Marco novo A']);
+  });
+
+  it('a cota da IA e contada no banco: o lote de dedupe nao a esconde', async () => {
+    // O `take: 50` do dedupe le os pendentes mais PROXIMOS. Um lead com dezenas
+    // de manuais para as proximas semanas encheria o lote inteiro, e derivar a
+    // cota dele daria "0 da IA usadas" com 5 lembretes de IA vivos mais adiante
+    // no calendario — o cap de 5 seria burlado em silencio a cada geracao.
+    const m = preparar(
+      [{ motivo: 'Marco novo A', quando: '2026-10-15' }],
+      Array.from({ length: 50 }, (_, i) =>
+        pendente(`Manual ${i}`, `2026-09-${String((i % 28) + 1).padStart(2, '0')}`, 'manual'),
+      ),
+    );
+    m.leadLembrete.count.mockResolvedValue(5);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+    const [args] = m.leadLembrete.count.mock.calls[0] as [
+      { where: { lead_id: string; status: string; origem: string } },
+    ];
+    expect(args.where).toEqual({ lead_id: 'lead-1', status: 'pendente', origem: 'ia' });
   });
 
   it('lembrete manual do atendente nao gasta a cota da IA, mas ainda dedupa', async () => {
@@ -1465,7 +1493,7 @@ const HOJE_SP = new Date('2026-08-26T03:00:00Z');
 
 describe('LeadInsightsService.listarLembretes', () => {
   interface ArgsLista {
-    where: { lead_id?: string; status?: string | { not: string } };
+    where: { tenant_id?: string; lead_id?: string; status?: string | { not: string } };
     select?: Record<string, boolean>;
     orderBy?: Record<string, string>;
     take?: number;
@@ -1524,12 +1552,19 @@ describe('LeadInsightsService.listarLembretes', () => {
 
     expect(lembretes.map((l) => l.id)).toEqual(['p1', 'p2', 'r1']);
 
+    // `tenant_id` nas duas, junto do `lead_id`: o LeadsService ja garantiu o
+    // acesso, mas o recorte de tenant nao pode viver so numa checagem anterior
+    // — e a mesma defesa em profundidade do resto do modulo.
     const pendentes = argsDaChamada(m.leadLembrete.findMany, 0);
-    expect(pendentes.where).toEqual({ lead_id: 'lead-1', status: 'pendente' });
+    expect(pendentes.where).toEqual({ tenant_id: 't1', lead_id: 'lead-1', status: 'pendente' });
     expect(pendentes.orderBy).toEqual({ avisar_em: 'asc' });
 
     const resolvidos = argsDaChamada(m.leadLembrete.findMany, 1);
-    expect(resolvidos.where).toEqual({ lead_id: 'lead-1', status: { not: 'pendente' } });
+    expect(resolvidos.where).toEqual({
+      tenant_id: 't1',
+      lead_id: 'lead-1',
+      status: { not: 'pendente' },
+    });
     expect(resolvidos.orderBy).toEqual({ updated_at: 'desc' });
   });
 
@@ -1652,6 +1687,28 @@ describe('LeadInsightsService.criarLembrete', () => {
     expect(m.leadLembrete.create).not.toHaveBeenCalled();
   });
 
+  it('alem de 12 meses e RECUSADO com 400, nao clampado em silencio', async () => {
+    // Mesmo teto do worker, e de proposito pela mesma constante. A diferenca e
+    // o que se faz com ele: para o modelo, que chuta 2030, clampar e a correcao
+    // obvia; para uma pessoa que digitou a data, ajustar em silencio criaria um
+    // lembrete para um dia que ela nao escolheu. Avisar e melhor.
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, { motivo: 'Longe', avisar_em: '2027-08-27' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+  });
+
+  it('a borda dos 12 meses ainda passa', async () => {
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, { motivo: 'No limite', avisar_em: '2027-08-26' }),
+    ).resolves.toEqual({ ok: true });
+    expect(gravado(m.leadLembrete.create).avisar_em).toEqual(new Date('2027-08-26T03:00:00Z'));
+  });
+
   it('lead fora da visibilidade: 404 antes de gravar', async () => {
     const m = montar();
     m.leads.findOne.mockRejectedValue(new NotFoundException());
@@ -1743,6 +1800,20 @@ describe('LeadInsightsService — concluir/adiar/descartar lembrete', () => {
 
     expect(atualizacao(m.leadLembrete.update).data.avisar_em).toEqual(
       new Date('2026-10-16T03:00:00Z'),
+    );
+  });
+
+  it('adiar um lembrete ATRASADO conta a partir de hoje, nao da data vencida', async () => {
+    // O botao existe para tirar o card da fila de hoje. Somando sobre a data
+    // vencida, "+1 dia" num lembrete atrasado ha 5 dias devolveria um lembrete
+    // atrasado ha 4 — ele continuaria exatamente onde estava, no topo do radar,
+    // e o clique nao teria feito nada visivel.
+    const m = preparar({ avisar_em: new Date('2026-08-21T03:00:00Z') });
+
+    await m.service.adiarLembrete('lem-1', usuario, 1);
+
+    expect(atualizacao(m.leadLembrete.update).data.avisar_em).toEqual(
+      new Date('2026-08-27T03:00:00Z'),
     );
   });
 
