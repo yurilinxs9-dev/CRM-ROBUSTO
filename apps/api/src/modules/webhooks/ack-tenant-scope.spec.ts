@@ -145,6 +145,38 @@ describe('Evolution messages.update — ack escopado por tenant', () => {
     );
   });
 
+  it('status não mapeável (SERVER_ACK/PENDING): descarta sem resolver instância nem consultar o banco', async () => {
+    // O Evolution manda um SERVER_ACK por mensagem enviada e ele não vira
+    // status nenhum. Resolver a instância antes do parse cobraria uma query
+    // por evento descartado — a resolução é LAZY, só no primeiro ack que
+    // realmente mapeia.
+    const { handler, prisma, inbound } = makeEvolution(instanciaT1);
+
+    await handler.handleMessageUpdate({
+      instance: 'porto-sul',
+      data: { keyId: WAMID, status: 'SERVER_ACK' },
+    });
+
+    expect(inbound.findEvolutionInstanceByName).not.toHaveBeenCalled();
+    expect(prisma.message.findMany).not.toHaveBeenCalled();
+  });
+
+  it('vários acks no mesmo payload resolvem a instância UMA vez', async () => {
+    const { handler, prisma, inbound } = makeEvolution(instanciaT1);
+    prisma.message.findMany.mockImplementation(fakeFindMany(linhasDeDoisTenants));
+
+    await handler.handleMessageUpdate({
+      instance: 'porto-sul',
+      data: [
+        { key: { id: 'WA-A' }, update: { status: 'DELIVERY_ACK' } },
+        { key: { id: 'WA-B' }, update: { status: 'DELIVERY_ACK' } },
+      ],
+    });
+
+    expect(inbound.findEvolutionInstanceByName).toHaveBeenCalledTimes(1);
+    expect(prisma.message.updateMany).toHaveBeenCalledTimes(2);
+  });
+
   it('instância desconhecida (ou tenant suspenso): descarta sem tocar em mensagem nenhuma', async () => {
     // Sem instância não há tenant — atualizar "todas as cópias do wamid" seria
     // exatamente o vazamento que este escopo existe para impedir.

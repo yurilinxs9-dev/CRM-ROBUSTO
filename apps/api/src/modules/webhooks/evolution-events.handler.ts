@@ -41,7 +41,10 @@ export class EvolutionEventsHandler {
    */
   private avisarInstanciaDesconhecida(evento: string, instanceName: string | undefined): void {
     const nome = instanceName ?? '(sem nome)';
-    if (!this.avisoInstancia.deveLogar(nome)) return;
+    // Chave = evento + instância. Só a instância faria o primeiro warn (ex.:
+    // messages.upsert) calar o de messages.update por 10min — some justamente
+    // o sinal de que os ACKS pararam, que é outro sintoma.
+    if (!this.avisoInstancia.deveLogar(`${evento}|${nome}`)) return;
     this.logger.warn(
       `${evento}: mensagem descartada: instancia Evolution '${nome}' nao mapeada no CRM ` +
         `(tenant removido/suspenso ou conexao criada fora do CRM) — ` +
@@ -158,21 +161,31 @@ export class EvolutionEventsHandler {
     // Tenant DONO do ack. O wamid nunca foi único global (a UNIQUE sempre
     // começou em tenant_id) e com o dedupe por conversa ele passou a repetir
     // também entre chats — sem este escopo, uma colisão de id entre empresas
-    // aplicaria o ack de uma na mensagem da outra. Resolvido depois do parse:
-    // ack irrelevante não paga consulta. Instância desconhecida/tenant
-    // suspenso descarta, igual à mensagem que chega.
+    // aplicaria o ack de uma na mensagem da outra. Instância desconhecida ou
+    // tenant suspenso descarta, igual à mensagem que chega.
+    //
+    // Resolução LAZY, só no primeiro ack que realmente mapeia: o Evolution
+    // manda um SERVER_ACK por mensagem enviada (e PENDING, e outros que
+    // `extractAck` descarta) — resolver antes do parse cobraria uma consulta
+    // por evento que não vira status nenhum, no evento mais volumoso do
+    // sistema. `undefined` = ainda não perguntei; `null` = perguntei e não é
+    // nossa.
     const instanceName = data?.instance as string | undefined;
-    const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
-    if (!instance) {
-      this.avisarInstanciaDesconhecida('messages.update', instanceName);
-      return;
-    }
-    const tenantId = instance.tenant_id;
+    let instance:
+      | Awaited<ReturnType<InboundMessageService['findEvolutionInstanceByName']>>
+      | undefined;
 
     for (const update of updates) {
       const ack = extractAck(update);
       if (!ack) continue;
       const { messageId, status: mappedStatus } = ack;
+
+      if (instance === undefined) {
+        instance = await this.inbound.findEvolutionInstanceByName(instanceName);
+        if (!instance) this.avisarInstanciaDesconhecida('messages.update', instanceName);
+      }
+      if (!instance) return;
+      const tenantId = instance.tenant_id;
 
       // Dentro do tenant, o wamid casa com N cópias — uma por conversa, quando
       // a mensagem foi encaminhada pra vários chats. updateMany cobre todas;

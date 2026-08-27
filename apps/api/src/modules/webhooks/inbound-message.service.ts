@@ -407,12 +407,19 @@ export class InboundMessageService {
     // `lead.telefone` entra no próprio where para decidir numa consulta só
     // (daqui pra frente pode haver N cópias do mesmo wamid, uma por conversa,
     // então findUnique deixou de servir).
+    //
+    // O `lidJid` entra junto quando o evento traz um: a identidade do chat MUDA
+    // DE FORMATO quando o WhatsApp migra a conversa para @lid — o mesmo chat
+    // chega ora com o telefone real, ora com os dígitos do LID. Só por
+    // `telefone`, a re-emissão viraria "mensagem nova": badge inflando e lead
+    // fantasma. Antes o unique do banco mascarava isso (barrava a linha); com a
+    // chave incluindo o lead, a decisão passou a ser nossa.
     if (input.messageId) {
       const dup = await this.prisma.message.findFirst({
         where: {
           tenant_id: tenantId,
           whatsapp_message_id: input.messageId,
-          lead: { telefone: phone },
+          lead: lidJid ? { OR: [{ telefone: phone }, { whatsapp_lid: lidJid }] } : { telefone: phone },
         },
         select: { id: true },
       });

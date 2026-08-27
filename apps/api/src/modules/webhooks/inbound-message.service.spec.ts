@@ -98,21 +98,37 @@ function makeMocks() {
  * (tenant, wamid) — pareceria correto. Aqui ele acha de verdade a cópia da
  * OUTRA conversa e engole a mensagem, como acontecia em produção.
  */
-type FakeRow = { id: string; wamid: string; lead_id: string; telefone: string };
+type FakeRow = {
+  id: string;
+  wamid: string;
+  lead_id: string;
+  telefone: string;
+  whatsapp_lid?: string;
+};
 function fakeMessageStore(rows: FakeRow[]) {
+  /** Resolve o filtro do relacionamento `lead`, inclusive na forma OR. */
+  const casaLead = (leadWhere: any, r: FakeRow): boolean => {
+    if (!leadWhere) return true;
+    const clausulas: any[] = leadWhere.OR ?? [leadWhere];
+    return clausulas.some(
+      (c) =>
+        (c.telefone === undefined || c.telefone === r.telefone) &&
+        (c.whatsapp_lid === undefined || c.whatsapp_lid === r.whatsapp_lid),
+    );
+  };
   return (args: any) => {
     const w = args?.where ?? {};
     const key = w.tenant_wamid_lead ?? w.tenant_id_whatsapp_message_id ?? null;
     const wamid = key?.whatsapp_message_id ?? w.whatsapp_message_id ?? null;
     const leadId = key?.lead_id ?? w.lead_id ?? null;
-    const telefone = w.lead?.telefone ?? null;
+    const leadWhere = w.lead ?? null;
     // Sem nenhum critério não há o que casar (evita falso positivo).
-    if (wamid === null && leadId === null && telefone === null) return Promise.resolve(null);
+    if (wamid === null && leadId === null && leadWhere === null) return Promise.resolve(null);
     const hit = rows.find(
       (r) =>
         (wamid === null || r.wamid === wamid) &&
         (leadId === null || r.lead_id === leadId) &&
-        (telefone === null || r.telefone === telefone),
+        casaLead(leadWhere, r),
     );
     return Promise.resolve(hit ? { id: hit.id, metadata: {} } : null);
   };
@@ -481,6 +497,47 @@ describe('InboundMessageService.saveIncomingMessage — encaminhamento p/ vária
     expect(m.prisma.lead.upsert).toHaveBeenCalled();
     expect(m.prisma.message.upsert).toHaveBeenCalledTimes(1);
     expect(m.gateway.emitNewMessage).toHaveBeenCalled();
+  });
+
+  it('chat migrando p/ LID: mesmo wamid com telefone diferente mas MESMO lid ainda é duplicata', async () => {
+    // O escopo do dedupe é o chat, e a identidade do chat muda de formato
+    // quando o WhatsApp migra a conversa para @lid: o mesmo chat chega ora com
+    // o telefone real, ora com os dígitos do LID. Comparando só `telefone`, a
+    // re-emissão passaria como mensagem nova → badge inflando e lead fantasma.
+    // Essa é a classe de bug que o unique antigo mascarava (o banco barrava),
+    // e que passa a chegar no código agora que a chave inclui o lead.
+    const m = makeService();
+    const store = fakeMessageStore([
+      {
+        id: 'msg-ja-salva',
+        wamid: 'wa-msg-1',
+        lead_id: 'lead-1',
+        telefone: '5511900000000',
+        whatsapp_lid: '253227262034086@lid',
+      },
+    ]);
+    m.prisma.message.findUnique.mockImplementation(store);
+    m.prisma.message.findFirst.mockImplementation(store);
+
+    await m.service.saveIncomingMessage(
+      baseInput({
+        phone: '253227262034086', // dígitos do LID, não o telefone real
+        lidJid: '253227262034086@lid',
+      }),
+    );
+
+    expect(m.prisma.lead.upsert).not.toHaveBeenCalled();
+    expect(m.prisma.message.upsert).not.toHaveBeenCalled();
+    expect(m.gateway.emitNewMessage).not.toHaveBeenCalled();
+  });
+
+  it('sem lidJid o dedupe não inventa filtro de lid (segue só pelo telefone)', async () => {
+    const m = segundoChat();
+
+    await m.service.saveIncomingMessage(inputSegundoChat());
+
+    const [{ where }] = m.prisma.message.findFirst.mock.calls[0];
+    expect(where.lead).toEqual({ telefone: ESTE_CHAT.telefone });
   });
 
   it('o dedupe pré-efeito consulta pelo CHAT (lead.telefone), não só por tenant+wamid', async () => {

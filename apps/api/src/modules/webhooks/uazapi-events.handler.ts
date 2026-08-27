@@ -38,7 +38,10 @@ export class UazapiEventsHandler {
    * propósito. Era `throw` → 3 retries inúteis + stack de `error` por mensagem.
    */
   private avisarInstanciaDesconhecida(evento: string, identificacao: string): void {
-    if (!this.avisoInstancia.deveLogar(identificacao)) return;
+    // Chave = evento + instância/token: só a identificação faria o warn de um
+    // evento (ex.: uazapi.messages) calar o do ack por 10min, escondendo que
+    // os acks também pararam.
+    if (!this.avisoInstancia.deveLogar(`${evento}|${identificacao}`)) return;
     this.logger.warn(
       `${evento}: mensagem descartada: instancia ${identificacao} nao mapeada no CRM ` +
         `(tenant removido/suspenso ou conexao criada fora do CRM) — ` +
