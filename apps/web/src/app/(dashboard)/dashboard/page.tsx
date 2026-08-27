@@ -174,7 +174,7 @@ const TEMP_CORES: Record<string, { bg: string; fg: string; label: string }> = {
 };
 
 const AJUDA_FINANCEIRO =
-  'O dinheiro que está em jogo no seu funil. "Em aberto" soma o valor estimado de todos os leads que ainda não foram ganhos nem perdidos. "Previsão ponderada" pesa cada um desses valores pela chance de fechar da etapa em que o lead está: um lead de R$ 10.000 numa etapa de 30% entra como R$ 3.000. "Ganhos no mês" é o que já fechou desde o dia 1º, comparado com o mês passado. "Ticket médio" é esse ganho dividido pelo número de negócios fechados no mês. A chance de fechar de cada etapa você define em Configurações › Pipeline; sem definir, o CRM usa a posição da etapa no funil. Todos os números desta seção são do funil ativo — por isso "Ganhos no mês" pode não bater com o "Valor ganho" lá em cima, que soma o CRM inteiro.';
+  'O dinheiro que está em jogo no seu funil. "Em aberto" soma o valor estimado de todos os leads que ainda não foram ganhos nem perdidos. "Previsão ponderada" pesa cada um desses valores pela chance de fechar da etapa em que o lead está: um lead de R$ 10.000 numa etapa de 30% entra como R$ 3.000. "Ganhos no mês" é o que já fechou desde o dia 1º, comparado com o mês passado. "Ticket médio" é esse ganho dividido pelo número de negócios fechados no mês. A chance de fechar de cada etapa você define no Editor de Pipeline (o caminho está na página "Como funciona"); sem definir, o CRM usa a posição da etapa no funil. Todos os números desta seção são do funil ativo — por isso "Ganhos no mês" pode não bater com o "Valor ganho" lá em cima, que soma o CRM inteiro.';
 
 const numberFmt = new Intl.NumberFormat('pt-BR');
 const percentFmt = new Intl.NumberFormat('pt-BR', {
