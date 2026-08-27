@@ -101,13 +101,15 @@ export class PipelinesController {
   }
 
   @Post('pipelines/:id/stages/reorder')
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   reorderStages(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.reorderStages(id, body, req.user as AuthUser);
   }
 
   @Patch('stages/:id')
-  @Roles(UserRole.GERENTE)
+  // OPERADOR pode renomear/cor; a guarda fina no service barra campos
+  // estruturais (automacoes, ganho/perda, probabilidade) para nao-gestores.
+  @Roles(UserRole.OPERADOR)
   updateStage(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.updateStage(id, body, req.user as AuthUser);
   }

@@ -94,3 +94,52 @@ describe('PipelinesService.updateStage — probabilidade', () => {
     expect(prisma.stage.update.mock.calls[0][0].data).toEqual({ nome: 'Proposta' });
   });
 });
+
+/**
+ * A rota PATCH /stages/:id e liberada para OPERADOR (renomear/cor no dia a
+ * dia), mas o mesmo endpoint carrega campos estruturais. A guarda fina do
+ * service e o que impede um operador de mexer em automacao/SLA/probabilidade.
+ */
+describe('PipelinesService.updateStage — guarda fina por papel', () => {
+  const operador: AuthUser = { ...gerente, id: 'o1', nome: 'Isamara', role: UserRole.OPERADOR as never };
+
+  it('operador renomeia e troca cor', async () => {
+    const { service, prisma } = montar();
+
+    await service.updateStage('s-1', { nome: 'Orcamento', cor: '#AA00FF' }, operador);
+
+    expect(prisma.stage.update.mock.calls[0][0].data).toEqual({ nome: 'Orcamento', cor: '#AA00FF' });
+  });
+
+  it.each([
+    { probabilidade: 50 },
+    { is_won: true },
+    { sla_config: { duration: 1 } },
+    { cadence_config: [] },
+    { nome: 'ok', max_dias: 3 },
+  ])('operador com campo estrutural %j leva 403 e nada e gravado', async (payload) => {
+    const { service, prisma } = montar();
+
+    await expect(service.updateStage('s-1', payload, operador)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(prisma.stage.update).not.toHaveBeenCalled();
+  });
+
+  it('gerente segue alterando campos estruturais', async () => {
+    const { service, prisma } = montar();
+
+    await service.updateStage('s-1', { is_won: true, probabilidade: 90 }, gerente);
+
+    expect(prisma.stage.update).toHaveBeenCalled();
+  });
+
+  it('super admin passa como gestor', async () => {
+    const { service, prisma } = montar();
+    const admin: AuthUser = { ...gerente, role: UserRole.SUPER_ADMIN as never };
+
+    await service.updateStage('s-1', { probabilidade: 10 }, admin);
+
+    expect(prisma.stage.update).toHaveBeenCalled();
+  });
+});

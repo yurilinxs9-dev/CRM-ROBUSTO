@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
@@ -53,6 +53,9 @@ const updateStageSchema = z.object({
 const reorderStagesSchema = z.object({
   stageIds: z.array(z.string().uuid()).min(1),
 });
+
+/** Campos do PATCH de etapa que um OPERADOR pode alterar (dia a dia). */
+const CAMPOS_STAGE_OPERADOR = new Set(['nome', 'cor']);
 
 const reorderPipelinesSchema = z.object({
   pipelineIds: z.array(z.string().uuid()).min(1),
@@ -312,6 +315,20 @@ export class PipelinesService {
 
   async updateStage(id: string, body: unknown, user: AuthUser) {
     const data = updateStageSchema.parse(body);
+    // A rota e liberada para OPERADOR (dia a dia: renomear/cor), mas o mesmo
+    // PATCH carrega campos estruturais (ganho/perda, automacoes, SLA/cadencia,
+    // probabilidade). Guarda fina: operador so passa com nome/cor no payload.
+    const ehGestor = user.role === 'GERENTE' || user.role === 'SUPER_ADMIN';
+    if (!ehGestor) {
+      const estruturais = Object.keys(data).filter(
+        (chave) => !CAMPOS_STAGE_OPERADOR.has(chave),
+      );
+      if (estruturais.length > 0) {
+        throw new ForbiddenException(
+          'Permissao insuficiente: apenas gerentes alteram automacoes e campos estruturais da etapa.',
+        );
+      }
+    }
     const exists = await this.prisma.stage.findFirst({
       where: { id, tenant_id: user.tenantId },
     });

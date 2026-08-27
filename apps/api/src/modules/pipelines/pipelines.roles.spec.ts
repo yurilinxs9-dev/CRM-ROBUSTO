@@ -18,21 +18,19 @@ function rolesDe(metodo: string): UserRole[] | undefined {
 }
 
 describe('PipelinesController — papeis por rota', () => {
-  it.each(['createStage', 'removeStage', 'removeStageWithMove'])(
-    'ciclo criar/excluir etapa e liberado para OPERADOR (todo tenant): %s',
-    (metodo) => {
-      expect(rolesDe(metodo)).toEqual([UserRole.OPERADOR]);
-    },
-  );
-
   it.each([
-    'create',
-    'update',
-    'remove',
-    'deleteWithMove',
-    'reorderStages',
+    'createStage',
+    'removeStage',
+    'removeStageWithMove',
     'updateStage',
-  ])('rota estrutural/destrutiva %s continua exigindo GERENTE', (metodo) => {
+    'reorderStages',
+  ])('ciclo de etapa do dia a dia e liberado para OPERADOR (todo tenant): %s', (metodo) => {
+    expect(rolesDe(metodo)).toEqual([UserRole.OPERADOR]);
+  });
+
+  it.each(['create', 'update', 'remove', 'deleteWithMove'])(
+    'rota de FUNIL %s continua exigindo GERENTE',
+    (metodo) => {
     expect(rolesDe(metodo)).toEqual([UserRole.GERENTE]);
   });
 });
