@@ -91,7 +91,11 @@ export class PipelinesController {
   }
 
   @Post('pipelines/:id/stages')
-  @Roles(UserRole.GERENTE)
+  // Criar etapa e trabalho do dia a dia (pedido do dono, 27/08): OPERADOR pode,
+  // em todo tenant. O guard e hierarquico, entao GERENTE/SUPER_ADMIN seguem
+  // passando; VISUALIZADOR continua barrado. Renomear/excluir/reordenar
+  // continuam GERENTE (estruturais).
+  @Roles(UserRole.OPERADOR)
   createStage(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.createStage(id, body, req.user as AuthUser);
   }

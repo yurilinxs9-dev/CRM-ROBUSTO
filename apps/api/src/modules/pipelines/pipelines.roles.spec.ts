@@ -1,0 +1,37 @@
+import 'reflect-metadata';
+import { PipelinesController } from './pipelines.controller';
+import { ROLES_KEY } from '../../common/decorators/roles.decorator';
+import { UserRole } from '@/common/types/roles';
+
+/**
+ * O RolesGuard e hierarquico (>=): @Roles(OPERADOR) admite OPERADOR, GERENTE e
+ * SUPER_ADMIN e barra so VISUALIZADOR. Criar etapa e trabalho do dia a dia do
+ * operador (pedido do dono, 27/08); o resto do modulo continua GERENTE por ser
+ * estrutural/destrutivo.
+ */
+function rolesDe(metodo: string): UserRole[] | undefined {
+  const handler = Object.getOwnPropertyDescriptor(PipelinesController.prototype, metodo)?.value as
+    | object
+    | undefined;
+  if (!handler) throw new Error(`metodo ${metodo} nao existe no controller`);
+  return Reflect.getMetadata(ROLES_KEY, handler) as UserRole[] | undefined;
+}
+
+describe('PipelinesController — papeis por rota', () => {
+  it('criar etapa e liberada para OPERADOR (todo tenant)', () => {
+    expect(rolesDe('createStage')).toEqual([UserRole.OPERADOR]);
+  });
+
+  it.each([
+    'create',
+    'update',
+    'remove',
+    'deleteWithMove',
+    'reorderStages',
+    'updateStage',
+    'removeStage',
+    'removeStageWithMove',
+  ])('rota estrutural/destrutiva %s continua exigindo GERENTE', (metodo) => {
+    expect(rolesDe(metodo)).toEqual([UserRole.GERENTE]);
+  });
+});
