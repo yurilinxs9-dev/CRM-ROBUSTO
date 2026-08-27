@@ -18,6 +18,8 @@ const EXPECTED: Record<string, PlatformScope> = {
   tenant: 'tenants',
   logs: 'logs',
   health: 'health',
+  // Saúde das instâncias é leitura de operação, irmã do `health`.
+  instancesHealth: 'health',
   banUser: 'tenant_actions',
   deleteUser: 'tenant_actions',
   deleteTenant: 'tenant_actions',
