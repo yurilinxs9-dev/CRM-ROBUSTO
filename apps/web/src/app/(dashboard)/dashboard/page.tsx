@@ -284,6 +284,9 @@ function deltaGanhos(atual: number, anterior: number): { trend: number | null; s
   }
   const pct = Math.round(((atual - anterior) / anterior) * 100);
   if (pct === 0) return { trend: null, sub: '— igual ao mês passado' };
+  // Um mês passado quase zerado gera porcentagem de quatro dígitos, que estoura
+  // o card e não informa nada: "+12.400%" e "+80.000%" dizem a mesma coisa.
+  if (pct > 999) return { trend: null, sub: '▲ muito acima do mês passado' };
   return { trend: pct, sub: 'vs mês passado' };
 }
 
@@ -380,7 +383,7 @@ function FinanceiroSecao({ dados }: { dados: Financeira }) {
                     </p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                       {numberFmt.format(linha.count)} leads · {brlFmt.format(linha.total)} ·{' '}
-                      {numberFmt.format(linha.probabilidade)}%
+                      {numberFmt.format(linha.probabilidade)}% de chance
                     </p>
                   </div>
                   <span
@@ -465,9 +468,10 @@ export default function DashboardPage() {
       return lerFinanceira(data);
     },
     // Backend antigo devolve 404: sem retry e sem mensagem de erro — a seção
-    // simplesmente não aparece.
+    // simplesmente não aparece. O poll também para depois do erro: sem isso, um
+    // backend sem a rota levaria um 404 a cada minuto, para sempre.
     retry: false,
-    refetchInterval: 60_000,
+    refetchInterval: (query) => (query.state.error ? false : 60_000),
   });
 
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

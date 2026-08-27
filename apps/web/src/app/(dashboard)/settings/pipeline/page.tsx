@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -835,16 +835,40 @@ function ProbabilidadeInput({
     setDraft(atual === null ? '' : String(atual));
   }, [atual]);
 
-  const commit = () => {
+  const reverter = () => setDraft(atual === null ? '' : String(atual));
+
+  /**
+   * Escape precisa de uma REF, não de estado: `.blur()` dispara o focusout de
+   * forma síncrona, dentro do mesmo batch — o `onBlur={commit}` roda em seguida
+   * com o `draft` velho capturado no closure desta renderização, e mandaria no
+   * PATCH exatamente o valor que o usuário acabou de descartar. A ref é lida no
+   * mesmo tick em que foi escrita, então não depende do re-render.
+   */
+  const cancelando = useRef(false);
+
+  const commit = (badInput: boolean) => {
+    if (cancelando.current) {
+      cancelando.current = false;
+      reverter();
+      return;
+    }
     const bruto = draft.trim();
     if (bruto === '') {
+      // `<input type="number">` com texto que não é número ("3e", "--") reporta
+      // `value === ''` e acende `validity.badInput`. Tratar isso como "campo
+      // esvaziado" apagaria uma probabilidade deliberada por causa de um typo —
+      // aqui reverte; o vazio de verdade (badInput falso) continua limpando.
+      if (badInput) {
+        reverter();
+        return;
+      }
       setDraft('');
       if (atual !== null) onUpdate({ probabilidade: null });
       return;
     }
     const n = Number(bruto);
     if (!Number.isFinite(n)) {
-      setDraft(atual === null ? '' : String(atual));
+      reverter();
       return;
     }
     // O backend recusa fora de 0-100 e fracionário: arredondar aqui evita
@@ -869,11 +893,13 @@ function ProbabilidadeInput({
         placeholder="auto"
         className="h-8"
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onBlur={(e) => commit(e.target.validity.badInput)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') e.currentTarget.blur();
           if (e.key === 'Escape') {
-            setDraft(atual === null ? '' : String(atual));
+            // Marca ANTES do blur: o `commit` disparado por ele lê a ref e
+            // reverte, em vez de gravar o rascunho descartado.
+            cancelando.current = true;
             e.currentTarget.blur();
           }
         }}
