@@ -163,8 +163,13 @@ export class DashboardService {
     const { ano, mes } = anoMesLocal(agora, TIMEZONE);
     const inicioMes = inicioDoDiaLocal(ano, mes, 1, TIMEZONE);
     // `mes - 1` com mes = 1 vira o mes 0 e o `Date.UTC` interno rola pra
-    // dezembro do ano anterior sozinho.
+    // dezembro do ano anterior sozinho; `mes + 1` com mes = 12 rola pra janeiro
+    // do ano seguinte pelo mesmo caminho.
     const inicioMesAnterior = inicioDoDiaLocal(ano, mes - 1, 1, TIMEZONE);
+    // Teto explicito no mes corrente tambem: as duas janelas sao [inicio, fim).
+    // Sem ele, um `estagio_entered_at` no futuro (correcao de data na mao, fila
+    // atrasada com relogio adiantado) entraria no mes de hoje pra sempre.
+    const inicioProximoMes = inicioDoDiaLocal(ano, mes + 1, 1, TIMEZONE);
 
     type GrupoEtapa = {
       estagio_id: string;
@@ -195,7 +200,7 @@ export class DashboardService {
         where: {
           tenant_id: user.tenantId,
           estagio_id: { in: ganhasIds },
-          estagio_entered_at: { gte: inicioMes },
+          estagio_entered_at: { gte: inicioMes, lt: inicioProximoMes },
         },
         _count: { id: true },
         _sum: { valor_estimado: true },
@@ -214,6 +219,11 @@ export class DashboardService {
           tenant_id: user.tenantId,
           estagio_id: { in: abertasIds },
           valor_estimado: { not: null },
+          // Lead privado (regra do `lead-visibility`) fica fora do top pra
+          // TODO mundo. A alternativa — filtrar pelo responsavel — partiria o
+          // cache por usuario; e um lead marcado como privado nao deveria
+          // aparecer com nome e valor num painel gerencial de qualquer jeito.
+          is_private: false,
         },
         orderBy: { valor_estimado: 'desc' },
         take: 5,

@@ -85,15 +85,16 @@ function montar(opts: MontarOpts = {}) {
     opts.pipeline === undefined ? { id: 'p-ativo', nome: 'Comercial', stages } : opts.pipeline;
   const atual = opts.ganhoAtual ?? { soma: null, quantidade: 0 };
   const anterior = opts.ganhoAnterior ?? { soma: null, quantidade: 0 };
+  let chamadasAggregate = 0;
 
   const prisma = {
     pipeline: { findFirst: jest.fn().mockResolvedValue(pipeline) },
     lead: {
       groupBy: jest.fn().mockResolvedValue(opts.grupos ?? []),
-      aggregate: jest.fn().mockImplementation((args: Record<string, any>) => {
-        // A janela do mes ANTERIOR e a unica com teto (`lt`).
-        const janela = args?.where?.estagio_entered_at as { lt?: Date } | undefined;
-        const alvo = janela?.lt ? anterior : atual;
+      aggregate: jest.fn().mockImplementation(() => {
+        // As duas janelas sao [inicio, fim); o que separa uma da outra e a
+        // ORDEM da chamada — o mes corrente primeiro, como o service documenta.
+        const alvo = chamadasAggregate++ === 0 ? atual : anterior;
         return Promise.resolve({
           _sum: { valor_estimado: alvo.soma === null ? null : new Prisma.Decimal(alvo.soma) },
           _count: { id: alvo.quantidade },
@@ -207,8 +208,28 @@ describe('DashboardService.getFinanceira', () => {
         probabilidade: 40,
         ponderado: 400.2,
       });
-      // 400.2 + 400 — em float puro isso da 800.2000000000001.
       expect(r.previsao.ponderado).toBe(800.2);
+    });
+
+    /**
+     * Somar float sem arredondar solta digito: `0.1 + 0.1 + 1000.2` da
+     * 1000.4000000000001, e os ponderados dessa mesma cesta dao
+     * 400.15999999999997 — os dois chegariam crus na tela como "R$ 1000,4000000000001".
+     */
+    it('as somas saem em centavos, sem sujeira de ponto flutuante', async () => {
+      const { service } = montar({
+        stages: [
+          etapa({ id: 's-a', ordem: 0, probabilidade: 40 }),
+          etapa({ id: 's-b', ordem: 1, probabilidade: 40 }),
+          etapa({ id: 's-c', ordem: 2, probabilidade: 40 }),
+        ],
+        grupos: [grupo('s-a', 1, '0.10'), grupo('s-b', 1, '0.10'), grupo('s-c', 1, '1000.20')],
+      });
+
+      const r = await service.getFinanceira(user);
+
+      expect(r.previsao.total_aberto).toBe(1000.4);
+      expect(r.previsao.ponderado).toBe(400.16);
     });
 
     it('etapa sem lead nenhum entra zerada em vez de sumir', async () => {
@@ -242,9 +263,33 @@ describe('DashboardService.getFinanceira', () => {
 
       const [atual, anterior] = janelas(prisma);
       expect(atual.gte.toISOString()).toBe('2026-03-01T03:00:00.000Z');
-      expect(atual.lt).toBeUndefined();
       expect(anterior.gte.toISOString()).toBe('2026-02-01T03:00:00.000Z');
       expect(anterior.lt?.toISOString()).toBe('2026-03-01T03:00:00.000Z');
+    });
+
+    /**
+     * O mes corrente tambem fecha em cima: data futura (correcao na mao, fila
+     * com relogio adiantado) nao pode ser contada como ganho de hoje.
+     */
+    it('a janela do mes corrente tem teto no inicio do mes seguinte', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-03-15T12:00:00Z'));
+      const { service, prisma } = montar();
+
+      await service.getFinanceira(user);
+
+      const [atual] = janelas(prisma);
+      expect(atual.lt?.toISOString()).toBe('2026-04-01T03:00:00.000Z');
+    });
+
+    it('em dezembro o teto do mes corrente e janeiro do ano seguinte', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-12-20T12:00:00Z'));
+      const { service, prisma } = montar();
+
+      await service.getFinanceira(user);
+
+      const [atual] = janelas(prisma);
+      expect(atual.gte.toISOString()).toBe('2026-12-01T03:00:00.000Z');
+      expect(atual.lt?.toISOString()).toBe('2027-01-01T03:00:00.000Z');
     });
 
     it('as 23h30 do dia 31 em SP o mes corrente ainda e o velho', async () => {
@@ -331,6 +376,21 @@ describe('DashboardService.getFinanceira', () => {
       });
       expect(args.orderBy).toEqual({ valor_estimado: 'desc' });
       expect(args.take).toBe(5);
+    });
+
+    /**
+     * Lead privado so aparece pra quem e o responsavel (regra do
+     * `lead-visibility`). Como a resposta e cacheada por tenant, e nao por
+     * usuario, um privado de valor alto no top vazaria nome e valor pro time
+     * inteiro — o corte tem que estar na CONSULTA: privado fica fora pra todos.
+     */
+    it('nao pede lead privado, nem o de maior valor', async () => {
+      const { service, prisma } = montar();
+
+      await service.getFinanceira(user);
+
+      const where = prisma.lead.findMany.mock.calls[0][0].where as { is_private: boolean };
+      expect(where.is_private).toBe(false);
     });
 
     it('devolve valor como numero e o nome da etapa achatado', async () => {
