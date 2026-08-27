@@ -198,14 +198,31 @@ export class UazapiEventsHandler {
     const mapped = rawStatus !== undefined ? statusMap[String(rawStatus)] : undefined;
     if (!mapped) return;
 
+    // Tenant DONO do ack (mesmo finder do inbound). O wamid nunca foi único
+    // global e com o dedupe por conversa passou a repetir também entre chats:
+    // sem o escopo, uma colisão de id entre empresas aplicaria o ack de uma na
+    // mensagem da outra. Token desconhecido/tenant suspenso descarta, igual à
+    // mensagem que chega.
+    const token = payload.token as string | undefined;
+    const instance = await this.inbound.findInstanceByUazapiToken(token);
+    if (!instance) {
+      this.avisarInstanciaDesconhecida(
+        'uazapi.messages_update',
+        `UazAPI token ${mascararToken(token)}`,
+      );
+      return;
+    }
+
+    // Dentro do tenant o wamid casa com N cópias (uma por conversa, quando a
+    // mensagem foi encaminhada): updateMany pega todas, emit sai por lead.
     const matches = await this.prisma.message.findMany({
-      where: { whatsapp_message_id: messageId },
+      where: { tenant_id: instance.tenant_id, whatsapp_message_id: messageId },
       select: { id: true, lead_id: true },
     });
     if (matches.length === 0) return;
 
     await this.prisma.message.updateMany({
-      where: { whatsapp_message_id: messageId },
+      where: { tenant_id: instance.tenant_id, whatsapp_message_id: messageId },
       data: { status: mapped },
     });
     for (const m of matches) {

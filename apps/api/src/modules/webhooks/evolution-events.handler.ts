@@ -154,22 +154,37 @@ export class EvolutionEventsHandler {
     // (nunca ✓✓) e ERRO de entrega nunca virava FAILED visível.
     const updates = normalizeAckUpdates(data?.data);
     if (updates.length === 0) return;
+
+    // Tenant DONO do ack. O wamid nunca foi único global (a UNIQUE sempre
+    // começou em tenant_id) e com o dedupe por conversa ele passou a repetir
+    // também entre chats — sem este escopo, uma colisão de id entre empresas
+    // aplicaria o ack de uma na mensagem da outra. Resolvido depois do parse:
+    // ack irrelevante não paga consulta. Instância desconhecida/tenant
+    // suspenso descarta, igual à mensagem que chega.
+    const instanceName = data?.instance as string | undefined;
+    const instance = await this.inbound.findEvolutionInstanceByName(instanceName);
+    if (!instance) {
+      this.avisarInstanciaDesconhecida('messages.update', instanceName);
+      return;
+    }
+    const tenantId = instance.tenant_id;
+
     for (const update of updates) {
       const ack = extractAck(update);
       if (!ack) continue;
       const { messageId, status: mappedStatus } = ack;
 
-      // wa_id deixou de ser único globalmente (composto com tenant_id), então
-      // a mesma id pode aparecer em múltiplas perspectivas. updateMany cobre
-      // todas; emitMessageStatusUpdate dispara por linha encontrada.
+      // Dentro do tenant, o wamid casa com N cópias — uma por conversa, quando
+      // a mensagem foi encaminhada pra vários chats. updateMany cobre todas;
+      // emitMessageStatusUpdate dispara por linha encontrada.
       const matches = await this.prisma.message.findMany({
-        where: { whatsapp_message_id: messageId },
+        where: { tenant_id: tenantId, whatsapp_message_id: messageId },
         select: { id: true, lead_id: true, tenant_id: true, direction: true, created_at: true },
       });
       if (matches.length === 0) continue;
 
       await this.prisma.message.updateMany({
-        where: { whatsapp_message_id: messageId },
+        where: { tenant_id: tenantId, whatsapp_message_id: messageId },
         data: { status: mappedStatus as 'DELIVERED' | 'READ' | 'FAILED' },
       });
       for (const m of matches) {

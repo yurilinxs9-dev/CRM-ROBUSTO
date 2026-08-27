@@ -27,7 +27,13 @@ function makeHandler() {
     emitLeadUpdated: jest.fn(),
     emitInstanceStatusChanged: jest.fn(),
   };
-  const inbound: any = {};
+  // O ack resolve a instância pra saber de QUE tenant é o wamid (ver
+  // ack-tenant-scope.spec.ts) — sem ela o handler descarta o evento.
+  const inbound: any = {
+    findEvolutionInstanceByName: jest
+      .fn()
+      .mockResolvedValue({ id: 'i1', nome: 'evo-1', tenant_id: 't1', status: 'open' }),
+  };
   const historySync: any = { syncEvolutionInstance: jest.fn().mockResolvedValue({}) };
   const instanceHealth: any = { resolverAlerta: jest.fn().mockResolvedValue(undefined) };
   const handler = new EvolutionEventsHandler(
@@ -58,6 +64,7 @@ describe('EvolutionEventsHandler.handleMessageUpdate — READ em INCOMING', () =
     prisma.message.count.mockResolvedValue(0); // depois do cascade, nada restou
 
     await handler.handleMessageUpdate({
+      instance: 'evo-1',
       data: { keyId: 'WA-1', status: 'READ' },
     });
 
@@ -91,6 +98,7 @@ describe('EvolutionEventsHandler.handleMessageUpdate — READ em INCOMING', () =
     prisma.message.count.mockResolvedValue(2); // 2 chegaram depois
 
     await handler.handleMessageUpdate({
+      instance: 'evo-1',
       data: { keyId: 'WA-1', status: 'READ' },
     });
 
@@ -119,6 +127,7 @@ describe('EvolutionEventsHandler.handleMessageUpdate — READ em INCOMING', () =
     ]);
 
     await handler.handleMessageUpdate({
+      instance: 'evo-1',
       data: { keyId: 'WA-1', status: 'DELIVERY_ACK' },
     });
 
@@ -155,11 +164,12 @@ describe('EvolutionEventsHandler.handleMessageUpdate — ack de mensagem encamin
     ]);
 
     await handler.handleMessageUpdate({
+      instance: 'evo-1',
       data: { keyId: 'WA-ENCAMINHADA', status: 'DELIVERY_ACK' },
     });
 
     expect(prisma.message.updateMany).toHaveBeenCalledWith({
-      where: { whatsapp_message_id: 'WA-ENCAMINHADA' },
+      where: { tenant_id: 't1', whatsapp_message_id: 'WA-ENCAMINHADA' },
       data: { status: 'DELIVERED' },
     });
     expect(gateway.emitMessageStatusUpdate).toHaveBeenCalledWith(
