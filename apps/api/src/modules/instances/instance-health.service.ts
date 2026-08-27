@@ -176,20 +176,20 @@ export class InstanceHealthService {
           continue;
         }
 
-        // Instância NOVA no meio do pareamento: `connecting` aqui é o QR na
-        // tela esperando alguém escanear, não uma queda. Mandar
-        // POST /instance/connect agora re-emite o QR e INVALIDA o código que a
-        // pessoa está lendo nesse instante — o cron sabotaria o pareamento.
-        // Só atualiza o status; sem reconexão, sem contador, sem alerta.
-        const pareada = inst.telefone != null || inst.status === 'open';
-        if (estado === 'connecting' && !pareada) {
-          await this.marcarStatus(inst.id, 'connecting');
+        // Instância que NUNCA foi pareada não caiu: nunca existiu sessão. É o
+        // QR criado e abandonado (ou o dialog aberto agora esperando alguém
+        // escanear). Só atualiza o status; sem reconexão, sem contador, sem
+        // alerta — e em `connecting` isso é vital: o POST /instance/connect
+        // re-emitiria o QR e invalidaria o código que a pessoa está lendo
+        // nesse instante, com o cron sabotando o pareamento.
+        if (!(await this.jaPareada(inst))) {
+          await this.marcarStatus(inst.id, estado);
           this.quedas.delete(inst.id);
           continue;
         }
 
-        // Caída (close ou instância JÁ PAREADA presa em connecting): tenta
-        // religar sozinha antes de incomodar alguém.
+        // Caída de verdade (close, ou instância pareada presa em connecting):
+        // tenta religar sozinha antes de incomodar alguém.
         const voltou = await this.tentarReconectar(inst, cfg);
         if (voltou) {
           await this.marcarStatus(inst.id, 'open');
@@ -254,6 +254,32 @@ export class InstanceHealthService {
 
     const texto = `Instância ${inst.nome} (${inst.tenant.nome}) reconectou.`;
     await this.avisarAdmins('Instância reconectada', texto, inst.id);
+  }
+
+  /**
+   * "Esta instância já teve sessão de WhatsApp em pé alguma vez?"
+   *
+   * Três sinais, do mais barato pro mais caro:
+   *  - `telefone` preenchido — mas isso só acontece nos caminhos UazAPI
+   *    (`importByToken`/`getQrCode`/`checkStatus` leem o jid); instância
+   *    Evolution NUNCA ganha telefone hoje;
+   *  - `status` = open no banco — é o retrato de AGORA: assim que a instância
+   *    cai, o webhook connection.update já reescreveu pra `close`;
+   *  - existe lead que entrou por este número. É o sinal durável e igual pros
+   *    dois providers (índice em `Lead.instancia_whatsapp`), e é o que impede
+   *    o gate de cegar o monitor justamente na instância Evolution caída —
+   *    o cenário que este serviço existe pra pegar.
+   *
+   * Só é consultado no ramo ambíguo (instância caída, sem telefone e sem
+   * status open), então não pesa no ciclo normal.
+   */
+  private async jaPareada(inst: InstanceRow): Promise<boolean> {
+    if (inst.telefone != null || inst.status === 'open') return true;
+    const lead = await this.prisma.lead.findFirst({
+      where: { tenant_id: inst.tenant_id, instancia_whatsapp: inst.nome },
+      select: { id: true },
+    });
+    return lead != null;
   }
 
   /**

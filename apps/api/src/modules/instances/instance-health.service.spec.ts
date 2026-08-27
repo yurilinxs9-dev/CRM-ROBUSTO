@@ -111,6 +111,8 @@ function build(instances: InstanceRow[]) {
     },
     user: { findMany: jest.fn().mockResolvedValue(ADMINS) },
     notification: { create: jest.fn().mockResolvedValue({ id: 'notif-1' }) },
+    // Sinal de "já teve sessão" das instâncias sem telefone (Evolution).
+    lead: { findFirst: jest.fn().mockResolvedValue(null) },
   };
   const push = { sendToUsers: jest.fn().mockResolvedValue(undefined) };
   const service = new InstanceHealthService(
@@ -382,6 +384,59 @@ describe('InstanceHealthService.verificarTodas', () => {
       where: { id: 'inst-uaz' },
       data: { status: 'connecting', ultimo_check: expect.any(Date) },
     });
+  });
+
+  // Nunca pareada + close: QR criado e abandonado não é queda
+  it('instância nunca pareada com gateway close: nenhum connect, nenhum alerta', async () => {
+    const m = build([uaz({ status: 'close', telefone: null })]);
+    m.httpGet.mockReturnValue(of(uazStatusCaido));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+
+    expect(m.httpPost).not.toHaveBeenCalled();
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.push.sendToUsers).not.toHaveBeenCalled();
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-uaz' },
+      data: { status: 'close', ultimo_check: expect.any(Date) },
+    });
+  });
+
+  // Evolution caída NUNCA ganha `telefone` (só os caminhos UazAPI preenchem) e
+  // o webhook já reescreveu o status pra 'close': sem o sinal do lead, o gate
+  // de nunca-pareada cegaria justamente o caso que o monitor existe pra pegar.
+  it('sem telefone e sem status open, mas com lead pelo número: é queda de verdade', async () => {
+    const m = build([evo({ status: 'close', telefone: null })]);
+    m.prisma.lead.findFirst.mockResolvedValue({ id: 'lead-1' });
+    m.httpGet.mockImplementation((url: string) =>
+      url.includes('connectionState') ? of(evoState('close')) : of(evoConnectComQr),
+    );
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+
+    expect(m.prisma.lead.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenant_id: 'tenant-2', instancia_whatsapp: 'vendas-evo' },
+      }),
+    );
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('instância pareada (com telefone) e close: fluxo normal de caída', async () => {
+    const m = build([uaz({ status: 'close' })]);
+    m.httpGet.mockReturnValue(of(uazStatusCaido));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+
+    expect(m.prisma.lead.findFirst).not.toHaveBeenCalled(); // telefone já basta
+    expect(m.httpPost).toHaveBeenCalled();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
   });
 
   // (ii) pareada e presa em connecting É queda
