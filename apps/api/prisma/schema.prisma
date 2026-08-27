@@ -137,6 +137,7 @@ model Tenant {
   custom_field_groups CustomFieldGroup[]
   lead_insights       LeadInsight[]
   lead_lembretes      LeadLembrete[]
+  instance_alerts     InstanceAlert[]
 
   @@index([owner_id])
 }
@@ -570,6 +571,7 @@ model WhatsappInstance {
   user_instances UserInstance[]
   instance_logs  InstanceLog[]
   hidden_by      InstanceHidden[]
+  alerts         InstanceAlert[]
 
   @@unique([tenant_id, nome])
   @@index([tenant_id])
@@ -614,6 +616,25 @@ model InstanceLog {
 
   @@index([instance_id, created_at])
   @@index([tenant_id])
+}
+
+// Monitor de instancias: um alerta por queda de numero. Fica aberto
+// (resolvido_em null) enquanto a instancia nao volta; ao reconectar, fecha.
+// tipo 'desconectada' hoje; campo aberto pra outros sintomas depois.
+model InstanceAlert {
+  id           String           @id @default(uuid())
+  tenant_id    String
+  tenant       Tenant           @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  instance_id  String
+  instance     WhatsappInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  tipo         String           @default("desconectada")
+  aberto_em    DateTime         @default(now())
+  resolvido_em DateTime?
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @updatedAt
+
+  @@index([instance_id, resolvido_em])
+  @@index([resolvido_em, aberto_em])
 }
 
 model Tag {
