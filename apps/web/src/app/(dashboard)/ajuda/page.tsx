@@ -1,7 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
+  ArrowRight,
   BarChart3,
   ChevronDown,
   Kanban,
@@ -32,6 +34,12 @@ interface Topico {
   titulo: string;
   /** Cada item vira um paragrafo. Nada de markdown: texto puro, sem surpresa. */
   paragrafos: string[];
+  /**
+   * Atalho para a tela citada no texto. Existe por causa do Editor de Pipeline:
+   * ele NAO tem item no menu, entao dizer "va la" sem levar seria mandar o
+   * vendedor procurar uma porta que nao esta desenhada em lugar nenhum.
+   */
+  link?: { href: string; rotulo: string };
 }
 
 interface Area {
@@ -166,9 +174,9 @@ const AREAS: Area[] = [
       },
       {
         chave: 'ficha-temperatura',
-        titulo: 'Temperatura automática (frio, morno, quente)',
+        titulo: 'Temperatura automática (frio, morno, quente, muito quente)',
         paragrafos: [
-          'A temperatura diz o quanto o cliente está perto de comprar. Ela pode ser mantida por você na mão, como sempre, ou se atualizar sozinha conforme a conversa muda de tom.',
+          'A temperatura diz o quanto o cliente está perto de comprar, em quatro níveis: frio, morno, quente e muito quente. Ela pode ser mantida por você na mão, como sempre, ou se atualizar sozinha conforme a conversa muda de tom.',
           'Quem liga o automático é o gerente, em Configurações → Geral, na chave "IA ajusta a temperatura dos leads". Ligada, cada mudança fica registrada na linha do tempo do lead: dá para ver quando esquentou e o que aconteceu ali.',
           'Com a chave desligada, a leitura vira apenas uma sugestão na ficha e a temperatura continua sendo sua — nada muda sem você mandar.',
         ],
@@ -186,6 +194,7 @@ const AREAS: Area[] = [
         titulo: 'Lembretes do lead',
         paragrafos: [
           'A ficha lista os compromissos daquele cliente: tanto os que o CRM pegou na conversa quanto os que você criar na mão, escolhendo a data e escrevendo o motivo.',
+          'O lembrete manual pode ser marcado para no máximo 12 meses à frente — mais longe que isso vira lembrete perdido, e o CRM avisa na hora em vez de aceitar em silêncio.',
           'No dia marcado eles aparecem em "Lembretes de hoje", no Radar. Concluir ou descartar aqui vale lá também — é a mesma lista vista de dois lugares.',
         ],
       },
@@ -203,9 +212,11 @@ const AREAS: Area[] = [
         chave: 'kanban-etapas',
         titulo: 'Colunas e etapas',
         paragrafos: [
-          'Cada coluna é uma etapa do seu processo — do primeiro contato ao fechamento. As etapas são suas: nome, cor e ordem você monta no editor de funil, em Configurações → Funil.',
+          'Cada coluna é uma etapa do seu processo — do primeiro contato ao fechamento. As etapas são suas: nome, cor e ordem se montam no Editor de Pipeline.',
           'Lá também se marca quais etapas contam como venda ganha e quais contam como perdida. É disso que saem os números de conversão no Dashboard.',
+          'O Editor de Pipeline ainda não tem item no menu lateral. Use o atalho abaixo — ele é o caminho mais curto até lá.',
         ],
+        link: { href: '/settings/pipeline', rotulo: 'Abrir o Editor de Pipeline' },
       },
       {
         chave: 'kanban-arrastar',
@@ -226,17 +237,18 @@ const AREAS: Area[] = [
       },
       {
         chave: 'kanban-campos',
-        titulo: 'Campos obrigatórios',
+        titulo: 'Campos do cadastro',
         paragrafos: [
-          'Além dos dados básicos, sua empresa pode criar campos próprios — placa do carro, plano escolhido, origem da indicação, o que fizer sentido.',
-          'Um campo pode ser marcado como obrigatório. Quando ele é, o CRM pede o preenchimento na hora de cadastrar o lead, em vez de deixar a ficha andar pelo funil com buraco.',
+          'Nome e telefone são sempre obrigatórios no cadastro; os campos que a sua empresa cria são opcionais.',
+          'Esses campos próprios — placa do carro, plano escolhido, origem da indicação, o que fizer sentido — o gerente cria na aba Configurações do cadastro do lead, aquela que abre quando você clica num card. Quem não é gerente não vê essa aba, mas preenche os campos normalmente na ficha.',
         ],
       },
       {
         chave: 'kanban-csv',
         titulo: 'Exportar CSV',
         paragrafos: [
-          'O botão Exportar CSV, na barra de cima do Kanban, baixa a lista do recorte que está na tela — o funil escolhido, a temperatura e o responsável filtrados.',
+          'O botão Exportar CSV, na barra de cima do Kanban, baixa os leads do funil escolhido, com a temperatura e o responsável que estiverem selecionados ali na mesma barra.',
+          'Só isso entra no arquivo: os filtros do painel e a view ativa não entram. Se você montou um recorte no painel e quer ele na planilha, por enquanto é preciso filtrar de novo na planilha.',
           'O arquivo abre direto no Excel ou no Google Planilhas, para relatório, conferência ou uma campanha fora do CRM.',
         ],
       },
@@ -260,9 +272,9 @@ const AREAS: Area[] = [
       },
       {
         chave: 'leads-views',
-        titulo: 'Views salvas',
+        titulo: '"Views salvas" (o painel chama de "Filtros salvos")',
         paragrafos: [
-          'Uma view é um jeito de olhar a carteira guardado com nome: os filtros, as colunas e a ordenação de uma vez só.',
+          'Uma "view salva" é um jeito de olhar a carteira guardado com nome: os filtros, as colunas e a ordenação de uma vez só. No painel de filtros ela aparece com outro nome, "Filtros salvos" — é a mesma coisa.',
           '"Meus quentes desta semana", "Sem contato há 10 dias", "Proposta acima de 5 mil" — salvou uma vez, volta com um clique, e o mesmo recorte vale no Kanban.',
         ],
       },
@@ -270,15 +282,17 @@ const AREAS: Area[] = [
         chave: 'leads-filtros',
         titulo: 'Filtros',
         paragrafos: [
-          'O painel de filtros recorta por etapa, responsável, temperatura, período e pelos campos que a sua empresa criou.',
-          'Vale combinar filtros: eles se somam, e o resultado é o que você vê tanto na tabela quanto no Kanban.',
+          'O painel de filtros tem três partes. À esquerda, os filtros que você já salvou, para reaplicar com um clique.',
+          'No meio ficam as propriedades: criado entre duas datas, próximo agendamento, valor estimado, origem do lead e tarefas. À direita, as tags — marque quantas quiser para ver só quem tem aquelas etiquetas.',
+          'Temperatura e responsável não moram no painel: são dois seletores na própria barra do Kanban, ao lado do funil. Tudo se soma, e o resultado é o mesmo na tabela e no Kanban.',
         ],
       },
       {
         chave: 'leads-exportar',
         titulo: 'Levar a lista para fora',
         paragrafos: [
-          'Quando precisar da lista em planilha, use o Exportar CSV na barra do Kanban: ele respeita os filtros ativos e baixa exatamente o recorte que você montou.',
+          'Quando precisar da lista em planilha, use o Exportar CSV na barra do Kanban. Ele leva o funil, a temperatura e o responsável escolhidos ali na barra.',
+          'Os filtros do painel e a view ativa não entram no arquivo — vale conferir antes de mandar a planilha para alguém.',
         ],
       },
     ],
@@ -301,11 +315,11 @@ const AREAS: Area[] = [
       },
       {
         chave: 'followup-modo',
-        titulo: 'Texto fixo ou mensagem personalizada',
+        titulo: 'Texto fixo ou IA personaliza',
         paragrafos: [
           'No modo Texto fixo, todo mundo recebe a mesma mensagem — só o primeiro nome e a saudação mudam de acordo com quem recebe e com a hora do dia.',
-          'No modo personalizado, você diz a intenção ("retomar o orçamento sem pressionar") e cada cliente recebe um texto escrito para ele, a partir da conversa que vocês já tiveram. Dá para ver uma prévia antes de disparar.',
-          'Se a sua conta ainda não tem um modelo de IA configurado, o modo personalizado fica indisponível e o Texto fixo continua funcionando normalmente.',
+          'No modo IA personaliza, você diz a intenção ("retomar o orçamento sem pressionar") e cada cliente recebe um texto escrito para ele, a partir da conversa que vocês já tiveram. Dá para ver uma prévia antes de disparar.',
+          'Se a sua conta ainda não tem um modelo de IA configurado, o modo IA personaliza fica indisponível e o Texto fixo continua funcionando normalmente.',
         ],
       },
       {
@@ -348,8 +362,9 @@ const AREAS: Area[] = [
         paragrafos: [
           'Cada etapa do funil tem uma chance de fechar: quem está em negociação avançada fecha mais do que quem acabou de chegar.',
           'A previsão ponderada não soma o valor cheio de todo mundo. Ela pesa o valor de cada negociação pela chance da etapa em que ela está. Um orçamento de R$ 10.000 numa etapa com 30% de chance entra como R$ 3.000 na conta.',
-          'Por isso a previsão fica perto do que costuma acontecer de verdade, em vez do cenário em que todo mundo compra. Você ajusta essas chances no editor de funil, no campo "Chance de fechar (%)" de cada etapa; deixando o campo vazio, o CRM usa um valor automático.',
+          'Por isso a previsão fica perto do que costuma acontecer de verdade, em vez do cenário em que todo mundo compra. Você ajusta essas chances no Editor de Pipeline, no campo "Chance de fechar (%)" de cada etapa em andamento; deixando o campo vazio, o CRM usa um valor automático. Etapas de ganho e de perda não têm esse campo: o negócio ali já acabou.',
         ],
+        link: { href: '/settings/pipeline', rotulo: 'Ajustar as chances no Editor de Pipeline' },
       },
     ],
   },
@@ -373,7 +388,7 @@ const AREAS: Area[] = [
         chave: 'ajustes-temperatura',
         titulo: 'IA ajusta a temperatura dos leads',
         paragrafos: [
-          'A chave que liga a temperatura automática. Ligada, a ficha atualiza frio/morno/quente sozinha conforme a conversa evolui, e registra cada mudança na linha do tempo do lead.',
+          'A chave que liga a temperatura automática. Ligada, a ficha move o lead entre frio, morno, quente e muito quente sozinha, conforme a conversa evolui, e registra cada mudança na linha do tempo do lead.',
           'Desligada, a leitura aparece só como sugestão e ninguém mexe na temperatura sem você.',
         ],
       },
@@ -382,24 +397,25 @@ const AREAS: Area[] = [
         titulo: 'Equipe e setores',
         paragrafos: [
           'Aqui entram e saem as pessoas do time, e cada uma recebe o papel que define o que enxerga e o que pode fazer.',
-          'Os setores organizam quem atende o quê, e são a base do rodízio: com a distribuição automática ligada, cada lead novo vai para o próximo atendente do setor, em revezamento.',
-          'Também em Geral fica o modelo de atendimento: um número para o time inteiro, com todos podendo assumir os leads, ou um número por atendente, cada um com a sua carteira.',
+          'Também em Geral fica o modelo de atendimento: Atendimento Compartilhado, com um número para o time inteiro e todos podendo assumir os leads, ou Atendimento Individual, um número por atendente, cada um com a sua carteira.',
+          'Os setores organizam quem atende o quê, e são a base do rodízio. A distribuição automática só existe no Atendimento Compartilhado: ligada, cada lead novo vai para o próximo atendente do setor, em revezamento, em vez de ficar esperando alguém assumir.',
         ],
       },
       {
         chave: 'ajustes-funil',
-        titulo: 'Funil e campos',
+        titulo: 'Editor de Pipeline',
         paragrafos: [
-          'O editor de funil é onde nascem as etapas: nome, cor, ordem, quais contam como ganho ou perda e a chance de fechar de cada uma.',
-          'É lá também que se define o que o CRM cobra dos vendedores — os campos da ficha e quais deles são obrigatórios.',
+          'É onde nascem as etapas do funil: nome, cor, ordem, quais contam como ganho ou perda e a chance de fechar de cada etapa em andamento.',
+          'Ele ainda não aparece no menu lateral — o atalho abaixo leva direto. Os campos do cadastro do lead não ficam aqui: eles vivem na aba Configurações do cadastro do lead, que só o gerente enxerga.',
         ],
+        link: { href: '/settings/pipeline', rotulo: 'Abrir o Editor de Pipeline' },
       },
       {
         chave: 'ajustes-integracoes',
         titulo: 'Integrações',
         paragrafos: [
-          'Em Instâncias ficam os números de WhatsApp conectados: é onde se lê o QR Code e se acompanha se o número está no ar.',
-          'Nas outras abas de Configurações ficam os webhooks, o rastreamento de origem dos leads, a checagem de duplicados e as chaves de API, para quando outro sistema precisa conversar com o CRM.',
+          'Os números de WhatsApp conectados ficam em Instâncias, que é um item próprio do menu lateral: é lá que se lê o QR Code e se acompanha se o número está no ar.',
+          'Dentro de Configurações ficam os webhooks, o rastreamento de origem dos leads, a checagem de duplicados e as chaves de API, para quando outro sistema precisa conversar com o CRM.',
         ],
       },
     ],
@@ -419,9 +435,9 @@ function achatar(valor: string): string {
   return valor.normalize('NFD').replace(ACENTOS, '').toLowerCase();
 }
 
-/** Texto de um topico, ja achatado — titulo mais corpo, tudo pesquisavel. */
+/** Texto de um topico, ja achatado — titulo, corpo e atalho: tudo pesquisavel. */
 function textoDoTopico(topico: Topico): string {
-  return achatar(`${topico.titulo} ${topico.paragrafos.join(' ')}`);
+  return achatar(`${topico.titulo} ${topico.paragrafos.join(' ')} ${topico.link?.rotulo ?? ''}`);
 }
 
 interface AreaFiltrada {
@@ -472,7 +488,10 @@ function ItemAccordion({
           type="button"
           onClick={onAlternar}
           aria-expanded={aberto}
-          aria-controls={idCorpo}
+          // So aponta para o corpo quando ele existe no DOM: `aria-controls`
+          // apontando para id inexistente e referencia quebrada para o leitor
+          // de tela — pior que nao ter atributo nenhum.
+          aria-controls={aberto ? idCorpo : undefined}
           className={cn(
             'flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-medium transition-colors',
             'hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
@@ -500,6 +519,18 @@ function ItemAccordion({
               {paragrafo}
             </p>
           ))}
+          {topico.link && (
+            <Link
+              href={topico.link.href}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-primary underline-offset-4 hover:underline',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              )}
+            >
+              <ArrowRight aria-hidden className="h-4 w-4 shrink-0" />
+              {topico.link.rotulo}
+            </Link>
+          )}
         </div>
       )}
     </div>
