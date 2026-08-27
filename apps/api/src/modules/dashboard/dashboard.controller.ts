@@ -18,6 +18,14 @@ export class DashboardController {
     return this.dashboardService.getFunnel(req.user as AuthUser, pipelineId);
   }
 
+  @Get('financeira')
+  getFinanceira(
+    @Req() req: Record<string, unknown>,
+    @Query('pipeline_id') pipelineId?: string,
+  ) {
+    return this.dashboardService.getFinanceira(req.user as AuthUser, pipelineId);
+  }
+
   @Get('performance')
   getPerformance(@Req() req: Record<string, unknown>) {
     return this.dashboardService.getPerformance(req.user as AuthUser);
