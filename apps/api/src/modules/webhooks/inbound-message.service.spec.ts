@@ -89,6 +89,35 @@ function makeMocks() {
   };
 }
 
+/**
+ * Banco falso de mensagens: responde `findUnique`/`findFirst` como o Postgres
+ * responderia, entendendo as duas chaves compostas (a antiga
+ * `tenant_id_whatsapp_message_id` e a nova `tenant_wamid_lead`) e o filtro por
+ * `lead.telefone`. É o que torna honesto o teste do encaminhamento: com um
+ * `mockResolvedValue` fixo, o código antigo — que perguntava só por
+ * (tenant, wamid) — pareceria correto. Aqui ele acha de verdade a cópia da
+ * OUTRA conversa e engole a mensagem, como acontecia em produção.
+ */
+type FakeRow = { id: string; wamid: string; lead_id: string; telefone: string };
+function fakeMessageStore(rows: FakeRow[]) {
+  return (args: any) => {
+    const w = args?.where ?? {};
+    const key = w.tenant_wamid_lead ?? w.tenant_id_whatsapp_message_id ?? null;
+    const wamid = key?.whatsapp_message_id ?? w.whatsapp_message_id ?? null;
+    const leadId = key?.lead_id ?? w.lead_id ?? null;
+    const telefone = w.lead?.telefone ?? null;
+    // Sem nenhum critério não há o que casar (evita falso positivo).
+    if (wamid === null && leadId === null && telefone === null) return Promise.resolve(null);
+    const hit = rows.find(
+      (r) =>
+        (wamid === null || r.wamid === wamid) &&
+        (leadId === null || r.lead_id === leadId) &&
+        (telefone === null || r.telefone === telefone),
+    );
+    return Promise.resolve(hit ? { id: hit.id, metadata: {} } : null);
+  };
+}
+
 function makeService() {
   const m = makeMocks();
   const service = new InboundMessageService(
@@ -330,9 +359,18 @@ describe('InboundMessageService.saveIncomingMessage — roteamento por conversa'
 });
 
 describe('InboundMessageService.saveIncomingMessage — webhook duplicado não infla o badge', () => {
-  it('wa_id já existente → sai ANTES do upsert do lead: sem increment, sem emit, sem push', async () => {
+  it('wa_id já existente NO MESMO chat → sai ANTES do upsert do lead: sem increment, sem emit, sem push', async () => {
     const m = makeService();
-    m.prisma.message.findUnique.mockResolvedValue({ id: 'msg-ja-salva' });
+    const store = fakeMessageStore([
+      {
+        id: 'msg-ja-salva',
+        wamid: 'wa-msg-1',
+        lead_id: 'lead-1',
+        telefone: '5511900000000', // MESMO telefone do baseInput
+      },
+    ]);
+    m.prisma.message.findUnique.mockImplementation(store);
+    m.prisma.message.findFirst.mockImplementation(store);
 
     await m.service.saveIncomingMessage(baseInput());
 
@@ -348,16 +386,115 @@ describe('InboundMessageService.saveIncomingMessage — webhook duplicado não i
     m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
     const p2002 = Object.assign(new Error('dup'), { code: 'P2002' });
     m.prisma.message.upsert.mockRejectedValue(p2002);
-    // dedupe inicial não viu (race), mas o findUnique do catch acha a do irmão
-    m.prisma.message.findUnique
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'msg-do-irmao', metadata: {} });
+    // dedupe pré-efeito não viu (race, findFirst → null por padrão), mas o
+    // findUnique do catch acha a linha que o irmão acabou de gravar.
+    m.prisma.message.findUnique.mockResolvedValue({ id: 'msg-do-irmao', metadata: {} });
 
     await m.service.saveIncomingMessage(baseInput());
 
     expect(m.prisma.lead.updateMany).toHaveBeenCalledWith({
       where: { id: 'lead-1', mensagens_nao_lidas: { gt: 0 } },
       data: { mensagens_nao_lidas: { decrement: 1 } },
+    });
+  });
+});
+
+describe('InboundMessageService.saveIncomingMessage — encaminhamento p/ várias conversas', () => {
+  // Bug real de produção: um vendedor encaminhou UM vídeo para 2 conversas ao
+  // mesmo tempo. O WhatsApp mandou os dois webhooks com o MESMO
+  // whatsapp_message_id — e a segunda cópia batia no dedupe por (tenant, wamid),
+  // era tratada como duplicata e a mensagem nunca aparecia no segundo chat.
+  const WAMID = 'A5C7F710366DBBEE3ED8DBD8FEC184ED';
+  // Chat 1: onde a cópia JÁ existe (lead 48bb51fd, VIDEO OUTGOING).
+  const OUTRO_CHAT = { id: 'lead-48bb51fd', telefone: '5511900000000' };
+  // Chat 2: o que sumia (lead 4bd769d1, 553798769016).
+  const ESTE_CHAT = {
+    id: 'lead-4bd769d1',
+    nome: 'Cliente 2',
+    telefone: '553798769016',
+    responsavel_id: 'B',
+    instancia_whatsapp: 'jssyca',
+  };
+
+  /** Webhook do SEGUNDO chat chegando com o wamid que já existe no primeiro. */
+  function segundoChat() {
+    const m = makeService();
+    const store = fakeMessageStore([
+      {
+        id: 'msg-do-chat-1',
+        wamid: WAMID,
+        lead_id: OUTRO_CHAT.id,
+        telefone: OUTRO_CHAT.telefone,
+      },
+    ]);
+    m.prisma.message.findUnique.mockImplementation(store);
+    m.prisma.message.findFirst.mockImplementation(store);
+    m.prisma.lead.upsert.mockResolvedValue({ ...ESTE_CHAT });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-2', responsavel_id: 'B' });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-do-chat-2',
+      conversation_id: 'conv-2',
+      visible_to_user_id: 'B',
+    });
+    return m;
+  }
+
+  const inputSegundoChat = (overrides: Partial<SaveMessageInput> = {}): SaveMessageInput =>
+    baseInput({
+      phone: ESTE_CHAT.telefone,
+      messageId: WAMID,
+      instance: { id: 'inst-j', nome: 'jssyca', owner_user_id: 'B', sector_id: null } as any,
+      ...overrides,
+    });
+
+  it('video encaminhado p/ 2 conversas nao some da segunda', async () => {
+    const m = segundoChat();
+
+    await m.service.saveIncomingMessage(
+      inputSegundoChat({
+        isFromMe: true, // encaminhado PELO vendedor
+        extracted: { type: 'VIDEO', content: null } as any,
+      }),
+    );
+
+    // A cópia do segundo chat precisa NASCER — pré-fix o dedupe por
+    // (tenant, wamid) achava a do primeiro chat e retornava calado.
+    expect(m.prisma.message.upsert).toHaveBeenCalledTimes(1);
+    const [{ where, create }] = m.prisma.message.upsert.mock.calls[0];
+    expect(where).toEqual({
+      tenant_wamid_lead: {
+        tenant_id: 't1',
+        whatsapp_message_id: WAMID,
+        lead_id: ESTE_CHAT.id,
+      },
+    });
+    expect(create.lead_id).toBe(ESTE_CHAT.id);
+    expect(create.type).toBe('VIDEO');
+    expect(m.gateway.emitNewMessage).toHaveBeenCalled();
+  });
+
+  it('mensagem do cliente com wamid repetido em OUTRO chat também é criada (não é duplicata)', async () => {
+    const m = segundoChat();
+
+    await m.service.saveIncomingMessage(inputSegundoChat());
+
+    expect(m.prisma.lead.upsert).toHaveBeenCalled();
+    expect(m.prisma.message.upsert).toHaveBeenCalledTimes(1);
+    expect(m.gateway.emitNewMessage).toHaveBeenCalled();
+  });
+
+  it('o dedupe pré-efeito consulta pelo CHAT (lead.telefone), não só por tenant+wamid', async () => {
+    const m = segundoChat();
+
+    await m.service.saveIncomingMessage(inputSegundoChat());
+
+    expect(m.prisma.message.findFirst).toHaveBeenCalledWith({
+      where: {
+        tenant_id: 't1',
+        whatsapp_message_id: WAMID,
+        lead: { telefone: ESTE_CHAT.telefone },
+      },
+      select: { id: true },
     });
   });
 });

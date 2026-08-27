@@ -130,3 +130,47 @@ describe('EvolutionEventsHandler.handleMessageUpdate — READ em INCOMING', () =
     expect(prisma.lead.updateMany).not.toHaveBeenCalled();
   });
 });
+
+describe('EvolutionEventsHandler.handleMessageUpdate — ack de mensagem encaminhada', () => {
+  it('mesmo wamid em 2 conversas: as DUAS cópias mudam de status e cada lead recebe o emit', async () => {
+    // Com o dedupe por conversa, um vídeo encaminhado p/ 2 chats vive como
+    // duas linhas com o MESMO whatsapp_message_id. O ack chega uma vez só e
+    // precisa alcançar as duas — daí updateMany por wamid + emit por cópia.
+    const { handler, prisma, gateway } = makeHandler();
+    prisma.message.findMany.mockResolvedValue([
+      {
+        id: 'msg-chat-1',
+        lead_id: 'lead-1',
+        tenant_id: 't1',
+        direction: 'OUTGOING',
+        created_at: READ_TS,
+      },
+      {
+        id: 'msg-chat-2',
+        lead_id: 'lead-2',
+        tenant_id: 't1',
+        direction: 'OUTGOING',
+        created_at: READ_TS,
+      },
+    ]);
+
+    await handler.handleMessageUpdate({
+      data: { keyId: 'WA-ENCAMINHADA', status: 'DELIVERY_ACK' },
+    });
+
+    expect(prisma.message.updateMany).toHaveBeenCalledWith({
+      where: { whatsapp_message_id: 'WA-ENCAMINHADA' },
+      data: { status: 'DELIVERED' },
+    });
+    expect(gateway.emitMessageStatusUpdate).toHaveBeenCalledWith(
+      'lead-1',
+      'msg-chat-1',
+      'DELIVERED',
+    );
+    expect(gateway.emitMessageStatusUpdate).toHaveBeenCalledWith(
+      'lead-2',
+      'msg-chat-2',
+      'DELIVERED',
+    );
+  });
+});

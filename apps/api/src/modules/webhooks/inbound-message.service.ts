@@ -398,13 +398,21 @@ export class InboundMessageService {
     // do lead, ANTES do dedupe da mensagem: cada duplicata inflava o badge
     // (+22 num chat re-aberto) sem criar mensagem nenhuma. Duplicata conhecida
     // sai aqui, antes de tocar no lead.
+    //
+    // O escopo do dedupe é a CONVERSA, não o tenant: encaminhar uma mensagem
+    // para vários chats de uma vez repete o MESMO whatsapp_message_id em todos
+    // eles. Perguntando só por (tenant, wamid), a cópia do segundo chat era
+    // lida como duplicata e a mensagem nunca aparecia lá (vídeo encaminhado
+    // sumindo). Duplicata de verdade é a que já existe NESTE chat — o
+    // `lead.telefone` entra no próprio where para decidir numa consulta só
+    // (daqui pra frente pode haver N cópias do mesmo wamid, uma por conversa,
+    // então findUnique deixou de servir).
     if (input.messageId) {
-      const dup = await this.prisma.message.findUnique({
+      const dup = await this.prisma.message.findFirst({
         where: {
-          tenant_id_whatsapp_message_id: {
-            tenant_id: tenantId,
-            whatsapp_message_id: input.messageId,
-          },
+          tenant_id: tenantId,
+          whatsapp_message_id: input.messageId,
+          lead: { telefone: phone },
         },
         select: { id: true },
       });
@@ -675,9 +683,12 @@ export class InboundMessageService {
     if (isFromMe && !backfill) {
       const existingByWaId = await this.prisma.message.findUnique({
         where: {
-          tenant_id_whatsapp_message_id: {
+          // Escopado no lead: a cópia do MESMO wamid em outra conversa
+          // (encaminhamento) não é eco desta.
+          tenant_wamid_lead: {
             tenant_id: tenantId,
             whatsapp_message_id: messageId,
+            lead_id: lead.id,
           },
         },
       });
@@ -729,9 +740,10 @@ export class InboundMessageService {
     try {
       message = await this.prisma.message.upsert({
       where: {
-        tenant_id_whatsapp_message_id: {
+        tenant_wamid_lead: {
           tenant_id: tenantId,
           whatsapp_message_id: messageId,
+          lead_id: lead.id,
         },
       },
       create: {
@@ -772,9 +784,10 @@ export class InboundMessageService {
       if (code === 'P2002') {
         const existing = await this.prisma.message.findUnique({
           where: {
-            tenant_id_whatsapp_message_id: {
+            tenant_wamid_lead: {
               tenant_id: tenantId,
               whatsapp_message_id: messageId,
+              lead_id: lead.id,
             },
           },
         });
