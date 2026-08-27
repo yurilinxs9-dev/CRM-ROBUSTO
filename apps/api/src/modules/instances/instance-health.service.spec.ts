@@ -1,5 +1,6 @@
 import { of, throwError } from 'rxjs';
 import { AxiosError } from 'axios';
+import type { Logger } from '@nestjs/common';
 import { InstanceHealthService } from './instance-health.service';
 import type { HttpService } from '@nestjs/axios';
 import type { ConfigService } from '@nestjs/config';
@@ -18,6 +19,7 @@ interface InstanceRow {
   id: string;
   nome: string;
   status: string;
+  telefone: string | null;
   tenant_id: string;
   config: Record<string, unknown> | null;
   tenant: { nome: string; suspended_at: Date | null };
@@ -28,6 +30,7 @@ function uaz(over: Partial<InstanceRow> = {}): InstanceRow {
     id: 'inst-uaz',
     nome: 'atendimento-alex',
     status: 'open',
+    telefone: '5511988887777',
     tenant_id: 'tenant-1',
     config: { uazapi_token: 'tok-1' },
     tenant: { nome: 'Cajuru', suspended_at: null },
@@ -40,6 +43,7 @@ function evo(over: Partial<InstanceRow> = {}): InstanceRow {
     id: 'inst-evo',
     nome: 'vendas-evo',
     status: 'open',
+    telefone: '5511977776666',
     tenant_id: 'tenant-2',
     config: { provider: 'evolution', evolution_token: 'evo-key-1' },
     tenant: { nome: 'Porto Sul', suspended_at: null },
@@ -53,6 +57,12 @@ const uazStatusConectado = {
   data: {
     instance: { status: 'connected' },
     status: { connected: true, loggedIn: true, jid: '5511999@s.whatsapp.net' },
+  },
+};
+const uazStatusConnecting = {
+  data: {
+    instance: { status: 'connecting', qrcode: 'data:image/png;base64,QR' },
+    status: { connected: false, loggedIn: false, jid: null },
   },
 };
 const uazStatusCaido = {
@@ -351,6 +361,136 @@ describe('InstanceHealthService.verificarTodas', () => {
       where: { id: 'inst-evo' },
       data: { status: esperado, ultimo_check: expect.any(Date) },
     });
+  });
+
+  // (i) NÃO sabotar o pareamento em andamento
+  it('instância nova em connecting (nunca pareada): não chama connect nem alerta', async () => {
+    const m = build([uaz({ status: 'connecting', telefone: null })]);
+    m.httpGet.mockReturnValue(of(uazStatusConnecting));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+
+    // POST /instance/connect re-emitiria o QR e invalidaria o que a pessoa
+    // está lendo agora no dialog.
+    expect(m.httpPost).not.toHaveBeenCalled();
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.push.sendToUsers).not.toHaveBeenCalled();
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-uaz' },
+      data: { status: 'connecting', ultimo_check: expect.any(Date) },
+    });
+  });
+
+  // (ii) pareada e presa em connecting É queda
+  it('instância pareada presa em connecting: reconecta e alerta no 2º ciclo', async () => {
+    const m = build([uaz({ status: 'connecting', telefone: '5511988887777' })]);
+    m.httpGet.mockReturnValue(of(uazStatusConnecting));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+    expect(m.httpPost).toHaveBeenCalledWith(
+      `${UAZ_BASE}/instance/connect`,
+      {},
+      expect.anything(),
+    );
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+
+    await m.service.verificarTodas();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('instância nunca pareada mas já vista open no banco conta como pareada', async () => {
+    const m = build([uaz({ status: 'open', telefone: null })]);
+    m.httpGet.mockReturnValue(of(uazStatusConnecting));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+
+    expect(m.httpPost).toHaveBeenCalled();
+  });
+
+  // Evolution: state manda mais que a ausência de QR
+  it('Evolution: connect devolve state connecting sem QR → NÃO reconectou', async () => {
+    const m = build([evo({ status: 'close' })]);
+    m.httpGet.mockImplementation((url: string) =>
+      url.includes('connectionState')
+        ? of(evoState('close'))
+        : of({ data: { instance: { state: 'connecting' } } }),
+    );
+
+    await m.service.verificarTodas();
+
+    // Sem isso a instância virava "open" no banco, o alerta era resolvido e
+    // dois ciclos depois abria outro: notificação nova a cada ~15 min.
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-evo' },
+      data: { status: 'close', ultimo_check: expect.any(Date) },
+    });
+    expect(m.prisma.whatsappInstance.update).not.toHaveBeenCalledWith({
+      where: { id: 'inst-evo' },
+      data: { status: 'open', ultimo_check: expect.any(Date) },
+    });
+
+    await m.service.verificarTodas();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('Evolution: connect devolve state open → reconectou', async () => {
+    const m = build([evo({ status: 'close' })]);
+    m.httpGet.mockImplementation((url: string) =>
+      url.includes('connectionState')
+        ? of(evoState('close'))
+        : of({ data: { instance: { state: 'open' } } }),
+    );
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-evo' },
+      data: { status: 'open', ultimo_check: expect.any(Date) },
+    });
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+  });
+
+  // Gateway cego não pode ser invisível no log de produção
+  it('3 ciclos seguidos sem resposta do gateway: um warn, e não repete no 4º', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(throwError(() => new AxiosError('ETIMEDOUT')));
+    const warn = jest
+      .spyOn((m.service as unknown as { logger: Logger }).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+    expect(warn).not.toHaveBeenCalled();
+
+    await m.service.verificarTodas();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('sem resposta do gateway');
+
+    await m.service.verificarTodas();
+    expect(warn).toHaveBeenCalledTimes(1); // throttle de 10min
+  });
+
+  it('gateway volta a responder: contador de cegueira zera', async () => {
+    const m = build([uaz()]);
+    const warn = jest
+      .spyOn((m.service as unknown as { logger: Logger }).logger, 'warn')
+      .mockImplementation(() => undefined);
+    m.httpGet.mockReturnValue(throwError(() => new AxiosError('ETIMEDOUT')));
+
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    await m.service.verificarTodas();
+    m.httpGet.mockReturnValue(throwError(() => new AxiosError('ETIMEDOUT')));
+    await m.service.verificarTodas();
+    await m.service.verificarTodas();
+
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('usa evolution_base_url da instância quando presente', async () => {

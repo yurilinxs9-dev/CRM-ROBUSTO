@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PushService } from '../push/push.service';
+import { LogThrottle, INSTANCIA_DESCONHECIDA_JANELA_MS } from '../webhooks/log-throttle';
 
 /** Mesmo shape lido pelo InstancesService (config Json da instância). */
 interface InstanceConfig {
@@ -20,6 +21,7 @@ interface InstanceRow {
   id: string;
   nome: string;
   status: string;
+  telefone: string | null;
   tenant_id: string;
   config: unknown;
   tenant: { nome: string; suspended_at: Date | null };
@@ -83,9 +85,15 @@ export class InstanceHealthService {
 
   /** Ciclos consecutivos caída por instância (anti-flap, em memória). */
   private readonly quedas = new Map<string, ContadorQueda>();
+  /** Ciclos consecutivos de estado desconhecido (gateway mudo) por instância. */
+  private readonly desconhecidos = new Map<string, number>();
+  /** Um warn por instância cega a cada 10min (mesmo padrão dos handlers). */
+  private readonly avisoCega = new LogThrottle(INSTANCIA_DESCONHECIDA_JANELA_MS);
 
   /** Ciclos consecutivos caída necessários pra abrir alerta. */
   private static readonly CICLOS_PARA_ALERTAR = 2;
+  /** Ciclos consecutivos sem resposta do gateway antes de gritar no log. */
+  private static readonly CICLOS_PARA_AVISAR_CEGA = 3;
   private static readonly TIMEOUT_MS = 5000;
 
   constructor(
@@ -131,6 +139,7 @@ export class InstanceHealthService {
         id: true,
         nome: true,
         status: true,
+        telefone: true,
         tenant_id: true,
         config: true,
         tenant: { select: { nome: true, suspended_at: true } },
@@ -154,9 +163,10 @@ export class InstanceHealthService {
         if (estado === 'desconhecido') {
           // Gateway mudo/rede ruim: NÃO é queda. Não escreve status, não conta
           // ciclo — senão uma oscilação de rede abriria alerta falso.
-          this.logger.debug(`instância ${inst.nome}: estado desconhecido (rede) — ignorada`);
+          this.avisarCega(inst);
           continue;
         }
+        this.desconhecidos.delete(inst.id);
         verificadas++;
 
         if (estado === 'open') {
@@ -166,8 +176,20 @@ export class InstanceHealthService {
           continue;
         }
 
-        // Caída (close ou presa em connecting): tenta religar sozinha antes de
-        // incomodar alguém.
+        // Instância NOVA no meio do pareamento: `connecting` aqui é o QR na
+        // tela esperando alguém escanear, não uma queda. Mandar
+        // POST /instance/connect agora re-emite o QR e INVALIDA o código que a
+        // pessoa está lendo nesse instante — o cron sabotaria o pareamento.
+        // Só atualiza o status; sem reconexão, sem contador, sem alerta.
+        const pareada = inst.telefone != null || inst.status === 'open';
+        if (estado === 'connecting' && !pareada) {
+          await this.marcarStatus(inst.id, 'connecting');
+          this.quedas.delete(inst.id);
+          continue;
+        }
+
+        // Caída (close ou instância JÁ PAREADA presa em connecting): tenta
+        // religar sozinha antes de incomodar alguém.
         const voltou = await this.tentarReconectar(inst, cfg);
         if (voltou) {
           await this.marcarStatus(inst.id, 'open');
@@ -222,6 +244,7 @@ export class InstanceHealthService {
         id: true,
         nome: true,
         status: true,
+        telefone: true,
         tenant_id: true,
         config: true,
         tenant: { select: { nome: true, suspended_at: true } },
@@ -231,6 +254,27 @@ export class InstanceHealthService {
 
     const texto = `Instância ${inst.nome} (${inst.tenant.nome}) reconectou.`;
     await this.avisarAdmins('Instância reconectada', texto, inst.id);
+  }
+
+  /**
+   * Gateway calado é EXATAMENTE o modo de falha que originou este monitor: o
+   * status no banco continua bonito enquanto ninguém consegue falar com a
+   * instância. O log `debug` de cada ciclo não sai em produção
+   * (`LOG_LEVEL=info`), então três ciclos seguidos (≥15 min) cegos viram UM
+   * `warn` por instância a cada 10 min — barulhento o bastante pra alguém ver,
+   * silencioso o bastante pra não inundar o log.
+   */
+  private avisarCega(inst: InstanceRow): void {
+    const ciclos = (this.desconhecidos.get(inst.id) ?? 0) + 1;
+    this.desconhecidos.set(inst.id, ciclos);
+    this.logger.debug(`instância ${inst.nome}: estado desconhecido (rede) — ignorada`);
+    if (ciclos < InstanceHealthService.CICLOS_PARA_AVISAR_CEGA) return;
+    if (!this.avisoCega.deveLogar(`health-desconhecido:${inst.id}`)) return;
+    this.logger.warn(
+      `monitor: instância ${inst.nome} (${inst.tenant.nome}) sem resposta do gateway ` +
+        `há ${ciclos} ciclos — status no painel pode estar desatualizado ` +
+        `(próximos avisos desta instância suprimidos por 10min)`,
+    );
   }
 
   // ── Gateways ───────────────────────────────────────────────────────────────
@@ -283,7 +327,13 @@ export class InstanceHealthService {
           }),
         );
         const qr = data?.base64 ?? data?.qrcode?.base64 ?? data?.code ?? data?.qrcode?.code ?? null;
-        // QR na resposta = NÃO reconectou (precisa de gente com o celular).
+        // O state é a palavra final quando vem: `connecting` SEM QR não é
+        // reconexão — tratar como sucesso resolvia o alerta, dois ciclos depois
+        // abria outro, e o admin levava notificação nova a cada ~15 min.
+        const state = data?.instance?.state;
+        if (state) return state === 'open';
+        // Sem state: QR na resposta = NÃO reconectou (precisa de gente com o
+        // celular); resposta limpa = sessão já de pé.
         return !qr;
       }
 
