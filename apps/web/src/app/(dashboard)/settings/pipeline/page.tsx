@@ -58,8 +58,13 @@ interface Stage {
   pipeline_id: string;
   is_won: boolean;
   is_lost: boolean;
+  /** Chance de fechar em %, 0-100. `null` = automático pela posição no funil. */
+  probabilidade?: number | null;
   _count?: { leads: number };
 }
+
+/** Campos da etapa que o editor manda no `PATCH /api/stages/:id`. */
+type StagePatch = Partial<Pick<Stage, 'nome' | 'cor' | 'is_won' | 'is_lost' | 'probabilidade'>>;
 
 interface Pipeline {
   id: string;
@@ -186,13 +191,7 @@ export default function PipelineEditorPage() {
   });
 
   const updateStage = useMutation({
-    mutationFn: async ({
-      id,
-      data,
-    }: {
-      id: string;
-      data: Partial<Pick<Stage, 'nome' | 'cor' | 'is_won' | 'is_lost'>>;
-    }) => {
+    mutationFn: async ({ id, data }: { id: string; data: StagePatch }) => {
       const res = await api.patch(`/api/stages/${id}`, data);
       return res.data;
     },
@@ -692,7 +691,7 @@ function SortableStageRow({
   onDelete,
 }: {
   stage: Stage;
-  onUpdate: (data: Partial<Pick<Stage, 'nome' | 'cor' | 'is_won' | 'is_lost'>>) => void;
+  onUpdate: (data: StagePatch) => void;
   onDelete: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -770,6 +769,11 @@ function SortableStageRow({
         )}
       </div>
 
+      {/* Ganho/perdido nao entram na previsao ponderada — o campo so confundiria. */}
+      {!stage.is_won && !stage.is_lost && (
+        <ProbabilidadeInput stage={stage} onUpdate={onUpdate} />
+      )}
+
       <Tooltip>
         <TooltipTrigger asChild>
           <label className="flex items-center gap-1.5 text-xs">
@@ -807,6 +811,76 @@ function SortableStageRow({
       <Button variant="ghost" size="sm" onClick={onDelete}>
         <Trash2 className="h-4 w-4" />
       </Button>
+    </div>
+  );
+}
+
+/**
+ * Chance de fechar da etapa, que alimenta a previsão ponderada da dashboard.
+ *
+ * Rascunho local em string porque o campo tem TRÊS estados e um `number` só
+ * teria dois: preenchido, vazio (= automático, grava `null`) e no meio da
+ * digitação. Grava só no blur/Enter — a cada tecla seria um PATCH por dígito.
+ */
+function ProbabilidadeInput({
+  stage,
+  onUpdate,
+}: {
+  stage: Stage;
+  onUpdate: (data: StagePatch) => void;
+}) {
+  const atual = stage.probabilidade ?? null;
+  const [draft, setDraft] = useState(atual === null ? '' : String(atual));
+  useEffect(() => {
+    setDraft(atual === null ? '' : String(atual));
+  }, [atual]);
+
+  const commit = () => {
+    const bruto = draft.trim();
+    if (bruto === '') {
+      setDraft('');
+      if (atual !== null) onUpdate({ probabilidade: null });
+      return;
+    }
+    const n = Number(bruto);
+    if (!Number.isFinite(n)) {
+      setDraft(atual === null ? '' : String(atual));
+      return;
+    }
+    // O backend recusa fora de 0-100 e fracionário: arredondar aqui evita
+    // um toast de erro para quem só digitou 105 sem querer.
+    const valor = Math.min(100, Math.max(0, Math.round(n)));
+    setDraft(String(valor));
+    if (valor !== atual) onUpdate({ probabilidade: valor });
+  };
+
+  return (
+    <div className="flex w-32 shrink-0 flex-col gap-0.5">
+      <Label htmlFor={`prob-${stage.id}`} className="text-[11px] text-muted-foreground">
+        Chance de fechar (%)
+      </Label>
+      <Input
+        id={`prob-${stage.id}`}
+        type="number"
+        min={0}
+        max={100}
+        inputMode="numeric"
+        value={draft}
+        placeholder="auto"
+        className="h-8"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setDraft(atual === null ? '' : String(atual));
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <span className="text-[10px] leading-tight text-muted-foreground">
+        Vazio = automático pela posição no funil
+      </span>
     </div>
   );
 }
