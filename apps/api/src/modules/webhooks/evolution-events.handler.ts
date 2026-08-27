@@ -41,7 +41,10 @@ export class EvolutionEventsHandler {
    */
   private avisarInstanciaDesconhecida(evento: string, instanceName: string | undefined): void {
     const nome = instanceName ?? '(sem nome)';
-    if (!this.avisoInstancia.deveLogar(nome)) return;
+    // Chave = evento + instância. Só a instância faria o primeiro warn (ex.:
+    // messages.upsert) calar o de messages.update por 10min — some justamente
+    // o sinal de que os ACKS pararam, que é outro sintoma.
+    if (!this.avisoInstancia.deveLogar(`${evento}|${nome}`)) return;
     this.logger.warn(
       `${evento}: mensagem descartada: instancia Evolution '${nome}' nao mapeada no CRM ` +
         `(tenant removido/suspenso ou conexao criada fora do CRM) — ` +
@@ -154,22 +157,47 @@ export class EvolutionEventsHandler {
     // (nunca ✓✓) e ERRO de entrega nunca virava FAILED visível.
     const updates = normalizeAckUpdates(data?.data);
     if (updates.length === 0) return;
+
+    // Tenant DONO do ack. O wamid nunca foi único global (a UNIQUE sempre
+    // começou em tenant_id) e com o dedupe por conversa ele passou a repetir
+    // também entre chats — sem este escopo, uma colisão de id entre empresas
+    // aplicaria o ack de uma na mensagem da outra. Instância desconhecida ou
+    // tenant suspenso descarta, igual à mensagem que chega.
+    //
+    // Resolução LAZY, só no primeiro ack que realmente mapeia: o Evolution
+    // manda um SERVER_ACK por mensagem enviada (e PENDING, e outros que
+    // `extractAck` descarta) — resolver antes do parse cobraria uma consulta
+    // por evento que não vira status nenhum, no evento mais volumoso do
+    // sistema. `undefined` = ainda não perguntei; `null` = perguntei e não é
+    // nossa.
+    const instanceName = data?.instance as string | undefined;
+    let instance:
+      | Awaited<ReturnType<InboundMessageService['findEvolutionInstanceByName']>>
+      | undefined;
+
     for (const update of updates) {
       const ack = extractAck(update);
       if (!ack) continue;
       const { messageId, status: mappedStatus } = ack;
 
-      // wa_id deixou de ser único globalmente (composto com tenant_id), então
-      // a mesma id pode aparecer em múltiplas perspectivas. updateMany cobre
-      // todas; emitMessageStatusUpdate dispara por linha encontrada.
+      if (instance === undefined) {
+        instance = await this.inbound.findEvolutionInstanceByName(instanceName);
+        if (!instance) this.avisarInstanciaDesconhecida('messages.update', instanceName);
+      }
+      if (!instance) return;
+      const tenantId = instance.tenant_id;
+
+      // Dentro do tenant, o wamid casa com N cópias — uma por conversa, quando
+      // a mensagem foi encaminhada pra vários chats. updateMany cobre todas;
+      // emitMessageStatusUpdate dispara por linha encontrada.
       const matches = await this.prisma.message.findMany({
-        where: { whatsapp_message_id: messageId },
+        where: { tenant_id: tenantId, whatsapp_message_id: messageId },
         select: { id: true, lead_id: true, tenant_id: true, direction: true, created_at: true },
       });
       if (matches.length === 0) continue;
 
       await this.prisma.message.updateMany({
-        where: { whatsapp_message_id: messageId },
+        where: { tenant_id: tenantId, whatsapp_message_id: messageId },
         data: { status: mappedStatus as 'DELIVERED' | 'READ' | 'FAILED' },
       });
       for (const m of matches) {

@@ -72,6 +72,27 @@ function makeService() {
   return { service, prisma, http, config, queue, gateway, cache };
 }
 
+/**
+ * Banco falso para a prova "a mensagem mais nova do servidor já está no
+ * banco?". Responde tanto pela chave composta antiga (só tenant+wamid) quanto
+ * pela consulta nova, que escopa o chat por `lead.telefone` — é o que faz o
+ * teste distinguir as duas implementações. Consulta SEM wamid é a busca da
+ * última mensagem do chat: devolve null (cada teste mocka isso quando precisa).
+ */
+function fakeWamidLookup(rows: Array<{ wamid: string; telefone: string }>) {
+  return (args: any) => {
+    const w = args?.where ?? {};
+    const key = w.tenant_wamid_lead ?? w.tenant_id_whatsapp_message_id ?? null;
+    const wamid = key?.whatsapp_message_id ?? w.whatsapp_message_id ?? null;
+    if (!wamid) return Promise.resolve(null);
+    const telefone = w.lead?.telefone ?? null;
+    const hit = rows.find(
+      (r) => r.wamid === wamid && (telefone === null || r.telefone === telefone),
+    );
+    return Promise.resolve(hit ? { id: `msg-${hit.wamid}` } : null);
+  };
+}
+
 afterEach(() => jest.restoreAllMocks());
 
 describe('HistorySyncService.syncInstance', () => {
@@ -109,9 +130,11 @@ describe('HistorySyncService.syncInstance', () => {
     expect(opts.jobId).toBe('bf-inst-1-A');
   });
 
-  it('mensagem mais nova do servidor já no banco (wa_id) → chat em dia, zero jobs (disparo com throttle)', async () => {
+  it('mensagem mais nova do servidor já no banco NESTE chat → chat em dia, zero jobs (disparo com throttle)', async () => {
     const { service, prisma, http, queue } = makeService();
-    prisma.message.findUnique.mockResolvedValue({ id: 'msg-existente' });
+    const lookup = fakeWamidLookup([{ wamid: 'A', telefone: '553186332984' }]);
+    prisma.message.findUnique.mockImplementation(lookup);
+    prisma.message.findFirst.mockImplementation(lookup);
     http.post
       .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
       .mockReturnValueOnce(
@@ -122,14 +145,34 @@ describe('HistorySyncService.syncInstance', () => {
 
     expect(queue.add).not.toHaveBeenCalled();
     expect(r.messages_enqueued).toBe(0);
-    expect(prisma.message.findUnique).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          tenant_id_whatsapp_message_id: { tenant_id: 't1', whatsapp_message_id: 'A' },
-        },
-        select: { id: true },
-      }),
-    );
+    expect(prisma.message.findFirst).toHaveBeenCalledWith({
+      where: {
+        tenant_id: 't1',
+        whatsapp_message_id: 'A',
+        lead: { telefone: '553186332984', tenant_id: 't1' },
+      },
+      select: { id: true },
+    });
+  });
+
+  it('wa_id conhecido mas de OUTRO chat não prova nada: o buraco deste chat é re-injetado', async () => {
+    // Pós-dedupe-por-conversa a mesma wamid existe em N conversas (mensagem
+    // encaminhada). Perguntar só por (tenant, wamid) daria "chat em dia" para
+    // um chat que nunca recebeu a mensagem — buraco no espelho.
+    const { service, prisma, http, queue } = makeService();
+    const lookup = fakeWamidLookup([{ wamid: 'A', telefone: '5599999999999' }]);
+    prisma.message.findUnique.mockImplementation(lookup);
+    prisma.message.findFirst.mockImplementation(lookup);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(r.messages_enqueued).toBe(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
   it('chat em dia (banco dentro da margem) não busca mensagens', async () => {
@@ -455,31 +498,68 @@ describe('HistorySyncService — instâncias Evolution (espelho completo)', () =
     expect(opts.jobId).toBe('bf-inst-evo-NEW-1');
   });
 
-  it('prova exata: newestId do findChats já no banco → nem chama findMessages', async () => {
+  const findChatsUmChat = () =>
+    of({
+      data: [
+        {
+          remoteJid: '553799086000@s.whatsapp.net',
+          unreadCount: null,
+          lastMessage: {
+            key: { id: 'JA-SALVA' },
+            messageTimestamp: Math.floor((NOW - HOUR) / 1000),
+          },
+        },
+      ],
+    });
+
+  it('prova exata: newestId do findChats já no banco NESTE chat → nem chama findMessages', async () => {
     const m = makeService();
     m.prisma.whatsappInstance.findMany.mockResolvedValue([evoInstance]);
     m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
-    m.prisma.message.findUnique.mockResolvedValue({ id: 'ja-existe' });
-    m.http.post.mockReturnValueOnce(
-      of({
-        data: [
-          {
-            remoteJid: '553799086000@s.whatsapp.net',
-            unreadCount: null,
-            lastMessage: {
-              key: { id: 'JA-SALVA' },
-              messageTimestamp: Math.floor((NOW - HOUR) / 1000),
-            },
-          },
-        ],
-      }),
-    );
+    const lookup = fakeWamidLookup([{ wamid: 'JA-SALVA', telefone: '553799086000' }]);
+    m.prisma.message.findUnique.mockImplementation(lookup);
+    m.prisma.message.findFirst.mockImplementation(lookup);
+    m.http.post.mockReturnValueOnce(findChatsUmChat());
 
     const r = await m.service.syncAllUazapi(48 * HOUR);
 
     expect(r[0].messages_enqueued).toBe(0);
     expect(m.queue.add).not.toHaveBeenCalled();
     expect(m.http.post).toHaveBeenCalledTimes(1); // só o findChats
+  });
+
+  it('newestId conhecido em OUTRO chat não é prova: busca as mensagens deste chat', async () => {
+    const m = makeService();
+    m.prisma.whatsappInstance.findMany.mockResolvedValue([evoInstance]);
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    const lookup = fakeWamidLookup([{ wamid: 'JA-SALVA', telefone: '5599999999999' }]);
+    m.prisma.message.findUnique.mockImplementation(lookup);
+    m.prisma.message.findFirst.mockImplementation(lookup);
+    m.http.post
+      .mockReturnValueOnce(findChatsUmChat())
+      .mockReturnValueOnce(
+        of({
+          data: {
+            messages: {
+              records: [
+                {
+                  key: { id: 'JA-SALVA', fromMe: true },
+                  messageTimestamp: Math.floor((NOW - HOUR) / 1000),
+                  message: { conversation: 'encaminhado' },
+                },
+              ],
+              total: 1,
+              pages: 1,
+              currentPage: 1,
+            },
+          },
+        }),
+      );
+
+    const r = await m.service.syncAllUazapi(48 * HOUR);
+
+    expect(m.http.post).toHaveBeenCalledTimes(2); // findChats + findMessages
+    expect(r[0].messages_enqueued).toBe(1);
   });
 });
 

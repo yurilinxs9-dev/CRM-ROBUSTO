@@ -510,7 +510,14 @@ model Message {
   //   WHERE media_url IS NOT NULL AND media_archived = false
   //   (varredura do cleanup de mídia 30d: 7.4s → ms)
 
-  @@unique([tenant_id, whatsapp_message_id], name: "tenant_id_whatsapp_message_id")
+  // Dedupe POR CONVERSA. O unique era (tenant_id, whatsapp_message_id), mas o
+  // WhatsApp reaproveita a MESMA id quando a pessoa encaminha uma mensagem
+  // para varios chats de uma vez: a copia do segundo chat batia no unique,
+  // caia no caminho de dedupe/update e a mensagem nunca aparecia la (video
+  // encaminhado sumindo da segunda conversa). Com lead_id na chave, existe
+  // uma copia por conversa e o dedupe continua valendo dentro do chat.
+  // Ver apps/api/prisma/manual/2026-08-27-dedupe-por-conversa.sql.
+  @@unique([tenant_id, whatsapp_message_id, lead_id], name: "tenant_wamid_lead")
   @@index([lead_id, created_at])
   @@index([instance_name, created_at])
   @@index([status, created_at])
@@ -522,8 +529,10 @@ model Message {
   // Dashboard: volume por dia do tenant.
   @@index([tenant_id, created_at])
   // Webhook ack/eco: lookup por whatsapp_message_id sozinho (sem tenant) —
-  // a UNIQUE composta (tenant_id, wa_id) não serve → era seq scan de 212ms
-  // na query mais chamada do sistema. 29/07/2026: caiu p/ ~2ms.
+  // a UNIQUE composta (tenant_id, wa_id, lead_id) não serve → era seq scan de
+  // 212ms na query mais chamada do sistema. 29/07/2026: caiu p/ ~2ms.
+  // Continua indispensável: o ack chega só com o wamid e agora pode casar com
+  // VÁRIAS cópias (uma por conversa) — updateMany por este índice.
   @@index([whatsapp_message_id])
   // Dashboard groupBy por atendente: o índice parcial antigo (abaixo) não
   // casa com o bind param do Prisma (direction = $n) → planner ignorava e

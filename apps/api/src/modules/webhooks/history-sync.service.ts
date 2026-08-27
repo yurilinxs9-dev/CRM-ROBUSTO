@@ -36,7 +36,8 @@ const ZERO: SyncSummary = { chats_scanned: 0, chats_synced: 0, messages_enqueued
  * banco e re-injeta o que falta (POST /message/find) na fila `webhooks` como
  * jobs `uazapi.messages` com flag backfill (timestamp original, sem
  * notificação — ver SaveMessageInput.backfill). Dedupe em duas camadas: jobId
- * determinístico na fila + upsert UNIQUE (tenant_id, whatsapp_message_id).
+ * determinístico na fila + upsert UNIQUE (tenant_id, whatsapp_message_id,
+ * lead_id) — a chave inclui a conversa desde o dedupe por chat.
  *
  * Gatilhos: cron 30min (janela 48h, pega queda silenciosa de webhook),
  * reconexão close→open (janela 7d, disparado pelo UazapiEventsHandler) e
@@ -210,14 +211,16 @@ export class HistorySyncService {
     sinceMs: number,
   ): Promise<number> {
     // Prova exata primeiro (vem de graça no findChats): última msg do chat já
-    // está no banco → em dia, nem consulta o findMessages.
+    // está no banco → em dia, nem consulta o findMessages. Escopado NESTE
+    // chat: a mesma wamid pode existir em outra conversa (mensagem
+    // encaminhada) e isso não prova nada sobre esta — sem o filtro, o chat que
+    // nunca recebeu a mensagem passaria por "em dia" e ficaria com buraco.
     if (chat.newestId) {
-      const existing = await this.prisma.message.findUnique({
+      const existing = await this.prisma.message.findFirst({
         where: {
-          tenant_id_whatsapp_message_id: {
-            tenant_id: tenantId,
-            whatsapp_message_id: chat.newestId,
-          },
+          tenant_id: tenantId,
+          whatsapp_message_id: chat.newestId,
+          lead: { telefone: chat.phone, tenant_id: tenantId },
         },
         select: { id: true },
       });
@@ -421,7 +424,10 @@ export class HistorySyncService {
       // ao ENFILEIRAR e o WhatsApp carimba até minutos depois (disparo com
       // throttle) — margem de relógio nunca cobre todos os casos. Prova
       // exata: se a mensagem MAIS NOVA do servidor já está no banco pelo
-      // whatsapp_message_id, o chat está em dia — sai sem re-injetar.
+      // whatsapp_message_id DESTE chat, o chat está em dia — sai sem
+      // re-injetar. O filtro por telefone é essencial: com o dedupe por
+      // conversa a mesma wamid vive em N chats (encaminhamento), e achá-la em
+      // outro chat não prova que ESTE está em dia.
       if (!newestChecked) {
         newestChecked = true;
         const newest = page.messages.find(
@@ -429,12 +435,11 @@ export class HistorySyncService {
         );
         const newestId = newest ? (newest.messageid as string) : null;
         if (newestId) {
-          const existing = await this.prisma.message.findUnique({
+          const existing = await this.prisma.message.findFirst({
             where: {
-              tenant_id_whatsapp_message_id: {
-                tenant_id: tenantId,
-                whatsapp_message_id: newestId,
-              },
+              tenant_id: tenantId,
+              whatsapp_message_id: newestId,
+              lead: { telefone: chat.phone, tenant_id: tenantId },
             },
             select: { id: true },
           });

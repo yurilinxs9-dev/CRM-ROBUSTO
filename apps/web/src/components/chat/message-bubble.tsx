@@ -9,6 +9,7 @@ import {
   Clock,
   Download,
   FileText,
+  Images,
   MapPin,
   NotebookPen,
   Reply,
@@ -31,6 +32,14 @@ import {
 } from './types';
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
+
+/**
+ * Resumo de álbum do WhatsApp: chega como mensagem TEXT com content tipo
+ * "Album: 2 images" / "Album: 1 image, 1 video". As fotos e vídeos em si vêm
+ * como mensagens separadas segundos depois. Renderizar o resumo como bolha
+ * comum fazia parecer mídia quebrada — vira uma linha discreta de sistema.
+ */
+const ALBUM_SUMMARY_REGEX = /^Album: \d+/i;
 
 /** Fetch media via authenticated proxy and trigger browser download. */
 async function downloadMediaViaProxy(messageId: string, filename: string) {
@@ -151,6 +160,23 @@ function MessageBubbleComponent({
               </p>
             </div>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Resumo de álbum: linha de sistema, sem placeholder de mídia nenhum.
+  // O content original ("Album: 2 images") fica no title, pra quem quiser ver.
+  const albumSummary = message.content?.trim();
+  if (type === 'TEXT' && albumSummary && ALBUM_SUMMARY_REGEX.test(albumSummary)) {
+    return (
+      <div className="my-1 flex justify-center">
+        <div
+          title={albumSummary}
+          className="flex items-center gap-1.5 rounded-full bg-muted/50 px-2.5 py-1 text-[11px] text-muted-foreground"
+        >
+          <Images size={12} className="flex-shrink-0" />
+          <span>Álbum — as fotos e vídeos aparecem logo abaixo</span>
         </div>
       </div>
     );

@@ -148,6 +148,56 @@ describe('Evolution contacts.upsert — instância não mapeada', () => {
   });
 });
 
+describe('throttle do aviso é por EVENTO + instância', () => {
+  // Os acks entraram na regra da instância desconhecida (ver
+  // ack-tenant-scope.spec.ts). Com a chave do throttle só na instância, o
+  // primeiro warn de `messages.upsert` calaria o de `messages.update` da mesma
+  // instância por 10min — e some justamente o sinal de "os acks pararam".
+  it('Evolution: o aviso de messages.upsert não engole o de messages.update', async () => {
+    const { handler, warn } = makeEvolution(null);
+
+    await handler.handleMessageUpsert(evolutionMsg('orfa'));
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    await handler.handleMessageUpdate({
+      instance: 'orfa',
+      data: { keyId: 'WA-1', status: 'DELIVERY_ACK' },
+    });
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    // ...e cada evento segue throttled dentro da própria janela.
+    await handler.handleMessageUpdate({
+      instance: 'orfa',
+      data: { keyId: 'WA-2', status: 'READ' },
+    });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('UazAPI: o aviso de uazapi.messages não engole o do ack do mesmo token', async () => {
+    const { handler, warn } = makeUazapi(null);
+    const token = 'tok-super-secreto-1234';
+
+    await handler.handleUazapiMessage({
+      token,
+      message: { chatid: '5511999998888@s.whatsapp.net', messageid: 'WA-1', text: 'oi' },
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    await handler.handleUazapiMessageAck({
+      token,
+      message: { messageid: 'WA-1', status: 'DELIVERY_ACK' },
+    });
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[1][0])).not.toContain(token);
+
+    await handler.handleUazapiMessageAck({
+      token,
+      message: { messageid: 'WA-2', status: 'READ' },
+    });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('UazAPI/WPP — mesma condição, mesmo tratamento', () => {
   it('WPP onmessage de instância desconhecida descarta com warn throttled', async () => {
     const { handler, inbound, warn } = makeUazapi(null);
