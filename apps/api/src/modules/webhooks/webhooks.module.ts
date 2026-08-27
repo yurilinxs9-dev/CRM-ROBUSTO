@@ -16,6 +16,7 @@ import { QueueModule } from '../queue/queue.module';
 import { BroadcastsModule } from '../broadcasts/broadcasts.module';
 import { HistorySyncModule } from './history-sync.module';
 import { AttributionModule } from '../attribution/attribution.module';
+import { InstancesModule } from '../instances/instances.module';
 
 @Module({
   imports: [
@@ -45,6 +46,9 @@ import { AttributionModule } from '../attribution/attribution.module';
     BroadcastsModule,
     HistorySyncModule,
     AttributionModule,
+    // Só pelo InstanceHealthService: o connection.update → open fecha o alerta
+    // do monitor na hora. Sem ciclo — InstancesModule não importa webhooks.
+    InstancesModule,
   ],
   controllers: [WebhooksController],
   providers: [

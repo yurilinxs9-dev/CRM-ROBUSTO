@@ -29,8 +29,16 @@ function makeHandler() {
   };
   const inbound: any = {};
   const historySync: any = { syncEvolutionInstance: jest.fn().mockResolvedValue({}) };
-  const handler = new EvolutionEventsHandler(prisma, leadsService, gateway, inbound, historySync);
-  return { handler, prisma, gateway, leadsService, historySync };
+  const instanceHealth: any = { resolverAlerta: jest.fn().mockResolvedValue(undefined) };
+  const handler = new EvolutionEventsHandler(
+    prisma,
+    leadsService,
+    gateway,
+    inbound,
+    historySync,
+    instanceHealth,
+  );
+  return { handler, prisma, gateway, leadsService, historySync, instanceHealth };
 }
 
 const READ_TS = new Date('2026-08-20T17:09:00.000Z');
