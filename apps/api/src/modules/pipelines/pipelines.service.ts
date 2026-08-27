@@ -39,6 +39,9 @@ const updateStageSchema = z.object({
   is_won: z.boolean().optional(),
   is_lost: z.boolean().optional(),
   max_dias: z.number().int().positive().nullable().optional(),
+  // Chance de fechar, em %, usada pela previsao ponderada do dashboard.
+  // `null` = volta ao default por posicao entre as etapas abertas.
+  probabilidade: z.number().int().min(0).max(100).nullable().optional(),
   auto_action: z.unknown().optional(),
   sla_config: z.any().optional(),
   idle_alert_config: z.any().optional(),

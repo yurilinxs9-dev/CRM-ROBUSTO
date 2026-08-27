@@ -1,9 +1,75 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { inicioDoDiaLocal } from '../lead-insights/lead-insights.service';
+import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '../../common/types/auth-user';
 
 export interface StageRow { id: string; nome: string; cor: string; ordem: number; is_won?: boolean; }
+
+const TIMEZONE = 'America/Sao_Paulo';
+
+export interface FinanceiraEtapa {
+  stage: { id: string; nome: string; cor: string; ordem: number };
+  count: number;
+  total: number;
+  probabilidade: number;
+  ponderado: number;
+}
+
+export interface FinanceiraResposta {
+  previsao: { total_aberto: number; ponderado: number; por_etapa: FinanceiraEtapa[] };
+  ganhos: { mes_atual: number; mes_anterior: number; quantidade_mes: number; ticket_medio: number };
+  top_oportunidades: Array<{
+    lead_id: string;
+    nome: string;
+    valor: number;
+    etapa: string;
+    temperatura: string;
+  }>;
+}
+
+const FINANCEIRA_VAZIA: FinanceiraResposta = {
+  previsao: { total_aberto: 0, ponderado: 0, por_etapa: [] },
+  ganhos: { mes_atual: 0, mes_anterior: 0, quantidade_mes: 0, ticket_medio: 0 },
+  top_oportunidades: [],
+};
+
+/**
+ * `valor_estimado` e Decimal: nao soma com `+` e serializa como objeto. Mesmo
+ * tratamento do `toNumber` do analytics.service.
+ */
+function paraNumero(valor: Prisma.Decimal | null | undefined): number {
+  if (valor === null || valor === undefined) return 0;
+  return valor.toNumber();
+}
+
+/** Dinheiro so em centavos: 400.2 + 400 da 800.2000000000001 em float puro. */
+function arredondar(valor: number): number {
+  return Number(valor.toFixed(2));
+}
+
+/**
+ * Ano e mes de PAREDE em `timeZone`. `getUTCMonth()` direto erraria a virada:
+ * as 21h de 31/marco em Sao Paulo ja e 1o/abril em UTC, e o mes novo comecaria
+ * levando os ganhos da ultima noite do mes velho.
+ * Formato inesperado cai no relogio do processo — mes um pouco torto e melhor
+ * do que `Invalid Date` dentro de um `where`.
+ */
+function anoMesLocal(instante: Date, timeZone: string): { ano: number; mes: number } {
+  const [ano, mes] = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+  })
+    .format(instante)
+    .split('-')
+    .map(Number);
+  if (!Number.isFinite(ano) || !Number.isFinite(mes)) {
+    return { ano: instante.getFullYear(), mes: instante.getMonth() + 1 };
+  }
+  return { ano, mes };
+}
 
 // Dashboard data changes slowly relative to render frequency — a short TTL
 // makes the first hit pay the cost and everyone else gets sub-10ms responses.
@@ -62,6 +128,146 @@ export class DashboardService {
         total: g?._sum.valor_estimado ?? 0,
       };
     });
+  }
+
+  async getFinanceira(user: AuthUser, pipelineId?: string): Promise<FinanceiraResposta> {
+    return this.cached(`dash:financeira:${user.tenantId}:${pipelineId ?? 'active'}`, () =>
+      this.computeFinanceira(user, pipelineId),
+    );
+  }
+
+  private async computeFinanceira(
+    user: AuthUser,
+    pipelineId?: string,
+  ): Promise<FinanceiraResposta> {
+    // Mesmo fallback do funil: sem id explicito, o pipeline ativo do tenant.
+    const pipeline = pipelineId
+      ? await this.prisma.pipeline.findFirst({
+          where: { id: pipelineId, tenant_id: user.tenantId },
+          include: { stages: { orderBy: { ordem: 'asc' } } },
+        })
+      : await this.prisma.pipeline.findFirst({
+          where: { ativo: true, tenant_id: user.tenantId },
+          include: { stages: { orderBy: { ordem: 'asc' } } },
+        });
+
+    if (!pipeline) return FINANCEIRA_VAZIA;
+
+    // Previsao e o que ainda esta em jogo: ganho ja virou receita e perdido vale
+    // zero — somar qualquer um dos dois infla o previsto.
+    const abertas = pipeline.stages.filter((s) => !s.is_won && !s.is_lost);
+    const abertasIds = abertas.map((s) => s.id);
+    const ganhasIds = pipeline.stages.filter((s) => s.is_won).map((s) => s.id);
+
+    const agora = new Date();
+    const { ano, mes } = anoMesLocal(agora, TIMEZONE);
+    const inicioMes = inicioDoDiaLocal(ano, mes, 1, TIMEZONE);
+    // `mes - 1` com mes = 1 vira o mes 0 e o `Date.UTC` interno rola pra
+    // dezembro do ano anterior sozinho.
+    const inicioMesAnterior = inicioDoDiaLocal(ano, mes - 1, 1, TIMEZONE);
+
+    type GrupoEtapa = {
+      estagio_id: string;
+      _count: { id: number };
+      _sum: { valor_estimado: Prisma.Decimal | null };
+    };
+    type AgregadoGanho = {
+      _count: { id: number };
+      _sum: { valor_estimado: Prisma.Decimal | null };
+    };
+    type LinhaTop = {
+      id: string;
+      nome: string;
+      valor_estimado: Prisma.Decimal | null;
+      temperatura: string;
+      estagio: { nome: string } | null;
+    };
+
+    // A ordem importa: a primeira chamada de `aggregate` e a do mes corrente.
+    const [grupos, ganhoAtual, ganhoAnterior, linhasTop] = (await Promise.all([
+      this.prisma.lead.groupBy({
+        by: ['estagio_id'],
+        where: { estagio_id: { in: abertasIds }, tenant_id: user.tenantId },
+        _count: { id: true },
+        _sum: { valor_estimado: true },
+      }),
+      this.prisma.lead.aggregate({
+        where: {
+          tenant_id: user.tenantId,
+          estagio_id: { in: ganhasIds },
+          estagio_entered_at: { gte: inicioMes },
+        },
+        _count: { id: true },
+        _sum: { valor_estimado: true },
+      }),
+      this.prisma.lead.aggregate({
+        where: {
+          tenant_id: user.tenantId,
+          estagio_id: { in: ganhasIds },
+          estagio_entered_at: { gte: inicioMesAnterior, lt: inicioMes },
+        },
+        _count: { id: true },
+        _sum: { valor_estimado: true },
+      }),
+      this.prisma.lead.findMany({
+        where: {
+          tenant_id: user.tenantId,
+          estagio_id: { in: abertasIds },
+          valor_estimado: { not: null },
+        },
+        orderBy: { valor_estimado: 'desc' },
+        take: 5,
+        select: {
+          id: true,
+          nome: true,
+          valor_estimado: true,
+          temperatura: true,
+          estagio: { select: { nome: true } },
+        },
+      }),
+    ])) as [GrupoEtapa[], AgregadoGanho, AgregadoGanho, LinhaTop[]];
+
+    const mapa = new Map(grupos.map((g) => [g.estagio_id, g]));
+    const por_etapa: FinanceiraEtapa[] = abertas.map((stage, indice) => {
+      const g = mapa.get(stage.id);
+      const total = arredondar(paraNumero(g?._sum.valor_estimado));
+      // Sem probabilidade configurada, a posicao entre as ABERTAS decide:
+      // 1 etapa -> 50; 3 -> 25/50/75. `?? ` e nao `||`: 0 e escolha do gestor.
+      const probabilidade =
+        stage.probabilidade ?? Math.round(((indice + 1) / (abertas.length + 1)) * 100);
+      return {
+        stage: { id: stage.id, nome: stage.nome, cor: stage.cor, ordem: stage.ordem },
+        count: g?._count.id ?? 0,
+        total,
+        probabilidade,
+        ponderado: arredondar((total * probabilidade) / 100),
+      };
+    });
+
+    const mes_atual = arredondar(paraNumero(ganhoAtual._sum.valor_estimado));
+    const quantidade_mes = ganhoAtual._count.id;
+
+    return {
+      previsao: {
+        total_aberto: arredondar(por_etapa.reduce((soma, e) => soma + e.total, 0)),
+        ponderado: arredondar(por_etapa.reduce((soma, e) => soma + e.ponderado, 0)),
+        por_etapa,
+      },
+      ganhos: {
+        mes_atual,
+        mes_anterior: arredondar(paraNumero(ganhoAnterior._sum.valor_estimado)),
+        quantidade_mes,
+        // Sem ganho no mes a divisao daria NaN e chegaria na tela como "R$ NaN".
+        ticket_medio: quantidade_mes > 0 ? arredondar(mes_atual / quantidade_mes) : 0,
+      },
+      top_oportunidades: linhasTop.map((l) => ({
+        lead_id: l.id,
+        nome: l.nome,
+        valor: arredondar(paraNumero(l.valor_estimado)),
+        etapa: l.estagio?.nome ?? '',
+        temperatura: String(l.temperatura),
+      })),
+    };
   }
 
   async getPerformance(user: AuthUser) {
