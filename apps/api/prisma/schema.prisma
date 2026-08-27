@@ -321,6 +321,7 @@ model Stage {
   auto_action         Json?
   campos_obrigatorios Json?
   max_dias            Int?
+  probabilidade       Int? // 0-100; null = default por posicao (dashboard financeira)
 
   // Novos campos do Painel Dinâmico
   sla_config            Json? // { duration, unit, action, targetStageId }
