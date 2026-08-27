@@ -373,11 +373,18 @@ export class InstanceHealthService {
           },
         ),
       );
+      // Mesma regra do Evolution: quando o gateway diz o status, ele é a
+      // palavra final. `connecting` sem qrcode não é reconexão — dar sucesso
+      // aqui resolveria o alerta e dois ciclos depois abriria outro, com o
+      // admin levando notificação nova a cada ~15 min.
+      const status = data?.instance?.status;
+      if (status) return status === 'connected';
+      // Sem status no corpo: os booleanos de sessão, e por último a ausência
+      // de QR (resposta limpa = sessão já de pé).
       const conectou =
         data?.status?.connected === true ||
         data?.status?.loggedIn === true ||
-        data?.connected === true ||
-        data?.instance?.status === 'connected';
+        data?.connected === true;
       const qr = data?.instance?.qrcode ?? null;
       return conectou || !qr;
     } catch (err: unknown) {

@@ -467,6 +467,49 @@ describe('InstanceHealthService.verificarTodas', () => {
     expect(m.httpPost).toHaveBeenCalled();
   });
 
+  // UazAPI: status manda mais que a ausência de qrcode (espelho do Evolution)
+  it('UazAPI: connect devolve status connecting sem qrcode → NÃO reconectou', async () => {
+    const m = build([uaz({ status: 'close' })]);
+    m.httpGet.mockReturnValue(of(uazStatusCaido));
+    m.httpPost.mockReturnValue(
+      of({
+        data: {
+          instance: { status: 'connecting' },
+          status: { connected: false, loggedIn: false, jid: null },
+        },
+      }),
+    );
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-uaz' },
+      data: { status: 'close', ultimo_check: expect.any(Date) },
+    });
+    expect(m.prisma.whatsappInstance.update).not.toHaveBeenCalledWith({
+      where: { id: 'inst-uaz' },
+      data: { status: 'open', ultimo_check: expect.any(Date) },
+    });
+
+    // …e a queda segue contando: 2º ciclo abre o alerta normalmente.
+    await m.service.verificarTodas();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('UazAPI: connect devolve status connected → reconectou', async () => {
+    const m = build([uaz({ status: 'close' })]);
+    m.httpGet.mockReturnValue(of(uazStatusCaido));
+    m.httpPost.mockReturnValue(of(uazConnectConectado));
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.whatsappInstance.update).toHaveBeenCalledWith({
+      where: { id: 'inst-uaz' },
+      data: { status: 'open', ultimo_check: expect.any(Date) },
+    });
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+  });
+
   // Evolution: state manda mais que a ausência de QR
   it('Evolution: connect devolve state connecting sem QR → NÃO reconectou', async () => {
     const m = build([evo({ status: 'close' })]);
