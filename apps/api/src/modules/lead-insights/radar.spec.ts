@@ -1437,6 +1437,7 @@ describe('LeadInsightsService.radar — fila lembretes de hoje', () => {
 
   interface ArgsLembrete {
     where: {
+      tenant_id?: string;
       status?: string;
       avisar_em?: { lte: Date };
       lead?: { tenant_id?: string; pipeline_id?: string; responsavel_id?: string; OR?: unknown[] };
@@ -1523,6 +1524,21 @@ describe('LeadInsightsService.radar — fila lembretes de hoje', () => {
     await m.service.radar(operador);
 
     expect(argsLembrete(m.leadLembrete).where.status).toBe('pendente');
+  });
+
+  it('o tenant e exigido no PROPRIO lembrete, nao so no lead da relacao', async () => {
+    // Duas razoes. Indice: `@@index([tenant_id, status, avisar_em])` so entra em
+    // jogo com o tenant na coluna do lembrete — sem ele o banco varre a tabela
+    // inteira e junta com Lead para depois filtrar. E defesa em profundidade: o
+    // recorte de tenant deixa de depender de UMA condicao dentro da relacao.
+    const m = montar();
+
+    await m.service.radar(operador);
+
+    const { where } = argsLembrete(m.leadLembrete);
+    expect(where.tenant_id).toBe('t1');
+    // E o recorte do lead continua inteiro: um nao substitui o outro.
+    expect(where.lead?.tenant_id).toBe('t1');
   });
 
   it('pede o lead com o mesmo select das outras filas, do mais antigo, cap 30', async () => {

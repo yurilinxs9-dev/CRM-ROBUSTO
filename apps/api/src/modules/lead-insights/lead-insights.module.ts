@@ -2,7 +2,11 @@ import { Global, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { LeadsModule } from '../leads/leads.module';
 import { AiModule } from '../ai/ai.module';
-import { LeadInsightsController, RadarController } from './lead-insights.controller';
+import {
+  LeadInsightsController,
+  LembretesController,
+  RadarController,
+} from './lead-insights.controller';
 import { LeadInsightsService } from './lead-insights.service';
 import { LeadInsightsProcessor } from './lead-insights.processor';
 import { LEAD_INSIGHTS_QUEUE } from './lead-insights.queue';
@@ -31,7 +35,7 @@ import { LEAD_INSIGHTS_QUEUE } from './lead-insights.queue';
       },
     }),
   ],
-  controllers: [LeadInsightsController, RadarController],
+  controllers: [LeadInsightsController, RadarController, LembretesController],
   providers: [LeadInsightsService, LeadInsightsProcessor],
   exports: [LeadInsightsService],
 })

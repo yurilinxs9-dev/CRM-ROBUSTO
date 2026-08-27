@@ -1,4 +1,4 @@
-import { HttpException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, HttpException, NotFoundException } from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import type { PrismaService } from '../../common/prisma/prisma.service';
@@ -7,6 +7,12 @@ import type { LeadsService } from '../leads/leads.service';
 import type { CrmGateway } from '../websocket/websocket.gateway';
 import type { AuthUser } from '../../common/types/auth-user';
 import { LeadInsightsService } from './lead-insights.service';
+import {
+  LeadInsightsController,
+  LembretesController,
+  adiarLembreteSchema,
+  criarLembreteSchema,
+} from './lead-insights.controller';
 import type { GerarInsightJobData } from './lead-insights.queue';
 
 /**
@@ -23,7 +29,12 @@ function montar() {
   const leadActivity = { create: jest.fn() };
   // Fase 3: lembretes temporais. `findMany` ja devolve lista vazia porque a
   // maioria dos testes nao tem marco temporal nenhum na conversa.
-  const leadLembrete = { findMany: jest.fn().mockResolvedValue([]), create: jest.fn() };
+  const leadLembrete = {
+    findMany: jest.fn().mockResolvedValue([]),
+    findFirst: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  };
   const prisma = { leadInsight, message, lead, stage, leadActivity, leadLembrete };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
@@ -1089,13 +1100,17 @@ describe('LeadInsightsService.gerarInsight (fase 3: lembretes temporais)', () =>
   });
 
   // (b) — clamp
-  it('data absurda e limitada a 12 meses (o modelo chuta 2030)', async () => {
+  it('data absurda e limitada a 12 meses, ancorada na meia-noite de Sao Paulo', async () => {
     const m = preparar([{ motivo: 'Trocar o portao', quando: '2030-01-10' }]);
 
     await m.service.gerarInsight('lead-1', 't1');
 
+    // O teto tambem passa pela ancora: `avisar_em` e SEMPRE a meia-noite do dia
+    // em Sao Paulo (convencao do modulo). Gravar 2027-08-26T13:00Z cru deixaria
+    // UM lembrete — justo o clampado — com hora no meio do dia, e o front, que
+    // compara e renderiza por dia local, herdaria uma excecao silenciosa.
     expect(gravados(m.leadLembrete.create)[0].avisar_em).toEqual(
-      new Date('2027-08-26T13:00:00Z'),
+      new Date('2027-08-26T03:00:00Z'),
     );
   });
 
@@ -1112,10 +1127,15 @@ describe('LeadInsightsService.gerarInsight (fase 3: lembretes temporais)', () =>
     // So PENDENTES do lead disputam o dedupe: um lembrete ja feito nao pode
     // impedir o proximo ciclo do mesmo assunto.
     const [consulta] = m.leadLembrete.findMany.mock.calls[0] as [
-      { where: { lead_id: string; status: string } },
+      { where: { lead_id: string; status: string }; take?: number; orderBy?: unknown },
     ];
     expect(consulta.where.lead_id).toBe('lead-1');
     expect(consulta.where.status).toBe('pendente');
+    // Leitura limitada: o cap da IA e 5, mas nada no banco impede um lead de
+    // acumular centenas de pendentes manuais — e essa lista inteira viajaria
+    // para dentro do worker a cada geracao.
+    expect(consulta.take).toBe(50);
+    expect(consulta.orderBy).toEqual({ avisar_em: 'asc' });
   });
 
   it('mesmo motivo a 5 dias do pendente e marco novo: os dois viram lembrete', async () => {
@@ -1425,6 +1445,445 @@ describe('LeadInsightsService — aceitar/recusar etapa sugerida', () => {
     const [args] = m.leadInsight.update.mock.calls[0] as [{ data: Record<string, unknown> }];
     const ids = (args.data.etapa_recusas as Array<{ estagio_id: string }>).map((r) => r.estagio_id);
     expect(ids).toEqual(['st-recente', 'st-negociacao']);
+  });
+});
+
+/*
+ * ---------------------------------------------------------------------------
+ * Fase 3, Task 4: a gestao dos lembretes pela tela
+ * ---------------------------------------------------------------------------
+ * A ficha lista, o atendente cria a mao, e os tres botoes do card (concluir,
+ * adiar, descartar) resolvem o lembrete. Uma convencao atravessa tudo:
+ * `avisar_em` e SEMPRE o instante da meia-noite do dia em Sao Paulo. O front
+ * renderiza e compara por dia local — qualquer lembrete gravado com outra hora
+ * apareceria no dia errado para metade do pais.
+ */
+
+/** 26/08/2026 10:00 em Sao Paulo (-03). Meia-noite de hoje = 26/08 03:00Z. */
+const HOJE_UTC = new Date('2026-08-26T13:00:00Z');
+const HOJE_SP = new Date('2026-08-26T03:00:00Z');
+
+describe('LeadInsightsService.listarLembretes', () => {
+  interface ArgsLista {
+    where: { lead_id?: string; status?: string | { not: string } };
+    select?: Record<string, boolean>;
+    orderBy?: Record<string, string>;
+    take?: number;
+  }
+
+  function argsDaChamada(findMany: jest.Mock, i: number): ArgsLista {
+    const [args] = findMany.mock.calls[i] as [ArgsLista];
+    return args;
+  }
+
+  /** Linha do banco, com o select exato do contrato. */
+  function linha(over: Record<string, unknown> = {}) {
+    return {
+      id: 'lem-1',
+      motivo: 'Ligar depois da reforma',
+      dito_em: new Date('2026-07-10T14:00:00Z'),
+      avisar_em: new Date('2026-09-01T03:00:00Z'),
+      origem: 'ia',
+      status: 'pendente',
+      ...over,
+    };
+  }
+
+  it('confere o acesso pelo LeadsService e devolve o contrato da ficha', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findMany.mockResolvedValueOnce([linha()]).mockResolvedValueOnce([]);
+
+    await expect(m.service.listarLembretes('lead-1', usuario)).resolves.toEqual({
+      lembretes: [
+        {
+          id: 'lem-1',
+          motivo: 'Ligar depois da reforma',
+          // Datas viajam como ISO, igual a fila do radar: `Date` cru nao tem
+          // contrato nenhum depois do JSON.stringify do Nest.
+          dito_em: '2026-07-10T14:00:00.000Z',
+          avisar_em: '2026-09-01T03:00:00.000Z',
+          origem: 'ia',
+          status: 'pendente',
+        },
+      ],
+    });
+    expect(m.leads.findOne).toHaveBeenCalledWith('lead-1', usuario);
+  });
+
+  it('pendentes por data primeiro, resolvidos por atualizacao depois', async () => {
+    // `status asc` nao serve: em ordem alfabetica 'pendente' vem DEPOIS de
+    // 'descartado' e 'feito' — a lista abriria pelo que ja foi resolvido.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findMany
+      .mockResolvedValueOnce([linha({ id: 'p1' }), linha({ id: 'p2' })])
+      .mockResolvedValueOnce([linha({ id: 'r1', status: 'feito' })]);
+
+    const { lembretes } = await m.service.listarLembretes('lead-1', usuario);
+
+    expect(lembretes.map((l) => l.id)).toEqual(['p1', 'p2', 'r1']);
+
+    const pendentes = argsDaChamada(m.leadLembrete.findMany, 0);
+    expect(pendentes.where).toEqual({ lead_id: 'lead-1', status: 'pendente' });
+    expect(pendentes.orderBy).toEqual({ avisar_em: 'asc' });
+
+    const resolvidos = argsDaChamada(m.leadLembrete.findMany, 1);
+    expect(resolvidos.where).toEqual({ lead_id: 'lead-1', status: { not: 'pendente' } });
+    expect(resolvidos.orderBy).toEqual({ updated_at: 'desc' });
+  });
+
+  it('cap de 20 no total: o pendente nunca perde a vaga para o resolvido', async () => {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findMany
+      .mockResolvedValueOnce(Array.from({ length: 15 }, (_, i) => linha({ id: `p${i}` })))
+      .mockResolvedValueOnce(
+        Array.from({ length: 15 }, (_, i) => linha({ id: `r${i}`, status: 'feito' })),
+      );
+
+    const { lembretes } = await m.service.listarLembretes('lead-1', usuario);
+
+    expect(lembretes).toHaveLength(20);
+    expect(lembretes.filter((l) => l.status === 'pendente')).toHaveLength(15);
+    // O corte no app repete o `take` de proposito (mesmo motivo do radar).
+    expect(argsDaChamada(m.leadLembrete.findMany, 0).take).toBe(20);
+    expect(argsDaChamada(m.leadLembrete.findMany, 1).take).toBe(20);
+  });
+
+  it('pede so as colunas do contrato', async () => {
+    // Sem `select` a linha inteira iria para a tela — inclusive `tenant_id`,
+    // que nao e da conta do navegador.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    await m.service.listarLembretes('lead-1', usuario);
+
+    expect(argsDaChamada(m.leadLembrete.findMany, 0).select).toEqual({
+      id: true,
+      motivo: true,
+      dito_em: true,
+      avisar_em: true,
+      origem: true,
+      status: true,
+    });
+  });
+
+  it('lead fora da visibilidade: 404 antes de consultar lembrete nenhum', async () => {
+    const m = montar();
+    m.leads.findOne.mockRejectedValue(new NotFoundException());
+
+    await expect(m.service.listarLembretes('lead-x', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leadLembrete.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('LeadInsightsService.criarLembrete', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(HOJE_UTC);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  function preparar() {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    return m;
+  }
+
+  function gravado(create: jest.Mock): Record<string, unknown> {
+    const [args] = create.mock.calls[0] as [{ data: Record<string, unknown> }];
+    return args.data;
+  }
+
+  it('grava o lembrete manual pendente com a data ancorada em Sao Paulo', async () => {
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, {
+        motivo: 'Cliente pediu retorno depois do feriado',
+        avisar_em: '2026-09-01',
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(gravado(m.leadLembrete.create)).toEqual({
+      tenant_id: 't1',
+      lead_id: 'lead-1',
+      motivo: 'Cliente pediu retorno depois do feriado',
+      // Comeco do dia em Sao Paulo: 2026-09-01T00:00Z venceria ainda no dia 31.
+      avisar_em: new Date('2026-09-01T03:00:00Z'),
+      dito_em: HOJE_UTC,
+      origem: 'manual',
+    });
+  });
+
+  it('hoje e aceito: "hoje mais tarde" e um pedido legitimo', async () => {
+    // Ao contrario do que o worker faz com o marco da IA (onde hoje quase sempre
+    // e o modelo errando o ano), aqui a data foi digitada pela pessoa.
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, { motivo: 'Ligar hoje', avisar_em: '2026-08-26' }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(gravado(m.leadLembrete.create).avisar_em).toEqual(HOJE_SP);
+  });
+
+  it('ontem e recusado com 400, sem gravar nada', async () => {
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, { motivo: 'Atrasado', avisar_em: '2026-08-25' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+  });
+
+  it('data que nao existe no calendario e recusada com 400', async () => {
+    // 31/02 passa pelo regex do Zod e o `Date.UTC` rolaria para marco em
+    // silencio: o lembrete nasceria num dia que o atendente nao escolheu.
+    const m = preparar();
+
+    await expect(
+      m.service.criarLembrete('lead-1', usuario, { motivo: 'Marco', avisar_em: '2026-02-31' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+  });
+
+  it('lead fora da visibilidade: 404 antes de gravar', async () => {
+    const m = montar();
+    m.leads.findOne.mockRejectedValue(new NotFoundException());
+
+    await expect(
+      m.service.criarLembrete('lead-x', usuario, { motivo: 'Marco', avisar_em: '2026-09-01' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(m.leadLembrete.create).not.toHaveBeenCalled();
+  });
+
+  it('sem dedupe: o manual e vontade explicita, mesmo repetindo um pendente', async () => {
+    // O dedupe existe porque o MODELO relê a mesma conversa a cada geracao.
+    // Quem digitou a data de novo sabe o que esta fazendo.
+    const m = preparar();
+
+    await m.service.criarLembrete('lead-1', usuario, {
+      motivo: 'Ligar depois da reforma',
+      avisar_em: '2026-09-01',
+    });
+
+    expect(m.leadLembrete.findMany).not.toHaveBeenCalled();
+    expect(m.leadLembrete.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LeadInsightsService — concluir/adiar/descartar lembrete', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(HOJE_UTC);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  /** Pendente do lead-1, avisando hoje. */
+  function preparar(over: Record<string, unknown> = {}) {
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findFirst.mockResolvedValue({
+      id: 'lem-1',
+      lead_id: 'lead-1',
+      avisar_em: HOJE_SP,
+      ...over,
+    });
+    return m;
+  }
+
+  function atualizacao(update: jest.Mock) {
+    const [args] = update.mock.calls[0] as [
+      { where: { id: string }; data: Record<string, unknown> },
+    ];
+    return args;
+  }
+
+  it('concluir marca feito no lembrete certo', async () => {
+    const m = preparar();
+
+    await expect(m.service.concluirLembrete('lem-1', usuario)).resolves.toEqual({ ok: true });
+
+    expect(atualizacao(m.leadLembrete.update)).toEqual({
+      where: { id: 'lem-1' },
+      data: { status: 'feito' },
+    });
+  });
+
+  it('descartar marca descartado', async () => {
+    const m = preparar();
+
+    await expect(m.service.descartarLembrete('lem-1', usuario)).resolves.toEqual({ ok: true });
+
+    expect(atualizacao(m.leadLembrete.update).data).toEqual({ status: 'descartado' });
+  });
+
+  it('adiar soma os dias mantendo a ancora de meia-noite e o status pendente', async () => {
+    const m = preparar();
+
+    await expect(m.service.adiarLembrete('lem-1', usuario, 7)).resolves.toEqual({ ok: true });
+
+    const { data } = atualizacao(m.leadLembrete.update);
+    expect(data.avisar_em).toEqual(new Date('2026-09-02T03:00:00Z'));
+    // Adiar nao resolve: o lembrete continua na fila do radar.
+    expect(data.status).toBeUndefined();
+  });
+
+  it('adiar parte da data do LEMBRETE, nao de hoje', async () => {
+    // Adiar "+1 dia" um lembrete que vence em outubro empurra para 16/10, nao
+    // para amanha — o botao adia o compromisso, nao reagenda para a semana.
+    const m = preparar({ avisar_em: new Date('2026-10-15T03:00:00Z') });
+
+    await m.service.adiarLembrete('lem-1', usuario, 1);
+
+    expect(atualizacao(m.leadLembrete.update).data.avisar_em).toEqual(
+      new Date('2026-10-16T03:00:00Z'),
+    );
+  });
+
+  it('adiar atravessa a virada do mes', async () => {
+    const m = preparar({ avisar_em: new Date('2026-08-31T03:00:00Z') });
+
+    await m.service.adiarLembrete('lem-1', usuario, 1);
+
+    expect(atualizacao(m.leadLembrete.update).data.avisar_em).toEqual(
+      new Date('2026-09-01T03:00:00Z'),
+    );
+  });
+
+  it('so pendente e resolvivel: a consulta ja recorta status e tenant', async () => {
+    const m = preparar();
+
+    await m.service.concluirLembrete('lem-1', usuario);
+
+    const [args] = m.leadLembrete.findFirst.mock.calls[0] as [
+      { where: { id: string; status: string; tenant_id: string } },
+    ];
+    // Cross-tenant morre aqui, ANTES do LeadsService: defesa em profundidade.
+    expect(args.where).toEqual({ id: 'lem-1', status: 'pendente', tenant_id: 't1' });
+  });
+
+  it('lembrete inexistente (ou ja resolvido): 404 nas tres acoes, sem update', async () => {
+    // Corrida real de duas abas: a outra ja concluiu. "Ja resolvido" e
+    // "nao existe" tem a mesma resposta de proposito — nao ha nada a fazer.
+    const m = montar();
+    m.leads.findOne.mockResolvedValue({ id: 'lead-1' });
+    m.leadLembrete.findFirst.mockResolvedValue(null);
+
+    await expect(m.service.concluirLembrete('lem-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.descartarLembrete('lem-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.adiarLembrete('lem-1', usuario, 1)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leadLembrete.update).not.toHaveBeenCalled();
+    // Nem chega a perguntar pelo lead: nao ha lead_id nenhum em maos.
+    expect(m.leads.findOne).not.toHaveBeenCalled();
+  });
+
+  it('lembrete de lead fora da visibilidade: 404 nas tres acoes, sem update', async () => {
+    // Mesmo tenant, outro operador (ou lead privado): quem decide e o
+    // LeadsService, exatamente como em aceitar/recusar etapa.
+    const m = preparar();
+    m.leads.findOne.mockRejectedValue(new NotFoundException());
+
+    await expect(m.service.concluirLembrete('lem-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.descartarLembrete('lem-1', usuario)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(m.service.adiarLembrete('lem-1', usuario, 1)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(m.leads.findOne).toHaveBeenCalledWith('lead-1', usuario);
+    expect(m.leadLembrete.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('lembretes — schemas Zod e rotas do controller', () => {
+  function montarController() {
+    const insights = {
+      listarLembretes: jest.fn().mockResolvedValue({ lembretes: [] }),
+      criarLembrete: jest.fn().mockResolvedValue({ ok: true }),
+      concluirLembrete: jest.fn().mockResolvedValue({ ok: true }),
+      descartarLembrete: jest.fn().mockResolvedValue({ ok: true }),
+      adiarLembrete: jest.fn().mockResolvedValue({ ok: true }),
+    };
+    return {
+      insights,
+      ficha: new LeadInsightsController(insights as unknown as LeadInsightsService),
+      lembretes: new LembretesController(insights as unknown as LeadInsightsService),
+    };
+  }
+  const req = { user: usuario } as unknown as Record<string, unknown>;
+
+  it('criar: o motivo chega aparado e a data no formato do contrato', async () => {
+    const { ficha, insights } = montarController();
+
+    await ficha.criarLembrete('lead-1', { motivo: '  Ligar  ', avisar_em: '2026-09-01' }, req);
+
+    expect(insights.criarLembrete).toHaveBeenCalledWith('lead-1', usuario, {
+      motivo: 'Ligar',
+      avisar_em: '2026-09-01',
+    });
+  });
+
+  it('criar: motivo em branco, motivo gigante e data torta sao recusados', () => {
+    expect(() => criarLembreteSchema.parse({ motivo: '   ', avisar_em: '2026-09-01' })).toThrow();
+    expect(() =>
+      criarLembreteSchema.parse({ motivo: 'x'.repeat(201), avisar_em: '2026-09-01' }),
+    ).toThrow();
+    expect(() => criarLembreteSchema.parse({ motivo: 'Ligar', avisar_em: '01/09/2026' })).toThrow();
+    expect(() => criarLembreteSchema.parse({ motivo: 'Ligar' })).toThrow();
+  });
+
+  it('criar: chave desconhecida no body e descartada', () => {
+    // `origem: 'ia'` vindo do navegador nao pode virar lembrete de IA.
+    expect(
+      criarLembreteSchema.parse({ motivo: 'Ligar', avisar_em: '2026-09-01', origem: 'ia' }),
+    ).toEqual({ motivo: 'Ligar', avisar_em: '2026-09-01' });
+  });
+
+  it('adiar: os tres botoes da UI passam; fora da faixa nao passa', async () => {
+    const { lembretes, insights } = montarController();
+
+    for (const dias of [1, 7, 30]) {
+      expect(adiarLembreteSchema.parse({ dias })).toEqual({ dias });
+    }
+    expect(() => adiarLembreteSchema.parse({ dias: 0 })).toThrow();
+    expect(() => adiarLembreteSchema.parse({ dias: 91 })).toThrow();
+    expect(() => adiarLembreteSchema.parse({ dias: 1.5 })).toThrow();
+    expect(() => adiarLembreteSchema.parse({})).toThrow();
+
+    await lembretes.adiar('lem-1', { dias: 7 }, req);
+    expect(insights.adiarLembrete).toHaveBeenCalledWith('lem-1', usuario, 7);
+  });
+
+  it('as tres rotas de acao repassam o id do lembrete e o usuario', async () => {
+    const { lembretes, insights } = montarController();
+
+    await lembretes.concluir('lem-1', req);
+    await lembretes.descartar('lem-2', req);
+
+    expect(insights.concluirLembrete).toHaveBeenCalledWith('lem-1', usuario);
+    expect(insights.descartarLembrete).toHaveBeenCalledWith('lem-2', usuario);
+  });
+
+  it('a lista sai pela rota da ficha, com o usuario logado', async () => {
+    const { ficha, insights } = montarController();
+
+    await ficha.listarLembretes('lead-1', req);
+
+    expect(insights.listarLembretes).toHaveBeenCalledWith('lead-1', usuario);
   });
 });
 
