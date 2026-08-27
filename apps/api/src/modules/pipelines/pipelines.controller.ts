@@ -113,13 +113,16 @@ export class PipelinesController {
   }
 
   @Delete('stages/:id')
-  @Roles(UserRole.GERENTE)
+  // Excluir etapa acompanha o criar (pedido do dono, 27/08): OPERADOR pode,
+  // nos dois caminhos (vazia aqui; com leads via delete-with-move). Editar a
+  // etapa segue GERENTE porque o PATCH carrega automacoes (SLA/cadencia).
+  @Roles(UserRole.OPERADOR)
   removeStage(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.pipelinesService.removeStage(id, req.user as AuthUser);
   }
 
   @Post('stages/:id/delete-with-move')
-  @Roles(UserRole.GERENTE)
+  @Roles(UserRole.OPERADOR)
   removeStageWithMove(
     @Param('id') id: string,
     @Body() body: unknown,
