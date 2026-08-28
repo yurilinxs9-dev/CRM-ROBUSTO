@@ -41,10 +41,11 @@ export class LeadsController {
     return this.leadsService.bulkArchive(body, req.user as AuthUser);
   }
 
-  // VISUALIZADOR nao exporta: o clamp do exportCsv so estreita o `where` de
-  // OPERADOR, entao sem este @Roles um visualizador baixava o tenant inteiro
-  // em CSV. RolesGuard e hierarquico (>=), logo OPERADOR admite OPERADOR,
-  // GERENTE e SUPER_ADMIN e barra so VISUALIZADOR.
+  // VISUALIZADOR nao exporta: e decisao de PRODUTO, tomada aqui na rota.
+  // `buildVisibilityWhere` ja recortaria o CSV dele (as proprias + a nuvem),
+  // mas quem so olha nao leva base em texto puro pra fora. RolesGuard e
+  // hierarquico (>=), logo OPERADOR admite OPERADOR, GERENTE e SUPER_ADMIN e
+  // barra so VISUALIZADOR.
   @Get('export')
   @Roles(UserRole.OPERADOR)
   exportCsv(

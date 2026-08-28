@@ -220,19 +220,17 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
     return res as unknown as Response & { setHeader: jest.Mock; send: jest.Mock };
   }
 
-  it('OPERADOR NÃO exporta a carteira do colega: o clamp resiste ao param', async () => {
+  it('OPERADOR NÃO exporta a carteira do colega: a visibilidade resiste ao param', async () => {
     const { service, prisma } = makeService();
 
     await service.exportCsv(operador, { responsavel_id: COLEGA_ID }, makeRes());
 
-    // O bug: esta linha era `where.responsavel_id = filters.responsavel_id`,
-    // sobrescrevendo o clamp de OPERADOR posto logo acima dela.
-    // O OR de privacidade entra em TODA exportação (ver suíte de privacidade
-    // abaixo); aqui ele é redundante com o clamp, mas precisa estar.
+    // O bug original: esta linha era `where.responsavel_id = filters.responsavel_id`,
+    // sobrescrevendo o clamp de OPERADOR posto logo acima dela. Hoje o recorte
+    // do param nem chega a entrar, e o que sobra é o MESMO OR do board.
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
-      responsavel_id: OPERADOR_ID,
-      OR: OR_SUPERVISAO(OPERADOR_ID),
+      OR: OR_OPERADOR(OPERADOR_ID),
     });
   });
 
@@ -241,10 +239,12 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
 
     await service.exportCsv(operador, { responsavel_id: OPERADOR_ID }, makeRes());
 
+    // Chave de topo + OR: o Prisma faz AND dos dois, então o param INTERSECTA
+    // a visibilidade (some a nuvem, sobram só as próprias).
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
       responsavel_id: OPERADOR_ID,
-      OR: OR_SUPERVISAO(OPERADOR_ID),
+      OR: OR_OPERADOR(OPERADOR_ID),
     });
   });
 
@@ -268,7 +268,7 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
 
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
-      OR: OR_SUPERVISAO(GERENTE_ID),
+      OR: OR_GERENTE_FOCO(GERENTE_ID),
     });
   });
 });
@@ -280,9 +280,12 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
  * membro", que é o mesmo caminho com `?responsavel_id=<colega>`) baixava o lead
  * PRIVADO de outra pessoa em texto puro.
  *
- * O recorte é o mesmo da supervisão: `is_private: false` OU eu sou o dono —
- * Prisma faz AND das chaves de topo com o OR, então o privado do colega cai
- * fora e o MEU privado continua entrando.
+ * O primeiro conserto grudou um OR de privacidade à mão no export. Ele fechava
+ * o vazamento do privado, mas era o OR de SUPERVISÃO para TODO mundo — o CSV do
+ * gerente em modo foco continuava sendo o tenant inteiro, mais largo que o
+ * board dele. Agora o export chama `buildVisibilityWhere`, que já carrega
+ * `is_private: false` em todos os ramos: a privacidade sai de graça e o CSV
+ * passa a ser exatamente o retrato do board.
  */
 describe('LeadsService.exportCsv — privado de outro fica fora do CSV', () => {
   function makeRes() {
@@ -316,15 +319,36 @@ describe('LeadsService.exportCsv — privado de outro fica fora do CSV', () => {
     // recorte `responsavel_id: COLEGA_ID` do topo.
   });
 
-  it('OPERADOR: o clamp da própria carteira convive com o OR (o meu privado entra)', async () => {
+  it('OPERADOR: exporta o mesmo que enxerga — as próprias (o meu privado entra) + a nuvem', async () => {
     const { service, prisma } = makeService();
 
     await service.exportCsv(operador, {}, makeRes());
 
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
-      responsavel_id: OPERADOR_ID,
-      OR: OR_SUPERVISAO(OPERADOR_ID),
+      OR: OR_OPERADOR(OPERADOR_ID),
     });
+  });
+
+  /**
+   * O finding desta rodada: com `focus_mode`, o export do gerente era o OR de
+   * supervisão (TODO não-privado do tenant) enquanto o board dele mostrava só
+   * as próprias + os sem-dono. Botão de exportar virava porta dos fundos pra
+   * supervisão de que o gerente tinha acabado de abrir mão.
+   */
+  it('GERENTE com foco: o CSV é o board focado, não o tenant inteiro', async () => {
+    const { service, prisma } = makeService();
+    prisma.user.findUnique.mockResolvedValue({ focus_mode: true });
+
+    await service.exportCsv(gerente, {}, makeRes());
+
+    const where = whereDoFindMany(prisma);
+    expect(where).toEqual({
+      tenant_id: TENANT,
+      OR: OR_GERENTE_FOCO(GERENTE_ID),
+    });
+    // Trava explícita: o ramo largo da supervisão (`is_private: false` sozinho,
+    // que casa lead de QUALQUER dono) não pode reaparecer aqui.
+    expect(where.OR).not.toContainEqual({ is_private: false });
   });
 });

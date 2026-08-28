@@ -184,10 +184,14 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
 
     // Igualdade estrita: `whatsappInstance.findFirst` devolve null por padrão,
     // então NÃO há `instancia_whatsapp` no data — se aparecer, é regressão.
+    // `is_private: false` entra junto (como em claim/moveToSector): lead que o
+    // gerente privatizou ao assumir não pode seguir escondido da supervisão
+    // debaixo do novo responsável.
     expect(dataDoUpdate(txClient.lead.update)).toEqual({
       responsavel_id: novoResponsavelId,
       assumed_at: expect.any(Date),
       returned_at: null,
+      is_private: false,
     });
   });
 

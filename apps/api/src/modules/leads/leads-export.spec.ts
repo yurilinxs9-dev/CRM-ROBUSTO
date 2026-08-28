@@ -17,9 +17,10 @@ import { EXPORT_PAGE_SIZE } from '../../common/prisma/fetch-all-by-cursor';
 function makeService() {
   const prisma: any = {
     lead: { findMany: jest.fn() },
-    // exportCsv le o modo foco do usuario para decidir se honra o param
-    // `responsavel_id` (regra do "Ver como membro"). Estes testes nao sao
-    // sobre foco: sem foco em todos eles.
+    // exportCsv monta o `where` com `buildVisibilityWhere`, que precisa do modo
+    // do tenant e do modo foco do usuario. Estes testes nao sao sobre nenhum
+    // dos dois: modo INDIVIDUAL e sem foco em todos eles.
+    tenant: { findUnique: jest.fn().mockResolvedValue({ pool_enabled: false }) },
     user: { findUnique: jest.fn().mockResolvedValue({ focus_mode: false }) },
   };
   const service = new LeadsService(
@@ -139,7 +140,12 @@ describe('LeadsService.exportCsv — pagina em lotes, sem teto silencioso', () =
 
     for (const call of prisma.lead.findMany.mock.calls) {
       expect(call[0].where.tenant_id).toBe('t1');
-      expect(call[0].where.responsavel_id).toBe('u-op');
+      // Escopo do OPERADOR agora vem de `buildVisibilityWhere`: as proprias
+      // mais a nuvem de devolvidos, o mesmo recorte do board.
+      expect(call[0].where.OR).toEqual([
+        { responsavel_id: 'u-op' },
+        { responsavel_id: null, returned_at: { not: null }, is_private: false },
+      ]);
       expect(call[0].where.temperatura).toBe('QUENTE');
     }
   });

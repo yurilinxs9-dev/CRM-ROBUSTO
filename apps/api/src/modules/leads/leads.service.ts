@@ -1503,6 +1503,10 @@ export class LeadsService {
           assumed_at: new Date(),
           // Lead com dono novo não é mais lead devolvido — sai da nuvem.
           returned_at: null,
+          // Privacidade é do DONO, não do lead: um gerente que privatizou ao
+          // assumir não pode deixar o lead escondido da supervisão embaixo do
+          // novo responsável. Mesma limpeza que claim/moveToSector já fazem.
+          is_private: false,
           ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
         },
         select: { id: true, nome: true },
@@ -1859,22 +1863,41 @@ export class LeadsService {
   async exportCsv(user: AuthUser, filters: ExportLeadFilters, res: Response): Promise<void> {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    const me = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: { focus_mode: true },
-    });
+    // MESMA visibilidade da listagem: o CSV é um retrato do board, então usa a
+    // regra canônica em vez de uma versão à mão. Antes daqui o export tinha um
+    // clamp só de OPERADOR + um OR de privacidade, o que dava ao gerente EM
+    // MODO FOCO um CSV mais largo que o board dele (todos os não-privados do
+    // tenant, e não só os próprios + os sem-dono).
+    const [tenant, me] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        select: { pool_enabled: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const poolEnabled = Boolean(tenant?.pool_enabled);
     const focusMode = Boolean(me?.focus_mode);
-
-    if (user.role === UserRole.OPERADOR) {
-      where.responsavel_id = user.id;
-    }
+    // Sem `scope`: o CSV é o recorte de lista/Kanban, não o do chat.
+    Object.assign(
+      where,
+      buildVisibilityWhere({
+        userId: user.id,
+        role: user.role as UserRole,
+        poolEnabled,
+        focusMode,
+      }),
+    );
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
     // Mesma regra do "Ver como" da listagem: auto-filtro sempre pode (só
     // estreita), recorte por OUTRO responsável só gerente supervisionando.
-    // Antes disto esta linha sobrescrevia o clamp de OPERADOR logo acima e o
-    // operador exportava a carteira do colega com ?responsavel_id=<id-dele>.
+    // Chave de topo: o Prisma faz AND dela com o OR de visibilidade, então o
+    // recorte INTERSECTA a visibilidade em vez de substituí-la (o furo antigo,
+    // em que o param sobrescrevia o clamp do OPERADOR).
     if (
       filters.responsavel_id &&
       (filters.responsavel_id === user.id ||
@@ -1890,13 +1913,11 @@ export class LeadsService {
       where.created_at = createdAt;
     }
 
-    // Lead privado continua regra suprema: nem gerente supervisionando, nem o
-    // "Ver como membro" (?responsavel_id=<colega>) leva o privado dos outros
-    // pro CSV — mesma condicao que `buildVisibilityWhere` aplica na listagem.
-    // Merge pelo helper de OR: hoje o `where` acima e plano, mas se algum
-    // filtro passar a montar um OR os dois viram AND em vez de um sobrescrever
-    // o outro e furar a privacidade.
-    mergeSearchCondition(where, [{ is_private: false }, { responsavel_id: user.id }]);
+    // Lead privado continua regra suprema — mas isso já vem de dentro de
+    // `buildVisibilityWhere` (todo ramo carrega `is_private: false`). O OR de
+    // privacidade solto que existia aqui foi REMOVIDO: além de duplicar a
+    // regra, ele era o OR de SUPERVISÃO, e por isso alargava o export do
+    // gerente em modo foco de volta pro tenant inteiro.
 
     // Le TODOS os leads do filtro paginando por cursor. Antes era um unico
     // findMany com take: 10000 — tenant acima disso baixava CSV incompleto
