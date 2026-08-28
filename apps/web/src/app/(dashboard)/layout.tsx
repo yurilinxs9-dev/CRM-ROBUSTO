@@ -84,6 +84,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               avatar_url: u.avatar_url,
               is_platform_admin: u.is_platform_admin,
               platform_scopes: u.platform_scopes,
+              focus_mode: u.focus_mode ?? false,
             });
           } else {
             updateUser({
@@ -91,6 +92,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               platform_scopes: u.platform_scopes,
               nome: u.nome,
               avatar_url: u.avatar_url,
+              // O servidor é a fonte da verdade do modo foco: sem isto, ligar o
+              // foco num device deixa os outros com o store em false e o board
+              // já filtrado — o menu ofereceria "entrar" e o toggle viraria no-op.
+              focus_mode: u.focus_mode ?? false,
             });
           }
         }
