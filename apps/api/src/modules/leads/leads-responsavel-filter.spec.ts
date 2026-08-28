@@ -108,6 +108,12 @@ const OR_GERENTE_FOCO = (userId: string) => [
   { responsavel_id: null, is_private: false },
 ];
 
+/** Modo COMPARTILHADO, quem não supervisiona: o pool aberto + as próprias. */
+const OR_POOL = (userId: string) => [
+  { responsavel_id: null, is_private: false },
+  { responsavel_id: userId },
+];
+
 function whereDoFindMany(prisma: PrismaMock): Record<string, unknown> {
   expect(prisma.lead.findMany).toHaveBeenCalledTimes(1);
   const args = prisma.lead.findMany.mock.calls[0][0] as { where: Record<string, unknown> };
@@ -350,5 +356,24 @@ describe('LeadsService.exportCsv — privado de outro fica fora do CSV', () => {
     // Trava explícita: o ramo largo da supervisão (`is_private: false` sozinho,
     // que casa lead de QUALQUER dono) não pode reaparecer aqui.
     expect(where.OR).not.toContainEqual({ is_private: false });
+  });
+
+  /**
+   * O resto desta suíte roda em modo INDIVIDUAL. Como `pool_enabled` virou
+   * entrada VIVA do `where` do export (antes o export nem lia o modo do
+   * tenant), o modo COMPARTILHADO precisa de pelo menos uma trava: o CSV do
+   * operador tem que trazer o pool aberto junto das próprias — e não o recorte
+   * individual, que esconderia o pool dele.
+   */
+  it('modo COMPARTILHADO: o CSV do OPERADOR traz o pool aberto + as próprias', async () => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findUnique.mockResolvedValue({ pool_enabled: true });
+
+    await service.exportCsv(operador, {}, makeRes());
+
+    expect(whereDoFindMany(prisma)).toEqual({
+      tenant_id: TENANT,
+      OR: OR_POOL(OPERADOR_ID),
+    });
   });
 });

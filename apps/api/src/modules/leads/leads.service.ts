@@ -1503,9 +1503,11 @@ export class LeadsService {
           assumed_at: new Date(),
           // Lead com dono novo não é mais lead devolvido — sai da nuvem.
           returned_at: null,
-          // Privacidade é do DONO, não do lead: um gerente que privatizou ao
-          // assumir não pode deixar o lead escondido da supervisão embaixo do
-          // novo responsável. Mesma limpeza que claim/moveToSector já fazem.
+          // Desfaz a privacidade que o claim de GERENTE pôs (lá é
+          // `is_private: isManagerClaim` — o claim é justamente quem cria o
+          // lead privado que esta linha limpa): privacidade é do DONO, não do
+          // lead, e não pode sobreviver à troca de responsável escondendo o
+          // lead da supervisão. Alinhado com moveToSector/returnToPool.
           is_private: false,
           ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
         },
@@ -1880,7 +1882,11 @@ export class LeadsService {
     ]);
     const poolEnabled = Boolean(tenant?.pool_enabled);
     const focusMode = Boolean(me?.focus_mode);
-    // Sem `scope`: o CSV é o recorte de lista/Kanban, não o do chat.
+    // Sem `scope`, de propósito e por dois motivos: o CSV é o recorte de
+    // lista/Kanban (não o do chat) E o guard de `responsavel_id` logo abaixo
+    // escreve numa chave de topo, contando que o helper só devolva `OR` —
+    // `scope: 'chat'` faria ele emitir `responsavel_id` no topo e uma das duas
+    // escritas venceria a outra em silêncio.
     Object.assign(
       where,
       buildVisibilityWhere({
