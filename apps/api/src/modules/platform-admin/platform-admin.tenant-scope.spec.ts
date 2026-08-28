@@ -385,14 +385,22 @@ describe('deleteUser — usuário do tenant protegido', () => {
     expect(prisma.user.delete).toHaveBeenCalled();
   });
 
-  it('os leads do usuário apagado vão pra NUVEM (returned_at carimbado)', async () => {
+  it('os leads do usuário apagado vão pra NUVEM visível (carimbo + is_private false)', async () => {
     // Task 5: desvincular sem carimbar deixaria os leads sem dono E fora da
     // nuvem — invisíveis pra qualquer operador em modo foco, ou seja, perdidos.
+    // Carimbar mas manter `is_private: true` (lead que um gerente tinha
+    // assumido) dá no mesmo: a cláusula da nuvem exige `is_private: false`.
+    // Mesma forma de dados do returnToPool.
     const { svc, prisma } = makeService();
     await svc.deleteUser(RESTRITO, USER_COMUM);
     expect(prisma.lead.updateMany).toHaveBeenCalledWith({
       where: { responsavel_id: USER_COMUM },
-      data: { responsavel_id: null, returned_at: expect.any(Date) },
+      data: {
+        responsavel_id: null,
+        assumed_at: null,
+        is_private: false,
+        returned_at: expect.any(Date),
+      },
     });
   });
 });

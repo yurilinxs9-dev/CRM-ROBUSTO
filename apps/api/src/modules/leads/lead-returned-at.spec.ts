@@ -1,4 +1,4 @@
-import { LeadsService } from './leads.service';
+import { LeadsService, patchDaNuvem } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
@@ -176,8 +176,11 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
 
     await service.reassign('lead-1', { novoResponsavelId }, gerente);
 
-    expect(dataDoUpdate(txClient.lead.update)).toMatchObject({
+    // Igualdade estrita: `whatsappInstance.findFirst` devolve null por padrão,
+    // então NÃO há `instancia_whatsapp` no data — se aparecer, é regressão.
+    expect(dataDoUpdate(txClient.lead.update)).toEqual({
       responsavel_id: novoResponsavelId,
+      assumed_at: expect.any(Date),
       returned_at: null,
     });
   });
@@ -199,8 +202,11 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
       gerente,
     );
 
-    expect(dataDoUpdate(txClient.lead.update)).toMatchObject({
+    // Idem: sem instância própria do agente, o data é exatamente este.
+    expect(dataDoUpdate(txClient.lead.update)).toEqual({
       responsavel_id: agente,
+      assumed_at: expect.any(Date),
+      is_private: false,
       returned_at: null,
     });
   });
@@ -245,6 +251,31 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
     });
   });
 
+  it('update com responsavel_id null é ignorado pelo schema (devolver é botão, não PATCH)', async () => {
+    // `vazioComoAusente` transforma null em undefined: a ficha manda o campo
+    // sempre, e vazio significa "não mexe no responsável". Este caso trava esse
+    // contrato — se ele mudar, o ramo de devolução do `patchDaNuvem` (testado
+    // logo abaixo) é que passa a valer, e nunca a limpeza silenciosa do carimbo.
+    const { service, txClient, prisma } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      responsavel_id: 'u-alex',
+      nome: 'Cliente',
+      telefone: '5511900000000',
+      email: null,
+      temperatura: 'FRIO',
+      valor_estimado: null,
+      empresa: null,
+      cargo: null,
+      tags: [],
+      dados_custom: null,
+    });
+
+    await service.update('lead-1', { responsavel_id: null, tags: ['vip'] }, gerente);
+
+    expect(dataDoUpdate(txClient.lead.update)).toEqual({ tags: ['vip'] });
+  });
+
   it('update sem mexer no responsável NÃO toca em returned_at', async () => {
     const { service, txClient, prisma } = makeService();
     prisma.lead.findFirst.mockResolvedValue({
@@ -264,5 +295,26 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
     await service.update('lead-1', { nome: 'Cliente Novo' }, gerente);
 
     expect(dataDoUpdate(txClient.lead.update)).toEqual({ nome: 'Cliente Novo' });
+  });
+});
+
+/**
+ * O ramo `null` do `patchDaNuvem` é inalcançável pela ficha hoje (o schema come
+ * o null antes), então ele é testado direto: é ele que garante que, no dia em
+ * que uma devolução por PATCH existir, ela CARIMBE em vez de limpar o carimbo —
+ * e que não deixe o lead privado, que é o mesmo furo do `deleteUser` e do
+ * espelho de conversa órfã.
+ */
+describe('patchDaNuvem — os dois lados da invariante', () => {
+  it('com dono: só limpa o carimbo', () => {
+    expect(patchDaNuvem('u-alex')).toEqual({ returned_at: null });
+  });
+
+  it('sem dono: carimba, libera privacidade e zera o corte de histórico', () => {
+    expect(patchDaNuvem(null)).toEqual({
+      returned_at: expect.any(Date),
+      is_private: false,
+      assumed_at: null,
+    });
   });
 });

@@ -157,6 +157,33 @@ const roleHierarchy: Record<string, number> = {
   VISUALIZADOR: 1,
 };
 
+/** Ver `patchDaNuvem`. */
+export type PatchDaNuvem =
+  | { returned_at: null }
+  | { returned_at: Date; is_private: false; assumed_at: null };
+
+/**
+ * Fragmento de escrita que preserva a invariante da nuvem de devolvidos
+ * (`returned_at != null` ⇔ lead sem dono, esperando na nuvem) em qualquer
+ * caminho que grave `Lead.responsavel_id`.
+ *
+ * - Dono novo → sai da nuvem (`returned_at: null`).
+ * - Sem dono → é DEVOLUÇÃO: carimba a hora, libera a privacidade e zera o
+ *   corte de histórico. Só carimbar não basta: a cláusula da nuvem em
+ *   `lead-visibility.ts` exige `is_private: false`, então um lead privado e sem
+ *   dono ficaria invisível pra todo mundo — nem o pool nem a supervisão o pegam.
+ *
+ * Existe como função exportada por causa do ramo `null`: hoje o
+ * `updateLeadSchema` trata null como "não mexe no responsável", então esse ramo
+ * é inalcançável pela ficha — é defesa pra quando/se o schema aceitar devolução
+ * por PATCH. Os dois ramos são testados aqui direto.
+ */
+export function patchDaNuvem(responsavelId: string | null): PatchDaNuvem {
+  return responsavelId === null
+    ? { returned_at: new Date(), is_private: false, assumed_at: null }
+    : { returned_at: null };
+}
+
 interface LeadFilters {
   pipeline_id?: string;
   estagio_id?: string;
@@ -1024,12 +1051,15 @@ export class LeadsService {
       }
     }
 
-    // Dar dono ao lead pela ficha também o tira da nuvem de devolvidos
-    // (invariante: `returned_at != null` ⇔ lead sem dono, esperando na nuvem).
-    // Entra DEPOIS do diff de campos alterados de propósito: é consequência
-    // mecânica da atribuição, não uma edição do usuário — no log de atividade
-    // apareceria como "returned_at atualizado(s)" sem significar nada pra quem lê.
-    if (updateData.responsavel_id !== undefined) updateData.returned_at = null;
+    // Mexeu no responsável pela ficha → aplica a invariante da nuvem (dono novo
+    // sai da nuvem; sem dono é devolução, com carimbo e privacidade liberada —
+    // ver `patchDaNuvem`). Entra DEPOIS do diff de campos alterados de
+    // propósito: é consequência mecânica da atribuição, não uma edição do
+    // usuário — no log de atividade apareceria como "returned_at atualizado(s)"
+    // sem significar nada pra quem lê.
+    if (parsed.responsavel_id !== undefined) {
+      Object.assign(updateData, patchDaNuvem(parsed.responsavel_id));
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.lead.update({

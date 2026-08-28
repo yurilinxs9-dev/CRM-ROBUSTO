@@ -140,15 +140,25 @@ export class ConversationService {
             // Espelhar um dono é uma atribuição como qualquer outra: lead com
             // dono não fica na nuvem de devolvidos (`returned_at != null` ⇔
             // está na nuvem).
-            ...(patch.responsavel_id !== null ? { returned_at: null } : {}),
+            //
+            // Sem dono, o espelho é uma DEVOLUÇÃO: além do carimbo (abaixo),
+            // precisa liberar a privacidade e zerar o corte de histórico. Lead
+            // privado e sem dono não aparece nem na cláusula da nuvem
+            // (`is_private: false`) nem na de supervisão — some pra todo mundo.
+            // Estes dois vão no update INCONDICIONAL de propósito: um lead
+            // órfão pela segunda vez já está carimbado, e mesmo assim não pode
+            // continuar privado.
+            ...(patch.responsavel_id !== null
+              ? { returned_at: null }
+              : { is_private: false, assumed_at: null }),
           },
         });
 
-        // Espelho SEM dono: o lead volta pro pool, e no modo foco só é visível
-        // se estiver carimbado. O `updateMany` condicional carimba apenas quem
-        // ainda não estava na nuvem — a devolução original (returnToPool /
-        // setor sem agente) já gravou a hora certa, e reescrevê-la a cada
-        // mensagem do cliente faria "devolvido há X" mentir.
+        // O carimbo, esse sim, é condicional: a devolução original
+        // (returnToPool / setor sem agente / usuário apagado) já gravou a hora
+        // certa, e reescrevê-la a cada mensagem do cliente faria "devolvido há
+        // X" mentir. Só entra quem ainda não estava na nuvem. É a única parte
+        // que precisa de escrita separada — daí as duas statements.
         if (patch.responsavel_id === null) {
           await tx.lead.updateMany({
             where: { id: leadId, returned_at: null },

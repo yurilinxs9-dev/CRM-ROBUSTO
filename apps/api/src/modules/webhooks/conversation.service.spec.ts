@@ -125,7 +125,7 @@ describe('ConversationService.syncLeadFromActive', () => {
     expect(prisma.lead.updateMany).not.toHaveBeenCalled();
   });
 
-  it('espelho de conversa SEM dono carimba returned_at (lead sem dono precisa estar na nuvem)', async () => {
+  it('espelho de conversa SEM dono devolve o lead pra nuvem: carimba, libera privacidade e zera assumed_at', async () => {
     const { service, prisma } = makeService();
     prisma.conversation.findMany.mockResolvedValue([
       {
@@ -138,9 +138,18 @@ describe('ConversationService.syncLeadFromActive', () => {
 
     await service.syncLeadFromActive('lead-1');
 
+    // `is_private: false` no update INCONDICIONAL (não junto do carimbo): um
+    // lead órfão pela segunda vez já está carimbado e mesmo assim não pode
+    // continuar privado — privado + sem dono não casa com nenhuma cláusula de
+    // visibilidade, o lead sumiria pra todo mundo.
     expect(prisma.lead.update).toHaveBeenCalledWith({
       where: { id: 'lead-1' },
-      data: { responsavel_id: null, instancia_whatsapp: 'inst-a' },
+      data: {
+        responsavel_id: null,
+        instancia_whatsapp: 'inst-a',
+        is_private: false,
+        assumed_at: null,
+      },
     });
     // Condicional em `returned_at: null`: preserva o carimbo da devolução que
     // criou esse estado em vez de reescrever a hora a cada mensagem do cliente.

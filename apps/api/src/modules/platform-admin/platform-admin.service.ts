@@ -457,11 +457,19 @@ export class PlatformAdminService {
     }
     // Desvincula referências que bloqueiam o delete (leads/mensagens ficam, sem responsável).
     await this.prisma.$transaction([
-      // Devolução automática: sem o carimbo os leads ficariam sem dono E fora
-      // da nuvem — invisíveis pra quem trabalha em modo foco.
+      // Devolução automática, com a MESMA forma do returnToPool: carimbo pra
+      // entrar na nuvem, `is_private: false` pra ela ser visível de fato (lead
+      // privado de um gerente apagado ficaria carimbado e ainda assim
+      // invisível pra todo mundo) e `assumed_at: null` pra quem pegar depois
+      // não herdar o corte de histórico do dono que não existe mais.
       this.prisma.lead.updateMany({
         where: { responsavel_id: userId },
-        data: { responsavel_id: null, returned_at: new Date() },
+        data: {
+          responsavel_id: null,
+          assumed_at: null,
+          is_private: false,
+          returned_at: new Date(),
+        },
       }),
       this.prisma.message.updateMany({ where: { sent_by_user_id: userId }, data: { sent_by_user_id: null } }),
       this.prisma.message.updateMany({ where: { visible_to_user_id: userId }, data: { visible_to_user_id: null } }),
