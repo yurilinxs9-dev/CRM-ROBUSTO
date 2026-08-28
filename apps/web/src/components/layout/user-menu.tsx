@@ -1,7 +1,9 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { LogOut, User as UserIcon } from 'lucide-react';
+import { Crosshair, LogOut, User as UserIcon } from 'lucide-react';
+import { toast } from 'sonner';
+import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -29,9 +31,27 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
   const role = user?.role ?? '';
   const initial = name.charAt(0).toUpperCase();
 
+  const isManager = role === 'GERENTE' || role === 'SUPER_ADMIN';
+  const focusMode = user?.focus_mode ?? false;
+
   const handleLogout = () => {
     logout();
     router.push('/login');
+  };
+
+  const toggleFocusMode = async () => {
+    try {
+      await api.patch('/api/users/me', { focus_mode: !focusMode });
+      useAuthStore.getState().updateUser({ focus_mode: !focusMode });
+      toast.success(
+        !focusMode
+          ? 'Modo foco ligado: você vê seus leads e os sem dono.'
+          : 'Modo foco desligado: visão completa de volta.',
+      );
+      window.location.reload();
+    } catch {
+      toast.error('Não deu para salvar o modo foco.');
+    }
   };
 
   return (
@@ -86,6 +106,12 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
           <UserIcon className="mr-2 h-4 w-4" />
           Perfil
         </DropdownMenuItem>
+        {isManager && (
+          <DropdownMenuItem onClick={toggleFocusMode}>
+            <Crosshair className="mr-2 h-4 w-4" />
+            {focusMode ? 'Sair do modo foco' : 'Entrar em modo foco'}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
           <LogOut className="mr-2 h-4 w-4" />
