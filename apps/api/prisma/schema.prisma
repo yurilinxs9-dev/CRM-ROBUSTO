@@ -159,6 +159,9 @@ model User {
   /// proteção do tenant do master, então o admin restrito recebe a lista
   /// nomeada inteira em vez do coringa.
   platform_scopes   String[]           @default([])
+  /// Modo foco: gerente/admin enxerga como operador (só os próprios leads +
+  /// sem-dono para distribuir). Só afeta SELECT; permissões de escrita intactas.
+  focus_mode        Boolean            @default(false)
   tenant_id         String
   tenant            Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
   // F-01: setor do colaborador. Nullable na migration p/ backfill; depois NOT NULL.
@@ -407,6 +410,10 @@ model Lead {
 
   assumed_at DateTime?
   is_private Boolean   @default(false)
+
+  /// Carimbo de devolução ao pool ("nuvem"). Preenchido: qualquer membro vê e
+  /// pode assumir no modo individual. Limpo em claim/reassign/atribuição.
+  returned_at    DateTime?
 
   // F-03: trava da IA na conversa. Setado TRUE quando uma mensagem 'user'
   // (humano) é enviada. A IA checa este flag antes de responder. Só humano/admin
