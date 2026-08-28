@@ -8,6 +8,15 @@ import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; ia_ajusta_temperatura?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
 
@@ -32,6 +41,9 @@ export function GeneralTab() {
   const tenant = useAuthStore((s) => s.tenant);
   const setTenant = useAuthStore((s) => s.setTenant);
   const [isPending, setIsPending] = useState(false);
+  // Trocar o modelo de atendimento muda a visibilidade de todo o workspace —
+  // pede confirmação antes de chamar a API. `null` = nenhum diálogo aberto.
+  const [pendingMode, setPendingMode] = useState<boolean | null>(null);
 
   // Conta instâncias open por dono pra detectar config inconsistente:
   // Atendimento Compartilhado (pool_enabled=true) com 2+ números de
@@ -223,7 +235,7 @@ export function GeneralTab() {
           </div>
           <Switch
             checked={tenant.pool_enabled}
-            onCheckedChange={handlePoolToggle}
+            onCheckedChange={(checked) => setPendingMode(checked)}
             disabled={isPending}
             aria-label="Modelo de atendimento"
           />
@@ -389,6 +401,40 @@ export function GeneralTab() {
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={pendingMode !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingMode(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingMode ? 'Mudar para Atendimento Compartilhado?' : 'Mudar para Atendimento Individual?'}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingMode
+                ? 'Todos os membros passarão a ver todos os cards e conversas do workspace. Leads sem dono ficam no pool, visíveis para qualquer um assumir.'
+                : 'Cada membro passará a ver apenas os próprios cards e apenas as conversas das suas instâncias. Leads sem dono ficam visíveis só para admin/gerente distribuir; leads devolvidos vão para a nuvem, onde qualquer um pode assumir.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingMode(null)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                const alvo = pendingMode;
+                setPendingMode(null);
+                if (alvo !== null) void handlePoolToggle(alvo);
+              }}
+            >
+              Confirmar mudança
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
