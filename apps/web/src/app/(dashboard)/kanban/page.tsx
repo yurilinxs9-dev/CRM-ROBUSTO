@@ -112,7 +112,15 @@ export default function KanbanPage() {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const userRole = useAuthStore((s) => s.user?.role);
   const isOperador = userRole === 'OPERADOR';
+  const focusMode = useAuthStore((s) => s.user?.focus_mode ?? false);
   const isPoolEnabled = useIsPoolEnabled();
+  // "Ver como [membro]": só para quem de fato supervisiona. O backend
+  // (leads.service `findAll`) ignora `responsavel_id` de TERCEIRO para operador
+  // e para gerente em modo foco — quem abriu mão da supervisão não recorta o
+  // board de ninguém. Sem este gate o select existiria como controle morto:
+  // trocar o valor não mudaria um card na tela.
+  const isManager = userRole === 'GERENTE' || userRole === 'SUPER_ADMIN';
+  const showViewAs = isManager && !focusMode;
   const [activeTab, setActiveTab] = useState<'escritorio' | 'meus'>(() => {
     try { return (localStorage.getItem('kanban-tab') as 'escritorio' | 'meus') ?? 'meus'; }
     catch { return 'meus'; }
@@ -135,7 +143,9 @@ export default function KanbanPage() {
   const [activePipelineId, setActivePipelineId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [tempFilter, setTempFilter] = useState<Temperatura | 'ALL'>('ALL');
-  const [responsavelFilter, setResponsavelFilter] = useState<string>('ALL');
+  // 'ALL' é o sentinela de "todos": o Select do Radix não aceita item com valor
+  // string vazia, então a ausência de recorte precisa de um valor próprio.
+  const [viewAsUserId, setViewAsUserId] = useState<string>('ALL');
   const [activeDragLead, setActiveDragLead] = useState<Lead | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [defaultStageId, setDefaultStageId] = useState<string | null>(null);
@@ -286,6 +296,12 @@ export default function KanbanPage() {
     return () => clearTimeout(t);
   }, [searchTerm]);
 
+  // Recorte de fato aplicado no "Ver como". Deriva do gate, e não só do estado:
+  // se o controle não está à mostra (gerente ligou o modo foco com um membro já
+  // escolhido), o `responsavel_id` sai da query junto — em vez de ficar órfão,
+  // ignorado pelo backend mas ainda sujando a chave de cache.
+  const viewAsApplied = showViewAs ? viewAsUserId : 'ALL';
+
   // Aba / temperatura / responsável: até aqui recortavam no CLIENTE o que já
   // tinha sido baixado, e por isso o número no topo da coluna (que vem do
   // servidor, sobre o board inteiro) não batia com os cards à vista — 103 em
@@ -295,16 +311,16 @@ export default function KanbanPage() {
     const p: Record<string, string> = {};
     if (searchAplicado) p.search = searchAplicado;
     if (tempFilter !== 'ALL') p.temperatura = tempFilter;
-    if (responsavelFilter !== 'ALL') {
+    if (viewAsApplied !== 'ALL') {
       // O dropdown sobrepõe as abas — gestor olhando o kanban de um operador vê
       // os leads dele inteiros, sem recorte de "meus"/"escritório".
-      p.responsavel_id = responsavelFilter;
+      p.responsavel_id = viewAsApplied;
     } else if (isPoolEnabled) {
       // Operador não tem aba "Escritório" — sempre vê só os próprios.
       p.owner = isOperador || activeTab === 'meus' ? 'me' : 'others';
     }
     return p;
-  }, [searchAplicado, tempFilter, responsavelFilter, isPoolEnabled, isOperador, activeTab]);
+  }, [searchAplicado, tempFilter, viewAsApplied, isPoolEnabled, isOperador, activeTab]);
 
   // A ordenação da view vale no board como RECORTE: o backend a aplica DENTRO
   // da janela de cada coluna, então o top-50 que chega é o começo da ordem
@@ -426,6 +442,15 @@ export default function KanbanPage() {
       .map((u) => [u.id, u.nome] as [string, string])
       .sort((a, b) => a[1].localeCompare(b[1]));
   }, [tenantUsers]);
+
+  // O gatilho fechado mostra "Ver como: Fulano" (e não só "Fulano"): sem o
+  // prefixo, um board recortado passa por board inteiro à primeira vista.
+  // Dentro da lista o prefixo seria ruído repetido em toda linha.
+  const viewAsLabel = useMemo(() => {
+    if (viewAsApplied === 'ALL') return 'Ver como: todos';
+    const alvo = responsaveis.find(([id]) => id === viewAsApplied);
+    return alvo ? `Ver como: ${alvo[1]}` : 'Ver como: todos';
+  }, [viewAsApplied, responsaveis]);
 
   // --- Metrics ---
   // Agregados vêm do servidor (stage_counts/stage_values) — exatos mesmo com
@@ -837,7 +862,7 @@ export default function KanbanPage() {
     const params = new URLSearchParams();
     if (activePipelineId) params.set('pipeline_id', activePipelineId);
     if (tempFilter !== 'ALL') params.set('temperatura', tempFilter);
-    if (responsavelFilter !== 'ALL') params.set('responsavel_id', responsavelFilter);
+    if (viewAsApplied !== 'ALL') params.set('responsavel_id', viewAsApplied);
     const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
     try {
       const response = await fetch(`/api/leads/export?${params.toString()}`, {
@@ -854,7 +879,7 @@ export default function KanbanPage() {
     } catch {
       toast.error('Erro ao exportar leads.');
     }
-  }, [activePipelineId, tempFilter, responsavelFilter]);
+  }, [activePipelineId, tempFilter, viewAsApplied]);
 
   // --- Stage handlers ---
   const handleRenameStage = useCallback(
@@ -1034,13 +1059,17 @@ export default function KanbanPage() {
             ))}
           </SelectContent>
         </Select>
-        {responsaveis.length > 0 && (
-          <Select value={responsavelFilter} onValueChange={setResponsavelFilter}>
-            <SelectTrigger className="h-9 w-44">
-              <SelectValue />
+        {showViewAs && responsaveis.length > 0 && (
+          <Select value={viewAsUserId} onValueChange={setViewAsUserId}>
+            <SelectTrigger
+              className="h-9 w-52"
+              aria-label="Ver como membro"
+              title="Ver o board como um membro da equipe"
+            >
+              <SelectValue>{viewAsLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="ALL">Todos responsaveis</SelectItem>
+              <SelectItem value="ALL">Ver como: todos</SelectItem>
               {responsaveis.map(([id, nome]) => (
                 <SelectItem key={id} value={id}>
                   {nome}
