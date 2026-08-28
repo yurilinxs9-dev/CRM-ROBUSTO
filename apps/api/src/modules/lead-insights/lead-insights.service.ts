@@ -1226,6 +1226,10 @@ export class LeadInsightsService {
         userId: user.id,
         role: user.role as UserRole,
         poolEnabled: Boolean(tenant?.pool_enabled),
+        // Radar e supervisao, nao distribuicao: quem nao e manager ve so a
+        // propria carteira (a nuvem de devolvidos fica fora — lead sem dono
+        // nao e tarefa de ninguem) e o modo foco do gerente nao entra aqui.
+        scope: 'radar',
       }),
     );
     // Base das filas de trabalho: negocio fechado ou morto nao e tarefa.

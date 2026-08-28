@@ -21,7 +21,10 @@ export interface VisibilityInput {
   userId: string;
   role: UserRole;
   poolEnabled: boolean;
-  /** 'chat' restringe TODO role aos próprios no modo individual. */
+  /**
+   * 'chat' restringe TODO role aos próprios no modo individual.
+   * 'radar' restringe só quem NÃO é manager (gerente segue supervisionando).
+   */
   scope?: string;
   /** Gerente+ com modo foco: enxerga como operador, mais os sem-dono p/ distribuir. */
   focusMode?: boolean;
@@ -52,9 +55,12 @@ export function buildVisibilityWhere(input: VisibilityInput): LeadWhere {
   }
 
   // INDIVIDUAL
-  if (scope === 'chat') {
+  if (scope === 'chat' || (scope === 'radar' && !isManagerRole(role))) {
     // Anti-leak Cajuru: no chat todo mundo vê só as próprias conversas —
     // supervisão global (e nuvem) só no Kanban/lista.
+    // 'radar': insights de SUPERVISÃO da própria carteira — a nuvem fica fora
+    // (lead sem dono não é tarefa de ninguém) e o foco do gerente
+    // deliberadamente NÃO afeta o Radar, que segue mostrando o time inteiro.
     where.responsavel_id = userId;
     return where;
   }

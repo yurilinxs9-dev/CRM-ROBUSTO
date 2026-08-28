@@ -154,20 +154,66 @@ describe('buildVisibilityWhere — modo foco (gerente vira operador)', () => {
     });
   });
 
-  it('foco NÃO muda nada para operador', () => {
-    const comFoco = buildVisibilityWhere({
+  it('foco NÃO muda nada para quem não é manager (operador e visualizador)', () => {
+    for (const role of [UserRole.OPERADOR, UserRole.VISUALIZADOR]) {
+      const comFoco = buildVisibilityWhere({
+        userId: 'o1',
+        role,
+        poolEnabled: false,
+        focusMode: true,
+      });
+      const semFoco = buildVisibilityWhere({
+        userId: 'o1',
+        role,
+        poolEnabled: false,
+        focusMode: false,
+      });
+      expect(comFoco).toEqual(semFoco);
+    }
+  });
+});
+
+describe('buildVisibilityWhere — scope=radar (insights de supervisão)', () => {
+  it('operador no radar fica estrito nos próprios — a nuvem fica de fora', () => {
+    const where = buildVisibilityWhere({
       userId: 'o1',
       role: UserRole.OPERADOR,
       poolEnabled: false,
-      focusMode: true,
+      scope: 'radar',
     });
-    const semFoco = buildVisibilityWhere({
+    expect(where).toEqual({ responsavel_id: 'o1' });
+  });
+
+  it('visualizador no radar também fica estrito nos próprios', () => {
+    const where = buildVisibilityWhere({
+      userId: 'v1',
+      role: UserRole.VISUALIZADOR,
+      poolEnabled: false,
+      scope: 'radar',
+    });
+    expect(where).toEqual({ responsavel_id: 'v1' });
+  });
+
+  it('gerente no radar mantém a supervisão completa (diferente do scope=chat)', () => {
+    const where = buildVisibilityWhere({
+      userId: 'g1',
+      role: UserRole.GERENTE,
+      poolEnabled: false,
+      scope: 'radar',
+    });
+    expect(where).toEqual({ OR: [{ is_private: false }, { responsavel_id: 'g1' }] });
+  });
+
+  it('radar no COMPARTILHADO segue a regra do pool, sem recorte extra', () => {
+    const where = buildVisibilityWhere({
       userId: 'o1',
       role: UserRole.OPERADOR,
-      poolEnabled: false,
-      focusMode: false,
+      poolEnabled: true,
+      scope: 'radar',
     });
-    expect(comFoco).toEqual(semFoco);
+    expect(where).toEqual({
+      OR: [{ responsavel_id: null, is_private: false }, { responsavel_id: 'o1' }],
+    });
   });
 });
 
