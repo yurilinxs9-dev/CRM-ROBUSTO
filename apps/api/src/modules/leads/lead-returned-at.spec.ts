@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { LeadsService, patchDaNuvem } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -51,6 +52,9 @@ function makeMocks() {
       findFirst: jest.fn(),
     },
     whatsappInstance: { findFirst: jest.fn().mockResolvedValue(null) },
+    // Modo do tenant lido pelo claim. Default compartilhado (pool_enabled=true)
+    // = comportamento antigo; a suíte do modo individual sobrescreve.
+    tenant: { findFirst: jest.fn().mockResolvedValue({ pool_enabled: true }) },
     conversation: { findMany: jest.fn(), update: jest.fn() },
     user: { findFirst: jest.fn() },
     sector: { findFirst: jest.fn() },
@@ -103,6 +107,8 @@ const gerente: AuthUser = {
 
 /** `data` do único `lead.update` chamado no mock. */
 const dataDoUpdate = (mock: jest.Mock) => mock.mock.calls[0][0].data;
+/** `where` do único `lead.updateMany` chamado no mock. */
+const whereDoUpdateMany = (mock: jest.Mock) => mock.mock.calls[0][0].where;
 
 describe('nuvem de devolvidos — devolução CARIMBA returned_at', () => {
   it('returnToPool: carimba returned_at junto de zerar dono/assumed_at/privacidade', async () => {
@@ -295,6 +301,75 @@ describe('nuvem de devolvidos — atribuição de dono ZERA returned_at', () => 
     await service.update('lead-1', { nome: 'Cliente Novo' }, gerente);
 
     expect(dataDoUpdate(txClient.lead.update)).toEqual({ nome: 'Cliente Novo' });
+  });
+});
+
+/**
+ * Finding 3 da revisão final: o outro lado da invariante no CLAIM.
+ *
+ * A listagem já esconde o lead NOVO sem dono do operador no modo individual
+ * (`lead-visibility.ts`: a nuvem é `returned_at != null`), mas o `claim`
+ * gateava só em `responsavel_id: null` — quem tivesse o id (link, WebSocket,
+ * um lead que passou pela tela antes de ser distribuído) furava a fila do
+ * gerente por baixo. Agora o `where` do updateMany carrega
+ * `returned_at: { not: null }` quando é operador E o tenant está no individual.
+ *
+ * Gerente segue distribuindo lead novo, e o modo compartilhado (pool) não muda:
+ * lá lead novo sem dono é do pool, de todo mundo, por definição.
+ */
+describe('claim — no modo individual o operador só pega da NUVEM', () => {
+  it('operador + individual + lead NOVO: 409 (o where exige returned_at)', async () => {
+    const { service, prisma, txClient } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+    // Lead novo não casa o `returned_at: { not: null }` → nenhuma linha.
+    txClient.lead.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.claim('lead-1', alex)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(whereDoUpdateMany(txClient.lead.updateMany)).toEqual({
+      id: 'lead-1',
+      tenant_id: 't1',
+      responsavel_id: { equals: null },
+      returned_at: { not: null },
+    });
+  });
+
+  it('operador + individual + lead DA NUVEM: assume normalmente', async () => {
+    const { service, prisma, txClient } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+
+    const r = await service.claim('lead-1', alex);
+
+    expect(r.responsavel_id).toBe('u-alex');
+    expect(whereDoUpdateMany(txClient.lead.updateMany).returned_at).toEqual({ not: null });
+    // E continua saindo da nuvem ao ser assumido.
+    expect(dataDoUpdate(txClient.lead.updateMany).returned_at).toBeNull();
+  });
+
+  it('gerente + individual + lead NOVO: distribuir continua sendo papel dele', async () => {
+    const { service, prisma, txClient } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false });
+
+    await service.claim('lead-1', gerente);
+
+    expect(whereDoUpdateMany(txClient.lead.updateMany)).toEqual({
+      id: 'lead-1',
+      tenant_id: 't1',
+      responsavel_id: { equals: null },
+    });
+  });
+
+  it('operador + COMPARTILHADO: pool é de todos, o where não muda', async () => {
+    const { service, prisma, txClient } = makeService();
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: true });
+
+    await service.claim('lead-1', alex);
+
+    expect(whereDoUpdateMany(txClient.lead.updateMany)).toEqual({
+      id: 'lead-1',
+      tenant_id: 't1',
+      responsavel_id: { equals: null },
+    });
   });
 });
 

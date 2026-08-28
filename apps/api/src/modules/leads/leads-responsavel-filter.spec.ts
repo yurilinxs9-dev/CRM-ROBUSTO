@@ -227,9 +227,12 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
 
     // O bug: esta linha era `where.responsavel_id = filters.responsavel_id`,
     // sobrescrevendo o clamp de OPERADOR posto logo acima dela.
+    // O OR de privacidade entra em TODA exportação (ver suíte de privacidade
+    // abaixo); aqui ele é redundante com o clamp, mas precisa estar.
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
       responsavel_id: OPERADOR_ID,
+      OR: OR_SUPERVISAO(OPERADOR_ID),
     });
   });
 
@@ -241,10 +244,11 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
       responsavel_id: OPERADOR_ID,
+      OR: OR_SUPERVISAO(OPERADOR_ID),
     });
   });
 
-  it('GERENTE sem foco exporta a carteira de um membro', async () => {
+  it('GERENTE sem foco exporta a carteira de um membro — menos o privado dela', async () => {
     const { service, prisma } = makeService();
 
     await service.exportCsv(gerente, { responsavel_id: COLEGA_ID }, makeRes());
@@ -252,6 +256,7 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
     expect(whereDoFindMany(prisma)).toEqual({
       tenant_id: TENANT,
       responsavel_id: COLEGA_ID,
+      OR: OR_SUPERVISAO(GERENTE_ID),
     });
   });
 
@@ -261,6 +266,65 @@ describe('LeadsService.exportCsv — param responsavel_id', () => {
 
     await service.exportCsv(gerente, { responsavel_id: COLEGA_ID }, makeRes());
 
-    expect(whereDoFindMany(prisma)).toEqual({ tenant_id: TENANT });
+    expect(whereDoFindMany(prisma)).toEqual({
+      tenant_id: TENANT,
+      OR: OR_SUPERVISAO(GERENTE_ID),
+    });
+  });
+});
+
+/**
+ * Finding 2 da revisão final: "lead privado continua regra suprema" valia na
+ * LISTAGEM (`buildVisibilityWhere`) mas NÃO no CSV — o `where` do exportCsv era
+ * plano, sem nenhuma condição de privacidade. Um gerente (ou o "Ver como
+ * membro", que é o mesmo caminho com `?responsavel_id=<colega>`) baixava o lead
+ * PRIVADO de outra pessoa em texto puro.
+ *
+ * O recorte é o mesmo da supervisão: `is_private: false` OU eu sou o dono —
+ * Prisma faz AND das chaves de topo com o OR, então o privado do colega cai
+ * fora e o MEU privado continua entrando.
+ */
+describe('LeadsService.exportCsv — privado de outro fica fora do CSV', () => {
+  function makeRes() {
+    const res = { setHeader: jest.fn(), send: jest.fn() };
+    return res as unknown as Response & { setHeader: jest.Mock; send: jest.Mock };
+  }
+
+  it('GERENTE: o CSV exige "não privado OU meu" — privado do colega excluído', async () => {
+    const { service, prisma } = makeService();
+
+    await service.exportCsv(gerente, {}, makeRes());
+
+    const where = whereDoFindMany(prisma);
+    expect(where.OR).toEqual([
+      { is_private: false },
+      // ...e o privado do PRÓPRIO gerente segue no CSV por este ramo.
+      { responsavel_id: GERENTE_ID },
+    ]);
+  });
+
+  it('"Ver como membro": privado do colega continua fora (AND com o recorte)', async () => {
+    const { service, prisma } = makeService();
+
+    await service.exportCsv(gerente, { responsavel_id: COLEGA_ID }, makeRes());
+
+    const where = whereDoFindMany(prisma);
+    expect(where.responsavel_id).toBe(COLEGA_ID);
+    expect(where.OR).toEqual(OR_SUPERVISAO(GERENTE_ID));
+    // Nenhum ramo do OR casa um lead privado do colega: `is_private:false`
+    // não casa (ele é privado) e `responsavel_id: GERENTE_ID` conflita com o
+    // recorte `responsavel_id: COLEGA_ID` do topo.
+  });
+
+  it('OPERADOR: o clamp da própria carteira convive com o OR (o meu privado entra)', async () => {
+    const { service, prisma } = makeService();
+
+    await service.exportCsv(operador, {}, makeRes());
+
+    expect(whereDoFindMany(prisma)).toEqual({
+      tenant_id: TENANT,
+      responsavel_id: OPERADOR_ID,
+      OR: OR_SUPERVISAO(OPERADOR_ID),
+    });
   });
 });

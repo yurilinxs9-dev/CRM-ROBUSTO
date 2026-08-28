@@ -1405,6 +1405,16 @@ export class LeadsService {
     //    o trabalho da equipe pelo Kanban.
     const isManagerClaim =
       (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
+    // Modo INDIVIDUAL (pool_enabled=false): a nuvem é só de DEVOLVIDOS. Lead
+    // novo sem dono está reservado pra distribuição do gerente — sem este
+    // recorte o operador pegava um lead novo pelo id (a listagem já esconde,
+    // mas o endpoint aceitava) e furava a fila. Manager e modo compartilhado
+    // seguem como antes.
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { id: user.tenantId },
+      select: { pool_enabled: true },
+    });
+    const soDaNuvem = !isManagerClaim && tenant?.pool_enabled === false;
     // Lead update (guard incluído) e transferência da conversa ativa na MESMA
     // transação: se o processo cair entre as duas escritas, Lead e
     // Conversation divergem e a próxima msg do cliente desfaz o claim sozinha
@@ -1414,7 +1424,13 @@ export class LeadsService {
     // que já tinha sido escrito (nada, nesse caso).
     await this.prisma.$transaction(async (tx) => {
       const result = await tx.lead.updateMany({
-        where: { id: leadId, tenant_id: user.tenantId, responsavel_id: { equals: null } },
+        where: {
+          id: leadId,
+          tenant_id: user.tenantId,
+          responsavel_id: { equals: null },
+          // Individual + não-manager: só o que já foi devolvido (nuvem).
+          ...(soDaNuvem ? { returned_at: { not: null } } : {}),
+        },
         data: {
           responsavel_id: user.id,
           assumed_at: new Date(),
@@ -1873,6 +1889,14 @@ export class LeadsService {
       if (filters.to) createdAt.lte = new Date(filters.to);
       where.created_at = createdAt;
     }
+
+    // Lead privado continua regra suprema: nem gerente supervisionando, nem o
+    // "Ver como membro" (?responsavel_id=<colega>) leva o privado dos outros
+    // pro CSV — mesma condicao que `buildVisibilityWhere` aplica na listagem.
+    // Merge pelo helper de OR: hoje o `where` acima e plano, mas se algum
+    // filtro passar a montar um OR os dois viram AND em vez de um sobrescrever
+    // o outro e furar a privacidade.
+    mergeSearchCondition(where, [{ is_private: false }, { responsavel_id: user.id }]);
 
     // Le TODOS os leads do filtro paginando por cursor. Antes era um unico
     // findMany com take: 10000 — tenant acima disso baixava CSV incompleto

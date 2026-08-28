@@ -60,6 +60,10 @@ function makeMocks() {
       findFirst: jest.fn(),
     },
     whatsappInstance: { findFirst: jest.fn().mockResolvedValue(null) },
+    // claim lê o modo do tenant pra decidir se o operador só pode pegar da
+    // nuvem (individual) ou qualquer sem-dono (compartilhado). Esta suíte é
+    // sobre a transação, não sobre o modo: compartilhado em todos os casos.
+    tenant: { findFirst: jest.fn().mockResolvedValue({ pool_enabled: true }) },
     conversation: {
       findMany: jest.fn(),
       // Idem: se isto for chamado, a escrita da conversa vazou pra fora da
