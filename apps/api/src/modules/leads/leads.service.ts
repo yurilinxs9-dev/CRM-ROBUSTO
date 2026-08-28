@@ -1648,14 +1648,30 @@ export class LeadsService {
     if (lead.is_private && lead.responsavel_id !== user.id) {
       return { messages: [], nextCursor: undefined };
     }
-    // Manager (GERENTE/SUPER_ADMIN) vê msgs de qualquer lead não-privado
-    // sem filtro por instância nem por assumed_at — supervisão completa.
+    // Manager (GERENTE/SUPER_ADMIN) SEM modo foco vê msgs de qualquer lead
+    // não-privado, sem filtro por instância nem por assumed_at — supervisão
+    // completa. Com foco ligado ele passa pelo mesmo gate do operador.
     // Operador segue restrito a leads onde é responsável OU da própria
     // instância (Individual).
     const isResponsavel = lead.responsavel_id === user.id;
+    const [tenantCfg, me] = await Promise.all([
+      this.prisma.tenant.findFirst({
+        where: { id: user.tenantId },
+        select: { share_history_enabled: true, pool_enabled: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const poolEnabled = Boolean(tenantCfg?.pool_enabled);
+    // Gerente focado abre mão da visão total — MENOS em lead sem dono, onde
+    // ler a conversa é o insumo da distribuição.
+    const supervising =
+      isManager && (!me?.focus_mode || lead.responsavel_id === null);
     let ownConversationIds: string[] = [];
     let ownedInstances: string[] = [];
-    if (!isManager) {
+    if (!supervising) {
       ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
       ownConversationIds = (
         await this.prisma.conversation.findMany({
@@ -1675,21 +1691,19 @@ export class LeadsService {
     // tem visão completa. Tenant com share_history_enabled (ex.: Diplapel)
     // desliga o corte: quem recebe o lead transferido vê a conversa inteira
     // pra ter contexto e dar sequência.
-    const tenantCfg = await this.prisma.tenant.findFirst({
-      where: { id: user.tenantId },
-      select: { share_history_enabled: true },
-    });
     const hideHistory =
       !isManager && !!lead.assumed_at && !tenantCfg?.share_history_enabled;
-    // Dono do lead vê a conversa INTEIRA (sem filtro por conversa). Quem não é
-    // dono vê só a(s) conversa(s) própria(s) — mais um ramo de TRANSIÇÃO:
+    // Visão total da conversa (todas as instâncias): gerente supervisionando,
+    // ou dono no modo COMPARTILHADO. No INDIVIDUAL o dono comum vê só as
+    // conversas dele — era o vazamento original do espelhamento.
+    // Quem não tem visão total vê só a(s) conversa(s) própria(s) — mais um ramo de TRANSIÇÃO:
     // mensagens anteriores ao backfill (Task 7) ainda não têm conversation_id,
     // então sem esse ramo quem tem conversa própria (ou acessa pela instância
     // que já era sua antes deste modelo) perde todo o histórico até o backfill
     // rodar. Remover o ramo transitório depois que a Task 8 apertar a coluna
     // conversation_id para NOT NULL (vira código morto nesse ponto).
     const conversationScope: Prisma.MessageWhereInput | null =
-      isManager || isResponsavel
+      supervising || (isResponsavel && poolEnabled)
         ? null
         : {
             OR: [

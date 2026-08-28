@@ -46,7 +46,12 @@ function makeService(rows: unknown[]) {
         assumed_at: null,
       }),
     },
-    tenant: { findFirst: jest.fn().mockResolvedValue({ share_history_enabled: false }) },
+    tenant: {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue({ share_history_enabled: false, pool_enabled: false }),
+    },
+    user: { findUnique: jest.fn().mockResolvedValue({ focus_mode: false }) },
     message: { findMany: jest.fn().mockResolvedValue(rows) },
     conversation: { findMany: jest.fn().mockResolvedValue([]) },
     whatsappInstance: { findMany: jest.fn().mockResolvedValue([]) },
