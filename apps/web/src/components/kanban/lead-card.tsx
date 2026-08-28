@@ -32,6 +32,12 @@ export interface Lead {
   created_at?: string | null;
   pending_tasks_count?: number;
   position?: number | null;
+  /**
+   * Carimbo da devolução ao escritório. Sem responsável E com `returned_at` = o
+   * lead está na nuvem, disponível para quem quiser assumir. Sem responsável e
+   * SEM `returned_at` é lead novo ainda sendo distribuído — nunca "Disponível".
+   */
+  returned_at?: string | null;
 }
 
 export const TEMP_LABELS: Record<Temperatura, string> = {
@@ -202,6 +208,9 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
       new Date(lead.proximo_followup).getTime() <= Date.now();
 
     const pendingTasks = lead.pending_tasks_count ?? 0;
+    // Lead na nuvem: sem dono e devolvido. Vale nos dois modos (pool e
+    // individual) — é o selo que diz ao vendedor que dá para assumir.
+    const naNuvem = !lead.responsavel && !!lead.returned_at;
     const tagsVisiveis = mostrar('tags') ? lead.tags ?? [] : [];
 
     const stop = (e: MouseEvent) => e.stopPropagation();
@@ -343,6 +352,15 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
             {mostrar('temperatura') && (
               <Badge variant="outline" className={cn('text-[10px] shrink-0 px-1.5 py-0 leading-tight', TEMP_BADGE[lead.temperatura] ?? TEMP_BADGE._DEFAULT)}>
                 {TEMP_LABELS[lead.temperatura] ?? 'Novo'}
+              </Badge>
+            )}
+            {naNuvem && (
+              <Badge
+                variant="outline"
+                className="text-[10px] shrink-0 px-1.5 py-0 leading-tight border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+                title="Lead devolvido ao escritorio — disponivel para assumir"
+              >
+                Disponível
               </Badge>
             )}
             {isPoolEnabled && lead.responsavel && (

@@ -106,6 +106,8 @@ type LeadDetail = {
   ultima_interacao?: string | null;
   dados_custom?: Record<string, unknown> | null;
   lead_contacts?: LeadContactLink[];
+  /** Carimbo da devolução ao escritório: sem dono + preenchido = lead na nuvem. */
+  returned_at?: string | null;
 };
 
 /** `valor_estimado` é Decimal(12,2): chega como string do Nest. */
@@ -402,6 +404,29 @@ export function LeadDetailDrawer({
     </div>
   );
 
+  /**
+   * Lead na nuvem: devolvido ao escritório (`returned_at`) e ainda sem dono.
+   * Existe nos DOIS modos — no individual é a única forma de o lead voltar a
+   * ter responsável sem um gestor no meio, então o botão Assumir aparece lá
+   * também. Lead novo sem dono (sem `returned_at`) não conta: no individual o
+   * operador nem o recebe da API.
+   */
+  const naNuvem = !lead?.responsavel && !!lead?.returned_at;
+
+  // Bloco reutilizado: o mesmo claim serve pool e nuvem — não há chamada nova.
+  const botaoAssumir = (
+    <Button
+      className="w-full"
+      disabled={claimMutation.isPending}
+      onClick={() => claimMutation.mutate()}
+    >
+      {claimMutation.isPending
+        ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
+        : <span className="mr-1">✋</span>}
+      {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
+    </Button>
+  );
+
   // ---- Render ----
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -522,16 +547,7 @@ export function LeadDetailDrawer({
                 {isPoolEnabled ? (
                   !lead?.responsavel ? (
                     <div className="space-y-2">
-                      <Button
-                        className="w-full"
-                        disabled={claimMutation.isPending}
-                        onClick={() => claimMutation.mutate()}
-                      >
-                        {claimMutation.isPending
-                          ? <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                          : <span className="mr-1">✋</span>}
-                        {claimMutation.isPending ? 'Assumindo...' : 'Assumir Lead'}
-                      </Button>
+                      {botaoAssumir}
                       {podeConfigurar && (
                         <div className="space-y-1.5">
                           <Label>Atribuir para</Label>
@@ -605,21 +621,24 @@ export function LeadDetailDrawer({
                     })()
                   )
                 ) : (
-                  <div className="space-y-1.5">
-                    <Label>Responsavel</Label>
-                    <Select
-                      value={responsavelId}
-                      onValueChange={(v) => { setResponsavelId(v); mark(); }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecionar responsavel" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {users.map((u) => (
-                          <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="space-y-2">
+                    {naNuvem && botaoAssumir}
+                    <div className="space-y-1.5">
+                      <Label>Responsavel</Label>
+                      <Select
+                        value={responsavelId}
+                        onValueChange={(v) => { setResponsavelId(v); mark(); }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecionar responsavel" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {users.map((u) => (
+                            <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 )}
                 <div className="space-y-1.5">
