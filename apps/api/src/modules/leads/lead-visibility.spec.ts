@@ -59,13 +59,27 @@ describe('buildVisibilityWhere — modo COMPARTILHADO (pool_enabled=true)', () =
 });
 
 describe('buildVisibilityWhere — modo INDIVIDUAL (pool_enabled=false)', () => {
-  it('operador só vê as próprias', () => {
+  it('operador só vê as próprias (+ a nuvem de devolvidos)', () => {
     const w = buildVisibilityWhere({
       userId: uid,
       role: UserRole.OPERADOR,
       poolEnabled: false,
     });
-    expect(w.responsavel_id).toBe(uid);
+    expect(w).toEqual({
+      OR: [
+        { responsavel_id: uid },
+        { responsavel_id: null, returned_at: { not: null }, is_private: false },
+      ],
+    });
+    // nenhum ramo casa com lead de outro dono
+    const or = w.OR as Array<Record<string, unknown>>;
+    const leadDeOutro = { responsavel_id: 'outro', is_private: false };
+    const matches = or.some((cond) =>
+      Object.entries(cond).every(
+        ([k, v]) => leadDeOutro[k as keyof typeof leadDeOutro] === v,
+      ),
+    );
+    expect(matches).toBe(false);
   });
 
   it('gerente vê tudo na LISTA (sem scope)', () => {
@@ -86,6 +100,7 @@ describe('buildVisibilityWhere — modo INDIVIDUAL (pool_enabled=false)', () => 
       scope: 'chat',
     });
     expect(w.responsavel_id).toBe(uid);
+    expect(w.OR).toBeUndefined();
   });
 
   it('SUPER_ADMIN no scope=chat também é restrito', () => {
@@ -96,15 +111,105 @@ describe('buildVisibilityWhere — modo INDIVIDUAL (pool_enabled=false)', () => 
       scope: 'chat',
     });
     expect(w.responsavel_id).toBe(uid);
+    expect(w.OR).toBeUndefined();
   });
 
-  it('visualizador só vê as próprias', () => {
+  it('visualizador só vê as próprias (+ a nuvem de devolvidos)', () => {
     const w = buildVisibilityWhere({
       userId: uid,
       role: UserRole.VISUALIZADOR,
       poolEnabled: false,
     });
-    expect(w.responsavel_id).toBe(uid);
+    expect(w).toEqual({
+      OR: [
+        { responsavel_id: uid },
+        { responsavel_id: null, returned_at: { not: null }, is_private: false },
+      ],
+    });
+  });
+});
+
+describe('buildVisibilityWhere — modo foco (gerente vira operador)', () => {
+  it('INDIVIDUAL + foco: gerente vê os próprios + qualquer sem-dono não-privado', () => {
+    const where = buildVisibilityWhere({
+      userId: 'g1',
+      role: UserRole.GERENTE,
+      poolEnabled: false,
+      focusMode: true,
+    });
+    expect(where).toEqual({
+      OR: [{ responsavel_id: 'g1' }, { responsavel_id: null, is_private: false }],
+    });
+  });
+
+  it('COMPARTILHADO + foco: gerente cai na regra de operador (pool + próprios)', () => {
+    const where = buildVisibilityWhere({
+      userId: 'g1',
+      role: UserRole.SUPER_ADMIN,
+      poolEnabled: true,
+      focusMode: true,
+    });
+    expect(where).toEqual({
+      OR: [{ responsavel_id: null, is_private: false }, { responsavel_id: 'g1' }],
+    });
+  });
+
+  it('foco NÃO muda nada para operador', () => {
+    const comFoco = buildVisibilityWhere({
+      userId: 'o1',
+      role: UserRole.OPERADOR,
+      poolEnabled: false,
+      focusMode: true,
+    });
+    const semFoco = buildVisibilityWhere({
+      userId: 'o1',
+      role: UserRole.OPERADOR,
+      poolEnabled: false,
+      focusMode: false,
+    });
+    expect(comFoco).toEqual(semFoco);
+  });
+});
+
+describe('buildVisibilityWhere — nuvem de devolvidos (INDIVIDUAL)', () => {
+  it('operador vê os próprios + devolvidos (returned_at preenchido)', () => {
+    const where = buildVisibilityWhere({
+      userId: 'o1',
+      role: UserRole.OPERADOR,
+      poolEnabled: false,
+    });
+    expect(where).toEqual({
+      OR: [
+        { responsavel_id: 'o1' },
+        { responsavel_id: null, returned_at: { not: null }, is_private: false },
+      ],
+    });
+  });
+
+  it('scope=chat continua estrito: só os próprios, para QUALQUER role', () => {
+    for (const role of [
+      UserRole.OPERADOR,
+      UserRole.GERENTE,
+      UserRole.SUPER_ADMIN,
+    ]) {
+      const where = buildVisibilityWhere({
+        userId: 'u1',
+        role,
+        poolEnabled: false,
+        scope: 'chat',
+        focusMode: true,
+      });
+      expect(where).toEqual({ responsavel_id: 'u1' });
+    }
+  });
+
+  it('gerente SEM foco no INDIVIDUAL segue supervisionando tudo', () => {
+    const where = buildVisibilityWhere({
+      userId: 'g1',
+      role: UserRole.GERENTE,
+      poolEnabled: false,
+    });
+    expect(where).toEqual({ OR: [{ is_private: false }, { responsavel_id: 'g1' }] });
   });
 });
 
