@@ -20,11 +20,12 @@ import { AssignmentService } from '../queue/assignment.service';
 import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
-import { buildVisibilityWhere, mergeSearchCondition } from './lead-visibility';
+import { buildVisibilityWhere, isManagerRole, mergeSearchCondition } from './lead-visibility';
 import {
   applyPanelFilters,
   ownerCondition,
   parseOwnerScope,
+  pushAnd,
   withCondition,
 } from './lead-filters';
 import { buildSortOrder } from './lead-sort';
@@ -235,9 +236,10 @@ export class LeadsService {
     filters: LeadFilters,
     role: string,
     userId: string,
+    focusMode: boolean,
   ): string {
     const hash = createHash('sha1')
-      .update(JSON.stringify({ filters, role, userId }))
+      .update(JSON.stringify({ filters, role, userId, focusMode }))
       .digest('hex')
       .slice(0, 16);
     return `leads:list:${tenantId}:${hash}`;
@@ -385,12 +387,19 @@ export class LeadsService {
   async findAll(user: AuthUser, filters: LeadFilters = {}) {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
-    // Visibilidade depende do MODO do tenant:
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: user.tenantId },
-      select: { pool_enabled: true },
-    });
+    // Visibilidade depende do MODO do tenant e do modo foco do usuário:
+    const [tenant, me] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        select: { pool_enabled: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
     const poolEnabled = Boolean(tenant?.pool_enabled);
+    const focusMode = Boolean(me?.focus_mode);
     Object.assign(
       where,
       buildVisibilityWhere({
@@ -398,12 +407,12 @@ export class LeadsService {
         role: user.role as UserRole,
         poolEnabled,
         scope: filters.scope,
+        focusMode,
       }),
     );
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
-    if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
     if (filters.instancia) where.instancia_whatsapp = filters.instancia;
     if (filters.temperatura) where.temperatura = filters.temperatura;
     // Aba "Não lidas" do chat — filtro no servidor pra funcionar com paginação.
@@ -416,6 +425,20 @@ export class LeadsService {
         { telefone: { contains: filters.search } },
       ];
       mergeSearchCondition(where, searchCondition);
+    }
+
+    // "Ver como membro": só gerente supervisionando pode recortar por outro
+    // responsável. Antes disto o param sobrescrevia where.responsavel_id e
+    // furava o modo individual.
+    // Entra DEPOIS do merge da busca pelo mesmo motivo dos filtros do painel:
+    // mergeSearchCondition reescreve `where.AND` do zero, e um pushAnd feito
+    // antes dele sumiria em silêncio quando o gerente busca e recorta junto.
+    if (
+      filters.responsavel_id &&
+      isManagerRole(user.role as UserRole) &&
+      !focusMode
+    ) {
+      pushAnd(where, { responsavel_id: filters.responsavel_id });
     }
 
     // Filtros do painel lateral. Todos entram DEPOIS do merge da busca, via
@@ -431,7 +454,13 @@ export class LeadsService {
     const owner = parseOwnerScope(filters.owner);
     const whereFinal = owner ? withCondition(where, ownerCondition(owner, user.id)) : where;
 
-    const cacheKey = this.buildLeadsListKey(user.tenantId, filters, user.role, user.id);
+    const cacheKey = this.buildLeadsListKey(
+      user.tenantId,
+      filters,
+      user.role,
+      user.id,
+      focusMode,
+    );
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
@@ -459,6 +488,7 @@ export class LeadsService {
       cargo: true,
       dados_custom: true,
       position: true,
+      returned_at: true,
       responsavel: { select: { id: true, nome: true, avatar_url: true } },
       estagio: { select: { id: true, nome: true, cor: true } },
       lead_tags: { include: { tag: true } },
