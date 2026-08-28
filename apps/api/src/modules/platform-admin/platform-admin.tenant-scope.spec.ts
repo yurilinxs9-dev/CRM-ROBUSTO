@@ -384,6 +384,17 @@ describe('deleteUser — usuário do tenant protegido', () => {
     await expect(svc.deleteUser(RESTRITO, USER_COMUM)).resolves.toEqual({ ok: true });
     expect(prisma.user.delete).toHaveBeenCalled();
   });
+
+  it('os leads do usuário apagado vão pra NUVEM (returned_at carimbado)', async () => {
+    // Task 5: desvincular sem carimbar deixaria os leads sem dono E fora da
+    // nuvem — invisíveis pra qualquer operador em modo foco, ou seja, perdidos.
+    const { svc, prisma } = makeService();
+    await svc.deleteUser(RESTRITO, USER_COMUM);
+    expect(prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { responsavel_id: USER_COMUM },
+      data: { responsavel_id: null, returned_at: expect.any(Date) },
+    });
+  });
 });
 
 describe('impersonate — usuário do tenant protegido', () => {

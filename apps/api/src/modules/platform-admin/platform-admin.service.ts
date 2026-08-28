@@ -457,7 +457,12 @@ export class PlatformAdminService {
     }
     // Desvincula referências que bloqueiam o delete (leads/mensagens ficam, sem responsável).
     await this.prisma.$transaction([
-      this.prisma.lead.updateMany({ where: { responsavel_id: userId }, data: { responsavel_id: null } }),
+      // Devolução automática: sem o carimbo os leads ficariam sem dono E fora
+      // da nuvem — invisíveis pra quem trabalha em modo foco.
+      this.prisma.lead.updateMany({
+        where: { responsavel_id: userId },
+        data: { responsavel_id: null, returned_at: new Date() },
+      }),
       this.prisma.message.updateMany({ where: { sent_by_user_id: userId }, data: { sent_by_user_id: null } }),
       this.prisma.message.updateMany({ where: { visible_to_user_id: userId }, data: { visible_to_user_id: null } }),
     ]);

@@ -124,7 +124,8 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
           const picked = users[Date.now() % users.length];
           await this.prisma.lead.update({
             where: { id: leadId },
-            data: { responsavel_id: picked.id },
+            // Ganhou dono → sai da nuvem de devolvidos.
+            data: { responsavel_id: picked.id, returned_at: null },
           });
           lead.responsavel_id = picked.id;
         }
@@ -188,7 +189,8 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
       try {
         await this.prisma.lead.update({
           where: { id: leadId },
-          data: { responsavel_id: onEnter.assign_user.user_id },
+          // Idem: atribuição por automação de etapa também tira da nuvem.
+          data: { responsavel_id: onEnter.assign_user.user_id, returned_at: null },
         });
       } catch (err) {
         this.logger.warn(`assign_user falhou para lead ${leadId}: ${String(err)}`);

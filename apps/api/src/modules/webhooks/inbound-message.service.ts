@@ -558,7 +558,10 @@ export class InboundMessageService {
     if (lead.responsavel_id === null && responsavelId !== null) {
       const fixed = await this.prisma.lead.update({
         where: { id: lead.id },
-        data: { responsavel_id: responsavelId, instancia_whatsapp: instance.nome },
+        // Ganhou dono → sai da nuvem de devolvidos (`returned_at` é o marcador
+        // de "está na nuvem"; deixá-lo preenchido mostraria o lead como
+        // disponível pra todo mundo mesmo já tendo dono).
+        data: { responsavel_id: responsavelId, instancia_whatsapp: instance.nome, returned_at: null },
       });
       lead.responsavel_id = fixed.responsavel_id;
       lead.instancia_whatsapp = fixed.instancia_whatsapp;
@@ -577,7 +580,8 @@ export class InboundMessageService {
       if (result.userId) {
         const upd = await this.prisma.lead.updateMany({
           where: { id: lead.id, responsavel_id: null },
-          data: { responsavel_id: result.userId, instancia_whatsapp: instance.nome },
+          // Idem: distribuição por setor dá dono, então tira da nuvem.
+          data: { responsavel_id: result.userId, instancia_whatsapp: instance.nome, returned_at: null },
         });
         if (upd.count > 0) {
           lead.responsavel_id = result.userId;

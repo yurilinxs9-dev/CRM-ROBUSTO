@@ -137,8 +137,24 @@ export class ConversationService {
           data: {
             responsavel_id: patch.responsavel_id,
             instancia_whatsapp: patch.instancia_whatsapp,
+            // Espelhar um dono é uma atribuição como qualquer outra: lead com
+            // dono não fica na nuvem de devolvidos (`returned_at != null` ⇔
+            // está na nuvem).
+            ...(patch.responsavel_id !== null ? { returned_at: null } : {}),
           },
         });
+
+        // Espelho SEM dono: o lead volta pro pool, e no modo foco só é visível
+        // se estiver carimbado. O `updateMany` condicional carimba apenas quem
+        // ainda não estava na nuvem — a devolução original (returnToPool /
+        // setor sem agente) já gravou a hora certa, e reescrevê-la a cada
+        // mensagem do cliente faria "devolvido há X" mentir.
+        if (patch.responsavel_id === null) {
+          await tx.lead.updateMany({
+            where: { id: leadId, returned_at: null },
+            data: { returned_at: new Date() },
+          });
+        }
 
         return patch;
       });

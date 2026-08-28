@@ -415,6 +415,61 @@ describe('InboundMessageService.saveIncomingMessage — webhook duplicado não i
   });
 });
 
+/**
+ * Task 5 — nuvem de devolvidos. Invariante: `returned_at != null` ⇔ o lead está
+ * na nuvem (sem dono, esperando alguém pegar). As duas atribuições automáticas
+ * do inbound dão dono ao lead, então precisam limpar o carimbo — senão um lead
+ * já atendido continua listado como disponível pra todo mundo no modo foco.
+ */
+describe('InboundMessageService.saveIncomingMessage — atribuição automática limpa returned_at', () => {
+  const leadNoPool = { ...leadOwnedByA, responsavel_id: null };
+
+  it('auto-assign do lead em pool (dono da instância) zera returned_at', async () => {
+    const { service, prisma, conversations } = makeService();
+    prisma.lead.upsert.mockResolvedValue({ ...leadNoPool });
+    prisma.lead.update.mockResolvedValue({ responsavel_id: 'B', instancia_whatsapp: 'inst-b' });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+
+    await service.saveIncomingMessage(baseInput());
+
+    expect(prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 'lead-1' },
+      data: { responsavel_id: 'B', instancia_whatsapp: 'inst-b', returned_at: null },
+    });
+  });
+
+  it('round-robin por setor zera returned_at no updateMany condicional', async () => {
+    const { service, prisma, conversations, assignment } = makeService();
+    // Lead segue no pool depois do upsert e a instância não tem dono → só o
+    // round-robin pode atribuir.
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: true, round_robin_enabled: true });
+    prisma.lead.upsert.mockResolvedValue({ ...leadNoPool });
+    prisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    assignment.resolveSectorForInstance.mockResolvedValue('sector-1');
+    assignment.assignBySector.mockResolvedValue({ userId: 'C', reason: 'round-robin' });
+    conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: null });
+    prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: null,
+    });
+
+    await service.saveIncomingMessage(
+      baseInput({ instance: { ...instanceB, owner_user_id: null } as any }),
+    );
+
+    expect(prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { id: 'lead-1', responsavel_id: null },
+      data: { responsavel_id: 'C', instancia_whatsapp: 'inst-b', returned_at: null },
+    });
+  });
+});
+
 describe('InboundMessageService.saveIncomingMessage — encaminhamento p/ várias conversas', () => {
   // Bug real de produção: um vendedor encaminhou UM vídeo para 2 conversas ao
   // mesmo tempo. O WhatsApp mandou os dois webhooks com o MESMO

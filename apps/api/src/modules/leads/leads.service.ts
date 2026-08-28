@@ -1024,6 +1024,13 @@ export class LeadsService {
       }
     }
 
+    // Dar dono ao lead pela ficha também o tira da nuvem de devolvidos
+    // (invariante: `returned_at != null` ⇔ lead sem dono, esperando na nuvem).
+    // Entra DEPOIS do diff de campos alterados de propósito: é consequência
+    // mecânica da atribuição, não uma edição do usuário — no log de atividade
+    // apareceria como "returned_at atualizado(s)" sem significar nada pra quem lê.
+    if (updateData.responsavel_id !== undefined) updateData.returned_at = null;
+
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.lead.update({
         where: { id },
@@ -1251,7 +1258,8 @@ export class LeadsService {
     const { ids, responsavel_id } = bulkAssignSchema.parse(data);
     const result = await this.prisma.lead.updateMany({
       where: { id: { in: ids }, tenant_id: user.tenantId },
-      data: { responsavel_id },
+      // Atribuir dono sempre tira o lead da nuvem de devolvidos.
+      data: { responsavel_id, returned_at: null },
     });
     await this.invalidateLeadsCache(user.tenantId);
     return { updated: result.count };
@@ -1381,6 +1389,8 @@ export class LeadsService {
           responsavel_id: user.id,
           assumed_at: new Date(),
           is_private: isManagerClaim,
+          // Saiu da nuvem: quem assume deixa de estar "devolvido".
+          returned_at: null,
         },
       });
       if (result.count === 0) {
@@ -1445,6 +1455,8 @@ export class LeadsService {
           // do anterior. Msgs antigas continuam no DB com visible_to_user_id
           // do dono anterior, então só ele ainda enxerga (privacidade).
           assumed_at: new Date(),
+          // Lead com dono novo não é mais lead devolvido — sai da nuvem.
+          returned_at: null,
           ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
         },
         select: { id: true, nome: true },
@@ -1511,7 +1523,15 @@ export class LeadsService {
       await this.prisma.$transaction(async (tx) => {
         await tx.lead.update({
           where: { id: leadId },
-          data: { responsavel_id: null, assumed_at: null, is_private: false },
+          // Devolução AUTOMÁTICA (setor sem agente) também é nuvem: sem o
+          // carimbo o lead ficaria sem dono e invisível pros operadores em
+          // modo foco, que só enxergam o pool de devolvidos.
+          data: {
+            responsavel_id: null,
+            assumed_at: null,
+            is_private: false,
+            returned_at: new Date(),
+          },
         });
         await this.transferActiveConversation(tx, leadId, null, user.tenantId);
       });
@@ -1547,6 +1567,8 @@ export class LeadsService {
           // Novo responsável começa do zero (sem histórico do anterior).
           assumed_at: new Date(),
           is_private: false,
+          // Distribuído = tem dono = fora da nuvem de devolvidos.
+          returned_at: null,
           ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
         },
       });
@@ -1606,9 +1628,16 @@ export class LeadsService {
     await this.prisma.$transaction(async (tx) => {
       await tx.lead.update({
         where: { id: leadId },
-        // Volta pro pool: zera assumed_at, libera privacidade. Msgs antigas
-        // continuam protegidas pelo visible_to_user_id do dono anterior.
-        data: { responsavel_id: null, assumed_at: null, is_private: false },
+        // Volta pro pool: zera assumed_at, libera privacidade e CARIMBA a
+        // devolução — é o `returned_at` que põe o lead na nuvem que os
+        // operadores em modo foco enxergam. Msgs antigas continuam protegidas
+        // pelo visible_to_user_id do dono anterior.
+        data: {
+          responsavel_id: null,
+          assumed_at: null,
+          is_private: false,
+          returned_at: new Date(),
+        },
       });
       await this.transferActiveConversation(tx, leadId, null, user.tenantId);
     });

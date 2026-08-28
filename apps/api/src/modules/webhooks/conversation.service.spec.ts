@@ -18,6 +18,7 @@ function makeMocks() {
     },
     lead: {
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     $transaction: jest.fn(async (arg: unknown) => {
       if (Array.isArray(arg)) return Promise.all(arg);
@@ -115,9 +116,37 @@ describe('ConversationService.syncLeadFromActive', () => {
     const patch = await service.syncLeadFromActive('lead-1');
 
     expect(patch).toEqual({ responsavel_id: 'B', instancia_whatsapp: 'inst-b' });
+    // `returned_at: null` entra junto (Task 5): espelhar um dono no lead é uma
+    // atribuição como qualquer outra, e lead com dono não fica na nuvem.
     expect(prisma.lead.update).toHaveBeenCalledWith({
       where: { id: 'lead-1' },
-      data: { responsavel_id: 'B', instancia_whatsapp: 'inst-b' },
+      data: { responsavel_id: 'B', instancia_whatsapp: 'inst-b', returned_at: null },
+    });
+    expect(prisma.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('espelho de conversa SEM dono carimba returned_at (lead sem dono precisa estar na nuvem)', async () => {
+    const { service, prisma } = makeService();
+    prisma.conversation.findMany.mockResolvedValue([
+      {
+        id: 'conv-orfa',
+        instancia_whatsapp: 'inst-a',
+        responsavel_id: null,
+        last_customer_message_at: new Date('2026-08-03T09:00:00Z'),
+      },
+    ]);
+
+    await service.syncLeadFromActive('lead-1');
+
+    expect(prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 'lead-1' },
+      data: { responsavel_id: null, instancia_whatsapp: 'inst-a' },
+    });
+    // Condicional em `returned_at: null`: preserva o carimbo da devolução que
+    // criou esse estado em vez de reescrever a hora a cada mensagem do cliente.
+    expect(prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { id: 'lead-1', returned_at: null },
+      data: { returned_at: expect.any(Date) },
     });
   });
 
