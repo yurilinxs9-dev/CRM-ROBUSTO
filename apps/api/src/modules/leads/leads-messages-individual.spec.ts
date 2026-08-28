@@ -154,6 +154,28 @@ describe('LeadsService.getMessages — corte do modo INDIVIDUAL', () => {
     expect(hasConversationCut(capturedScopes(prisma))).toBe(false);
   });
 
+  it('DISCRIMINANTE: INDIVIDUAL — GERENTE focado que É o responsável vê só as conversas dele', async () => {
+    const { service, prisma } = makeService({
+      poolEnabled: false,
+      focusMode: true,
+      responsavelId: 'u-ger',
+      ownConversationIds: ['conv-ger'],
+      ownedInstances: ['inst-ger'],
+    });
+
+    const res = await service.getMessages(LEAD_ID, user('u-ger', UserRole.GERENTE));
+
+    // Passa o gate por ser o responsável, mas sem visão total: no INDIVIDUAL o
+    // gerente focado lê como operador — só as conversas próprias.
+    expect(res.messages).toEqual([]);
+    expect(capturedScopes(prisma)).toContainEqual({
+      OR: [
+        { conversation_id: { in: ['conv-ger'] } },
+        { conversation_id: null, instance_name: { in: ['inst-ger'] } },
+      ],
+    });
+  });
+
   it('REGRESSÃO: COMPARTILHADO — dono OPERADOR segue vendo a conversa inteira', async () => {
     const { service, prisma } = makeService({
       poolEnabled: true,

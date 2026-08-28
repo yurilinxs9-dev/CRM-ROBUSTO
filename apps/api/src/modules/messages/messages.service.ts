@@ -19,6 +19,7 @@ import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { PushService } from '../push/push.service';
 import { ConversationService } from '../webhooks/conversation.service';
+import { isManagerRole } from '../leads/lead-visibility';
 import { extractAdReferral } from '../webhooks/ad-referral';
 
 /**
@@ -935,29 +936,62 @@ export class MessagesService {
     }
 
     const isResponsavel = lead.responsavel_id === user.id;
+    // Mesma regra do chat (`LeadsService.getMessages`): esta rota tinha o
+    // vazamento original do modo INDIVIDUAL — o dono do card lia as conversas
+    // de TODAS as instâncias, inclusive as de outros vendedores.
+    const [tenantCfg, me] = await Promise.all([
+      this.prisma.tenant.findFirst({
+        where: { id: user.tenantId },
+        select: { pool_enabled: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const poolEnabled = Boolean(tenantCfg?.pool_enabled);
+    // Gerente focado abre mão da visão total — MENOS em lead sem dono, onde
+    // ler a conversa é o insumo da distribuição.
+    const supervising =
+      isManagerRole(user.role as UserRole) &&
+      (!me?.focus_mode || lead.responsavel_id === null);
+
     let ownedInstances: string[] = [];
-    if (user.role === UserRole.OPERADOR) {
+    let ownConversationIds: string[] = [];
+    if (!supervising) {
       ownedInstances = (
         await this.prisma.whatsappInstance.findMany({
           where: { owner_user_id: user.id, tenant_id: user.tenantId },
           select: { nome: true },
         })
       ).map((r) => r.nome);
-      const accessible =
-        isResponsavel ||
-        (lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp));
-      if (!accessible) {
+      ownConversationIds = (
+        await this.prisma.conversation.findMany({
+          where: { lead_id: leadId, responsavel_id: user.id },
+          select: { id: true },
+        })
+      ).map((c) => c.id);
+      const accessibleByInstance =
+        !!lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp);
+      if (ownConversationIds.length === 0 && !isResponsavel && !accessibleByInstance) {
         return { messages: [], nextCursor: undefined };
       }
     }
-    // Gerente, SuperAdmin: passam direto, veem todas as mensagens do lead.
 
-    // Dono do lead vê a conversa inteira (todos os números). Filtro por
-    // instância só pra operador que acessa via número próprio sem ser o dono.
-    const messagesFilter =
-      user.role === UserRole.OPERADOR && !isResponsavel && ownedInstances.length
-        ? { instance_name: { in: ownedInstances } }
-        : {};
+    // Visão total da conversa (todas as instâncias): gerente supervisionando,
+    // ou dono no modo COMPARTILHADO. No INDIVIDUAL o dono comum vê só as
+    // conversas dele. O ramo `conversation_id: null` é transitório: mensagens
+    // anteriores ao backfill ainda não têm conversa, e sem ele quem acessa pela
+    // própria instância perde todo o histórico.
+    const messagesFilter: Prisma.MessageWhereInput =
+      supervising || (isResponsavel && poolEnabled)
+        ? {}
+        : {
+            OR: [
+              { conversation_id: { in: ownConversationIds } },
+              { conversation_id: null, instance_name: { in: ownedInstances } },
+            ],
+          };
 
     const rows = await this.prisma.message.findMany({
       where: {

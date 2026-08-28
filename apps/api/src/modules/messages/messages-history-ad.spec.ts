@@ -40,6 +40,9 @@ function makeService(rows: unknown[]) {
       }),
     },
     whatsappInstance: { findMany: jest.fn().mockResolvedValue([]) },
+    conversation: { findMany: jest.fn().mockResolvedValue([]) },
+    tenant: { findFirst: jest.fn().mockResolvedValue({ pool_enabled: true }) },
+    user: { findUnique: jest.fn().mockResolvedValue({ focus_mode: false }) },
     message: { findMany: jest.fn().mockResolvedValue(rows) },
   };
   const media: any = { getSignedUrl: jest.fn().mockResolvedValue('https://signed/x') };
