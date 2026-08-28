@@ -427,16 +427,25 @@ export class LeadsService {
       mergeSearchCondition(where, searchCondition);
     }
 
-    // "Ver como membro": só gerente supervisionando pode recortar por outro
-    // responsável. Antes disto o param sobrescrevia where.responsavel_id e
-    // furava o modo individual.
+    // Recorte por responsável, em duas situações e só nelas:
+    //
+    // 1. AUTO-FILTRO (`responsavel_id === user.id`): sempre permitido. Pedir
+    //    "só os meus" nunca ALARGA o que o usuário já enxerga — é interseção
+    //    com o recorte de visibilidade, não substituição. É o que a aba
+    //    "Minhas" do chat manda pra todo mundo (chat/page.tsx), então barrar
+    //    isso quebraria a aba pro operador e pro gerente em modo foco.
+    // 2. "VER COMO MEMBRO" (outro responsável): só gerente supervisionando.
+    //    Antes disto o param sobrescrevia `where.responsavel_id` e furava o
+    //    modo individual — operador passava ?responsavel_id=<colega> e via a
+    //    carteira dele.
+    //
     // Entra DEPOIS do merge da busca pelo mesmo motivo dos filtros do painel:
     // mergeSearchCondition reescreve `where.AND` do zero, e um pushAnd feito
     // antes dele sumiria em silêncio quando o gerente busca e recorta junto.
     if (
       filters.responsavel_id &&
-      isManagerRole(user.role as UserRole) &&
-      !focusMode
+      (filters.responsavel_id === user.id ||
+        (isManagerRole(user.role as UserRole) && !focusMode))
     ) {
       pushAnd(where, { responsavel_id: filters.responsavel_id });
     }
@@ -1761,13 +1770,29 @@ export class LeadsService {
   async exportCsv(user: AuthUser, filters: ExportLeadFilters, res: Response): Promise<void> {
     const where: Record<string, unknown> = { tenant_id: user.tenantId };
 
+    const me = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { focus_mode: true },
+    });
+    const focusMode = Boolean(me?.focus_mode);
+
     if (user.role === UserRole.OPERADOR) {
       where.responsavel_id = user.id;
     }
 
     if (filters.pipeline_id) where.pipeline_id = filters.pipeline_id;
     if (filters.estagio_id) where.estagio_id = filters.estagio_id;
-    if (filters.responsavel_id) where.responsavel_id = filters.responsavel_id;
+    // Mesma regra do "Ver como" da listagem: auto-filtro sempre pode (só
+    // estreita), recorte por OUTRO responsável só gerente supervisionando.
+    // Antes disto esta linha sobrescrevia o clamp de OPERADOR logo acima e o
+    // operador exportava a carteira do colega com ?responsavel_id=<id-dele>.
+    if (
+      filters.responsavel_id &&
+      (filters.responsavel_id === user.id ||
+        (isManagerRole(user.role as UserRole) && !focusMode))
+    ) {
+      where.responsavel_id = filters.responsavel_id;
+    }
     if (filters.temperatura) where.temperatura = filters.temperatura;
     if (filters.from || filters.to) {
       const createdAt: Record<string, Date> = {};

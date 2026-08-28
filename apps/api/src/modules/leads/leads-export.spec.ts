@@ -17,6 +17,10 @@ import { EXPORT_PAGE_SIZE } from '../../common/prisma/fetch-all-by-cursor';
 function makeService() {
   const prisma: any = {
     lead: { findMany: jest.fn() },
+    // exportCsv le o modo foco do usuario para decidir se honra o param
+    // `responsavel_id` (regra do "Ver como membro"). Estes testes nao sao
+    // sobre foco: sem foco em todos eles.
+    user: { findUnique: jest.fn().mockResolvedValue({ focus_mode: false }) },
   };
   const service = new LeadsService(
     prisma,
