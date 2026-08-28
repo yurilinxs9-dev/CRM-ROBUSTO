@@ -11,6 +11,8 @@ interface User {
   is_platform_admin?: boolean;
   /** ["*"] = admin master; senão as áreas liberadas do painel. */
   platform_scopes?: string[];
+  /** Modo foco (gerente+): enxerga o board como operador. */
+  focus_mode?: boolean;
 }
 
 export interface Tenant {

@@ -135,15 +135,19 @@ export class UsersService {
     return { ok: true };
   }
 
-  async updateProfile(user: AuthUser, dto: { nome?: string; titulo?: string | null; especialidade?: string | null }) {
+  async updateProfile(
+    user: AuthUser,
+    dto: { nome?: string; titulo?: string | null; especialidade?: string | null; focus_mode?: boolean },
+  ) {
     const data: Record<string, unknown> = {};
     if (dto.nome !== undefined) data.nome = dto.nome;
     if (dto.titulo !== undefined) data.titulo = dto.titulo;
     if (dto.especialidade !== undefined) data.especialidade = dto.especialidade;
+    if (dto.focus_mode !== undefined) data.focus_mode = dto.focus_mode;
     return this.prisma.user.update({
       where: { id: user.id },
       data,
-      select: { id: true, nome: true, email: true, role: true, avatar_url: true, titulo: true, especialidade: true },
+      select: { id: true, nome: true, email: true, role: true, avatar_url: true, titulo: true, especialidade: true, focus_mode: true },
     });
   }
 

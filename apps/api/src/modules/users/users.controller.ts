@@ -23,6 +23,7 @@ const updateProfileSchema = z.object({
   nome: z.string().min(2).max(100).optional(),
   titulo: z.string().max(50).nullable().optional(),
   especialidade: z.string().max(100).nullable().optional(),
+  focus_mode: z.boolean().optional(),
 });
 
 const changePasswordSchema = z.object({
