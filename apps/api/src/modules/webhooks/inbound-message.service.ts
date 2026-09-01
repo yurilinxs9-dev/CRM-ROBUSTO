@@ -445,7 +445,10 @@ export class InboundMessageService {
 
     const tenant = await this.prisma.tenant.findFirst({
       where: { id: tenantId },
-      select: { pool_enabled: true, round_robin_enabled: true },
+      // `kanban_individual` entra NESTE select (e não numa consulta própria) de
+      // propósito: é o caminho mais quente do sistema, uma mensagem por webhook.
+      // Assim o tenant que não ligou a feature não paga consulta nenhuma a mais.
+      select: { pool_enabled: true, round_robin_enabled: true, kanban_individual: true },
     });
 
     // Instância dona de SUPER_ADMIN/GERENTE auto-atribui sempre ao dono,
@@ -597,6 +600,43 @@ export class InboundMessageService {
           { responsavel_id: responsavelId, estagio_id: estagioDono },
           tenantId,
         );
+      }
+    } else if (
+      tenant?.kanban_individual === true &&
+      lead.responsavel_id !== null &&
+      lead.estagio_id === ctx.firstStage.id
+    ) {
+      /**
+       * Lead que JÁ NASCE com dono — o caso normal do atendimento individual,
+       * onde a instância é do próprio operador. Ele não passa pelo auto-assign
+       * acima (aquilo é só para lead em pool), e nasce na coluna BASE: o
+       * `firstStage` é lido com `user_id: null` de propósito, para um lead SEM
+       * dono não cair dentro do board de alguém. Com o kanban individual ligado
+       * isso deixa o lead com dono apontando para uma coluna que o dono não
+       * enxerga — o board realoca o card para a primeira coluna e nada some da
+       * tela, mas a etapa gravada (a que SLA, cadência e segmento de follow-up
+       * leem) fica errada.
+       *
+       * O conserto vale também no backfill: lead recuperado com dono nasce na
+       * coluna do dono, e o resto do caminho de backfill segue intacto.
+       *
+       * A condição só é verdadeira enquanto a coluna ainda é a base, então a
+       * mensagem seguinte do mesmo lead não paga nada. E o `kanban_individual`
+       * vem do tenant já carregado: tenant com a feature desligada não faz
+       * consulta alguma a mais.
+       */
+      const estagioDono = await this.kanbanIndividual.stageForOwner(
+        tenantId,
+        lead.responsavel_id,
+        lead.estagio_id,
+      );
+      if (estagioDono !== lead.estagio_id) {
+        const fixed = await this.prisma.lead.update({
+          where: { id: lead.id },
+          data: { estagio_id: estagioDono, estagio_entered_at: new Date() },
+        });
+        lead.estagio_id = fixed.estagio_id;
+        this.gateway.emitLeadUpdated(lead.id, { estagio_id: estagioDono }, tenantId);
       }
     }
 

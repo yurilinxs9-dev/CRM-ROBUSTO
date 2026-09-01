@@ -995,4 +995,102 @@ describe('InboundMessageService — kanban individual', () => {
       't1',
     );
   });
+
+  /**
+   * Lead que JA NASCE com dono — o caso NORMAL do atendimento individual, onde
+   * a instancia e do proprio operador. Ele nao passa pelo auto-assign (que so
+   * roda para lead em pool), entao ficava parado na coluna BASE em que nasceu:
+   * o board realoca o card para a primeira coluna do dono e nada some da tela,
+   * mas a etapa gravada — a que SLA, cadencia e segmento de follow-up leem —
+   * fica apontando para uma coluna que nao e do board dele.
+   */
+  describe('lead nasce com dono', () => {
+    function cenarioNasceComDono(kanbanLigado: boolean) {
+      const m = makeService();
+      // A coluna em que o lead nasce E a primeira da base: e essa igualdade que
+      // marca "ainda nao traduzido".
+      m.prisma.stage.findFirst.mockResolvedValue({ id: 'base-novo' });
+      m.prisma.tenant.findFirst.mockResolvedValue({
+        pool_enabled: false,
+        round_robin_enabled: false,
+        kanban_individual: kanbanLigado,
+      });
+      const nascido = {
+        ...leadOwnedByA,
+        responsavel_id: 'B',
+        instancia_whatsapp: 'inst-b',
+        estagio_id: 'base-novo',
+      };
+      m.prisma.lead.upsert.mockResolvedValue({ ...nascido });
+      m.prisma.lead.update.mockImplementation(({ data }: any) =>
+        Promise.resolve({ ...nascido, ...data }),
+      );
+      m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+      m.prisma.message.upsert.mockResolvedValue({
+        id: 'msg-1',
+        conversation_id: 'conv-b',
+        visible_to_user_id: 'B',
+      });
+      return m;
+    }
+
+    /** `data` de todas as escritas em `lead.update`. */
+    const escritas = (prisma: any) => prisma.lead.update.mock.calls.map(([a]: any[]) => a.data);
+
+    it('toggle ON: a primeira mensagem leva o lead para a coluna do dono', async () => {
+      const m = cenarioNasceComDono(true);
+      m.kanbanIndividual.stageForOwner.mockResolvedValue('col-de-B');
+
+      await m.service.saveIncomingMessage(baseInput());
+
+      expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith('t1', 'B', 'base-novo');
+      expect(m.prisma.lead.update).toHaveBeenCalledWith({
+        where: { id: 'lead-1' },
+        data: { estagio_id: 'col-de-B', estagio_entered_at: expect.any(Date) },
+      });
+      expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith(
+        'lead-1',
+        { estagio_id: 'col-de-B' },
+        't1',
+      );
+    });
+
+    it('toggle ON: backfill com dono tambem nasce na coluna do dono', async () => {
+      // History sync recupera conversa antiga: o lead recuperado tem dono e
+      // precisa da mesma coluna. O resto do backfill (timestamps, sem badge,
+      // sem notificacao) segue como esta.
+      const m = cenarioNasceComDono(true);
+      m.kanbanIndividual.stageForOwner.mockResolvedValue('col-de-B');
+
+      await m.service.saveIncomingMessage(
+        baseInput({ backfill: { timestamp: new Date('2026-08-16T12:00:00.000Z') } }),
+      );
+
+      expect(escritas(m.prisma)).toContainEqual({
+        estagio_id: 'col-de-B',
+        estagio_entered_at: expect.any(Date),
+      });
+    });
+
+    it('toggle ON: coluna que ja e a do dono nao gera escrita nem emit', async () => {
+      // `stageForOwner` devolvendo o proprio id = nada a corrigir. Escrever aqui
+      // carimbaria entrada de etapa a cada mensagem, zerando SLA e cadencia.
+      const m = cenarioNasceComDono(true);
+
+      await m.service.saveIncomingMessage(baseInput());
+
+      expect(escritas(m.prisma).some((d: any) => 'estagio_id' in d)).toBe(false);
+      expect(m.gateway.emitLeadUpdated).not.toHaveBeenCalled();
+    });
+
+    it('toggle OFF: nem consulta a traducao — nada muda para quem nao ligou a feature', async () => {
+      const m = cenarioNasceComDono(false);
+
+      await m.service.saveIncomingMessage(baseInput());
+
+      expect(m.kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+      expect(escritas(m.prisma).some((d: any) => 'estagio_id' in d)).toBe(false);
+      expect(m.gateway.emitLeadUpdated).not.toHaveBeenCalled();
+    });
+  });
 });

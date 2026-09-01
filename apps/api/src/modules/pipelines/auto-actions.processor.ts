@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MessagesService } from '../messages/messages.service';
+import { KanbanIndividualService } from './kanban-individual.service';
 
 export const PIPELINE_AUTO_ACTIONS_QUEUE = 'pipeline-auto-actions';
 
@@ -69,8 +70,31 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     private prisma: PrismaService,
     private gateway: CrmGateway,
     private messages: MessagesService,
+    private kanbanIndividual: KanbanIndividualService,
   ) {
     super();
+  }
+
+  /**
+   * Automacao que ATRIBUI dono tem que levar a coluna junto: com o kanban
+   * individual ligado cada membro tem a propria copia das etapas, e um lead
+   * parado na coluna de quem nao e mais o responsavel some do board do dono
+   * (o board realoca o card para a primeira coluna, mas a etapa gravada — a que
+   * SLA, cadencia e segmento de follow-up leem — fica errada).
+   *
+   * Devolve o pedaco de `data` a acrescentar na MESMA escrita que grava o dono:
+   * vazio quando nao ha o que mudar, que e sempre o caso com o toggle desligado
+   * (`stageForOwner` devolve o proprio id).
+   */
+  private async colunaDoNovoDono(
+    tenantId: string,
+    donoId: string,
+    estagioAtual: string | null,
+  ): Promise<{ estagio_id: string; estagio_entered_at: Date } | Record<string, never>> {
+    if (!estagioAtual) return {};
+    const destino = await this.kanbanIndividual.stageForOwner(tenantId, donoId, estagioAtual);
+    if (destino === estagioAtual) return {};
+    return { estagio_id: destino, estagio_entered_at: new Date() };
   }
 
   async process(job: Job<AutoActionJobData>): Promise<void> {
@@ -84,7 +108,14 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true, telefone: true },
+      select: {
+        id: true,
+        responsavel_id: true,
+        instancia_whatsapp: true,
+        telefone: true,
+        // Origem da tradução de coluna quando a automação atribui dono.
+        estagio_id: true,
+      },
     });
     if (!lead) return;
 
@@ -102,7 +133,13 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     stageId: string,
     tenantId: string,
     triggeredByUserId: string,
-    lead: { id: string; responsavel_id: string | null; instancia_whatsapp: string | null; telefone: string },
+    lead: {
+      id: string;
+      responsavel_id: string | null;
+      instancia_whatsapp: string | null;
+      telefone: string;
+      estagio_id: string | null;
+    },
   ) {
     const parsed = entryConfigSchema.safeParse(raw);
     if (!parsed.success) {
@@ -122,12 +159,14 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
         if (users.length > 0) {
           // Distribui por modulo do timestamp — aproximação de round-robin sem estado
           const picked = users[Date.now() % users.length];
-          await this.prisma.lead.update({
+          const coluna = await this.colunaDoNovoDono(tenantId, picked.id, lead.estagio_id);
+          const atualizado = await this.prisma.lead.update({
             where: { id: leadId },
             // Ganhou dono → sai da nuvem de devolvidos.
-            data: { responsavel_id: picked.id, returned_at: null },
+            data: { responsavel_id: picked.id, returned_at: null, ...coluna },
           });
           lead.responsavel_id = picked.id;
+          lead.estagio_id = atualizado.estagio_id;
         }
       } catch (err) {
         this.logger.warn(`assignResponsible (round-robin) falhou para lead ${leadId}: ${String(err)}`);
@@ -175,7 +214,13 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     leadId: string,
     tenantId: string,
     triggeredByUserId: string,
-    lead: { id: string; responsavel_id: string | null; instancia_whatsapp: string | null; telefone: string },
+    lead: {
+      id: string;
+      responsavel_id: string | null;
+      instancia_whatsapp: string | null;
+      telefone: string;
+      estagio_id: string | null;
+    },
   ) {
     const parsed = legacyActionSchema.safeParse(raw);
     if (!parsed.success) {
@@ -187,10 +232,12 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
 
     if (onEnter.assign_user) {
       try {
+        const donoId = onEnter.assign_user.user_id;
+        const coluna = await this.colunaDoNovoDono(tenantId, donoId, lead.estagio_id);
         await this.prisma.lead.update({
           where: { id: leadId },
           // Idem: atribuição por automação de etapa também tira da nuvem.
-          data: { responsavel_id: onEnter.assign_user.user_id, returned_at: null },
+          data: { responsavel_id: donoId, returned_at: null, ...coluna },
         });
       } catch (err) {
         this.logger.warn(`assign_user falhou para lead ${leadId}: ${String(err)}`);
