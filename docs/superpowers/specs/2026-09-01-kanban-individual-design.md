@@ -48,9 +48,20 @@ compartilhadas.
 
 ### Com o toggle ON
 - GET de pipelines/etapas para o kanban devolve só as colunas do usuário
-  (`user_id = viewer`). "Ver como membro X" devolve as colunas do X.
+  (`user_id = viewer`).
+- **"Ver como membro" hoje é só filtro `responsavel_id` nos leads** (kanban
+  page → query). Precisa de complemento: o GET de pipelines/etapas aceita
+  `view_as_user_id` (validado: só GERENTE/SUPER_ADMIN) e devolve as colunas do
+  membro alvo; o kanban page passa o mesmo id nos dois requests.
 - Criar/renomear/recolorir/reordenar/apagar etapa: só nas colunas próprias.
   Ninguém (nem OPERADOR criativo) toca nas colunas dos outros.
+- Permissões dentro da coluna própria: OPERADOR controla estrutura (criar,
+  apagar, nome, cor, ordem). Campos avançados (is_won/is_lost, sla, cadence,
+  auto_action, on_entry, campos_obrigatorios, max_dias, probabilidade) seguem
+  só GERENTE/SUPER_ADMIN, como hoje (`CAMPOS_STAGE_OPERADOR`); vêm herdados do
+  clone.
+- **Lead inbound novo**: com responsável (round robin/atribuição) → primeira
+  coluna do responsável; sem responsável → primeira coluna base.
 - Tela de etapas do admin (config do pipeline) edita o **modelo base** —
   serve de template para membro novo.
 - Membro novo criado com toggle ON: recebe clone do modelo base na criação.
@@ -68,7 +79,10 @@ compartilhadas.
 ### Desativação (ON → OFF)
 1. Leads remapeiam para a coluna **base** de mesmo nome; sem equivalente →
    primeira coluna base.
-2. Colunas pessoais (agora vazias) são apagadas.
+2. Colunas pessoais (agora vazias) são apagadas. Referências penduradas:
+   `LeadInsight.etapa_sugerida_id` já é `onDelete: SetNull`;
+   `Broadcast.stage_id` (string solta, sem FK) apontando para coluna pessoal
+   apagada → anular no mesmo passo.
 3. Kanban volta a ser o modelo base compartilhado para todos.
 
 ### Guardas
@@ -98,9 +112,13 @@ Tenant `bb4953ac-b37f-4445-81c0-f54508c77141`.
    Loja → "Em contato" do dono (sem equivalente antigo). Aprovado pelo Yuri.
 6. Liga `kanban_individual` no tenant.
 
-Limitação aceita: sem histórico no banco; se a Isamara tiver renomeado colunas
-antigas não há como recuperar o nome anterior. Evidência atual: ela só
-adicionou colunas — as 9 antigas estão intactas.
+Limitações aceitas:
+- Sem histórico no banco; se a Isamara tiver renomeado colunas antigas não há
+  como recuperar o nome anterior. Evidência atual: ela só adicionou colunas —
+  as 9 antigas estão intactas.
+- Views salvas (`LeadView.filtros`) que filtram por id de etapa apontariam
+  para colunas base esvaziadas após a ativação. Cajuru tem zero views salvas
+  (verificado 01/09) — sem impacto; limitação documentada para outros tenants.
 
 ## Testes
 
