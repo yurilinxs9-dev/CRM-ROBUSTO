@@ -26,6 +26,8 @@ import {
   Wallet,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { deveMostrarOnboarding } from '@/lib/dashboard-onboarding';
+import { useAuthStore } from '@/stores/auth.store';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/layout/page-header';
@@ -447,6 +449,9 @@ function FinanceiroSecao({ dados }: { dados: Financeira }) {
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
+  // Quem supervisiona — mesma regra do backend, ver `dashboard-onboarding`.
+  const userRole = useAuthStore((s) => s.user?.role);
+  const focusMode = useAuthStore((s) => s.user?.focus_mode ?? false);
 
   const { data: stats, isLoading, isError } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
@@ -496,7 +501,14 @@ export default function DashboardPage() {
 
   const trend = stats ? weeklyTrend(stats.leadsThisWeek, stats.leadsLastWeek) : null;
 
-  if (!isLoading && stats && stats.totalLeads === 0) {
+  // Carteira vazia de operador NAO e workspace novo: ele fica com o dashboard
+  // zerado normal, o convite so aparece para quem supervisiona.
+  const mostrarOnboarding =
+    !isLoading &&
+    !!stats &&
+    deveMostrarOnboarding({ totalLeads: stats.totalLeads, role: userRole, focusMode });
+
+  if (mostrarOnboarding) {
     return (
       <div className="p-4 sm:p-6 space-y-6">
         <PageHeader title="Dashboard" subtitle="Visão geral do funil em tempo real" live />
