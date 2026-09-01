@@ -7,10 +7,16 @@ import {
   PIPELINE_AUTO_ACTIONS_QUEUE,
 } from './auto-actions.processor';
 import { MessagesModule } from '../messages/messages.module';
+import { KanbanIndividualModule } from './kanban-individual.module';
+import { KanbanIndividualController } from './kanban-individual.controller';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }), MessagesModule],
-  controllers: [PipelinesController],
+  imports: [
+    BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }),
+    MessagesModule,
+    KanbanIndividualModule,
+  ],
+  controllers: [PipelinesController, KanbanIndividualController],
   providers: [PipelinesService, PipelineAutoActionsProcessor],
   exports: [PipelinesService, BullModule],
 })
