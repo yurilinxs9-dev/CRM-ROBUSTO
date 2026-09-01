@@ -220,7 +220,10 @@ export class KanbanIndividualService {
 
       if (pessoais.length > 0) {
         await tx.broadcast.updateMany({
-          where: { stage_id: { in: pessoais.map((p) => p.id) } },
+          // `tenant_id` e redundante com os ids (que ja sao deste tenant), mas
+          // toda escrita do projeto carrega o recorte — um id vindo de outra
+          // fonte um dia nao pode virar escrita cross-tenant por descuido.
+          where: { tenant_id: tenantId, stage_id: { in: pessoais.map((p) => p.id) } },
           data: { stage_id: null },
         });
       }

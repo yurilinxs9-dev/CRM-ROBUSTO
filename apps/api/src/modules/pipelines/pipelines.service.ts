@@ -379,7 +379,14 @@ export class PipelinesService {
       }),
       this.prisma.pipeline.findFirst({
         where: { id: targetPipelineId, tenant_id: user.tenantId },
-        include: { stages: { orderBy: { ordem: 'asc' }, select: { id: true } } },
+        // `user_id: null` recorta o MODELO BASE: com o kanban individual ligado,
+        // sem isto a primeira etapa do destino podia ser a coluna pessoal de um
+        // membro qualquer (mesma `ordem`, desempate indefinido) e o pipeline
+        // inteiro cairia dentro do board de quem nem foi consultado. A base é o
+        // ponto de partida certo — a coluna de cada dono sai da tradução abaixo.
+        include: {
+          stages: { where: { user_id: null }, orderBy: { ordem: 'asc' }, select: { id: true } },
+        },
       }),
     ]);
     if (!source) throw new NotFoundException('Pipeline de origem nao encontrado');
@@ -389,8 +396,48 @@ export class PipelinesService {
     }
 
     const targetFirstStageId = target.stages[0].id;
+    const individual = await this.kanbanIndividual.isOn(user.tenantId);
 
     await this.prisma.$transaction(async (tx) => {
+      /**
+       * Kanban individual: os leads que atravessam de pipeline têm donos
+       * DIVERSOS, e cada um enxerga a própria cópia das colunas. Jogar todo
+       * mundo na primeira coluna base deixaria a etapa gravada fora do board do
+       * dono (o card seria realocado na tela, mas SLA, cadência e segmento de
+       * follow-up leem o `estagio_id`). Traduz por DONO, como o `bulkMoveStage`:
+       * uma tradução por dono, não uma por lead.
+       */
+      if (individual) {
+        const leads = await tx.lead.findMany({
+          where: { pipeline_id: id, tenant_id: user.tenantId },
+          select: { id: true, responsavel_id: true },
+        });
+        const porDono = new Map<string | null, string[]>();
+        for (const lead of leads) {
+          const doGrupo = porDono.get(lead.responsavel_id);
+          if (doGrupo) doGrupo.push(lead.id);
+          else porDono.set(lead.responsavel_id, [lead.id]);
+        }
+        for (const [dono, leadIds] of porDono) {
+          const destino =
+            dono === null
+              ? await this.kanbanIndividual.stageForBase(user.tenantId, targetFirstStageId)
+              : await this.kanbanIndividual.stageForOwner(
+                  user.tenantId,
+                  dono,
+                  targetFirstStageId,
+                );
+          await tx.lead.updateMany({
+            where: { id: { in: leadIds }, tenant_id: user.tenantId },
+            data: { pipeline_id: targetPipelineId, estagio_id: destino },
+          });
+        }
+      }
+
+      // Toggle desligado: é a única escrita, exatamente como antes da feature.
+      // Ligado: rede para o lead que tenha nascido no pipeline entre a leitura
+      // acima e agora — sobrar apontando para a etapa de um pipeline arquivado
+      // seria pior que cair na primeira coluna base.
       await tx.lead.updateMany({
         where: { pipeline_id: id, tenant_id: user.tenantId },
         data: { pipeline_id: targetPipelineId, estagio_id: targetFirstStageId },

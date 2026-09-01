@@ -46,6 +46,9 @@ function montar(
     lead: {
       count: jest.fn().mockResolvedValue(0),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      // Usado só pelo deleteWithMoveLeads com o kanban individual ligado, para
+      // agrupar os leads que atravessam de pipeline por dono.
+      findMany: jest.fn().mockResolvedValue([]),
     },
     user: { findMany: jest.fn().mockResolvedValue(opts.membros ?? []) },
     pipeline: {
@@ -55,6 +58,7 @@ function montar(
         Promise.resolve({ id: 'p-novo', ...data, stages: [] }),
       ),
       count: jest.fn().mockResolvedValue(0),
+      update: jest.fn().mockResolvedValue({ id: 'p-1' }),
     },
     $transaction: jest.fn(),
   };
@@ -68,6 +72,9 @@ function montar(
   const kanban = {
     isOn: jest.fn().mockResolvedValue(opts.kanbanOn ?? false),
     cloneBaseForUser: jest.fn().mockResolvedValue(undefined),
+    // Toggle desligado = traducao identidade, como o service real.
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
   };
   return {
     service: new PipelinesService(
@@ -578,6 +585,86 @@ describe('PipelinesService — escrita de etapas escopada por dono', () => {
       });
       expect(kanban.cloneBaseForUser).toHaveBeenCalledTimes(1);
       expect(kanban.cloneBaseForUser.mock.calls[0].slice(1)).toEqual([TENANT, 'o1', 'p-novo']);
+    });
+  });
+
+  /**
+   * Excluir pipeline movendo os leads: eles atravessam para o funil de destino
+   * com donos DIVERSOS. A primeira etapa do destino tem que sair do MODELO BASE
+   * (senao o funil inteiro cai dentro do board de um membro sorteado pelo
+   * desempate da `ordem`), e dali cada grupo vai para a coluna do seu dono.
+   */
+  describe('deleteWithMoveLeads', () => {
+    const ALVO = '33333333-3333-4333-8333-333333333333';
+
+    function comDestino(prisma: ReturnType<typeof montar>['prisma']) {
+      prisma.pipeline.findFirst
+        .mockResolvedValueOnce({ id: 'p-1', tenant_id: TENANT }) // origem
+        .mockResolvedValueOnce({
+          id: ALVO,
+          tenant_id: TENANT,
+          stages: [{ id: 'base-primeira' }],
+        });
+    }
+
+    it('le a primeira etapa do destino no modelo base (user_id null)', async () => {
+      const { service, prisma } = montar({ kanbanOn: true });
+      comDestino(prisma);
+
+      await service.deleteWithMoveLeads('p-1', { targetPipelineId: ALVO }, gerente);
+
+      expect(prisma.pipeline.findFirst.mock.calls[1][0].include.stages.where).toEqual({
+        user_id: null,
+      });
+    });
+
+    it('toggle ON: cada dono leva os leads dele para a coluna equivalente', async () => {
+      const { service, prisma, kanban } = montar({ kanbanOn: true });
+      comDestino(prisma);
+      prisma.lead.findMany.mockResolvedValue([
+        { id: 'l1', responsavel_id: 'u-alex' },
+        { id: 'l2', responsavel_id: 'u-alex' },
+        { id: 'l3', responsavel_id: 'u-bia' },
+        { id: 'l4', responsavel_id: null },
+      ]);
+      kanban.stageForOwner.mockImplementation(async (_t: string, dono: string) => `col-${dono}`);
+      kanban.stageForBase.mockResolvedValue('col-base');
+
+      await service.deleteWithMoveLeads('p-1', { targetPipelineId: ALVO }, gerente);
+
+      expect(kanban.stageForOwner).toHaveBeenCalledTimes(2);
+      expect(kanban.stageForBase).toHaveBeenCalledWith(TENANT, 'base-primeira');
+      const grupos = prisma.lead.updateMany.mock.calls
+        .slice(0, 3)
+        .map(([arg]: [{ where: { id: { in: string[] } }; data: { estagio_id: string } }]) => ({
+          ids: arg.where.id.in,
+          estagio_id: arg.data.estagio_id,
+        }));
+      expect(grupos).toEqual([
+        { ids: ['l1', 'l2'], estagio_id: 'col-u-alex' },
+        { ids: ['l3'], estagio_id: 'col-u-bia' },
+        { ids: ['l4'], estagio_id: 'col-base' },
+      ]);
+      // Rede final: sobra do pipeline vai para a base do destino.
+      expect(prisma.lead.updateMany.mock.calls.at(-1)?.[0]).toEqual({
+        where: { pipeline_id: 'p-1', tenant_id: TENANT },
+        data: { pipeline_id: ALVO, estagio_id: 'base-primeira' },
+      });
+    });
+
+    it('toggle OFF: um unico updateMany, exatamente como antes da feature', async () => {
+      const { service, prisma, kanban } = montar({ kanbanOn: false });
+      comDestino(prisma);
+
+      await service.deleteWithMoveLeads('p-1', { targetPipelineId: ALVO }, gerente);
+
+      expect(prisma.lead.findMany).not.toHaveBeenCalled();
+      expect(kanban.stageForOwner).not.toHaveBeenCalled();
+      expect(prisma.lead.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.lead.updateMany.mock.calls[0][0]).toEqual({
+        where: { pipeline_id: 'p-1', tenant_id: TENANT },
+        data: { pipeline_id: ALVO, estagio_id: 'base-primeira' },
+      });
     });
   });
 });

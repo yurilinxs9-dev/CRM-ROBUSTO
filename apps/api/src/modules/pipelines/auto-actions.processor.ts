@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MessagesService } from '../messages/messages.service';
-import { KanbanIndividualService } from './kanban-individual.service';
+import { KanbanIndividualService, PAPEIS_COM_BOARD } from './kanban-individual.service';
 
 export const PIPELINE_AUTO_ACTIONS_QUEUE = 'pipeline-auto-actions';
 
@@ -152,7 +152,11 @@ export class PipelineAutoActionsProcessor extends WorkerHost {
     if (cfg.assignResponsible?.enabled) {
       try {
         const users = await this.prisma.user.findMany({
-          where: { tenant_id: tenantId, ativo: true },
+          // VISUALIZADOR não move lead e não ganha cópia das colunas (mesma
+          // lista do clone): sorteá-lo daria um dono que não pode atender e,
+          // com o kanban individual ligado, deixaria o lead preso na coluna do
+          // dono anterior — `stageForOwner` não acharia board para traduzir.
+          where: { tenant_id: tenantId, ativo: true, role: { in: PAPEIS_COM_BOARD } },
           select: { id: true },
           orderBy: { created_at: 'asc' },
         });

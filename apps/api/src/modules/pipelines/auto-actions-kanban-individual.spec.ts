@@ -1,5 +1,6 @@
 import { PipelineAutoActionsProcessor } from './auto-actions.processor';
 import type { AutoActionJobData } from './auto-actions.processor';
+import { PAPEIS_COM_BOARD } from './kanban-individual.service';
 import type { Job } from 'bullmq';
 
 /**
@@ -98,6 +99,22 @@ describe('on_entry_config.assignResponsible (round-robin) — a coluna acompanha
     await processor.process(job);
 
     expect(dataEscrita(prisma)).toEqual({ responsavel_id: ALEX, returned_at: null });
+  });
+
+  it('o sorteio so considera papeis com board proprio (VISUALIZADOR fora)', async () => {
+    // VISUALIZADOR nao move lead e nao ganha copia das colunas: sorteado, o lead
+    // ficaria com um dono que nao pode atender e — com o toggle ligado — preso
+    // na coluna do dono anterior, porque nao existe board para traduzir.
+    const { processor, prisma } = makeProcessor();
+    comAssignResponsible(prisma);
+
+    await processor.process(job);
+
+    expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
+      tenant_id: 't1',
+      ativo: true,
+      role: { in: PAPEIS_COM_BOARD },
+    });
   });
 });
 

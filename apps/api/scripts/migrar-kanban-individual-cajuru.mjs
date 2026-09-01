@@ -212,6 +212,43 @@ try {
     );
   }
 
+  /**
+   * Colisao de ORDEM no board da Isamara. O clone de cada antiga nasce com a
+   * `ordem` da base, e as colunas pos-corte mantem a delas — as duas faixas
+   * convivem no MESMO board (so o dela). Dois estragos possiveis:
+   *   - ordem IGUAL a de um clone: duas colunas na mesma posicao, e qual vem
+   *     antes passa a depender do desempate do banco (muda entre recargas);
+   *   - ordem ENTRE as dos clones: a coluna pessoal aparece intercalada no meio
+   *     do funil base em vez de depois dele.
+   * Nenhum dos dois perde lead, entao e aviso, nao aborta — mas tem que sair
+   * nos dois modos, antes de alguem aplicar.
+   */
+  const ordensDosClones = [...new Set(antigas.map((s) => s.ordem))].sort((a, b) => a - b);
+  const setDeOrdens = new Set(ordensDosClones);
+  const ultimaDosClones = ordensDosClones.at(-1);
+  const ordensIguais = daIsamara.filter((s) => setDeOrdens.has(s.ordem));
+  const ordensIntercaladas = daIsamara.filter(
+    (s) => !setDeOrdens.has(s.ordem) && s.ordem < ultimaDosClones,
+  );
+  const descrever = (lista) => lista.map((s) => `"${s.nome}" (ordem ${s.ordem})`).join(' | ');
+
+  if (ordensIguais.length > 0) {
+    avisos.push(
+      `COLISAO DE ORDEM no board da Isamara: ${ordensIguais.length} coluna(s) pos-corte ficam na ` +
+        `MESMA ordem de um clone das antigas (clones em ${ordensDosClones.join(',')}): ` +
+        `${descrever(ordensIguais)}. Duas colunas na mesma posicao = ordem visual indefinida. ` +
+        `Reordenar para ordem > ${ultimaDosClones} ANTES do --apply resolve.`,
+    );
+  }
+  if (ordensIntercaladas.length > 0) {
+    avisos.push(
+      `ORDEM INTERCALADA no board da Isamara: ${ordensIntercaladas.length} coluna(s) pos-corte ficam ` +
+        `no MEIO do funil base (clones em ${ordensDosClones.join(',')}): ${descrever(ordensIntercaladas)}. ` +
+        `Nenhum lead se perde — o board dela abre com as colunas pessoais intercaladas entre as do ` +
+        `modelo, que e como ela ja ve hoje. Reordenar para ordem > ${ultimaDosClones} agrupa tudo no fim.`,
+    );
+  }
+
   // ------------------------------------------------------------- 3. membros
 
   const membros = await prisma.user.findMany({
