@@ -10,7 +10,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { PipelinesService } from './pipelines.service';
+import { PipelinesService, stageScopeQuerySchema } from './pipelines.service';
+import type { StageScopeOpts } from './pipelines.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -22,20 +23,35 @@ import type { AuthUser } from '../../common/types/auth-user';
 export class PipelinesController {
   constructor(private pipelinesService: PipelinesService) {}
 
+  /**
+   * `view_as_user_id` / `stage_scope` so tem efeito com o kanban individual
+   * ligado; o service decide o escopo e barra quem nao e gestor.
+   */
+  private escopoDeEtapas(query: unknown): StageScopeOpts {
+    const q = stageScopeQuerySchema.parse(query ?? {});
+    return { viewAsUserId: q.view_as_user_id, stageScope: q.stage_scope };
+  }
+
   @Get('pipelines')
   findAll(
     @Req() req: Record<string, unknown>,
+    @Query() query: Record<string, unknown>,
     @Query('includeArchived') includeArchived?: string,
   ) {
     return this.pipelinesService.findAll(
       req.user as AuthUser,
       includeArchived === 'true' || includeArchived === '1',
+      this.escopoDeEtapas(query),
     );
   }
 
   @Get('pipelines/:id')
-  findOne(@Param('id') id: string, @Req() req: Record<string, unknown>) {
-    return this.pipelinesService.findOne(id, req.user as AuthUser);
+  findOne(
+    @Param('id') id: string,
+    @Req() req: Record<string, unknown>,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.pipelinesService.findOne(id, req.user as AuthUser, this.escopoDeEtapas(query));
   }
 
   @Post('pipelines')

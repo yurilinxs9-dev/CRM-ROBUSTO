@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import { MessagesService } from '../messages/messages.service';
+import { KanbanIndividualService } from './kanban-individual.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
@@ -69,6 +70,21 @@ const deleteStageWithMoveSchema = z.object({
   targetStageId: z.string().uuid(),
 });
 
+/**
+ * Escopo de leitura das etapas quando o kanban individual esta ligado.
+ * `own` (default) = o board de quem pede (ou o de `view_as_user_id`, so gestor);
+ * `base` = o modelo do tenant (colunas com user_id null), tambem so gestor.
+ */
+export const stageScopeQuerySchema = z.object({
+  view_as_user_id: z.string().uuid().optional(),
+  stage_scope: z.enum(['own', 'base']).optional(),
+});
+
+export type StageScopeOpts = {
+  viewAsUserId?: string;
+  stageScope?: 'own' | 'base';
+};
+
 @Injectable()
 export class PipelinesService {
   private readonly logger = new Logger(PipelinesService.name);
@@ -77,13 +93,38 @@ export class PipelinesService {
     private prisma: PrismaService,
     private cache: RedisCacheService,
     private messages: MessagesService,
+    private kanbanIndividual: KanbanIndividualService,
   ) {}
 
   private async invalidateLeadsCache(tenantId: string): Promise<void> {
     await this.cache.delPattern(`leads:list:${tenantId}:*`);
   }
 
-  async findAll(user: AuthUser, includeArchived = false) {
+  /**
+   * Traduz quem pede + o que pediu no filtro de `Stage.user_id`. Com o toggle
+   * desligado nao existe coluna pessoal: todo mundo continua lendo a base, que
+   * e exatamente o comportamento anterior a esta feature.
+   */
+  private async stageScopeWhere(
+    user: AuthUser,
+    opts?: StageScopeOpts,
+  ): Promise<Prisma.StageWhereInput> {
+    const on = await this.kanbanIndividual.isOn(user.tenantId);
+    if (!on) return { user_id: null };
+    const ehGestor = user.role === 'GERENTE' || user.role === 'SUPER_ADMIN';
+    if (opts?.stageScope === 'base') {
+      if (!ehGestor) throw new ForbiddenException('Apenas gestores editam o modelo base.');
+      return { user_id: null };
+    }
+    if (opts?.viewAsUserId && opts.viewAsUserId !== user.id) {
+      if (!ehGestor) throw new ForbiddenException('Apenas gestores usam Ver como.');
+      return { user_id: opts.viewAsUserId };
+    }
+    return { user_id: user.id };
+  }
+
+  async findAll(user: AuthUser, includeArchived = false, opts?: StageScopeOpts) {
+    const stageWhere = await this.stageScopeWhere(user, opts);
     return this.prisma.pipeline.findMany({
       where: {
         ativo: true,
@@ -91,18 +132,20 @@ export class PipelinesService {
         ...(includeArchived ? {} : { arquivado: false }),
       },
       include: {
-        stages: { orderBy: { ordem: 'asc' } },
+        stages: { where: stageWhere, orderBy: { ordem: 'asc' } },
         _count: { select: { leads: true } },
       },
       orderBy: { ordem: 'asc' },
     });
   }
 
-  async findOne(id: string, user: AuthUser) {
+  async findOne(id: string, user: AuthUser, opts?: StageScopeOpts) {
+    const stageWhere = await this.stageScopeWhere(user, opts);
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id, tenant_id: user.tenantId },
       include: {
         stages: {
+          where: stageWhere,
           orderBy: { ordem: 'asc' },
           include: { _count: { select: { leads: true } } },
         },
