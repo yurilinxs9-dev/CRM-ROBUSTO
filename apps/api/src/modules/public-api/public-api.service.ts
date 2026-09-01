@@ -11,6 +11,7 @@ import { LeadsService } from '../leads/leads.service';
 import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { AttributionService } from '../attribution/attribution.service';
+import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
@@ -61,6 +62,7 @@ export class PublicApiService {
     private readonly gateway: CrmGateway,
     private readonly customFields: CustomFieldsService,
     private readonly attribution: AttributionService,
+    private readonly kanbanIndividual: KanbanIndividualService,
   ) {}
 
   /**
@@ -71,6 +73,11 @@ export class PublicApiService {
    * banco — e um id copiado à mão apodrece calado quando o funil é reorganizado.
    */
   async listPipelines(tenantId: string) {
+    // Kanban individual: o catálogo da integração é o MODELO do tenant (as
+    // colunas base). Com o toggle ligado existe uma cópia de cada coluna por
+    // membro — devolvê-las aqui faria a integração guardar o id da coluna de um
+    // membro sorteado e mandar todo mundo para o board dele.
+    const soBase = (await this.kanbanIndividual.isOn(tenantId)) ? { where: { user_id: null } } : {};
     const pipelines = await this.prisma.pipeline.findMany({
       where: { tenant_id: tenantId },
       orderBy: { ordem: 'asc' },
@@ -79,6 +86,7 @@ export class PublicApiService {
         nome: true,
         ordem: true,
         stages: {
+          ...soBase,
           orderBy: { ordem: 'asc' },
           select: { id: true, nome: true, ordem: true, is_won: true, is_lost: true },
         },
@@ -105,7 +113,7 @@ export class PublicApiService {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: tenantId },
-      select: { id: true },
+      select: { id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Usuário não encontrado.');
 
@@ -117,7 +125,17 @@ export class PublicApiService {
     });
     if (!stage) throw new NotFoundException('Estágio não encontrado.');
 
-    await this.leads.updateStage(leadId, { estagio_id: stage_id }, this.systemUser(tenantId));
+    // Kanban individual: a coluna acompanha o DONO, como em claim/reassign. A
+    // integração manda o id que leu do catálogo (base); gravá-lo cru num lead
+    // com dono tiraria o card do board de quem cuida dele. Lead sem dono vai
+    // para a base — nunca para a coluna pessoal de um membro qualquer.
+    const alvo = (await this.kanbanIndividual.isOn(tenantId))
+      ? lead.responsavel_id
+        ? await this.kanbanIndividual.stageForOwner(tenantId, lead.responsavel_id, stage_id)
+        : await this.kanbanIndividual.stageForBase(tenantId, stage_id)
+      : stage_id;
+
+    await this.leads.updateStage(leadId, { estagio_id: alvo }, this.systemUser(tenantId));
 
     const atualizado = await this.prisma.lead.findFirst({
       where: { id: leadId },
@@ -235,10 +253,19 @@ export class PublicApiService {
   async createContact(tenantId: string, body: unknown) {
     const d = createContactSchema.parse(body);
 
+    // Contato criado pela API nasce SEM dono (`responsavel_id: null` abaixo),
+    // então ele pertence ao conjunto BASE. Com o kanban individual ligado as
+    // cópias pessoais têm o mesmo nome e a mesma `ordem` das base, e sem este
+    // filtro o desempate poderia deixá-lo na coluna de um colega sorteado —
+    // board de ninguém.
+    const soBase = (await this.kanbanIndividual.isOn(tenantId)) ? { where: { user_id: null } } : {};
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { tenant_id: tenantId },
       orderBy: { ordem: 'asc' },
-      select: { id: true, stages: { orderBy: { ordem: 'asc' }, take: 1, select: { id: true } } },
+      select: {
+        id: true,
+        stages: { ...soBase, orderBy: { ordem: 'asc' }, take: 1, select: { id: true } },
+      },
     });
     if (!pipeline || !pipeline.stages[0]) {
       throw new BadRequestException('Tenant sem pipeline/estágio configurado.');

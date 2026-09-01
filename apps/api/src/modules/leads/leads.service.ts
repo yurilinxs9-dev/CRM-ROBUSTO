@@ -11,7 +11,7 @@ import {
   PIPELINE_AUTO_ACTIONS_QUEUE,
   type AutoActionJobData,
 } from '../pipelines/auto-actions.processor';
-import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
+import { KanbanIndividualService, temBoardProprio } from '../pipelines/kanban-individual.service';
 import { InstancesService } from '../instances/instances.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
@@ -646,8 +646,12 @@ export class LeadsService {
       // que já foi autorizado acima; usar o param cru deixaria um operador
       // pedir o conjunto de colunas de um colega). Toggle desligado = base do
       // tenant, que é o único conjunto que existe nesse modo.
+      // VISUALIZADOR (papel sem board proprio) le a BASE: o enable() so clona
+      // colunas para PAPEIS_COM_BOARD, entao pedir as colunas dele devolveria
+      // conjunto vazio e o board abriria em branco.
       const individual = await this.kanbanIndividual.isOn(user.tenantId);
-      const donoDasColunas = individual ? (responsavelRecortado ?? user.id) : null;
+      const donoDasColunas =
+        individual && temBoardProprio(user.role) ? (responsavelRecortado ?? user.id) : null;
       const stages = await this.prisma.stage.findMany({
         where: { pipeline_id: filters.pipeline_id, user_id: donoDasColunas },
         select: { id: true, ordem: true },
@@ -661,9 +665,22 @@ export class LeadsService {
       // Lead devolvido vive numa coluna BASE (returnToPool o remapeia pra lá),
       // que não pertence a nenhum board pessoal. Sem este OR a nuvem sumiria da
       // tela de quem tem o kanban individual ligado.
+      //
+      // O terceiro termo é o par do realocamento de CONTAGEM lá embaixo: o
+      // gestor sem recorte enxerga leads do time inteiro, e cada um vive na
+      // coluna pessoal do dono — fora do conjunto dele. A contagem já somava
+      // esses leads na primeira coluna; sem isto os CARDS não apareciam em
+      // lugar nenhum, e o rótulo dizia "12" numa coluna com 3 cards.
+      const idsConhecidos = stages.map((s) => s.id);
       const condicaoDaColuna = (id: string): Record<string, unknown> =>
         individual && id === primeiraColuna?.id
-          ? { OR: [{ estagio_id: id }, { responsavel_id: null, returned_at: { not: null } }] }
+          ? {
+              OR: [
+                { estagio_id: id },
+                { responsavel_id: null, returned_at: { not: null } },
+                { estagio_id: { notIn: idsConhecidos } },
+              ],
+            }
           : { estagio_id: id };
       const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
         Promise.all(stages.map((s) => runQuery(condicaoDaColuna(s.id), perStage, 0))),
@@ -690,7 +707,7 @@ export class LeadsService {
       // coluna pessoal de um colega, num lead que o gestor supervisiona). Elas
       // somam na primeira coluna — o mesmo lugar onde os cards aparecem, pelo
       // OR acima. Sem isto o rótulo diria "0" com a coluna cheia de cards.
-      const conhecidas = new Set(stages.map((s) => s.id));
+      const conhecidas = new Set(idsConhecidos);
       for (const c of counts) {
         const alvo =
           individual && !conhecidas.has(c.estagio_id) ? primeiraColuna?.id : c.estagio_id;
@@ -878,7 +895,15 @@ export class LeadsService {
   private async resolvePipelineAndStage(
     parsed: { pipeline_id?: string; estagio_id?: string },
     tenantId: string,
+    individual: boolean,
   ): Promise<{ pipelineId: string; stageId: string }> {
+    // Kanban individual: a PRIMEIRA etapa sai sempre do conjunto base. Com o
+    // toggle ligado existem N copias de cada coluna (uma por membro) com a
+    // MESMA `ordem`, entao o `orderBy: ordem asc` desempataria sozinho e o lead
+    // poderia nascer na coluna pessoal de um colega sorteado — board de
+    // ninguem. Quem escolheu a etapa explicitamente NAO passa por aqui: a
+    // escolha do usuario continua valendo, inclusive a coluna pessoal dele.
+    const soBase = individual ? { user_id: null } : {};
     if (parsed.pipeline_id) {
       if (parsed.estagio_id) {
         const stage = await this.prisma.stage.findFirst({
@@ -891,7 +916,7 @@ export class LeadsService {
         return { pipelineId: parsed.pipeline_id, stageId: stage.id };
       }
       const firstStage = await this.prisma.stage.findFirst({
-        where: { pipeline_id: parsed.pipeline_id, tenant_id: tenantId },
+        where: { pipeline_id: parsed.pipeline_id, tenant_id: tenantId, ...soBase },
         orderBy: { ordem: 'asc' },
         select: { id: true },
       });
@@ -914,7 +939,7 @@ export class LeadsService {
 
     const pipeline = await this.resolveDefaultPipeline(tenantId);
     const firstStage = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipeline.id, tenant_id: tenantId },
+      where: { pipeline_id: pipeline.id, tenant_id: tenantId, ...soBase },
       orderBy: { ordem: 'asc' },
       select: { id: true },
     });
@@ -957,7 +982,22 @@ export class LeadsService {
     });
     const poolEnabled = Boolean(tenant?.pool_enabled);
 
-    const { pipelineId, stageId } = await this.resolvePipelineAndStage(parsed, user.tenantId);
+    const individual = await this.kanbanIndividual.isOn(user.tenantId);
+    const { pipelineId, stageId: etapaResolvida } = await this.resolvePipelineAndStage(
+      parsed,
+      user.tenantId,
+      individual,
+    );
+
+    // Dono do lead novo — decidido ANTES da etapa de proposito. Com o kanban
+    // individual ligado, lead COM dono parado numa coluna base e lead
+    // invisivel: o board do dono so consulta as colunas dele. A etapa entao
+    // acompanha o dono, exatamente como em claim/reassign.
+    const donoInicial: string | null = parsed.responsavel_id || (poolEnabled ? null : user.id);
+    const stageId =
+      individual && donoInicial
+        ? await this.kanbanIndividual.stageForOwner(user.tenantId, donoInicial, etapaResolvida)
+        : etapaResolvida;
 
     // Telefone duplicado no mesmo (pipeline_id, lead_scope) — exatamente a
     // tupla da unique constraint `telefone_pipeline_scope` — estourava
@@ -992,7 +1032,7 @@ export class LeadsService {
             pipeline_id: pipelineId,
             estagio_id: stageId,
             instancia_whatsapp: instanciaWhatsapp,
-            responsavel_id: parsed.responsavel_id || (poolEnabled ? null : user.id),
+            responsavel_id: donoInicial,
             // Escopo de identidade: SEMPRE tenant → 1 lead por telefone+pipeline
             // (pool e Individual). Evita duplicar o mesmo contato por dono.
             lead_scope: user.tenantId,

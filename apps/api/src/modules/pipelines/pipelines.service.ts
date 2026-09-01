@@ -3,7 +3,12 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import { MessagesService } from '../messages/messages.service';
-import { KanbanIndividualService, PAPEIS_COM_BOARD, TX_OPTS } from './kanban-individual.service';
+import {
+  KanbanIndividualService,
+  PAPEIS_COM_BOARD,
+  TX_OPTS,
+  temBoardProprio,
+} from './kanban-individual.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 
@@ -122,6 +127,11 @@ export class PipelinesService {
       if (!this.ehGestor(user)) throw new ForbiddenException('Apenas gestores usam Ver como.');
       return { user_id: opts.viewAsUserId };
     }
+    // Papel sem board proprio (VISUALIZADOR) le o MODELO do tenant: o enable()
+    // so clona a base para PAPEIS_COM_BOARD, entao `{ user_id: <id dele> }` nao
+    // casaria com coluna nenhuma e o board abriria vazio para sempre — sem erro
+    // nenhum que denunciasse o motivo. Mesma lista do clone, de proposito.
+    if (!temBoardProprio(user.role)) return { user_id: null };
     return { user_id: user.id };
   }
 

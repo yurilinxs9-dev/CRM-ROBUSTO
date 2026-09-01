@@ -29,6 +29,16 @@ export const PAPEIS_COM_BOARD: UserRole[] = [
 ];
 
 /**
+ * O papel ganha copia das colunas? Existe para as rotas perguntarem sem cast:
+ * `AuthUser.role` vem do enum do Prisma e `PAPEIS_COM_BOARD` do enum local, que
+ * o TypeScript nao considera o mesmo tipo. Quem NAO tem board le a BASE — e
+ * essa e a unica leitura correta, porque o enable() nunca clonou nada para ele.
+ */
+export function temBoardProprio(role: string): boolean {
+  return (PAPEIS_COM_BOARD as string[]).includes(role);
+}
+
+/**
  * Ligar/desligar e O(membros x colunas) em round-trips dentro de UMA transacao.
  * O default do Prisma (5s de timeout) estoura com tenant grande e devolve P2028
  * no meio do remapeamento, entao os dois toggles pedem janela larga. Criar

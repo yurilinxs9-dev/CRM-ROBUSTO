@@ -220,6 +220,12 @@ describe('PipelinesService — escopo de leitura das etapas', () => {
     nome: 'Isamara',
     role: UserRole.OPERADOR as never,
   };
+  const visualizador: AuthUser = {
+    ...gerente,
+    id: 'v1',
+    nome: 'Auditor',
+    role: UserRole.VISUALIZADOR as never,
+  };
 
   it('toggle OFF: le so as colunas base, sem filtro por membro', async () => {
     const { service, prisma } = montar({ kanbanOn: false });
@@ -285,6 +291,27 @@ describe('PipelinesService — escopo de leitura das etapas', () => {
     await service.findOne('p-1', gerente, { viewAsUserId: 'o1' });
 
     expect(whereDasEtapasNoFindFirst(prisma)).toEqual({ user_id: 'o1' });
+  });
+
+  /**
+   * GATE: o enable() so clona a base para PAPEIS_COM_BOARD — VISUALIZADOR fica
+   * sem coluna nenhuma. Lendo `{ user_id: 'v1' }` ele veria um board VAZIO para
+   * sempre, sem nenhum erro que denunciasse o motivo.
+   */
+  it('toggle ON + VISUALIZADOR: le a BASE, porque nunca ganhou colunas proprias', async () => {
+    const { service, prisma } = montar({ kanbanOn: true });
+
+    await service.findAll(visualizador);
+
+    expect(whereDasEtapasNoFindMany(prisma)).toEqual({ user_id: null });
+  });
+
+  it('toggle ON + VISUALIZADOR no findOne: mesma regra', async () => {
+    const { service, prisma } = montar({ kanbanOn: true });
+
+    await service.findOne('p-1', visualizador);
+
+    expect(whereDasEtapasNoFindFirst(prisma)).toEqual({ user_id: null });
   });
 
   it('findOne com toggle OFF continua na base', async () => {

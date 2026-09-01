@@ -136,6 +136,11 @@ const gerente: AuthUser = {
   id: 'u-gerente',
   role: UserRole.GERENTE as unknown as AuthUser['role'],
 };
+const visualizador: AuthUser = {
+  ...alex,
+  id: 'u-visualizador',
+  role: UserRole.VISUALIZADOR as unknown as AuthUser['role'],
+};
 
 /** `data` da chamada de indice `i` no mock. */
 const dataDaChamada = (mock: jest.Mock, i = 0) => mock.mock.calls[i][0].data;
@@ -354,11 +359,18 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
 
     await service.findAll(alex, { per_stage: '50', pipeline_id: 'p-1' });
 
-    // Primeira coluna (menor ordem): a dela OU qualquer devolvido sem dono —
-    // o lead devolvido vive numa coluna BASE, que nao esta no conjunto do
-    // viewer, e sem isto ficaria invisivel no board dele.
+    // Primeira coluna (menor ordem): a dela, OU qualquer devolvido sem dono, OU
+    // qualquer lead parado numa coluna que este viewer nao conhece (a base dos
+    // devolvidos; a coluna pessoal de um colega, num lead que o gestor
+    // supervisiona). Sem o terceiro termo a CONTAGEM da primeira coluna somava
+    // esses leads (ver o bloco de stage_counts) mas os CARDS nao apareciam em
+    // lugar nenhum do board.
     expect(whereDaColuna(prisma, 0).AND).toContainEqual({
-      OR: [{ estagio_id: 's-a' }, { responsavel_id: null, returned_at: { not: null } }],
+      OR: [
+        { estagio_id: 's-a' },
+        { responsavel_id: null, returned_at: { not: null } },
+        { estagio_id: { notIn: ['s-a', 's-b'] } },
+      ],
     });
     // Demais colunas: recorte simples pela coluna.
     expect(whereDaColuna(prisma, 1).AND).toContainEqual({ estagio_id: 's-b' });
@@ -370,6 +382,39 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
       { responsavel_id: 'u-alex' },
       { responsavel_id: null, returned_at: { not: null }, is_private: false },
     ]);
+  });
+
+  /**
+   * GATE do gestor supervisionando: sem recorte de responsavel ele enxerga
+   * leads do time inteiro, e cada um deles vive na coluna PESSOAL do dono —
+   * fora do conjunto de colunas do gestor. A contagem ja somava esses leads na
+   * primeira coluna; os cards precisam cair no mesmo lugar.
+   */
+  it('toggle ON + gestor sem recorte: cards de coluna desconhecida entram na primeira', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comStages(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.findAll(gerente, { per_stage: '50', pipeline_id: 'p-1' });
+
+    const orDaPrimeira = (whereDaColuna(prisma, 0).AND as { OR?: unknown[] }[]).find(
+      (c) => Array.isArray(c.OR),
+    );
+    expect(orDaPrimeira?.OR).toContainEqual({ estagio_id: { notIn: ['s-a', 's-b'] } });
+  });
+
+  /**
+   * GATE do VISUALIZADOR: `enable()` so clona a base para PAPEIS_COM_BOARD, e
+   * ele nao esta na lista. Pedindo `{ user_id: 'v1' }` o board viria vazio.
+   */
+  it('toggle ON + VISUALIZADOR: as colunas do board sao as da BASE', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comStages(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.findAll(visualizador, { per_stage: '50', pipeline_id: 'p-1' });
+
+    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: null });
   });
 
   it('toggle OFF: primeira coluna continua sem a nuvem', async () => {

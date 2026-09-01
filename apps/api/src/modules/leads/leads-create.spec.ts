@@ -53,7 +53,14 @@ function makeMocks() {
   const outboundWebhooks: any = {
     dispatchLeadEvent: jest.fn().mockReturnValue(Promise.resolve()),
   };
-  return { prisma, cache, gateway, outboundWebhooks };
+  // Default = kanban individual DESLIGADO, que e o estado de quase todo tenant:
+  // as duas traducoes de coluna sao identidade, como no service real.
+  const kanbanIndividual: any = {
+    isOn: jest.fn().mockResolvedValue(false),
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
+  };
+  return { prisma, cache, gateway, outboundWebhooks, kanbanIndividual };
 }
 
 function makeService() {
@@ -69,7 +76,7 @@ function makeService() {
     {} as any, // AssignmentService
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
-    {} as any, // KanbanIndividualService — create() nao remapeia coluna
+    m.kanbanIndividual,
   );
   return { service, ...m };
 }
@@ -480,5 +487,129 @@ describe('LeadsService.create — telefone duplicado no mesmo pipeline devolve o
     );
 
     expect(prisma.leadActivity.create).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * GATE do kanban individual: lead criado a mao nascia INVISIVEL.
+ *
+ * Duas metades do mesmo furo, que so fazem sentido juntas:
+ *
+ * 1. A escolha da PRIMEIRA etapa (sem estagio_id explicito) nao filtrava
+ *    `user_id: null`. Com o toggle ligado o tenant tem N copias de cada coluna
+ *    (uma por membro) com a MESMA `ordem`, entao o `orderBy: ordem asc`
+ *    desempatava sozinho e o lead podia nascer na coluna pessoal de um colega
+ *    sorteado — board de ninguem.
+ * 2. Resolvida a base, o lead ainda nasce COM dono (o criador, fora do modo
+ *    pool). Lead com dono parado numa coluna BASE nao aparece no board do dono:
+ *    o board dele so consulta as colunas dele. A etapa tem que ser remapeada
+ *    para a copia do dono ANTES da gravacao.
+ *
+ * Toggle desligado: nenhuma das duas coisas acontece — nao existe coluna
+ * pessoal, e qualquer filtro/traducao a mais seria mudanca de comportamento
+ * num tenant que nem ligou a feature.
+ */
+describe('LeadsService.create — kanban individual: o lead nasce onde o dono enxerga', () => {
+  const COLUNA_BASE = FIRST_STAGE_OF_DEFAULT_PIPELINE;
+  const COLUNA_DO_DONO = '33333333-3333-3333-3333-333333333333';
+
+  function comPipelineDefault(prisma: any, poolEnabled = false) {
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: poolEnabled });
+    prisma.pipeline.findFirst.mockResolvedValue({ id: DEFAULT_PIPELINE_ID, ativo: true });
+    prisma.stage.findFirst.mockResolvedValue({ id: COLUNA_BASE, pipeline_id: DEFAULT_PIPELINE_ID });
+    prisma.whatsappInstance.findFirst.mockResolvedValue({
+      id: 'wa-own-1',
+      nome: OWN_INSTANCE_NAME,
+      owner_user_id: operador.id,
+    });
+  }
+
+  const whereDoStageFindFirst = (prisma: any, i = 0) => prisma.stage.findFirst.mock.calls[i][0].where;
+
+  it('toggle ON: a primeira etapa e procurada so entre as colunas BASE', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comPipelineDefault(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.create({ nome: 'Novo', telefone: '+5531900000001', temperatura: 'FRIO' }, operador);
+
+    expect(whereDoStageFindFirst(prisma)).toEqual({
+      pipeline_id: DEFAULT_PIPELINE_ID,
+      tenant_id: 't1',
+      user_id: null,
+    });
+  });
+
+  it('toggle ON + pipeline_id explicito sem etapa: mesmo filtro de base', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comPipelineDefault(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.create(
+      { nome: 'Novo', telefone: '+5531900000002', pipeline_id: NON_DEFAULT_PIPELINE_ID, temperatura: 'FRIO' },
+      operador,
+    );
+
+    expect(whereDoStageFindFirst(prisma)).toEqual({
+      pipeline_id: NON_DEFAULT_PIPELINE_ID,
+      tenant_id: 't1',
+      user_id: null,
+    });
+  });
+
+  it('toggle OFF: o filtro de etapa fica exatamente o de antes da feature', async () => {
+    const { service, prisma } = makeService();
+    comPipelineDefault(prisma);
+
+    await service.create({ nome: 'Novo', telefone: '+5531900000003', temperatura: 'FRIO' }, operador);
+
+    expect(whereDoStageFindFirst(prisma)).toEqual({
+      pipeline_id: DEFAULT_PIPELINE_ID,
+      tenant_id: 't1',
+    });
+  });
+
+  it('toggle ON: lead que nasce com dono e gravado na COLUNA DO DONO', async () => {
+    const { service, prisma, gateway, kanbanIndividual } = makeService();
+    comPipelineDefault(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForOwner.mockResolvedValue(COLUNA_DO_DONO);
+
+    await service.create({ nome: 'Novo', telefone: '+5531900000004', temperatura: 'FRIO' }, operador);
+
+    expect(kanbanIndividual.stageForOwner).toHaveBeenCalledWith('t1', operador.id, COLUNA_BASE);
+    const payload = prisma.lead.create.mock.calls[0][0].data;
+    expect(payload.estagio_id).toBe(COLUNA_DO_DONO);
+    expect(payload.responsavel_id).toBe(operador.id);
+    // A posicao (topo da coluna) tem que sair da coluna NOVA: tirada da base, o
+    // card nasceria num ponto arbitrario do board do dono.
+    expect(prisma.lead.aggregate.mock.calls[0][0].where.estagio_id).toBe(COLUNA_DO_DONO);
+    // Regra global: mutacao de Kanban emite — com a coluna onde o card esta.
+    expect(gateway.emitLeadCreated).toHaveBeenCalledWith(
+      expect.any(String),
+      { pipeline_id: DEFAULT_PIPELINE_ID, estagio_id: COLUNA_DO_DONO },
+      't1',
+    );
+  });
+
+  it('toggle ON + modo pool (lead nasce SEM dono): fica na base, sem traducao', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comPipelineDefault(prisma, true);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.create({ nome: 'Novo', telefone: '+5531900000005', temperatura: 'FRIO' }, operador);
+
+    expect(kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+    expect(prisma.lead.create.mock.calls[0][0].data.estagio_id).toBe(COLUNA_BASE);
+  });
+
+  it('toggle OFF: nenhuma traducao de coluna, mesmo com dono', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comPipelineDefault(prisma);
+
+    await service.create({ nome: 'Novo', telefone: '+5531900000006', temperatura: 'FRIO' }, operador);
+
+    expect(kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+    expect(prisma.lead.create.mock.calls[0][0].data.estagio_id).toBe(COLUNA_BASE);
   });
 });
