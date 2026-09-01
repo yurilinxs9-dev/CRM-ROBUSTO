@@ -68,10 +68,15 @@ compartilhadas.
 - **Claim/reassign/atribuição**: lead vai para a coluna do novo dono com o
   mesmo nome (case-insensitive); sem equivalente → primeira coluna do novo
   dono (ordem 0).
-- **Nuvem** (`responsavel_id null`, `returned_at` preenchido): lead mantém o
-  `estagio_id` de onde estava. Na renderização do kanban de quem olha, o card
-  da nuvem aparece na coluna de mesmo nome do viewer; sem equivalente →
-  primeira coluna. Só apresentação; o remap real acontece no claim.
+- **Nuvem** (`responsavel_id null`, `returned_at` preenchido): ao devolver,
+  o lead remapeia para a coluna **base** de mesmo nome (fallback: primeira
+  base) — dado canônico fica no modelo base enquanto não tem dono. No kanban
+  de qualquer viewer, cards cujo `estagio_id` não pertence ao conjunto do
+  viewer aparecem na **primeira coluna** dele (selo "Disponível" existente).
+  O remap real para coluna do novo dono acontece no claim.
+- **"Ver como: todos"** (gestor) deixa de existir com o toggle ON: leads dos
+  outros vivem em colunas que não são do gestor, não têm onde renderizar.
+  O seletor passa a exigir um membro específico (default: o próprio gestor).
 - Dashboards/métricas: `is_won`/`is_lost` existem nas colunas pessoais, então
   taxa de ganho etc. seguem por lead/responsável. Agrupamentos por etapa viram
   por-membro — aceito na decisão de kanban 100% independente.
@@ -119,6 +124,9 @@ Limitações aceitas:
 - Views salvas (`LeadView.filtros`) que filtram por id de etapa apontariam
   para colunas base esvaziadas após a ativação. Cajuru tem zero views salvas
   (verificado 01/09) — sem impacto; limitação documentada para outros tenants.
+- Broadcast segmentado por etapa (`Broadcast.stage_id`) com toggle ON mira uma
+  coluna de UM membro (ou base vazia). Recomendação na UI não muda; limitação
+  documentada — segmentar por etapa não é útil nesse modo.
 
 ## Testes
 
