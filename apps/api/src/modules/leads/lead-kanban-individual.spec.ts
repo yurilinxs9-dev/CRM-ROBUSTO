@@ -47,17 +47,24 @@ function makeMocks() {
       update: jest.fn().mockImplementation(({ data }: any) =>
         Promise.resolve({ id: 'lead-1', nome: 'Cliente', ...data }),
       ),
+      aggregate: jest.fn().mockResolvedValue({ _min: { position: null } }),
       findFirst: jest.fn().mockResolvedValue({
         id: 'lead-1',
         responsavel_id: null,
         instancia_whatsapp: null,
         estagio_id: 'base-novo',
+        mensagens_nao_lidas: 0,
       }),
       findMany: jest.fn().mockResolvedValue([]),
       groupBy: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
     },
-    stage: { findMany: jest.fn().mockResolvedValue([]) },
+    stage: {
+      findMany: jest.fn().mockResolvedValue([]),
+      // `updateStage` le a etapa duas vezes (nome para a atividade, is_won/
+      // is_lost para o webhook). Um retorno so serve para as duas.
+      findUnique: jest.fn().mockResolvedValue({ nome: 'Negociando', is_won: false, is_lost: false }),
+    },
     whatsappInstance: { findFirst: jest.fn().mockResolvedValue(null) },
     tenant: {
       findFirst: jest.fn().mockResolvedValue({ pool_enabled: true }),
@@ -80,7 +87,12 @@ function makeMocks() {
     set: jest.fn().mockResolvedValue(undefined),
     delPattern: jest.fn(),
   };
-  const gateway: any = { emitLeadUpdated: jest.fn() };
+  const gateway: any = {
+    emitLeadUpdated: jest.fn(),
+    emitLeadStageChanged: jest.fn(),
+    emitLeadUnreadReset: jest.fn(),
+  };
+  const autoActionsQueue: any = { add: jest.fn().mockResolvedValue(undefined) };
   const push: any = { sendToUsers: jest.fn() };
   const assignment: any = { assignBySector: jest.fn() };
   const outboundWebhooks: any = {
@@ -102,6 +114,7 @@ function makeMocks() {
     assignment,
     outboundWebhooks,
     kanbanIndividual,
+    autoActionsQueue,
   };
 }
 
@@ -117,7 +130,7 @@ function makeService() {
     m.outboundWebhooks,
     m.assignment,
     {} as any, // CustomFieldsService
-    {} as any, // autoActionsQueue (BullMQ)
+    m.autoActionsQueue,
     m.kanbanIndividual,
   );
   return { service, ...m };
@@ -281,6 +294,80 @@ describe('returnToPool — lead sem dono volta para a BASE', () => {
       returned_at: expect.any(Date),
     });
     expect(payloadEmitido(gateway)).toEqual({ responsavel_id: null });
+  });
+});
+
+/**
+ * `updateStage` (arrastar no board, mover pelo chat, acao em massa de um
+ * gestor): a coluna PEDIDA e a do board de quem move, que nem sempre e o board
+ * do dono do lead — a tela de chat, por exemplo, le os pipelines sem escopo.
+ * Gravar o id cru cravaria uma coluna pessoal do GESTOR num lead de colega, e o
+ * card sumiria do board do dono (nenhuma coluna dele bate com aquele id).
+ */
+describe('updateStage — a coluna pedida e traduzida para o board do dono', () => {
+  const COL_GERENTE = '22222222-2222-2222-2222-222222222222';
+  const COL_ALEX = '33333333-3333-3333-3333-333333333333';
+  const COL_BASE = '44444444-4444-4444-4444-444444444444';
+
+  function comLeadDoAlex(prisma: any) {
+    prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      responsavel_id: 'u-alex',
+      instancia_whatsapp: 'inst-alex',
+      estagio_id: 'alex-novo',
+      mensagens_nao_lidas: 0,
+    });
+  }
+
+  it('toggle ON: gestor movendo lead de colega grava a coluna DO COLEGA', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comLeadDoAlex(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForOwner.mockResolvedValue(COL_ALEX);
+
+    await service.updateStage('lead-1', { estagio_id: COL_GERENTE }, gerente);
+
+    expect(kanbanIndividual.stageForOwner).toHaveBeenCalledWith('t1', 'u-alex', COL_GERENTE);
+    expect(dataDaChamada(prisma.lead.update).estagio_id).toBe(COL_ALEX);
+  });
+
+  it('toggle ON: lead sem dono cai na BASE, nao na coluna pessoal de quem moveu', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForBase.mockResolvedValue(COL_BASE);
+
+    await service.updateStage('lead-1', { estagio_id: COL_GERENTE }, gerente);
+
+    expect(kanbanIndividual.stageForBase).toHaveBeenCalledWith('t1', COL_GERENTE);
+    expect(dataDaChamada(prisma.lead.update).estagio_id).toBe(COL_BASE);
+  });
+
+  it('toggle OFF: grava exatamente a coluna pedida (nenhuma traducao)', async () => {
+    const { service, prisma } = makeService();
+    comLeadDoAlex(prisma);
+
+    await service.updateStage('lead-1', { estagio_id: COL_GERENTE }, gerente);
+
+    expect(dataDaChamada(prisma.lead.update).estagio_id).toBe(COL_GERENTE);
+  });
+
+  it('a atividade e o evento WS carregam a coluna TRADUZIDA, nao a pedida', async () => {
+    const { service, prisma, kanbanIndividual, gateway } = makeService();
+    comLeadDoAlex(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForOwner.mockResolvedValue(COL_ALEX);
+
+    await service.updateStage('lead-1', { estagio_id: COL_GERENTE }, gerente);
+
+    expect(dataDaChamada(prisma.leadActivity.create).dados_depois).toEqual({
+      estagio_id: COL_ALEX,
+    });
+    expect(gateway.emitLeadStageChanged.mock.calls[0][1]).toEqual({
+      newStageId: COL_ALEX,
+      oldStageId: 'alex-novo',
+      leadId: 'lead-1',
+      triggeredByUserId: 'u-gerente',
+    });
   });
 });
 

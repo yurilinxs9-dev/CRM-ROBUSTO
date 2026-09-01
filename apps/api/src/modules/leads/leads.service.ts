@@ -1253,12 +1253,28 @@ export class LeadsService {
   }
 
   async updateStage(id: string, data: unknown, user: AuthUser) {
-    const { estagio_id, position } = updateStageSchema.parse(data);
+    const { estagio_id: estagioPedido, position } = updateStageSchema.parse(data);
 
     const lead = await this.prisma.lead.findFirst({
       where: { id, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException();
+
+    /**
+     * Kanban individual: a coluna PEDIDA e a do board de quem moveu, que nem
+     * sempre e o board do dono do lead — gestor arrastando no board de
+     * supervisao, ou mudando a etapa pelo chat (aquela tela le os pipelines sem
+     * escopo). Gravar o id cru cravaria uma coluna PESSOAL do gestor num lead de
+     * colega: o card sumiria do board do dono, que nao tem esse estagio.
+     * Traduz para a coluna equivalente do dono — ou da base, quando o lead esta
+     * sem dono (devolvido/pool). Com o toggle desligado a traducao e identidade.
+     */
+    const remapeada = await this.remapearEtapa(
+      user.tenantId,
+      estagioPedido,
+      lead.responsavel_id,
+    );
+    const estagio_id = remapeada?.estagio_id ?? estagioPedido;
 
     const stageChanged = estagio_id !== lead.estagio_id;
 
