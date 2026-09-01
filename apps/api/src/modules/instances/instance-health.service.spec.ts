@@ -6,6 +6,7 @@ import type { HttpService } from '@nestjs/axios';
 import type { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { PushService } from '../push/push.service';
+import { HistorySyncService } from '../webhooks/history-sync.service';
 
 const UAZ_BASE = 'https://uazapi.test';
 const EVO_BASE = 'http://evolution:8080';
@@ -113,15 +114,32 @@ function build(instances: InstanceRow[]) {
     notification: { create: jest.fn().mockResolvedValue({ id: 'notif-1' }) },
     // Sinal de "já teve sessão" das instâncias sem telefone (Evolution).
     lead: { findFirst: jest.fn().mockResolvedValue(null) },
+    // Detector de silêncio de inbound: por padrão chegou mensagem de cliente
+    // agora há pouco (instância saudável) — os testes de silêncio sobrescrevem.
+    message: {
+      findFirst: jest.fn().mockResolvedValue({ created_at: new Date() }),
+      count: jest.fn().mockResolvedValue(0),
+    },
+    webhookLog: { findFirst: jest.fn().mockResolvedValue(null) },
   };
   const push = { sendToUsers: jest.fn().mockResolvedValue(undefined) };
+  const historySync = {
+    syncInstance: jest.fn().mockResolvedValue(undefined),
+    syncEvolutionInstance: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new InstanceHealthService(
     prisma as unknown as PrismaService,
     http,
     config,
     push as unknown as PushService,
+    historySync as unknown as HistorySyncService,
   );
-  return { service, prisma, push, httpGet, httpPost };
+  return { service, prisma, push, historySync, httpGet, httpPost };
+}
+
+/** Silêncio de inbound: última mensagem de cliente mais velha que a janela. */
+function horasAtras(h: number): Date {
+  return new Date(Date.now() - h * 3_600_000);
 }
 
 describe('InstanceHealthService.verificarTodas', () => {
@@ -603,6 +621,168 @@ describe('InstanceHealthService.verificarTodas', () => {
       'http://evo2:8080/instance/connectionState/vendas-evo',
       expect.anything(),
     );
+  });
+});
+
+// Incidente 28→31/08/2026: o servidor UazAPI parou de entregar webhook de
+// mensagem de CLIENTE em todas as instâncias. Status ficou 'open' o tempo
+// todo, o monitor não viu nada e clientes ficaram 3 dias sem resposta.
+describe('InstanceHealthService: detector de silêncio de inbound', () => {
+  interface AlertWhere {
+    where: { tipo?: string };
+  }
+
+  it('conectada, sem inbound há horas mas com webhook vivo: alerta e dispara o sync', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(10) });
+    m.prisma.message.count.mockResolvedValue(42); // baseline: instância movimentada
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-1' }); // canal vivo
+
+    const r = await m.service.verificarTodas();
+
+    expect(m.prisma.message.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenant_id: 'tenant-1',
+          instance_name: 'atendimento-alex',
+          direction: 'INCOMING',
+        }),
+      }),
+    );
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        tenant_id: 'tenant-1',
+        instance_id: 'inst-uaz',
+        tipo: 'inbound_silencioso',
+        aberto_em: expect.any(Date),
+      }),
+    });
+
+    const texto = expect.stringMatching(
+      /^Instância atendimento-alex \(Cajuru\) conectada mas sem mensagens de clientes há 10h — possível falha de entrega do provedor; sincronização de histórico disparada\.$/,
+    );
+    expect(m.prisma.notification.create).toHaveBeenCalledTimes(2);
+    expect(m.prisma.notification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        user_id: 'admin-1',
+        titulo: 'Instância sem mensagens recebidas',
+        conteudo: texto,
+        tipo: 'instance_alert',
+        link: '/admin',
+      }),
+    });
+    expect(m.push.sendToUsers).toHaveBeenCalledWith(
+      ['admin-1', 'admin-2'],
+      expect.objectContaining({ body: texto }),
+    );
+
+    expect(m.historySync.syncInstance).toHaveBeenCalledWith(
+      'inst-uaz',
+      HistorySyncService.RECONNECT_WINDOW_MS,
+    );
+    expect(r.silencios).toBe(1);
+  });
+
+  it('silêncio total (nenhum webhook na janela): não é este alerta', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(10) });
+    m.prisma.message.count.mockResolvedValue(42);
+    m.prisma.webhookLog.findFirst.mockResolvedValue(null);
+
+    const r = await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.prisma.notification.create).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+    expect(r.silencios).toBe(0);
+  });
+
+  it('instância sem volume histórico: silêncio não vira alerta', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(30) });
+    m.prisma.message.count.mockResolvedValue(3); // < mínimo de 10 nos 7d
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-1' });
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  it('cooldown: alerta de silêncio recente não re-alerta nem re-sincroniza', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(10) });
+    m.prisma.message.count.mockResolvedValue(42);
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-1' });
+    m.prisma.instanceAlert.findFirst.mockImplementation((args: AlertWhere) =>
+      Promise.resolve(
+        args.where.tipo === 'inbound_silencioso'
+          ? { id: 'alert-sil', aberto_em: horasAtras(2) }
+          : null,
+      ),
+    );
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          instance_id: 'inst-uaz',
+          tipo: 'inbound_silencioso',
+          aberto_em: { gte: expect.any(Date) },
+        }),
+      }),
+    );
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.prisma.notification.create).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  it('inbound recente: nem consulta o resto', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(1) });
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.webhookLog.findFirst).not.toHaveBeenCalled();
+    expect(m.prisma.message.count).not.toHaveBeenCalled();
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  it('instância caída não passa pelo detector (é a queda de sempre)', async () => {
+    const m = build([uaz({ status: 'close' })]);
+    m.httpGet.mockReturnValue(of(uazStatusCaido));
+    m.httpPost.mockReturnValue(of(uazConnectComQr));
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.message.findFirst).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  it('Evolution silenciosa: dispara o sync Evolution', async () => {
+    const m = build([evo()]);
+    m.httpGet.mockReturnValue(of(evoState('open')));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(8) });
+    m.prisma.message.count.mockResolvedValue(20);
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-2' });
+
+    await m.service.verificarTodas();
+
+    expect(m.historySync.syncEvolutionInstance).toHaveBeenCalledWith(
+      'inst-evo',
+      HistorySyncService.RECONNECT_WINDOW_MS,
+    );
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ instance_id: 'inst-evo', tipo: 'inbound_silencioso' }),
+    });
   });
 });
 

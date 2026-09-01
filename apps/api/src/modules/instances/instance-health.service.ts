@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { PushService } from '../push/push.service';
+import { HistorySyncService } from '../webhooks/history-sync.service';
 import { LogThrottle, INSTANCIA_DESCONHECIDA_JANELA_MS } from '../webhooks/log-throttle';
 
 /** Mesmo shape lido pelo InstancesService (config Json da instância). */
@@ -96,11 +97,23 @@ export class InstanceHealthService {
   private static readonly CICLOS_PARA_AVISAR_CEGA = 3;
   private static readonly TIMEOUT_MS = 5000;
 
+  /** Sem mensagem de CLIENTE por mais que isto = silêncio suspeito. */
+  private static readonly SILENCIO_INBOUND_MS = 6 * 3_600_000;
+  /** Janela de baseline (antes da janela de silêncio) que prova movimento. */
+  private static readonly BASELINE_MS = 7 * 24 * 3_600_000;
+  /** Mínimo de INCOMING no baseline pra instância ser "movimentada". */
+  private static readonly BASELINE_MINIMO = 10;
+  /** No máximo um alerta+sync de silêncio por instância nesta janela. */
+  private static readonly COOLDOWN_SILENCIO_MS = 6 * 3_600_000;
+  private static readonly TIPO_SILENCIO = 'inbound_silencioso';
+  private static readonly TIPO_QUEDA = 'desconectada';
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
     private readonly config: ConfigService,
     private readonly push: PushService,
+    private readonly historySync: HistorySyncService,
   ) {
     this.uazBaseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.evoBaseUrl = this.config.get<string>('EVOLUTION_BASE_URL', '');
@@ -115,10 +128,11 @@ export class InstanceHealthService {
     this.running = true;
     try {
       const r = await this.verificarTodas();
-      if (r.reconectadas || r.alertas) {
+      if (r.reconectadas || r.alertas || r.silencios) {
         this.logger.log(
           `monitor de instâncias: ${r.verificadas} verificada(s), ` +
-            `${r.reconectadas} reconectada(s), ${r.alertas} alerta(s)`,
+            `${r.reconectadas} reconectada(s), ${r.alertas} alerta(s), ` +
+            `${r.silencios} sem inbound`,
         );
       }
     } catch (err: unknown) {
@@ -132,6 +146,7 @@ export class InstanceHealthService {
     verificadas: number;
     reconectadas: number;
     alertas: number;
+    silencios: number;
   }> {
     const instances = (await this.prisma.whatsappInstance.findMany({
       where: { tenant: { suspended_at: null } },
@@ -149,6 +164,7 @@ export class InstanceHealthService {
     let verificadas = 0;
     let reconectadas = 0;
     let alertas = 0;
+    let silencios = 0;
 
     for (const inst of instances) {
       const cfg = (inst.config ?? {}) as InstanceConfig;
@@ -173,6 +189,7 @@ export class InstanceHealthService {
           await this.marcarStatus(inst.id, 'open');
           this.quedas.delete(inst.id);
           await this.resolverAlerta(inst.id, inst);
+          if (await this.checarSilencioInbound(inst, cfg)) silencios++;
           continue;
         }
 
@@ -217,7 +234,122 @@ export class InstanceHealthService {
       }
     }
 
-    return { verificadas, reconectadas, alertas };
+    return { verificadas, reconectadas, alertas, silencios };
+  }
+
+  /**
+   * Detector de silêncio de inbound (incidente 28→31/08/2026).
+   *
+   * O servidor UazAPI parou de entregar webhook de mensagem de CLIENTE — só
+   * `fromMe` continuou chegando. As instâncias ficaram `open` o tempo todo, o
+   * check de status acima não viu nada, o history sync (gatilho: reconexão)
+   * também não, e clientes ficaram três dias sem resposta.
+   *
+   * O sinal é a combinação: nenhum INCOMING há ≥6h ENQUANTO o canal de webhook
+   * da instância continua vivo (WebhookLog recente). Sem webhook nenhum a
+   * instância está parada de verdade — isso é a queda de sempre, tratada
+   * acima, e este alerta fica quieto pra não duplicar.
+   *
+   * O baseline (≥10 INCOMING nos 7 dias ANTERIORES à janela) é o que mantém
+   * fora do alerta a instância nova, a de teste e a que simplesmente não
+   * recebe nada de madrugada.
+   *
+   * Cooldown de 6h no próprio InstanceAlert (`aberto_em`, tipo
+   * `inbound_silencioso`) e não em memória como o contador anti-flap: numa
+   * pane de dias o backend é redeployado várias vezes, e um Map zerado a cada
+   * restart viraria alerta+sync repetidos. O alerta de silêncio fica aberto
+   * (ninguém "resolve" um provedor) — por isso `resolverAlerta`/`abrirAlerta`
+   * são escopados ao tipo `desconectada`.
+   *
+   * @returns true quando alertou (e disparou o sync) neste ciclo.
+   */
+  private async checarSilencioInbound(
+    inst: InstanceRow,
+    cfg: InstanceConfig,
+  ): Promise<boolean> {
+    const agora = Date.now();
+    const janela = new Date(agora - InstanceHealthService.SILENCIO_INBOUND_MS);
+
+    const ultimo = await this.prisma.message.findFirst({
+      where: {
+        tenant_id: inst.tenant_id,
+        instance_name: inst.nome,
+        direction: 'INCOMING',
+      },
+      orderBy: { created_at: 'desc' },
+      select: { created_at: true },
+    });
+    // Cliente falou dentro da janela: canal saudável, sai barato.
+    if (ultimo && ultimo.created_at.getTime() >= janela.getTime()) return false;
+
+    // Cooldown antes das consultas caras: numa pane que dura dias este ramo é
+    // o que roda a cada 5 min.
+    const recente = await this.prisma.instanceAlert.findFirst({
+      where: {
+        instance_id: inst.id,
+        tipo: InstanceHealthService.TIPO_SILENCIO,
+        aberto_em: { gte: new Date(agora - InstanceHealthService.COOLDOWN_SILENCIO_MS) },
+      },
+      select: { id: true },
+    });
+    if (recente) return false;
+
+    // Prova de que o canal está vivo e só o inbound sumiu. O log da UazAPI
+    // grava ora o nome, ora o id da instância — os dois identificadores valem.
+    const identificadores = [inst.nome, typeof cfg.uazapi_id === 'string' ? cfg.uazapi_id : null]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0);
+    const webhookVivo = await this.prisma.webhookLog.findFirst({
+      where: { instance: { in: identificadores }, created_at: { gte: janela } },
+      select: { id: true },
+    });
+    if (!webhookVivo) return false;
+
+    const baseline = await this.prisma.message.count({
+      where: {
+        tenant_id: inst.tenant_id,
+        instance_name: inst.nome,
+        direction: 'INCOMING',
+        created_at: {
+          gte: new Date(janela.getTime() - InstanceHealthService.BASELINE_MS),
+          lt: janela,
+        },
+      },
+    });
+    if (baseline < InstanceHealthService.BASELINE_MINIMO) return false;
+
+    const horas = ultimo
+      ? Math.floor((agora - ultimo.created_at.getTime()) / 3_600_000)
+      : Math.floor(InstanceHealthService.SILENCIO_INBOUND_MS / 3_600_000);
+
+    await this.prisma.instanceAlert.create({
+      data: {
+        tenant_id: inst.tenant_id,
+        instance_id: inst.id,
+        tipo: InstanceHealthService.TIPO_SILENCIO,
+        aberto_em: new Date(agora),
+      },
+    });
+
+    const texto =
+      `Instância ${inst.nome} (${inst.tenant.nome}) conectada mas sem mensagens ` +
+      `de clientes há ${horas}h — possível falha de entrega do provedor; ` +
+      `sincronização de histórico disparada.`;
+    await this.avisarAdmins('Instância sem mensagens recebidas', texto, inst.id);
+
+    // Best-effort e em background: o sync varre 7 dias e não pode segurar o
+    // ciclo do monitor nem derrubá-lo se o gateway estiver ruim.
+    const sync = cfg.evolution_token
+      ? this.historySync.syncEvolutionInstance(inst.id, HistorySyncService.RECONNECT_WINDOW_MS)
+      : this.historySync.syncInstance(inst.id, HistorySyncService.RECONNECT_WINDOW_MS);
+    void sync.catch((err: unknown) =>
+      this.logger.warn(`history sync por silêncio (${inst.nome}) falhou: ${String(err)}`),
+    );
+
+    this.logger.warn(
+      `monitor: ${inst.nome} (${inst.tenant.nome}) sem INCOMING há ${horas}h com webhook ` +
+        `ativo — alerta de silêncio aberto e history sync disparado`,
+    );
+    return true;
   }
 
   /**
@@ -227,8 +359,14 @@ export class InstanceHealthService {
    */
   async resolverAlerta(instanceId: string, conhecida?: InstanceRow): Promise<void> {
     this.quedas.delete(instanceId);
+    // Só o alerta de QUEDA: "reconectou" não diz nada sobre o alerta de
+    // silêncio de inbound, que nasce com a instância já conectada.
     const aberto = await this.prisma.instanceAlert.findFirst({
-      where: { instance_id: instanceId, resolvido_em: null },
+      where: {
+        instance_id: instanceId,
+        tipo: InstanceHealthService.TIPO_QUEDA,
+        resolvido_em: null,
+      },
       orderBy: { aberto_em: 'desc' },
     });
     if (!aberto) return;
@@ -428,7 +566,11 @@ export class InstanceHealthService {
   /** @returns true quando o alerta foi criado agora (false = já havia um aberto). */
   private async abrirAlerta(inst: InstanceRow, desde: Date): Promise<boolean> {
     const aberto = await this.prisma.instanceAlert.findFirst({
-      where: { instance_id: inst.id, resolvido_em: null },
+      where: {
+        instance_id: inst.id,
+        tipo: InstanceHealthService.TIPO_QUEDA,
+        resolvido_em: null,
+      },
       select: { id: true },
     });
     if (aberto) return false; // UM alerta por queda.
@@ -437,7 +579,7 @@ export class InstanceHealthService {
       data: {
         tenant_id: inst.tenant_id,
         instance_id: inst.id,
-        tipo: 'desconectada',
+        tipo: InstanceHealthService.TIPO_QUEDA,
         aberto_em: desde,
       },
     });
