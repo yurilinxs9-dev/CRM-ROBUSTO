@@ -723,6 +723,165 @@ describe('HistorySyncService — deep sync (miolo da conversa)', () => {
   });
 });
 
+describe('HistorySyncService — backfill não atropela o webhook ao vivo', () => {
+  // BullMQ 5: o worker faz RPOPLPUSH do `wait` (jobs SEM priority) e só cai no
+  // ZSET `prioritized` quando o wait esvazia. Backfill com priority > 0 fica
+  // atrás de todo webhook ao vivo — sem isso um deep grande ocupa as 3 vagas
+  // de concorrência e o inbound real espera.
+  it('job de backfill UazAPI vai com priority atrás do ao vivo', async () => {
+    const { service, http, queue } = makeService();
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    await service.syncInstance('inst-1', 48 * HOUR);
+
+    const [, , opts] = queue.add.mock.calls[0];
+    expect(opts.priority).toBe(HistorySyncService.BACKFILL_PRIORITY);
+    expect(HistorySyncService.BACKFILL_PRIORITY).toBeGreaterThan(0);
+  });
+
+  it('job de backfill Evolution vai com priority atrás do ao vivo', async () => {
+    const m = makeService();
+    const evoInstance = {
+      id: 'inst-evo',
+      nome: 'teste',
+      tenant_id: 't1',
+      config: { provider: 'evolution' },
+    };
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    const ts = Math.floor((NOW - HOUR) / 1000);
+    m.http.post
+      .mockReturnValueOnce(
+        of({
+          data: [
+            {
+              remoteJid: '553799086000@s.whatsapp.net',
+              unreadCount: null,
+              lastMessage: { key: { id: 'NEW-1' }, messageTimestamp: ts },
+            },
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            messages: {
+              records: [
+                { key: { id: 'NEW-1', fromMe: false }, messageTimestamp: ts, message: {} },
+              ],
+              total: 1,
+              pages: 1,
+              currentPage: 1,
+            },
+          },
+        }),
+      );
+
+    await m.service.syncEvolutionInstance('inst-evo', 48 * HOUR);
+
+    const [, , opts] = m.queue.add.mock.calls[0];
+    expect(opts.priority).toBe(HistorySyncService.BACKFILL_PRIORITY);
+  });
+});
+
+describe('HistorySyncService — cap de mensagens por chat avisa', () => {
+  it('chat cortado pelo cap de 500 loga warn com o telefone', async () => {
+    const { service, http } = makeService();
+    const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const muitas = Array.from({ length: 600 }, (_, i) => msgPayload(`M${i}`, NOW - HOUR));
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(of({ data: { hasMore: false, messages: muitas } }));
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR, true);
+
+    expect(r.messages_enqueued).toBe(500);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cap de 500'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('553186332984'));
+  });
+
+  it('chat Evolution cortado pelo cap de 500 loga warn', async () => {
+    const m = makeService();
+    const evoInstance = {
+      id: 'inst-evo',
+      nome: 'teste',
+      tenant_id: 't1',
+      config: { provider: 'evolution' },
+    };
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    const warn = jest.spyOn((m.service as any).logger, 'warn').mockImplementation(() => undefined);
+    const ts = Math.floor((NOW - HOUR) / 1000);
+    const muitos = Array.from({ length: 600 }, (_, i) => ({
+      key: { id: `E${i}`, fromMe: false },
+      messageTimestamp: ts,
+      message: { conversation: 'oi' },
+    }));
+    m.http.post
+      .mockReturnValueOnce(
+        of({
+          data: [
+            {
+              remoteJid: '553799086000@s.whatsapp.net',
+              unreadCount: null,
+              lastMessage: { key: { id: 'E0' }, messageTimestamp: ts },
+            },
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: { messages: { records: muitos, total: 600, pages: 1, currentPage: 1 } },
+        }),
+      );
+
+    const r = await m.service.syncEvolutionInstance('inst-evo', 48 * HOUR, true);
+
+    expect(r.messages_enqueued).toBe(500);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cap de 500'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('553799086000'));
+  });
+});
+
+describe('HistorySyncService — log honesto no deep', () => {
+  // Em deep TODO chat com mensagem na janela entra em chats_synced (nada é
+  // filtrado por gap), então chamar isso de "com buraco" mentiria no log.
+  it('deep não chama os chats varridos de "com buraco"', async () => {
+    const { service, http } = makeService();
+    const log = jest.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    await service.syncInstance('inst-1', 48 * HOUR, true);
+
+    const linha = String(log.mock.calls[log.mock.calls.length - 1][0]);
+    expect(linha).toContain('DEEP');
+    expect(linha).toContain('com mensagem no período');
+    expect(linha).not.toContain('com buraco');
+  });
+
+  it('sem deep o log continua falando de buraco', async () => {
+    const { service, http } = makeService();
+    const log = jest.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    await service.syncInstance('inst-1', 48 * HOUR);
+
+    const linha = String(log.mock.calls[log.mock.calls.length - 1][0]);
+    expect(linha).toContain('com buraco');
+    expect(linha).not.toContain('DEEP');
+  });
+});
+
 describe('HistorySyncService.syncAllUazapi', () => {
   it('sincroniza só instâncias open com token uazapi', async () => {
     const { service, prisma, http } = makeService();

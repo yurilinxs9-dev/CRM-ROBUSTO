@@ -1,4 +1,26 @@
+import { z } from 'zod';
+
 type Obj = Record<string, unknown>;
+
+/**
+ * Corpo dos endpoints de history sync (`POST /instances/:nome/history-sync` e
+ * `POST /platform-admin/history-sync`) — um só contrato pros dois controllers.
+ * `deep` varre o MIOLO das conversas: 1 fetch por chat SEMPRE (até 400 chats
+ * por instância) e re-injeta tudo do período na fila. Por isso a janela do deep
+ * é limitada a 7 dias: 30/60 dias em deep viram varredura eterna e enxurrada de
+ * jobs. O detector de silêncio usa 1 dia; o manual, até 7.
+ */
+export const MAX_DEEP_DAYS = 7;
+
+export const historySyncRequestSchema = z
+  .object({
+    days: z.number().int().min(1).max(60).optional(),
+    deep: z.boolean().optional(),
+  })
+  .refine((v) => !v.deep || (v.days ?? 30) <= MAX_DEEP_DAYS, {
+    path: ['days'],
+    message: `deep sync aceita no máximo ${MAX_DEEP_DAYS} dias (1 fetch por chat) — reduza days ou rode sem deep`,
+  });
 
 /**
  * Helpers puros do history sync UazAPI (espelho WhatsApp Web). O servidor

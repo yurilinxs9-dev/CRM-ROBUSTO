@@ -74,8 +74,17 @@ export class HistorySyncService {
   static readonly SILENCIO_DEEP_WINDOW_MS = 24 * 3_600_000;
   private static readonly PAGE_SIZE = 100;
   private static readonly MAX_CHATS_PER_RUN = 400;
-  private static readonly MAX_MSGS_PER_CHAT = 500;
+  static readonly MAX_MSGS_PER_CHAT = 500;
   private static readonly HTTP_TIMEOUT_MS = 12_000;
+  /**
+   * Prioridade dos jobs de backfill. BullMQ 5: o worker faz RPOPLPUSH da lista
+   * `wait` (jobs SEM priority) e só cai no ZSET `prioritized` quando o wait
+   * esvazia — então QUALQUER priority > 0 deixa o backfill atrás de todo
+   * webhook ao vivo. Sem isso um deep grande ocupa as 3 vagas de concorrência
+   * do worker e a mensagem que está chegando agora fica na fila atrás de
+   * milhares de mensagens velhas.
+   */
+  static readonly BACKFILL_PRIORITY = 10;
 
   private readonly evoBaseUrl: string;
   private readonly evoApiKey: string;
@@ -188,6 +197,7 @@ export class HistorySyncService {
           summary.chats_synced++;
           summary.messages_enqueued += enqueued;
         }
+        this.avisarCap(enqueued, chat.phone, `evolution ${instance.nome}`);
       } catch (err) {
         this.logger.warn(
           `sync do chat ${chat.phone} (evolution ${instance.nome}) falhou: ${(err as Error).message}`,
@@ -223,7 +233,7 @@ export class HistorySyncService {
     if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
       this.logger.log(
         `history sync evolution${deep ? ' DEEP' : ''} ${instance.nome}: ` +
-          `${summary.chats_scanned} chats na janela, ${summary.chats_synced} com buraco, ` +
+          `${summary.chats_scanned} chats na janela, ${this.rotuloChatsSynced(summary, deep)}, ` +
           `${summary.messages_enqueued} msgs re-injetadas`,
       );
     }
@@ -314,6 +324,7 @@ export class HistorySyncService {
           {
             jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
             attempts: 3,
+            priority: HistorySyncService.BACKFILL_PRIORITY,
           },
         );
         enqueued++;
@@ -399,6 +410,7 @@ export class HistorySyncService {
             summary.chats_synced++;
             summary.messages_enqueued += enqueued;
           }
+          this.avisarCap(enqueued, chat.phone, instance.nome);
           await this.refreshLeadContact(instance.tenant_id, chat);
           await this.reconcileUnread(instance.tenant_id, chat);
         } catch (err) {
@@ -424,11 +436,37 @@ export class HistorySyncService {
     if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
       this.logger.log(
         `history sync${deep ? ' DEEP' : ''} ${instance.nome}: ` +
-          `${summary.chats_scanned} chats na janela, ${summary.chats_synced} com buraco, ` +
+          `${summary.chats_scanned} chats na janela, ${this.rotuloChatsSynced(summary, deep)}, ` +
           `${summary.messages_enqueued} msgs re-injetadas`,
       );
     }
     return summary;
+  }
+
+  /**
+   * `chats_synced` só significa "com buraco" no modo normal — é lá que o chat
+   * em dia sai antes de enfileirar. No deep NADA é filtrado por gap: todo chat
+   * com mensagem no período entra, e quem decide o que vira mensagem nova é o
+   * dedupe do upsert. Chamar isso de "com buraco" no log seria mentira.
+   */
+  private rotuloChatsSynced(summary: SyncSummary, deep: boolean): string {
+    return deep
+      ? `${summary.chats_synced} com mensagem no período`
+      : `${summary.chats_synced} com buraco`;
+  }
+
+  /**
+   * O chat bateu no teto de mensagens por execução: o resto do período ficou
+   * pra trás em silêncio. Doí sobretudo no deep (busca a janela inteira de um
+   * chat movimentado), e sem este aviso ninguém descobre que faltou miolo.
+   */
+  private avisarCap(enqueued: number, phone: string, contexto: string): void {
+    if (enqueued < HistorySyncService.MAX_MSGS_PER_CHAT) return;
+    this.logger.warn(
+      `chat ${phone} (${contexto}): cap de ${HistorySyncService.MAX_MSGS_PER_CHAT} msgs por ` +
+        `execução atingido — pode ter sobrado mensagem do período pra trás; rode de novo ` +
+        `com janela menor`,
+    );
   }
 
   /** Re-injeta as mensagens faltantes de um chat. Retorna quantas enfileirou. */
@@ -510,6 +548,7 @@ export class HistorySyncService {
         await this.webhookQueue.add('uazapi.messages', backfillJobPayload(m, token, chat.phone), {
           jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
           attempts: 3,
+          priority: HistorySyncService.BACKFILL_PRIORITY,
         });
         enqueued++;
         if (enqueued >= HistorySyncService.MAX_MSGS_PER_CHAT) return enqueued;

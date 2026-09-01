@@ -18,16 +18,14 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
 import { PlatformScopes } from './platform-scopes.decorator';
 import { HistorySyncService } from '../webhooks/history-sync.service';
+import { historySyncRequestSchema } from '../webhooks/history-sync';
 
 const bannedSchema = z.object({ banned: z.boolean() });
 const suspendedSchema = z.object({ suspended: z.boolean() });
 const activeSchema = z.object({ active: z.boolean() });
-const historySyncSchema = z.object({
-  days: z.number().int().min(1).max(60).optional(),
-  // deep: varre o miolo das conversas (ignora a prova de "chat em dia"). 1
-  // fetch por chat sempre — em lote global, usar com janela curta.
-  deep: z.boolean().optional(),
-});
+// deep: varre o miolo das conversas (ignora a prova de "chat em dia"). 1 fetch
+// por chat SEMPRE e em lote global — daí o teto de janela do schema.
+const historySyncSchema = historySyncRequestSchema;
 
 /**
  * TODA rota daqui declara seu escopo. O guard é fail-closed: rota nova sem
