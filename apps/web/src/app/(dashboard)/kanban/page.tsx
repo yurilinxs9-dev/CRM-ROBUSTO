@@ -149,7 +149,16 @@ export default function KanbanPage() {
   const [tempFilter, setTempFilter] = useState<Temperatura | 'ALL'>('ALL');
   // 'ALL' é o sentinela de "todos": o Select do Radix não aceita item com valor
   // string vazia, então a ausência de recorte precisa de um valor próprio.
-  const [viewAsUserId, setViewAsUserId] = useState<string>('ALL');
+  //
+  // Inicialização preguiçosa em vez de 'ALL' + efeito: no modo individual um
+  // único ciclo com 'ALL' já dispara a query do board do time INTEIRO, que cai
+  // todo na primeira coluna e nasce arrastável — um arrasto nessa janela
+  // gravaria coluna do gestor em lead de colega. Lê o store direto porque isto
+  // roda antes do primeiro render, não dá para depender de hook.
+  const [viewAsUserId, setViewAsUserId] = useState<string>(() => {
+    const { tenant, user } = useAuthStore.getState();
+    return tenant?.kanban_individual === true && user?.id ? user.id : 'ALL';
+  });
   const [activeDragLead, setActiveDragLead] = useState<Lead | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [defaultStageId, setDefaultStageId] = useState<string | null>(null);
@@ -187,13 +196,30 @@ export default function KanbanPage() {
   // também vira 'ALL': param vazio no request é pior que param ausente.
   const viewAsApplied = showViewAs && viewAsUserId ? viewAsUserId : 'ALL';
 
-  // No kanban individual não existe "board de todos" — cada coluna tem dono.
-  // O default do gestor passa a ser o PRÓPRIO board; 'ALL' pediria ao backend
-  // um escopo que não existe nesse modo.
+  // Rede da inicialização acima, para quando a flag chega DEPOIS da montagem
+  // (sessão ainda hidratando, `/me` respondendo, ou o gestor ligando o toggle
+  // noutra aba): mesmo default, aplicado assim que o modo individual aparece.
   useEffect(() => {
     if (!kanbanIndividual || !currentUserId) return;
     setViewAsUserId((prev) => (prev === 'ALL' ? currentUserId : prev));
   }, [kanbanIndividual, currentUserId]);
+
+  // Enquanto esse default não assentou, não há board a pedir: um GET sem
+  // `responsavel_id` traria a carteira do time inteiro, empilhada na primeira
+  // coluna e arrastável. Só vale para quem tem o seletor (gestor fora do modo
+  // foco) — operador em 'ALL' já recebe o próprio board do backend.
+  const viewAsResolvido = !(kanbanIndividual && showViewAs && viewAsApplied === 'ALL');
+
+  /**
+   * Gestor olhando o board de OUTRO membro: as colunas são dele, não do gestor.
+   * Criar, renomear, recolorir, configurar, reordenar ou excluir aqui não faz o
+   * que a tela promete — cai no board do próprio gestor (criação) ou toma 403 do
+   * backend (o porteiro só deixa o dono editar a coluna pessoal). Some com os
+   * controles em vez de deixá-los enganando. 'ALL' não entra: é o próprio board
+   * de quem não tem seletor (operador, gestor em modo foco).
+   */
+  const boardDeOutroMembro =
+    kanbanIndividual && viewAsApplied !== 'ALL' && viewAsApplied !== currentUserId;
 
   // --- Pipelines ---
   // Com o toggle ligado, as ETAPAS vêm do board de quem o gestor está vendo.
@@ -378,7 +404,7 @@ export default function KanbanPage() {
       });
       return res.data;
     },
-    enabled: !!activePipelineId,
+    enabled: !!activePipelineId && viewAsResolvido,
     placeholderData: keepPreviousData,
     // Realtime via WebSocket com DELTA-PATCH direto na cache (sem refetch).
     // Poll é só rede de segurança se o WS cair — 60s.
@@ -734,6 +760,10 @@ export default function KanbanPage() {
       // Stage column reorder
       if (activeId.startsWith('stage-') && overId.startsWith('stage-')) {
         if (activeId === overId) return;
+        // Board de outro membro: reordenar tomaria 403 e ainda deixaria a ordem
+        // otimista na tela. O grip nem é renderizado nesse modo — isto é a
+        // trava de trás (teclado, drag iniciado antes da troca do "Ver como").
+        if (boardDeOutroMembro) return;
         const ids = orderedStages.map((s) => s.id);
         const fromId = activeId.replace('stage-', '');
         const toId = overId.replace('stage-', '');
@@ -751,8 +781,9 @@ export default function KanbanPage() {
       //
       // Card realocado (kanban individual, lead numa coluna de outro dono):
       // segue pelo caminho normal de propósito. O `estagio_id` mandado é o da
-      // coluna de DESTINO deste viewer, e o backend traduz a etapa pelo dono do
-      // lead — arrastar aqui não precisa saber de quem era a coluna de origem.
+      // coluna de DESTINO deste viewer, e o `updateStage` do backend traduz para
+      // a coluna equivalente do DONO do lead (ou da base, se estiver sem dono) —
+      // arrastar aqui não precisa saber de quem era a coluna de origem.
       const lead = leads.find((l) => l.id === activeId);
       if (!lead) return;
       let targetStageId: string | null = null;
@@ -843,7 +874,15 @@ export default function KanbanPage() {
         position: topPosition,
       });
     },
-    [leads, queryClient, leadsQueryKey, stageMutation, orderedStages, reorderStagesMutation],
+    [
+      leads,
+      queryClient,
+      leadsQueryKey,
+      stageMutation,
+      orderedStages,
+      reorderStagesMutation,
+      boardDeOutroMembro,
+    ],
   );
 
   /**
@@ -1003,7 +1042,10 @@ export default function KanbanPage() {
   };
 
   // --- Render ---
-  const isLoading = pipelinesLoading || leadsLoading;
+  // `viewAsResolvido` falso deixa a query desabilitada, e query desabilitada não
+  // reporta `isLoading` — sem ele a tela mostraria colunas vazias (board
+  // "carregado" e sem lead nenhum) em vez do esqueleto.
+  const isLoading = pipelinesLoading || leadsLoading || !viewAsResolvido;
   const stageSortableIds = useMemo(() => orderedStages.map((s) => `stage-${s.id}`), [orderedStages]);
 
   return (
@@ -1222,8 +1264,13 @@ export default function KanbanPage() {
                     onToggleSelect={toggleLead}
                     onSelectAllInStage={selectAllInStage}
                     cardFields={view.config.card_fields}
+                    stagesReadOnly={boardDeOutroMembro}
                   />
                 ))}
+                {/* Etapa nova nasce no board de QUEM cria: no board de um colega
+                    o botão criaria uma coluna invisível aqui e visível só para o
+                    gestor. Fora do modo individual nada muda. */}
+                {!boardDeOutroMembro && (
                 <button
                   type="button"
                   onClick={() => {
@@ -1235,6 +1282,7 @@ export default function KanbanPage() {
                   <Plus className="h-3.5 w-3.5" />
                   Adicionar Etapa
                 </button>
+                )}
               </div>
             </SortableContext>
             <DragOverlay>
