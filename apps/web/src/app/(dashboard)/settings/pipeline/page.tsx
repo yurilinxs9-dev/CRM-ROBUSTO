@@ -20,8 +20,9 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Plus, Trash2, Trophy, XCircle, Palette } from 'lucide-react';
+import { GripVertical, Plus, Trash2, Trophy, XCircle, Palette, Info } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useAuthStore, useIsKanbanIndividual } from '@/stores/auth.store';
 import {
   Button,
   Input,
@@ -101,10 +102,32 @@ export default function PipelineEditorPage() {
   >(null);
   const [moveTargetStageId, setMoveTargetStageId] = useState<string>('');
 
+  /**
+   * Com o kanban individual ligado, esta tela é a do MODELO BASE do tenant (o
+   * template de quem entrar na equipe), não a de um board pessoal — é a única
+   * tela que o gestor tem para editá-lo. Só gestor: o backend recusa
+   * `stage_scope=base` de qualquer outro papel, então mandar o parâmetro para
+   * um operador transformaria a tela num 403.
+   */
+  const role = useAuthStore((s) => s.user?.role);
+  const kanbanIndividual = useIsKanbanIndividual();
+  const editaModeloBase =
+    kanbanIndividual && (role === 'GERENTE' || role === 'SUPER_ADMIN');
+
+  const pipelineParams = useMemo(() => {
+    const p: Record<string, string> = {};
+    if (editaModeloBase) p.stage_scope = 'base';
+    return p;
+  }, [editaModeloBase]);
+
+  // Escopo na chave: o board pessoal e o modelo base são listas diferentes de
+  // etapas — compartilhar cache com o kanban mostraria uma no lugar da outra.
+  const pipelinesKey = useMemo(() => ['pipelines', pipelineParams] as const, [pipelineParams]);
+
   const { data: pipelines = [], isLoading } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
+    queryKey: pipelinesKey,
     queryFn: async () => {
-      const res = await api.get('/api/pipelines');
+      const res = await api.get('/api/pipelines', { params: pipelineParams });
       return res.data;
     },
   });
@@ -180,6 +203,9 @@ export default function PipelineEditorPage() {
       const res = await api.post(`/api/pipelines/${pipelineId}/stages`, {
         nome,
         cor: '#3498DB',
+        // Sem isto a etapa nasceria no board PESSOAL do gestor: ele acharia que
+        // mexeu no modelo base, e a coluna não apareceria para mais ninguém.
+        ...(editaModeloBase ? { scope: 'base' as const } : {}),
       });
       return res.data;
     },
@@ -196,11 +222,11 @@ export default function PipelineEditorPage() {
       return res.data;
     },
     onMutate: async ({ id, data }) => {
-      await qc.cancelQueries({ queryKey: ['pipelines'] });
-      const prev = qc.getQueryData<Pipeline[]>(['pipelines']);
+      await qc.cancelQueries({ queryKey: pipelinesKey });
+      const prev = qc.getQueryData<Pipeline[]>(pipelinesKey);
       if (prev) {
         qc.setQueryData<Pipeline[]>(
-          ['pipelines'],
+          pipelinesKey,
           prev.map((p) => ({
             ...p,
             stages: p.stages.map((s) => (s.id === id ? { ...s, ...data } : s)),
@@ -210,7 +236,7 @@ export default function PipelineEditorPage() {
       return { prev };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['pipelines'], ctx.prev);
+      if (ctx?.prev) qc.setQueryData(pipelinesKey, ctx.prev);
       toast.error('Erro ao atualizar stage');
     },
     onSuccess: () => invalidate(),
@@ -271,11 +297,11 @@ export default function PipelineEditorPage() {
       await api.post(`/api/pipelines/${pipelineId}/stages/reorder`, { stageIds });
     },
     onMutate: async ({ pipelineId, stageIds }) => {
-      await qc.cancelQueries({ queryKey: ['pipelines'] });
-      const prev = qc.getQueryData<Pipeline[]>(['pipelines']);
+      await qc.cancelQueries({ queryKey: pipelinesKey });
+      const prev = qc.getQueryData<Pipeline[]>(pipelinesKey);
       if (prev) {
         qc.setQueryData<Pipeline[]>(
-          ['pipelines'],
+          pipelinesKey,
           prev.map((p) => {
             if (p.id !== pipelineId) return p;
             const byId = new Map(p.stages.map((s) => [s.id, s]));
@@ -292,7 +318,7 @@ export default function PipelineEditorPage() {
       return { prev };
     },
     onError: (_e, _v, ctx) => {
-      if (ctx?.prev) qc.setQueryData(['pipelines'], ctx.prev);
+      if (ctx?.prev) qc.setQueryData(pipelinesKey, ctx.prev);
       toast.error('Erro ao reordenar');
     },
     onSuccess: () => invalidate(),
@@ -334,6 +360,17 @@ export default function PipelineEditorPage() {
             Novo Pipeline
           </Button>
         </div>
+
+        {editaModeloBase && (
+          <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <p>
+              <strong>Kanban individual ativo:</strong> esta tela edita o modelo
+              base (template para novos membros). Cada membro edita as próprias
+              colunas no kanban.
+            </p>
+          </div>
+        )}
 
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Carregando...</p>

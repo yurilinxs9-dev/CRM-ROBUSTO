@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { PageHeader } from '@/components/layout/page-header';
 import { ModelSelect, useAvailableAiModels } from '@/components/ai/model-select';
 import { estimateFinish } from '@/lib/followup-eta';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsKanbanIndividual } from '@/stores/auth.store';
 
 interface Stage { id: string; nome: string; cor?: string }
 interface Pipeline { id: string; nome: string; stages: Stage[] }
@@ -61,6 +61,18 @@ function apiError(e: unknown, fallback: string): string {
 export default function FollowupPage() {
   const qc = useQueryClient();
   const tenant = useAuthStore((s) => s.tenant);
+  /**
+   * O follow-up é disparado para a equipe inteira, então a etapa escolhida aqui
+   * precisa ser a do MODELO BASE — com o kanban individual ligado, a lista sem
+   * escopo traria as colunas pessoais do gestor, que ninguém mais tem. Só
+   * gestor: o backend recusa `stage_scope=base` dos demais papéis.
+   */
+  const role = useAuthStore((s) => s.user?.role);
+  const kanbanIndividual = useIsKanbanIndividual();
+  const usaModeloBase =
+    kanbanIndividual && (role === 'GERENTE' || role === 'SUPER_ADMIN');
+  const pipelineParams: Record<string, string> = {};
+  if (usaModeloBase) pipelineParams.stage_scope = 'base';
   const janela = {
     start: tenant?.broadcast_window_start ?? 9,
     end: tenant?.broadcast_window_end ?? 18,
@@ -109,8 +121,9 @@ export default function FollowupPage() {
   });
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
-    queryFn: async () => (await api.get<Pipeline[]>('/api/pipelines')).data,
+    queryKey: ['pipelines', pipelineParams],
+    queryFn: async () =>
+      (await api.get<Pipeline[]>('/api/pipelines', { params: pipelineParams })).data,
     staleTime: 5 * 60_000,
   });
 
