@@ -866,3 +866,133 @@ describe('InboundMessageService.saveIncomingMessage — gatilho da ficha intelig
     expect(erro).toBeNull();
   });
 });
+
+/**
+ * Kanban individual no inbound (Task 6, regras 4 e 5).
+ *
+ * Duas coisas precisam ser verdade quando o toggle está ligado:
+ *  - lead NOVO (sem dono) nasce na primeira coluna da BASE, nunca dentro do
+ *    board pessoal de um membro qualquer;
+ *  - lead que ganha dono aqui (dono da instância ou round-robin) vai junto para
+ *    a coluna DELE, e o board de quem está com a tela aberta fica sabendo.
+ *
+ * Com o toggle desligado `stageForOwner` devolve o próprio id, e cada caso tem
+ * o par OFF travando o no-op — a escrita e o emit têm que ficar byte a byte o
+ * que eram antes da feature.
+ */
+describe('InboundMessageService — kanban individual', () => {
+  /** Lead no pool: é o gatilho do auto-assign para o dono da instância (B). */
+  const leadNoPool = {
+    ...leadOwnedByA,
+    responsavel_id: null,
+    instancia_whatsapp: null,
+    estagio_id: 'base-novo',
+  };
+
+  function cenarioAutoAssign() {
+    const m = makeService();
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadNoPool });
+    m.prisma.lead.update.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...leadNoPool, ...data }),
+    );
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: 'B',
+    });
+    return m;
+  }
+
+  it('lead novo nasce na primeira coluna BASE (where do firstStage leva user_id null)', async () => {
+    // Sem o recorte, com o toggle ligado a `findFirst` podia devolver a coluna
+    // pessoal de um membro qualquer (mesma `ordem`, desempate indefinido) — e o
+    // lead nasceria dentro do board de quem nem foi escolhido pra atendê-lo.
+    const { service, prisma } = cenarioAutoAssign();
+
+    await service.saveIncomingMessage(baseInput());
+
+    expect(prisma.stage.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { pipeline_id: 'pipe-1', tenant_id: 't1', user_id: null },
+      }),
+    );
+  });
+
+  it('auto-assign com toggle ON: a coluna do dono entra na MESMA escrita e o emit leva o estagio novo', async () => {
+    const { service, prisma, gateway, kanbanIndividual } = cenarioAutoAssign();
+    kanbanIndividual.stageForOwner.mockResolvedValue('col-de-B');
+
+    await service.saveIncomingMessage(baseInput());
+
+    expect(kanbanIndividual.stageForOwner).toHaveBeenCalledWith('t1', 'B', 'base-novo');
+    expect(prisma.lead.update.mock.calls[0][0].data).toEqual({
+      responsavel_id: 'B',
+      instancia_whatsapp: 'inst-b',
+      returned_at: null,
+      estagio_id: 'col-de-B',
+      estagio_entered_at: expect.any(Date),
+    });
+    expect(gateway.emitLeadUpdated).toHaveBeenCalledWith(
+      'lead-1',
+      { responsavel_id: 'B', estagio_id: 'col-de-B' },
+      't1',
+    );
+  });
+
+  it('auto-assign com toggle OFF: escrita e silêncio idênticos ao comportamento antigo', async () => {
+    const { service, prisma, gateway } = cenarioAutoAssign();
+
+    await service.saveIncomingMessage(baseInput());
+
+    // Igualdade estrita: um `estagio_id` a mais aqui seria escrita de coluna em
+    // tenant que nem ligou a feature.
+    expect(prisma.lead.update.mock.calls[0][0].data).toEqual({
+      responsavel_id: 'B',
+      instancia_whatsapp: 'inst-b',
+      returned_at: null,
+    });
+    // O caminho antigo não emitia nada neste ponto (o lead passa a refletir a
+    // conversa, então nem o sync emite) — e não vai passar a emitir.
+    expect(gateway.emitLeadUpdated).not.toHaveBeenCalled();
+  });
+
+  it('round-robin com toggle ON: sorteado leva o lead para a coluna dele', async () => {
+    const m = makeService();
+    // Individual + round-robin + instância com setor = soloDistribute: o dono
+    // da instância NÃO auto-atribui, quem escolhe é o rodízio.
+    m.prisma.tenant.findFirst.mockResolvedValue({
+      pool_enabled: false,
+      round_robin_enabled: true,
+    });
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadNoPool });
+    m.prisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    m.assignment.resolveSectorForInstance.mockResolvedValue('setor-1');
+    m.assignment.assignBySector.mockResolvedValue({ userId: 'C', reason: 'round-robin' });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-c', responsavel_id: 'C' });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-c',
+      visible_to_user_id: 'C',
+    });
+    m.kanbanIndividual.stageForOwner.mockResolvedValue('col-de-C');
+
+    await m.service.saveIncomingMessage(
+      baseInput({ instance: { ...instanceB, sector_id: 'setor-1' } as any }),
+    );
+
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith('t1', 'C', 'base-novo');
+    expect(m.prisma.lead.updateMany.mock.calls[0][0].data).toEqual({
+      responsavel_id: 'C',
+      instancia_whatsapp: 'inst-b',
+      returned_at: null,
+      estagio_id: 'col-de-C',
+      estagio_entered_at: expect.any(Date),
+    });
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith(
+      'lead-1',
+      { responsavel_id: 'C', instancia_whatsapp: 'inst-b', estagio_id: 'col-de-C' },
+      't1',
+    );
+  });
+});

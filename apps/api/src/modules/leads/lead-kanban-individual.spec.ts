@@ -362,6 +362,14 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
     });
     // Demais colunas: recorte simples pela coluna.
     expect(whereDaColuna(prisma, 1).AND).toContainEqual({ estagio_id: 's-b' });
+    // E o OR da VISIBILIDADE (operador em modo individual: as próprias + a
+    // nuvem) tem que sobreviver intacto ao lado dele. A condição da coluna
+    // entra por AND justamente por isto: mesclada por spread, como era antes,
+    // o OR da coluna sobrescreveria este e o board devolveria lead de colega.
+    expect(whereDaColuna(prisma, 0).OR).toEqual([
+      { responsavel_id: 'u-alex' },
+      { responsavel_id: null, returned_at: { not: null }, is_private: false },
+    ]);
   });
 
   it('toggle OFF: primeira coluna continua sem a nuvem', async () => {
