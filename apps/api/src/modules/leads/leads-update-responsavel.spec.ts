@@ -50,6 +50,7 @@ function makeService() {
     {} as any,
     { validate: jest.fn().mockResolvedValue({}) } as any,
     { add: jest.fn() } as any,
+    {} as any, // kanbanIndividual
   );
   return { service, prisma };
 }

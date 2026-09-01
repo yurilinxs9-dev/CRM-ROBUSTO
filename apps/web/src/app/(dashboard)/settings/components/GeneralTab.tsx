@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, type Tenant } from '@/stores/auth.store';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; ia_ajusta_temperatura?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; ia_ajusta_temperatura?: boolean; kanban_individual?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
 
 const DIAS = [
   { iso: 1, label: 'Seg' },
@@ -44,6 +44,9 @@ export function GeneralTab() {
   // Trocar o modelo de atendimento muda a visibilidade de todo o workspace —
   // pede confirmação antes de chamar a API. `null` = nenhum diálogo aberto.
   const [pendingMode, setPendingMode] = useState<boolean | null>(null);
+  // Mesmo padrão para o kanban individual: a troca clona/junta colunas e
+  // remapeia lead por lead — não é um switch para se descobrir clicando.
+  const [pendingKanbanIndividual, setPendingKanbanIndividual] = useState<boolean | null>(null);
 
   // Conta instâncias open por dono pra detectar config inconsistente:
   // Atendimento Compartilhado (pool_enabled=true) com 2+ números de
@@ -147,6 +150,45 @@ export function GeneralTab() {
       );
     } catch {
       toast.error('Erro ao salvar configuração.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  /**
+   * O POST do kanban individual não devolve o tenant (só `{ success }`), e a
+   * travessia mexe em mais coisa que a flag. O `/me` é a fonte da verdade.
+   */
+  const syncTenantFromMe = async () => {
+    try {
+      const { data } = await api.get<{ tenant: Tenant | null }>('/api/auth/me');
+      if (data?.tenant) setTenant(data.tenant);
+    } catch {
+      /* rede — o próximo carregamento do dashboard re-sincroniza */
+    }
+  };
+
+  const handleKanbanIndividualToggle = async (checked: boolean) => {
+    setIsPending(true);
+    try {
+      await api.post('/api/kanban-individual', { enabled: checked });
+      await syncTenantFromMe();
+      toast.success(
+        checked
+          ? 'Kanban individual ativado — cada membro tem as próprias colunas.'
+          : 'Kanban individual desativado — todos voltam ao modelo base.',
+      );
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      if (status === 409) {
+        // 409 = o backend JÁ está no estado pedido (duplo clique, outra aba,
+        // outro gestor mais rápido). O usuário pediu X e o servidor está em X:
+        // não é erro nenhum — só re-sincroniza o switch com o servidor.
+        await syncTenantFromMe();
+        return;
+      }
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(typeof msg === 'string' ? msg : 'Erro ao salvar configuração.');
     } finally {
       setIsPending(false);
     }
@@ -299,6 +341,27 @@ export function GeneralTab() {
       <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
         <div className="space-y-1">
           <Label className="text-sm font-medium">
+            Kanban individual (cada membro com as próprias colunas)
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Ativado, o funil de cada membro é <strong>só dele</strong>: ele
+            renomeia, cria e reordena as próprias etapas sem mexer no board de
+            ninguém. Esta tela de Etapas passa a editar o <em>modelo base</em>,
+            usado como ponto de partida para quem entrar na equipe. Desativado,
+            todo mundo volta a compartilhar o mesmo funil do workspace.
+          </p>
+        </div>
+        <Switch
+          checked={tenant.kanban_individual === true}
+          onCheckedChange={(checked) => setPendingKanbanIndividual(checked)}
+          disabled={isPending}
+          aria-label="Kanban individual"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">
             IA ajusta a temperatura dos leads
           </Label>
           <p className="text-xs text-muted-foreground">
@@ -428,6 +491,40 @@ export function GeneralTab() {
                 const alvo = pendingMode;
                 setPendingMode(null);
                 if (alvo !== null) void handlePoolToggle(alvo);
+              }}
+            >
+              Confirmar mudança
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingKanbanIndividual !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingKanbanIndividual(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingKanbanIndividual ? 'Ativar kanban individual?' : 'Desativar kanban individual?'}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingKanbanIndividual
+                ? 'O kanban atual é clonado para cada membro da equipe: a partir daí cada um edita só as próprias colunas, e os leads acompanham o board do respectivo responsável. Esta tela de Etapas passa a editar o modelo base, template para quem entrar depois.'
+                : 'Todas as colunas pessoais são recolhidas no modelo base do workspace e os leads voltam para as etapas correspondentes. Personalizações que cada membro fez no funil dele se perdem.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingKanbanIndividual(null)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                const alvo = pendingKanbanIndividual;
+                setPendingKanbanIndividual(null);
+                if (alvo !== null) void handleKanbanIndividualToggle(alvo);
               }}
             >
               Confirmar mudança

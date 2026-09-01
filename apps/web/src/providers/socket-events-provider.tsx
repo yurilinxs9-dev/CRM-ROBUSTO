@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSocket } from '@/lib/socket';
 import { leadUpdateFields } from '@/lib/lead-events';
+import { api } from '@/lib/api';
+import { useAuthStore, type Tenant } from '@/stores/auth.store';
 
 /**
  * Provider global de eventos WS pro dashboard.
@@ -199,15 +201,42 @@ export function SocketEventsProvider({ children }: { children: React.ReactNode }
     // Reconexão: eventos do gap foram perdidos — refetch completo.
     const onConnect = () => scheduleInvalidate();
 
+    /**
+     * Kanban individual ligado/desligado por um gestor. O evento vai pro tenant
+     * inteiro: quem estiver com o board aberto tem as COLUNAS trocadas embaixo
+     * dos pés (base ↔ pessoais) e os leads remapeados. Só invalidar `leads` não
+     * bastaria — os estágios vêm de `pipelines`, e a flag da sessão decide o
+     * modo da tela. `getState()` em vez de hook: o efeito não pode reassinar o
+     * socket a cada mudança do store.
+     */
+    const onKanbanIndividualChanged = (payload: { kanban_individual?: boolean }) => {
+      if (typeof payload?.kanban_individual === 'boolean') {
+        useAuthStore.getState().updateTenant({ kanban_individual: payload.kanban_individual });
+      }
+      // O `/me` é a fonte da verdade da sessão; o payload só evita a tela ficar
+      // no modo antigo durante o round-trip. Falha de rede aqui não é crítica —
+      // o próximo carregamento do dashboard re-sincroniza.
+      api
+        .get<{ tenant: Tenant | null }>('/api/auth/me')
+        .then(({ data }) => {
+          if (data?.tenant) useAuthStore.getState().setTenant(data.tenant);
+        })
+        .catch(() => { /* noop */ });
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+    };
+
     socket.on('lead:new-message', onNewMessage);
     socket.on('lead:unread-reset', onUnreadReset);
     socket.on('lead:updated', onLeadUpdated);
+    socket.on('kanban:individual-changed', onKanbanIndividualChanged);
     socket.on('connect', onConnect);
 
     return () => {
       socket.off('lead:new-message', onNewMessage);
       socket.off('lead:unread-reset', onUnreadReset);
       socket.off('lead:updated', onLeadUpdated);
+      socket.off('kanban:individual-changed', onKanbanIndividualChanged);
       socket.off('connect', onConnect);
       if (trailing) clearTimeout(trailing);
     };

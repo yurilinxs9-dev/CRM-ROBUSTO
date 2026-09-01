@@ -17,6 +17,7 @@ import { BroadcastsModule } from '../broadcasts/broadcasts.module';
 import { HistorySyncModule } from './history-sync.module';
 import { AttributionModule } from '../attribution/attribution.module';
 import { InstancesModule } from '../instances/instances.module';
+import { KanbanIndividualModule } from '../pipelines/kanban-individual.module';
 
 @Module({
   imports: [
@@ -49,6 +50,9 @@ import { InstancesModule } from '../instances/instances.module';
     // Só pelo InstanceHealthService: o connection.update → open fecha o alerta
     // do monitor na hora. Sem ciclo — InstancesModule não importa webhooks.
     InstancesModule,
+    // Só a tradução de coluna do inbound (auto-assign e round-robin). O módulo
+    // não importa nada, então não há ciclo com pipelines.
+    KanbanIndividualModule,
   ],
   controllers: [WebhooksController],
   providers: [

@@ -22,6 +22,12 @@ export interface Tenant {
   prefix_enabled?: boolean;
   round_robin_enabled?: boolean;
   share_history_enabled?: boolean;
+  /**
+   * Kanban individual: cada membro tem as PRÓPRIAS colunas, clonadas do modelo
+   * base do tenant. Ausente/false = board único do workspace (comportamento
+   * anterior à feature).
+   */
+  kanban_individual?: boolean;
   /** Janela de disparo do follow-up: hora local BRT, fim exclusivo. */
   broadcast_window_start?: number;
   broadcast_window_end?: number;
@@ -42,6 +48,7 @@ interface AuthState {
   setAuth: (user: User, token: string) => void;
   restoreUser: (user: User) => void;
   setTenant: (tenant: Tenant) => void;
+  updateTenant: (partial: Partial<Tenant>) => void;
   updateToken: (token: string) => void;
   updateUser: (partial: Partial<User>) => void;
   startImpersonation: (user: User, token: string) => void;
@@ -77,6 +84,12 @@ export const useAuthStore = create<AuthState>()(
         accessToken: state.accessToken ?? localStorage.getItem('accessToken'),
       })),
       setTenant: (tenant) => set({ tenant }),
+      // Patch parcial do workspace, para eventos que carregam UM campo (ex.:
+      // `kanban:individual-changed`). `setTenant` exigiria o objeto inteiro e
+      // apagaria o resto da configuração já hidratada.
+      updateTenant: (partial) => set((state) => ({
+        tenant: state.tenant ? { ...state.tenant, ...partial } : null,
+      })),
       updateUser: (partial) => set((state) => ({
         user: state.user ? { ...state.user, ...partial } : null,
       })),
@@ -124,3 +137,7 @@ export const useAuthStore = create<AuthState>()(
 );
 
 export const useIsPoolEnabled = () => useAuthStore((s) => s.tenant?.pool_enabled ?? false);
+
+/** Kanban individual ligado no workspace (flag vem do `/api/auth/me`). */
+export const useIsKanbanIndividual = () =>
+  useAuthStore((s) => s.tenant?.kanban_individual === true);

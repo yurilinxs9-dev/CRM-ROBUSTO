@@ -34,6 +34,7 @@ function makeService() {
     {} as any, // AssignmentService
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
+    {} as any, // KanbanIndividualService
   );
   return { service, prisma };
 }

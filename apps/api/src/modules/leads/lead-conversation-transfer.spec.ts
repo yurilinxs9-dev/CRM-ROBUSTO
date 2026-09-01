@@ -82,7 +82,14 @@ function makeMocks() {
   const gateway: any = { emitLeadUpdated: jest.fn() };
   const push: any = { sendToUsers: jest.fn() };
   const assignment: any = { assignBySector: jest.fn() };
-  return { prisma, txClient, cache, gateway, push, assignment };
+  // Kanban individual DESLIGADO (o service real devolve o próprio id nesse
+  // caso): esta suíte é sobre a transação de troca de dono, não sobre coluna.
+  const kanbanIndividual: any = {
+    isOn: jest.fn().mockResolvedValue(false),
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
+  };
+  return { prisma, txClient, cache, gateway, push, assignment, kanbanIndividual };
 }
 
 function makeService() {
@@ -98,6 +105,7 @@ function makeService() {
     m.assignment,
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
+    m.kanbanIndividual,
   );
   return { service, ...m };
 }

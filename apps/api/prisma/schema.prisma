@@ -108,6 +108,9 @@ model Tenant {
   billing_paid_until        DateTime?
   // Suspensão explícita pelo admin (antes era inferida por users inativos).
   suspended_at              DateTime?
+  /// Kanban individual: cada membro tem conjunto próprio de colunas
+  /// (Stage.user_id). Spec docs/superpowers/specs/2026-09-01-kanban-individual-design.md.
+  kanban_individual         Boolean   @default(false)
 
   owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users               User[]             @relation("TenantMembers")
@@ -188,6 +191,7 @@ model User {
   refresh_tokens     RefreshToken[]
   password_resets    PasswordResetToken[]
   conversations      Conversation[]       @relation("ConversationResponsavel")
+  stages_pessoais    Stage[]              @relation("StagesPessoais")
 
   @@index([email])
   @@index([tenant_id])
@@ -320,6 +324,10 @@ model Stage {
   pipeline            Pipeline @relation(fields: [pipeline_id], references: [id], onDelete: Cascade)
   tenant_id           String
   tenant              Tenant   @relation(fields: [tenant_id], references: [id])
+  /// null = coluna do modelo base do tenant (template); preenchido = coluna
+  /// pessoal do membro (só aparece no board dele quando kanban_individual).
+  user_id             String?
+  owner               User?    @relation("StagesPessoais", fields: [user_id], references: [id], onDelete: SetNull)
   is_won              Boolean  @default(false)
   is_lost             Boolean  @default(false)
   auto_action         Json?
@@ -341,6 +349,7 @@ model Stage {
 
   @@index([pipeline_id, ordem])
   @@index([tenant_id])
+  @@index([tenant_id, user_id])
 }
 
 model Lead {

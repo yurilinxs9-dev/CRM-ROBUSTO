@@ -159,6 +159,12 @@ interface StageColumnProps {
   loadingMore?: boolean;
   /** `card_fields` da view ativa; repassado a cada card. Vazio = card padrão. */
   cardFields?: string[];
+  /**
+   * Coluna de outro dono (kanban individual + "Ver como"): esconde renomear,
+   * cor, configurar, duplicar, mover, excluir e o grip de reordenar. Os cards
+   * seguem normais — supervisionar continua valendo, editar o board alheio não.
+   */
+  stagesReadOnly?: boolean;
 }
 
 function StageColumnImpl({
@@ -187,6 +193,7 @@ function StageColumnImpl({
   onLoadMore,
   loadingMore,
   cardFields,
+  stagesReadOnly = false,
 }: StageColumnProps) {
   const bulkActive = selectedLeadIds !== undefined && selectedLeadIds.size > 0;
   const [isEditing, setIsEditing] = useState(false);
@@ -251,21 +258,23 @@ function StageColumnImpl({
       {/* Header */}
       <div className="sticky top-0 z-10 px-3 py-2.5 border-b bg-muted/50 backdrop-blur rounded-t-lg">
         <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            className="cursor-grab text-muted-foreground/60 hover:text-muted-foreground touch-none"
-            aria-label="Reordenar etapa"
-          >
-            <GripVertical className="h-3.5 w-3.5" />
-          </button>
+          {!stagesReadOnly && (
+            <button
+              type="button"
+              {...attributes}
+              {...listeners}
+              className="cursor-grab text-muted-foreground/60 hover:text-muted-foreground touch-none"
+              aria-label="Reordenar etapa"
+            >
+              <GripVertical className="h-3.5 w-3.5" />
+            </button>
+          )}
           <span
             className="w-2.5 h-2.5 rounded-full shrink-0"
             style={{ backgroundColor: stage.cor }}
             aria-hidden
           />
-          {isEditing ? (
+          {isEditing && !stagesReadOnly ? (
             <Input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -274,6 +283,8 @@ function StageColumnImpl({
               autoFocus
               className="h-6 flex-1 px-1.5 text-xs"
             />
+          ) : stagesReadOnly ? (
+            <span className="text-sm font-semibold truncate flex-1 text-left">{stage.nome}</span>
           ) : (
             <button
               type="button"
@@ -308,6 +319,7 @@ function StageColumnImpl({
           >
             <Plus className="h-3.5 w-3.5" />
           </Button>
+          {!stagesReadOnly && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -366,6 +378,7 @@ function StageColumnImpl({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
         {total > 0 && (
           <p className="mt-1 text-xs tabular-nums">

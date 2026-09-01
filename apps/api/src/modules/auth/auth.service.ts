@@ -297,6 +297,9 @@ export class AuthService {
           // Sem este campo o switch de "IA ajusta a temperatura" hidrata como
           // undefined, cai no default ligado e volta sozinho ao recarregar.
           ia_ajusta_temperatura: true,
+          // Sem a flag na sessao o front nao sabe se o board e o do tenant ou o
+          // pessoal e renderiza o kanban errado ate o primeiro reload.
+          kanban_individual: true,
           broadcast_window_start: true, broadcast_window_end: true, broadcast_window_days: true,
         },
       }),

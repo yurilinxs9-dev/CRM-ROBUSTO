@@ -39,6 +39,7 @@ function makeInbound(instanceRow: unknown) {
     {} as any, // broadcastReply
     {} as any, // leadInsights
     {} as any, // attribution
+    {} as any, // kanbanIndividual
   );
   return { service, prisma };
 }

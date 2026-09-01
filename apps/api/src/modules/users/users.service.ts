@@ -1,7 +1,12 @@
-import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SectorsService } from '../sectors/sectors.service';
+import {
+  KanbanIndividualService,
+  TX_OPTS,
+  temBoardProprio,
+} from '../pipelines/kanban-individual.service';
 import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import * as bcrypt from 'bcryptjs';
@@ -23,11 +28,48 @@ const TEAM_SELECT = {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private prisma: PrismaService,
     private media: MediaService,
     private sectors: SectorsService,
+    private kanbanIndividual: KanbanIndividualService,
   ) {}
+
+  /**
+   * Kanban individual: membro que entra na equipe DEPOIS do toggle ligado
+   * precisa ganhar a copia das colunas base agora — `enable()` clonou uma vez
+   * so, para quem ja estava no tenant. Sem isto o Kanban do contratado novo
+   * abre em branco, sem erro nenhum, ate alguem desligar e religar a feature.
+   *
+   * Idempotente (quem ja tem colunas nao ganha um segundo conjunto) e
+   * ACESSORIO: o usuario ja esta gravado quando isto roda, entao uma falha aqui
+   * vira log — nunca um 500 numa criacao que deu certo. Papel sem board
+   * (VISUALIZADOR) le a base e nao clona nada.
+   */
+  private async garantirBoardDoMembro(
+    tenantId: string,
+    userId: string,
+    role: string,
+  ): Promise<void> {
+    try {
+      if (!temBoardProprio(role)) return;
+      if (!(await this.kanbanIndividual.isOn(tenantId))) return;
+      const jaTem = await this.prisma.stage.count({
+        where: { tenant_id: tenantId, user_id: userId },
+      });
+      if (jaTem > 0) return;
+      await this.prisma.$transaction(
+        (tx) => this.kanbanIndividual.cloneBaseForUser(tx, tenantId, userId),
+        TX_OPTS,
+      );
+    } catch (err) {
+      this.logger.error(
+        `kanban individual: falha ao clonar o board do membro ${userId} (tenant ${tenantId}): ${String(err)}`,
+      );
+    }
+  }
 
   findAll(user: AuthUser) {
     return this.prisma.user.findMany({
@@ -61,6 +103,7 @@ export class UsersService {
       INSERT INTO "User" (id, nome, email, senha_hash, role, ativo, tenant_id, sector_id, created_at, updated_at)
       VALUES (${userId}, ${dto.nome}, ${dto.email}, ${senha_hash}, ${dto.role}::"UserRole", true, ${caller.tenantId}, ${sectorId}, NOW(), NOW())
     `;
+    await this.garantirBoardDoMembro(caller.tenantId, userId, dto.role);
     return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: TEAM_SELECT });
   }
 
@@ -79,11 +122,15 @@ export class UsersService {
     const sectorId = dto.sector_id
       ? await this.sectors.assertActiveForTenant(caller.tenantId, dto.sector_id)
       : null;
-    return this.prisma.user.update({
+    const vinculado = await this.prisma.user.update({
       where: { id: target.id },
       data: { tenant_id: caller.tenantId, role: dto.role as UserRole, sector_id: sectorId },
       select: TEAM_SELECT,
     });
+    // Vincular e a outra porta de entrada da equipe: o efeito no board e o
+    // mesmo de criar do zero.
+    await this.garantirBoardDoMembro(caller.tenantId, target.id, dto.role);
+    return vinculado;
   }
 
   async updateTeamMember(
@@ -115,11 +162,17 @@ export class UsersService {
         : null;
     }
 
-    return this.prisma.user.update({
+    const atualizado = await this.prisma.user.update({
       where: { id: targetId },
       data,
       select: TEAM_SELECT,
     });
+    // Roda em TODO update, nao so quando `role` mudou: promocao
+    // (VISUALIZADOR -> OPERADOR) e reativacao (`enable()` so clonou para quem
+    // estava ATIVO) deixam o membro com papel de board e sem coluna nenhuma,
+    // pelo mesmo motivo. Sem `dto.role`, o papel que vale e o atual.
+    await this.garantirBoardDoMembro(caller.tenantId, targetId, dto.role ?? target.role);
+    return atualizado;
   }
 
   async changePassword(user: AuthUser, dto: { currentPassword: string; newPassword: string }) {
