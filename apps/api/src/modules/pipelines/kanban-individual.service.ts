@@ -16,15 +16,24 @@ import type { AuthUser } from '../../common/types/auth-user';
  * ele de dentro de pipelines/leads/broadcasts e um import cruzado viraria ciclo.
  */
 
-/** Papeis que ganham board proprio. VISUALIZADOR nao move lead, entao nao clona. */
-const PAPEIS_COM_BOARD: UserRole[] = [UserRole.OPERADOR, UserRole.GERENTE, UserRole.SUPER_ADMIN];
+/**
+ * Papeis que ganham board proprio. VISUALIZADOR nao move lead, entao nao clona.
+ * Exportado porque o PipelinesService clona a base para os mesmos membros
+ * quando nasce um pipeline novo — duas listas divergiriam em silencio.
+ */
+export const PAPEIS_COM_BOARD: UserRole[] = [
+  UserRole.OPERADOR,
+  UserRole.GERENTE,
+  UserRole.SUPER_ADMIN,
+];
 
 /**
  * Ligar/desligar e O(membros x colunas) em round-trips dentro de UMA transacao.
  * O default do Prisma (5s de timeout) estoura com tenant grande e devolve P2028
- * no meio do remapeamento, entao os dois toggles pedem janela larga.
+ * no meio do remapeamento, entao os dois toggles pedem janela larga. Criar
+ * pipeline com o toggle ligado tem a mesma forma, entao reusa a mesma janela.
  */
-const TX_OPTS = { timeout: 120_000, maxWait: 10_000 } as const;
+export const TX_OPTS = { timeout: 120_000, maxWait: 10_000 } as const;
 
 /** Colunas sao comparadas por nome normalizado — o clone nasce com o nome da base. */
 function normalizar(nome: string): string {
