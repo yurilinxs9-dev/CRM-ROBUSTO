@@ -1403,9 +1403,50 @@ export class LeadsService {
     // TODO: skip logging individual LeadActivity records for bulk (expensive)
     // Bulk move é sempre ação humana — zera o badge junto (mesma regra do
     // updateStage: mover = conversa tratada).
+    const marcaDoMovimento = { estagio_entered_at: new Date(), mensagens_nao_lidas: 0 };
+
+    /**
+     * Kanban individual: o alvo é UM id de coluna, mas a seleção pode misturar
+     * donos — no board de supervisão do gestor os devolvidos (sem dono) e os
+     * leads de cada membro convivem na primeira coluna. Um `updateMany` único
+     * com o id cru cravaria a coluna do GESTOR em todos eles, e os cards
+     * sumiriam do board dos donos (mesmo furo do `updateStage`).
+     *
+     * A tradução é por DONO, não por lead: seleção de 500 com 3 donos custa 3
+     * traduções e 3 escritas, não 500. O `where` da leitura é o MESMO da escrita
+     * antiga, então o recorte do operador continua valendo.
+     */
+    if (await this.kanbanIndividual.isOn(user.tenantId)) {
+      const alvos = await this.prisma.lead.findMany({
+        where,
+        select: { id: true, responsavel_id: true },
+      });
+
+      const porDono = new Map<string | null, string[]>();
+      for (const alvo of alvos) {
+        const doGrupo = porDono.get(alvo.responsavel_id);
+        if (doGrupo) doGrupo.push(alvo.id);
+        else porDono.set(alvo.responsavel_id, [alvo.id]);
+      }
+
+      let updated = 0;
+      for (const [dono, leadIds] of porDono) {
+        const remapeada = await this.remapearEtapa(user.tenantId, estagio_id, dono);
+        const destino = remapeada?.estagio_id ?? estagio_id;
+        const grupo = await this.prisma.lead.updateMany({
+          where: { id: { in: leadIds }, tenant_id: user.tenantId },
+          data: { estagio_id: destino, ...marcaDoMovimento },
+        });
+        updated += grupo.count;
+      }
+
+      await this.invalidateLeadsCache(user.tenantId);
+      return { updated };
+    }
+
     const result = await this.prisma.lead.updateMany({
       where,
-      data: { estagio_id, estagio_entered_at: new Date(), mensagens_nao_lidas: 0 },
+      data: { estagio_id, ...marcaDoMovimento },
     });
     await this.invalidateLeadsCache(user.tenantId);
     return { updated: result.count };

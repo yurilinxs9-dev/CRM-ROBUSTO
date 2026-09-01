@@ -298,11 +298,14 @@ describe('returnToPool — lead sem dono volta para a BASE', () => {
 });
 
 /**
- * `updateStage` (arrastar no board, mover pelo chat, acao em massa de um
- * gestor): a coluna PEDIDA e a do board de quem move, que nem sempre e o board
- * do dono do lead — a tela de chat, por exemplo, le os pipelines sem escopo.
- * Gravar o id cru cravaria uma coluna pessoal do GESTOR num lead de colega, e o
- * card sumiria do board do dono (nenhuma coluna dele bate com aquele id).
+ * `updateStage` (arrastar um card no board, mudar a etapa pelo chat): a coluna
+ * PEDIDA e a do board de quem move, que nem sempre e o board do dono do lead —
+ * a tela de chat, por exemplo, le os pipelines sem escopo. Gravar o id cru
+ * cravaria uma coluna pessoal do GESTOR num lead de colega, e o card sumiria do
+ * board do dono (nenhuma coluna dele bate com aquele id).
+ *
+ * A acao em MASSA nao passa por aqui: e o `bulkMoveStage`, com traducao propria
+ * (uma por dono) e suite propria no fim deste arquivo.
  */
 describe('updateStage — a coluna pedida e traduzida para o board do dono', () => {
   const COL_GERENTE = '22222222-2222-2222-2222-222222222222';
@@ -566,5 +569,104 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
     })) as { stage_counts: Record<string, number> };
 
     expect(r.stage_counts).toEqual({ 's-a': 2, outra: 3 });
+  });
+});
+
+/**
+ * `bulkMoveStage` (barra de acoes em massa do board): o alvo e UM id de coluna,
+ * mas a selecao pode misturar donos — no board de supervisao do gestor os
+ * devolvidos (sem dono) e os leads de cada membro convivem na primeira coluna.
+ * Um `updateMany` unico com o id cru cravaria a coluna do gestor em todos eles.
+ * A traducao e por DONO (nao por lead): selecao de 500 com 3 donos = 3 alvos.
+ */
+describe('bulkMoveStage — um alvo traduzido por dono da selecao', () => {
+  const ALVO = '55555555-5555-5555-5555-555555555555';
+  const L1 = '66666666-6666-6666-6666-666666666666';
+  const L2 = '77777777-7777-7777-7777-777777777777';
+  const L3 = '88888888-8888-8888-8888-888888888888';
+  const L4 = '99999999-9999-9999-9999-999999999999';
+
+  /** `{ ids, estagio_id }` de cada `updateMany`, na ordem em que sairam. */
+  const gruposEscritos = (prisma: any) =>
+    prisma.lead.updateMany.mock.calls.map(([arg]: any[]) => ({
+      ids: arg.where.id.in,
+      estagio_id: arg.data.estagio_id,
+    }));
+
+  it('toggle ON: selecao mista vira um updateMany por dono, com a coluna de cada um', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForOwner.mockImplementation(
+      async (_t: string, dono: string) => `col-${dono}`,
+    );
+    kanbanIndividual.stageForBase.mockResolvedValue('col-base');
+    prisma.lead.findMany.mockResolvedValue([
+      { id: L1, responsavel_id: 'u-alex' },
+      { id: L2, responsavel_id: 'u-alex' },
+      { id: L3, responsavel_id: 'u-bia' },
+      // Devolvido: sem dono, a coluna certa e a da BASE.
+      { id: L4, responsavel_id: null },
+    ]);
+
+    const r = await service.bulkMoveStage({ ids: [L1, L2, L3, L4], estagio_id: ALVO }, gerente);
+
+    expect(kanbanIndividual.stageForOwner).toHaveBeenCalledTimes(2);
+    expect(kanbanIndividual.stageForBase).toHaveBeenCalledWith('t1', ALVO);
+    expect(gruposEscritos(prisma)).toEqual([
+      { ids: [L1, L2], estagio_id: 'col-u-alex' },
+      { ids: [L3], estagio_id: 'col-u-bia' },
+      { ids: [L4], estagio_id: 'col-base' },
+    ]);
+    expect(r).toEqual({ updated: 3 });
+  });
+
+  it('toggle ON: o carimbo de entrada e o badge zerado continuam em todo grupo', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    prisma.lead.findMany.mockResolvedValue([{ id: L1, responsavel_id: 'u-alex' }]);
+
+    await service.bulkMoveStage({ ids: [L1], estagio_id: ALVO }, gerente);
+
+    expect(dataDaChamada(prisma.lead.updateMany)).toEqual({
+      estagio_id: ALVO,
+      estagio_entered_at: expect.any(Date),
+      mensagens_nao_lidas: 0,
+    });
+  });
+
+  it('toggle OFF: um unico updateMany, exatamente como antes da feature', async () => {
+    const { service, prisma } = makeService();
+
+    const r = await service.bulkMoveStage({ ids: [L1, L2], estagio_id: ALVO }, gerente);
+
+    // Nem carrega os leads: sem coluna pessoal nao ha o que agrupar.
+    expect(prisma.lead.findMany).not.toHaveBeenCalled();
+    expect(prisma.lead.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.lead.updateMany.mock.calls[0][0].where).toEqual({
+      id: { in: [L1, L2] },
+      tenant_id: 't1',
+    });
+    expect(dataDaChamada(prisma.lead.updateMany)).toEqual({
+      estagio_id: ALVO,
+      estagio_entered_at: expect.any(Date),
+      mensagens_nao_lidas: 0,
+    });
+    expect(r).toEqual({ updated: 1 });
+  });
+
+  it('toggle ON + OPERADOR: o recorte por dono da rota sobrevive a leitura da selecao', async () => {
+    // O `where` do findMany e o MESMO da escrita antiga: sem o recorte, um
+    // operador leria (e moveria) lead de colega passando o id na lista.
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    prisma.lead.findMany.mockResolvedValue([{ id: L1, responsavel_id: 'u-alex' }]);
+
+    await service.bulkMoveStage({ ids: [L1, L3], estagio_id: ALVO }, alex);
+
+    expect(prisma.lead.findMany.mock.calls[0][0].where).toEqual({
+      id: { in: [L1, L3] },
+      tenant_id: 't1',
+      responsavel_id: 'u-alex',
+    });
   });
 });
