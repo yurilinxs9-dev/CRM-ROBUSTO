@@ -717,9 +717,12 @@ describe('InstanceHealthService: detector de silêncio de inbound', () => {
       expect.objectContaining({ body: texto }),
     );
 
+    // Deep e janela curta: o buraco do silêncio é no MIOLO da conversa — o sync
+    // normal para na prova de "chat em dia" e não recuperaria nada disso.
     expect(m.historySync.syncInstance).toHaveBeenCalledWith(
       'inst-uaz',
-      HistorySyncService.RECONNECT_WINDOW_MS,
+      HistorySyncService.SILENCIO_DEEP_WINDOW_MS,
+      true,
     );
     expect(r.silencios).toBe(1);
   });
@@ -819,7 +822,8 @@ describe('InstanceHealthService: detector de silêncio de inbound', () => {
 
     expect(m.historySync.syncInstance).toHaveBeenCalledWith(
       'inst-uaz',
-      HistorySyncService.RECONNECT_WINDOW_MS,
+      HistorySyncService.SILENCIO_DEEP_WINDOW_MS,
+      true,
     );
     expect(r.silencios).toBe(1);
   });
@@ -939,7 +943,8 @@ describe('InstanceHealthService: detector de silêncio de inbound', () => {
 
     expect(m.historySync.syncEvolutionInstance).toHaveBeenCalledWith(
       'inst-evo',
-      HistorySyncService.RECONNECT_WINDOW_MS,
+      HistorySyncService.SILENCIO_DEEP_WINDOW_MS,
+      true,
     );
     expect(m.historySync.syncInstance).not.toHaveBeenCalled();
     expect(m.prisma.instanceAlert.create).toHaveBeenCalledWith({

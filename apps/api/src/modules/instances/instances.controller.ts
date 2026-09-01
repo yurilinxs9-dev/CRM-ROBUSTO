@@ -8,7 +8,12 @@ import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
 const setSectorSchema = z.object({ sector_id: z.string().uuid().nullable() });
-const historySyncSchema = z.object({ days: z.number().int().min(1).max(60).optional() });
+const historySyncSchema = z.object({
+  days: z.number().int().min(1).max(60).optional(),
+  // deep: varre o miolo das conversas (ignora a prova de "chat em dia"). Mais
+  // pesado — 1 fetch por chat sempre —, por isso opt-in.
+  deep: z.boolean().optional(),
+});
 
 @Controller('instances')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -82,8 +87,8 @@ export class InstancesController {
     @Body() body: unknown,
     @Req() req: Record<string, unknown>,
   ) {
-    const { days = 30 } = historySyncSchema.parse(body ?? {});
-    return this.instancesService.startHistorySync(nome, days, req.user as AuthUser);
+    const { days = 30, deep = false } = historySyncSchema.parse(body ?? {});
+    return this.instancesService.startHistorySync(nome, days, deep, req.user as AuthUser);
   }
 
   // F-02: define o setor que atende este número (destino do round-robin).

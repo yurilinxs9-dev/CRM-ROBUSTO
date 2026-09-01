@@ -134,3 +134,45 @@ describe('InstancesService.syncAllWebhookUrls — instâncias Evolution', () => 
     expect(httpPost).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Deep sync manual: o endpoint aceita `deep` e o service repassa pro
+ * HistorySyncService — é o modo que varre o MIOLO das conversas (o normal só
+ * enxerga buraco no fim do chat).
+ */
+describe('InstancesService.startHistorySync — modo deep', () => {
+  function makeWithSync(config: Record<string, unknown>) {
+    const syncInstance = jest.fn().mockResolvedValue({});
+    const syncEvolutionInstance = jest.fn().mockResolvedValue({});
+    const http = { get: jest.fn(), post: jest.fn() } as unknown as HttpService;
+    const cfg = { get: (k: string, d?: string) => ENV[k] ?? d } as unknown as ConfigService;
+    const prisma = {
+      whatsappInstance: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'inst-1', config }),
+      },
+    } as unknown as PrismaService;
+    const historySync = { syncInstance, syncEvolutionInstance } as unknown as HistorySyncService;
+    const service = new InstancesService(http, cfg, prisma, historySync);
+    return { service, syncInstance, syncEvolutionInstance };
+  }
+
+  const user = { tenantId: 't1' } as never;
+
+  it('deep=true chega no sync UazAPI e volta no retorno do endpoint', async () => {
+    const m = makeWithSync({ uazapi_token: 'tok' });
+
+    const r = await m.service.startHistorySync('isamara', 2, true, user);
+
+    expect(m.syncInstance).toHaveBeenCalledWith('inst-1', 2 * 24 * 3_600_000, true);
+    expect(r).toEqual({ started: true, days: 2, deep: true });
+  });
+
+  it('sem deep o sync continua no modo normal (Evolution)', async () => {
+    const m = makeWithSync({ provider: 'evolution' });
+
+    const r = await m.service.startHistorySync('teste', 30, false, user);
+
+    expect(m.syncEvolutionInstance).toHaveBeenCalledWith('inst-1', 30 * 24 * 3_600_000, false);
+    expect(r).toEqual({ started: true, days: 30, deep: false });
+  });
+});

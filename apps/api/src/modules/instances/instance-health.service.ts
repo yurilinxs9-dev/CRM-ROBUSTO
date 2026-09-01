@@ -368,11 +368,20 @@ export class InstanceHealthService {
     // O sync vem ANTES do aviso, e o aviso não pode derrubar o caminho: o
     // cooldown de 6h já está gravado, então uma falha aqui (banco de
     // notificação fora, push com erro) cegaria a instância justamente na pane.
-    // Best-effort e em background: o sync varre 7 dias e não pode segurar o
-    // ciclo do monitor nem derrubá-lo se o gateway estiver ruim.
+    // Best-effort e em background: não pode segurar o ciclo do monitor nem
+    // derrubá-lo se o gateway estiver ruim.
+    // DEEP e janela curta (1 dia): o sync normal para na prova de "chat em
+    // dia" — basta alguém ter respondido pelo celular pra ele achar que está
+    // tudo certo — e o silêncio de inbound é exatamente o buraco no MIOLO das
+    // conversas, que só o deep recupera. Deep custa 1 fetch por chat, daí a
+    // janela de 1 dia em vez dos 7 da reconexão.
     const sync = cfg.evolution_token
-      ? this.historySync.syncEvolutionInstance(inst.id, HistorySyncService.RECONNECT_WINDOW_MS)
-      : this.historySync.syncInstance(inst.id, HistorySyncService.RECONNECT_WINDOW_MS);
+      ? this.historySync.syncEvolutionInstance(
+          inst.id,
+          HistorySyncService.SILENCIO_DEEP_WINDOW_MS,
+          true,
+        )
+      : this.historySync.syncInstance(inst.id, HistorySyncService.SILENCIO_DEEP_WINDOW_MS, true);
     void sync.catch((err: unknown) =>
       this.logger.warn(`history sync por silêncio (${inst.nome}) falhou: ${String(err)}`),
     );

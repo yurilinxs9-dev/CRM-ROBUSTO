@@ -563,6 +563,166 @@ describe('HistorySyncService — instâncias Evolution (espelho completo)', () =
   });
 });
 
+/**
+ * Deep sync: o sync normal só enxerga buraco no FIM do chat (prova de "chat em
+ * dia" pela mensagem mais nova). Resposta dada pelo celular sela o buraco e as
+ * mensagens perdidas no MEIO da conversa nunca voltam (caso Diplapel 28-31/08).
+ * No modo deep a prova é ignorada: varre a janela inteira de cada chat e deixa
+ * o dedupe do banco (tenant, wamid, lead) fazer o diff.
+ */
+describe('HistorySyncService — deep sync (miolo da conversa)', () => {
+  it('deep ignora a prova de chat em dia e re-injeta a janela toda', async () => {
+    const { service, prisma, http, queue } = makeService();
+    const lookup = fakeWamidLookup([{ wamid: 'A', telefone: '553186332984' }]);
+    prisma.message.findUnique.mockImplementation(lookup);
+    prisma.message.findFirst.mockImplementation(lookup);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({
+          data: {
+            hasMore: false,
+            messages: [msgPayload('A', NOW - HOUR), msgPayload('B', NOW - 2 * HOUR)],
+          },
+        }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR, true);
+
+    // sem deep este mesmo cenário devolve zero (prova de chat em dia)
+    expect(r).toEqual({ chats_scanned: 1, chats_synced: 1, messages_enqueued: 2 });
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    const [name, payload] = queue.add.mock.calls[0];
+    expect(name).toBe('uazapi.messages');
+    expect(payload).toMatchObject({ backfill: true });
+  });
+
+  it('deep ignora a prova de gap: chat "em dia" pelo banco ainda vai ao /message/find', async () => {
+    const { service, prisma, http, queue } = makeService();
+    prisma.message.findFirst.mockResolvedValue({ created_at: new Date(NOW - HOUR) });
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('MIOLO', NOW - 3 * HOUR)] } }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR, true);
+
+    expect(http.post).toHaveBeenCalledTimes(2);
+    expect(r.messages_enqueued).toBe(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('deep respeita a janela: mensagem fora do período não é re-injetada', async () => {
+    const { service, http, queue } = makeService();
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({
+          data: {
+            hasMore: false,
+            messages: [msgPayload('DENTRO', NOW - HOUR), msgPayload('FORA', NOW - 100 * HOUR)],
+          },
+        }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR, true);
+
+    expect(r.messages_enqueued).toBe(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem deep (padrão) a prova de chat em dia continua valendo', async () => {
+    const { service, prisma, http, queue } = makeService();
+    const lookup = fakeWamidLookup([{ wamid: 'A', telefone: '553186332984' }]);
+    prisma.message.findUnique.mockImplementation(lookup);
+    prisma.message.findFirst.mockImplementation(lookup);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    const r = await service.syncInstance('inst-1', 48 * HOUR);
+
+    expect(r.messages_enqueued).toBe(0);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('deep na Evolution ignora a prova do newestId e varre o chat', async () => {
+    const m = makeService();
+    const evoInstance = {
+      id: 'inst-evo',
+      nome: 'teste',
+      tenant_id: 't1',
+      config: { provider: 'evolution' },
+    };
+    m.prisma.whatsappInstance.findUnique.mockResolvedValue(evoInstance);
+    const lookup = fakeWamidLookup([{ wamid: 'JA-SALVA', telefone: '553799086000' }]);
+    m.prisma.message.findUnique.mockImplementation(lookup);
+    m.prisma.message.findFirst.mockImplementation(lookup);
+    const ts = Math.floor((NOW - HOUR) / 1000);
+    m.http.post
+      .mockReturnValueOnce(
+        of({
+          data: [
+            {
+              remoteJid: '553799086000@s.whatsapp.net',
+              unreadCount: null,
+              lastMessage: { key: { id: 'JA-SALVA' }, messageTimestamp: ts },
+            },
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          data: {
+            messages: {
+              records: [
+                {
+                  key: { id: 'JA-SALVA', fromMe: true },
+                  messageTimestamp: ts,
+                  message: { conversation: 'ja salva' },
+                },
+                {
+                  key: { id: 'MIOLO', fromMe: false },
+                  messageTimestamp: ts - 3600,
+                  message: { conversation: 'perdida no meio' },
+                },
+              ],
+              total: 2,
+              pages: 1,
+              currentPage: 1,
+            },
+          },
+        }),
+      );
+
+    const r = await m.service.syncEvolutionInstance('inst-evo', 48 * HOUR, true);
+
+    expect(m.http.post).toHaveBeenCalledTimes(2); // findChats + findMessages
+    expect(r).toEqual({ chats_scanned: 1, chats_synced: 1, messages_enqueued: 2 });
+    expect(m.queue.add.mock.calls[0][0]).toBe('messages.upsert');
+  });
+
+  it('syncAllUazapi propaga o deep pras instâncias', async () => {
+    const { service, prisma, http, queue } = makeService();
+    const lookup = fakeWamidLookup([{ wamid: 'A', telefone: '553186332984' }]);
+    prisma.message.findUnique.mockImplementation(lookup);
+    prisma.message.findFirst.mockImplementation(lookup);
+    http.post
+      .mockReturnValueOnce(of({ data: { chats: [chatPayload()] } }))
+      .mockReturnValueOnce(
+        of({ data: { hasMore: false, messages: [msgPayload('A', NOW - HOUR)] } }),
+      );
+
+    const r = await service.syncAllUazapi(48 * HOUR, true);
+
+    expect(r[0].messages_enqueued).toBe(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('HistorySyncService.syncAllUazapi', () => {
   it('sincroniza só instâncias open com token uazapi', async () => {
     const { service, prisma, http } = makeService();

@@ -356,9 +356,11 @@ export class InstancesService implements OnModuleInit {
    */
   /**
    * Dispara em background o re-sync de histórico da instância (espelho
-   * WhatsApp Web) — só UazAPI. Retorno imediato; progresso vai pro log.
+   * WhatsApp Web). Retorno imediato; progresso vai pro log. Com `deep` o sync
+   * ignora a prova de "chat em dia" e varre a janela inteira de cada chat —
+   * único jeito de recuperar mensagem perdida no MIOLO da conversa.
    */
-  async startHistorySync(nome: string, days: number, user: AuthUser) {
+  async startHistorySync(nome: string, days: number, deep: boolean, user: AuthUser) {
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: { nome, tenant_id: user.tenantId },
       select: { id: true, config: true },
@@ -372,10 +374,10 @@ export class InstancesService implements OnModuleInit {
     }
     const windowMs = days * 24 * 3_600_000;
     const run = isEvolution
-      ? this.historySync.syncEvolutionInstance(instance.id, windowMs)
-      : this.historySync.syncInstance(instance.id, windowMs);
+      ? this.historySync.syncEvolutionInstance(instance.id, windowMs, deep)
+      : this.historySync.syncInstance(instance.id, windowMs, deep);
     void run.catch((err) => this.logger.warn(`history sync manual (${nome}): ${String(err)}`));
-    return { started: true, days };
+    return { started: true, days, deep };
   }
 
   async setSector(instanceId: string, sectorId: string | null, user: AuthUser) {
