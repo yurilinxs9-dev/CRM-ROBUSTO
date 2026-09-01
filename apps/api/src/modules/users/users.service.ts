@@ -162,11 +162,17 @@ export class UsersService {
         : null;
     }
 
-    return this.prisma.user.update({
+    const atualizado = await this.prisma.user.update({
       where: { id: targetId },
       data,
       select: TEAM_SELECT,
     });
+    // Roda em TODO update, nao so quando `role` mudou: promocao
+    // (VISUALIZADOR -> OPERADOR) e reativacao (`enable()` so clonou para quem
+    // estava ATIVO) deixam o membro com papel de board e sem coluna nenhuma,
+    // pelo mesmo motivo. Sem `dto.role`, o papel que vale e o atual.
+    await this.garantirBoardDoMembro(caller.tenantId, targetId, dto.role ?? target.role);
+    return atualizado;
   }
 
   async changePassword(user: AuthUser, dto: { currentPassword: string; newPassword: string }) {

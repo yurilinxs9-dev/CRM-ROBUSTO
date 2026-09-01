@@ -417,6 +417,25 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
     expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: null });
   });
 
+  /**
+   * A nuvem de devolvidos so existe para quem le um conjunto PESSOAL: o lead
+   * devolvido vive numa coluna base, que nao esta no board dele. Quem ja le a
+   * BASE (VISUALIZADOR) recebe esse mesmo lead pela consulta da coluna dele —
+   * repetir o termo na primeira coluna faria o card aparecer DUAS vezes no
+   * board, em duas colunas diferentes.
+   */
+  it('toggle ON + VISUALIZADOR: sem o termo da nuvem, senao o devolvido duplica', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    comStages(prisma);
+    kanbanIndividual.isOn.mockResolvedValue(true);
+
+    await service.findAll(visualizador, { per_stage: '50', pipeline_id: 'p-1' });
+
+    expect(whereDaColuna(prisma, 0).AND).toContainEqual({
+      OR: [{ estagio_id: 's-a' }, { estagio_id: { notIn: ['s-a', 's-b'] } }],
+    });
+  });
+
   it('toggle OFF: primeira coluna continua sem a nuvem', async () => {
     const { service, prisma } = makeService();
     comStages(prisma);

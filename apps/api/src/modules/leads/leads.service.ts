@@ -671,13 +671,20 @@ export class LeadsService {
       // coluna pessoal do dono — fora do conjunto dele. A contagem já somava
       // esses leads na primeira coluna; sem isto os CARDS não apareciam em
       // lugar nenhum, e o rótulo dizia "12" numa coluna com 3 cards.
+      //
+      // O termo da nuvem só vale para quem lê um conjunto PESSOAL. Quem já lê a
+      // BASE (VISUALIZADOR) recebe o devolvido pela consulta da própria coluna
+      // dele — repetir o termo aqui traria o MESMO card duas vezes, em duas
+      // colunas diferentes do board.
       const idsConhecidos = stages.map((s) => s.id);
       const condicaoDaColuna = (id: string): Record<string, unknown> =>
         individual && id === primeiraColuna?.id
           ? {
               OR: [
                 { estagio_id: id },
-                { responsavel_id: null, returned_at: { not: null } },
+                ...(donoDasColunas !== null
+                  ? [{ responsavel_id: null, returned_at: { not: null } }]
+                  : []),
                 { estagio_id: { notIn: idsConhecidos } },
               ],
             }

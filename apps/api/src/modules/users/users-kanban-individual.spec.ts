@@ -123,6 +123,72 @@ describe('UsersService.createTeamMember — board do membro novo', () => {
 });
 
 /**
+ * Editar um membro tem DUAS portas para o mesmo furo:
+ *  - promocao (VISUALIZADOR -> OPERADOR): o papel passa a ter board e ninguem
+ *    clonou nada para ele;
+ *  - reativacao (`ativo: false` -> `true`): o `enable()` so clonou para quem
+ *    estava ATIVO, entao quem voltou depois esta na mesma situacao.
+ * Por isso a garantia roda em TODO update, sem olhar o que o dto mudou — o
+ * helper e idempotente e sai cedo em quase todos os casos.
+ */
+describe('UsersService.updateTeamMember — board do membro editado', () => {
+  const alvoVisualizador = {
+    id: 'alvo-1',
+    role: UserRole.VISUALIZADOR,
+    tenant_id: TENANT,
+  };
+  const alvoOperador = { id: 'alvo-1', role: UserRole.OPERADOR, tenant_id: TENANT };
+
+  it('toggle ON + promocao de VISUALIZADOR para OPERADOR: ganha o board agora', async () => {
+    const { service, prisma, kanbanIndividual } = montar({ kanbanOn: true });
+    prisma.user.findUnique.mockResolvedValue(alvoVisualizador);
+
+    await service.updateTeamMember(gerente, 'alvo-1', { role: UserRole.OPERADOR as string });
+
+    expect(kanbanIndividual.cloneBaseForUser).toHaveBeenCalledTimes(1);
+    expect(kanbanIndividual.cloneBaseForUser.mock.calls[0][2]).toBe('alvo-1');
+  });
+
+  it('toggle ON + reativacao sem mexer no papel: usa o papel ATUAL e clona', async () => {
+    // enable() so clonou para membros ativos; quem volta depois nao tinha
+    // nenhuma outra porta que criasse o board dele.
+    const { service, prisma, kanbanIndividual } = montar({ kanbanOn: true });
+    prisma.user.findUnique.mockResolvedValue(alvoOperador);
+
+    await service.updateTeamMember(gerente, 'alvo-1', { ativo: true });
+
+    expect(kanbanIndividual.cloneBaseForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggle ON + membro que segue VISUALIZADOR: continua sem board', async () => {
+    const { service, prisma, kanbanIndividual } = montar({ kanbanOn: true });
+    prisma.user.findUnique.mockResolvedValue(alvoVisualizador);
+
+    await service.updateTeamMember(gerente, 'alvo-1', { titulo: 'Auditor' });
+
+    expect(kanbanIndividual.cloneBaseForUser).not.toHaveBeenCalled();
+  });
+
+  it('toggle ON + membro que ja tem colunas: nao duplica o board', async () => {
+    const { service, prisma, kanbanIndividual } = montar({ kanbanOn: true, stagesExistentes: 4 });
+    prisma.user.findUnique.mockResolvedValue(alvoOperador);
+
+    await service.updateTeamMember(gerente, 'alvo-1', { ativo: true });
+
+    expect(kanbanIndividual.cloneBaseForUser).not.toHaveBeenCalled();
+  });
+
+  it('toggle OFF: nao clona nada', async () => {
+    const { service, prisma, kanbanIndividual } = montar({ kanbanOn: false });
+    prisma.user.findUnique.mockResolvedValue(alvoVisualizador);
+
+    await service.updateTeamMember(gerente, 'alvo-1', { role: UserRole.OPERADOR as string });
+
+    expect(kanbanIndividual.cloneBaseForUser).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * Vincular um usuario existente e a outra porta de entrada da equipe: o efeito
  * no board e identico ao de criar do zero.
  */
