@@ -1457,11 +1457,51 @@ export class LeadsService {
       throw new ForbiddenException('Operadores nao podem reatribuir leads em massa');
     }
     const { ids, responsavel_id } = bulkAssignSchema.parse(data);
-    const result = await this.prisma.lead.updateMany({
-      where: { id: { in: ids }, tenant_id: user.tenantId },
-      // Atribuir dono sempre tira o lead da nuvem de devolvidos.
-      data: { responsavel_id, returned_at: null },
-    });
+    const where = { id: { in: ids }, tenant_id: user.tenantId };
+    // Atribuir dono sempre tira o lead da nuvem de devolvidos.
+    const novoDono = { responsavel_id, returned_at: null };
+
+    /**
+     * Kanban individual: a coluna acompanha o dono, mesma regra do `reassign`
+     * de um lead só. Sem isto o lead reatribuído fica apontando para a coluna
+     * PESSOAL do dono anterior — o board realoca o card e a contagem para a
+     * primeira coluna do novo dono (nada some da tela), mas a etapa gravada
+     * segue errada até alguém mover o card na mão.
+     *
+     * O destino é um só, então a tradução é por coluna de ORIGEM distinta: uma
+     * seleção inteira vinda da mesma etapa custa uma tradução e uma escrita.
+     */
+    if (await this.kanbanIndividual.isOn(user.tenantId)) {
+      const alvos = await this.prisma.lead.findMany({
+        where,
+        select: { id: true, estagio_id: true },
+      });
+
+      const porOrigem = new Map<string | null, string[]>();
+      for (const alvo of alvos) {
+        const doGrupo = porOrigem.get(alvo.estagio_id);
+        if (doGrupo) doGrupo.push(alvo.id);
+        else porOrigem.set(alvo.estagio_id, [alvo.id]);
+      }
+
+      let updated = 0;
+      for (const [origem, leadIds] of porOrigem) {
+        // `remapearEtapa` devolve null quando a coluna já é a do destino — aí o
+        // `data` fica igual ao de antes, sem carimbar entrada de etapa à toa
+        // (isso zeraria SLA e cadência de quem nem mudou de coluna).
+        const etapaNova = await this.remapearEtapa(user.tenantId, origem, responsavel_id);
+        const grupo = await this.prisma.lead.updateMany({
+          where: { id: { in: leadIds }, tenant_id: user.tenantId },
+          data: { ...novoDono, ...(etapaNova ?? {}) },
+        });
+        updated += grupo.count;
+      }
+
+      await this.invalidateLeadsCache(user.tenantId);
+      return { updated };
+    }
+
+    const result = await this.prisma.lead.updateMany({ where, data: novoDono });
     await this.invalidateLeadsCache(user.tenantId);
     return { updated: result.count };
   }

@@ -670,3 +670,96 @@ describe('bulkMoveStage — um alvo traduzido por dono da selecao', () => {
     });
   });
 });
+
+/**
+ * `bulkAssign` (atribuir em massa): todos vao para o MESMO dono novo, mas saem
+ * de colunas diferentes — cada lead na coluna pessoal do dono anterior. Trocar
+ * so o `responsavel_id` deixaria a etapa apontando para o board de quem nao tem
+ * mais o lead. O board realoca card e contagem para a primeira coluna, entao
+ * nada some da tela; a etapa REAL e que fica errada ate alguem mover o card.
+ * Aqui a traducao e por coluna de ORIGEM distinta (o destino e um so).
+ */
+describe('bulkAssign — a etapa acompanha o novo dono', () => {
+  const NOVO_DONO = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const L1 = '66666666-6666-6666-6666-666666666666';
+  const L2 = '77777777-7777-7777-7777-777777777777';
+  const L3 = '88888888-8888-8888-8888-888888888888';
+
+  const gruposEscritos = (prisma: any) =>
+    prisma.lead.updateMany.mock.calls.map(([arg]: any[]) => ({
+      ids: arg.where.id.in,
+      data: arg.data,
+    }));
+
+  it('toggle ON: cada coluna de origem vira a equivalente no board do novo dono', async () => {
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    kanbanIndividual.stageForOwner.mockImplementation(
+      async (_t: string, dono: string, from: string) => `${dono}::${from}`,
+    );
+    prisma.lead.findMany.mockResolvedValue([
+      { id: L1, estagio_id: 'alex-negociando' },
+      { id: L2, estagio_id: 'alex-negociando' },
+      { id: L3, estagio_id: 'bia-novo' },
+    ]);
+
+    const r = await service.bulkAssign({ ids: [L1, L2, L3], responsavel_id: NOVO_DONO }, gerente);
+
+    // Uma traducao por coluna de origem distinta, nao uma por lead.
+    expect(kanbanIndividual.stageForOwner).toHaveBeenCalledTimes(2);
+    expect(gruposEscritos(prisma)).toEqual([
+      {
+        ids: [L1, L2],
+        data: {
+          responsavel_id: NOVO_DONO,
+          returned_at: null,
+          estagio_id: `${NOVO_DONO}::alex-negociando`,
+          estagio_entered_at: expect.any(Date),
+        },
+      },
+      {
+        ids: [L3],
+        data: {
+          responsavel_id: NOVO_DONO,
+          returned_at: null,
+          estagio_id: `${NOVO_DONO}::bia-novo`,
+          estagio_entered_at: expect.any(Date),
+        },
+      },
+    ]);
+    expect(r).toEqual({ updated: 2 });
+  });
+
+  it('toggle ON: coluna que ja e a do destino nao entra no update', async () => {
+    // `remapearEtapa` devolve null quando nao ha o que mudar — sem isso o lead
+    // levaria um `estagio_entered_at` novo por nada, zerando SLA e cadencia.
+    const { service, prisma, kanbanIndividual } = makeService();
+    kanbanIndividual.isOn.mockResolvedValue(true);
+    prisma.lead.findMany.mockResolvedValue([{ id: L1, estagio_id: 'ja-do-destino' }]);
+
+    await service.bulkAssign({ ids: [L1], responsavel_id: NOVO_DONO }, gerente);
+
+    expect(dataDaChamada(prisma.lead.updateMany)).toEqual({
+      responsavel_id: NOVO_DONO,
+      returned_at: null,
+    });
+  });
+
+  it('toggle OFF: um unico updateMany, exatamente como antes da feature', async () => {
+    const { service, prisma } = makeService();
+
+    const r = await service.bulkAssign({ ids: [L1, L2], responsavel_id: NOVO_DONO }, gerente);
+
+    expect(prisma.lead.findMany).not.toHaveBeenCalled();
+    expect(prisma.lead.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.lead.updateMany.mock.calls[0][0].where).toEqual({
+      id: { in: [L1, L2] },
+      tenant_id: 't1',
+    });
+    expect(dataDaChamada(prisma.lead.updateMany)).toEqual({
+      responsavel_id: NOVO_DONO,
+      returned_at: null,
+    });
+    expect(r).toEqual({ updated: 1 });
+  });
+});
