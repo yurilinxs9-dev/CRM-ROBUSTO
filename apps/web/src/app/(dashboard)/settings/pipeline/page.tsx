@@ -367,7 +367,11 @@ export default function PipelineEditorPage() {
             <p>
               <strong>Kanban individual ativo:</strong> esta tela edita o modelo
               base (template para novos membros). Cada membro edita as próprias
-              colunas no kanban.
+              colunas no kanban. Renomear ou apagar colunas aqui{' '}
+              <strong>não</strong> altera os boards que os membros já têm — e
+              muda o nome pelo qual o sistema encontra a coluna equivalente de
+              cada um, então mudanças de nome aqui podem desalinhar a
+              correspondência entre o modelo base e os boards existentes.
             </p>
           </div>
         )}
