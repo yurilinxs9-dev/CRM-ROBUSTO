@@ -73,10 +73,12 @@ function makeMocks() {
     conversation: { findMany: jest.fn(), update: jest.fn() },
     user: {
       findFirst: jest.fn(),
+      // Auditoria da reatribuicao em massa (Task D2) le os nomes envolvidos.
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue({ focus_mode: false }),
     },
     sector: { findFirst: jest.fn() },
-    leadActivity: { create: jest.fn() },
+    leadActivity: { create: jest.fn(), createMany: jest.fn() },
     $transaction: jest.fn(async (arg: unknown) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return (arg as (tx: unknown) => unknown)(txClient);
@@ -750,7 +752,9 @@ describe('bulkAssign — a etapa acompanha o novo dono', () => {
 
     const r = await service.bulkAssign({ ids: [L1, L2], responsavel_id: NOVO_DONO }, gerente);
 
-    expect(prisma.lead.findMany).not.toHaveBeenCalled();
+    // O `findMany` que sobrou aqui e o da AUDITORIA (Task D2: le o dono anterior
+    // de cada lead antes da troca), nao a leitura de colunas desta feature — o
+    // que esta suite trava e que o toggle OFF escreve num updateMany so.
     expect(prisma.lead.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.lead.updateMany.mock.calls[0][0].where).toEqual({
       id: { in: [L1, L2] },
