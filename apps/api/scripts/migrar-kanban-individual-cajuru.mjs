@@ -89,17 +89,48 @@ const linha = (c = '-') => c.repeat(78);
 // --------------------------------------------------------------------- setup
 
 const env = readFileSync(new URL('../.env', import.meta.url), 'utf8');
-const url =
-  env.match(/^DIRECT_URL=(.+)$/m)?.[1]?.trim() || env.match(/^DATABASE_URL=(.+)$/m)?.[1]?.trim();
+const direct = env.match(/^DIRECT_URL=(.+)$/m)?.[1]?.trim();
+const url = direct || env.match(/^DATABASE_URL=(.+)$/m)?.[1]?.trim();
+const origemUrl = direct ? 'DIRECT_URL' : 'DATABASE_URL (fallback)';
+
+/**
+ * O --apply e uma transacao INTERATIVA (varios statements no mesmo backend). O
+ * pooler do Supabase em transaction mode (pgbouncer, :6543) devolve o backend
+ * entre statements: a transacao estoura ou aplica pela metade. So a conexao
+ * direta (:5432) serve. O dry-run e leitura solta, entao passa em qualquer uma.
+ */
+function descreverConexao(raw) {
+  try {
+    const u = new URL(raw);
+    return {
+      alvo: `${u.hostname}:${u.port || '(default)'}`,
+      pooler: u.searchParams.get('pgbouncer') === 'true' || u.port === '6543',
+    };
+  } catch {
+    return { alvo: '(url ilegivel)', pooler: /pgbouncer=true|:6543/.test(raw ?? '') };
+  }
+}
+const conexao = descreverConexao(url);
+
 const prisma = new PrismaClient({ datasources: { db: { url } } });
 
 try {
   console.log(linha('='));
   console.log(`MIGRACAO KANBAN INDIVIDUAL — CAJURU INTERIORES  [${APPLY ? 'APPLY' : 'DRY-RUN'}]`);
   console.log(`tenant=${TENANT}  corte=${CORTE.toISOString()}  em ${new Date().toISOString()}`);
+  console.log(`conexao: ${conexao.alvo}  (de ${origemUrl})${conexao.pooler ? '  [POOLER]' : ''}`);
   console.log(linha('='));
 
   // ------------------------------------------------------------- 1. guardas
+
+  if (APPLY && conexao.pooler) {
+    abortar(
+      `--apply exige conexao DIRETA, e ${conexao.alvo} e o pooler em transaction mode ` +
+        `(pgbouncer=true ou :6543). Transacao interativa nesse pooler aplica pela metade.\n` +
+        `  Ajuste DIRECT_URL para a porta 5432 do banco e rode de novo.`,
+    );
+    throw new Error('guarda');
+  }
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: TENANT },
@@ -124,6 +155,14 @@ try {
       `${jaPessoais.length} Stage(s) do tenant JA tem user_id preenchido — estado misto, migracao manual.\n` +
         jaPessoais.map((s) => `  ${s.id} ${s.nome} -> ${s.user_id}`).join('\n'),
     );
+    throw new Error('guarda');
+  }
+
+  // O plano inteiro (clone 1:1, fallback por nome) assume UM pipeline. Com dois,
+  // "as 9 antigas" deixaria de ser um conjunto e o fallback cruzaria pipeline.
+  const pipelines = new Set(stages.map((s) => s.pipeline_id));
+  if (pipelines.size !== 1) {
+    abortar(`O tenant tem ${pipelines.size} pipelines com colunas — este script cobre so 1.`);
     throw new Error('guarda');
   }
 
@@ -153,6 +192,23 @@ try {
     avisos.push(
       `colunas pos-corte: ${daIsamara.length} (esperado ${DA_ISAMARA_ESPERADAS}) — ` +
         `todas viram da Isamara mesmo assim: ${daIsamara.map((s) => s.nome).join(' | ')}`,
+    );
+  }
+
+  // Colisao de nome no board da Isamara: ela fica com a coluna pos-corte E com o
+  // clone da antiga de mesmo nome normalizado. stageForOwner/stageForBase casam
+  // por nome case-insensitive com findFirst — com duas candidatas o destino de um
+  // reassign para ela deixa de ser deterministico. Nao aborta (a colisao ja existe
+  // hoje no board compartilhado), mas tem que aparecer antes de alguem aplicar.
+  const nomesDasAntigas = new Set(antigas.map((s) => normalizar(s.nome)));
+  for (const s of daIsamara) {
+    if (!nomesDasAntigas.has(normalizar(s.nome))) continue;
+    const antiga = antigas.find((a) => normalizar(a.nome) === normalizar(s.nome));
+    avisos.push(
+      `COLISAO DE NOME no board da Isamara: "${s.nome}" (pos-corte, ordem ${s.ordem}) ` +
+        `normaliza igual a "${antiga.nome}" (antiga, ordem ${antiga.ordem}), da qual ela recebe clone. ` +
+        `stageForOwner casa por nome case-insensitive: reassign para ela vira destino nao-deterministico. ` +
+        `Renomear uma das duas ANTES do --apply resolve.`,
     );
   }
 
@@ -337,6 +393,20 @@ try {
     console.log('APLICANDO (transacao unica)...');
     const feito = await prisma.$transaction(
       async (tx) => {
+        // Reler o toggle DENTRO da transacao: entre a guarda la de cima e este
+        // commit alguem pode ter ligado pela UI (POST /api/kanban-individual, que
+        // ja clona a base pra todo mundo). Sem esta trava o script clonaria a
+        // segunda leva por cima e o board sairia com colunas duplicadas.
+        const atual = await tx.tenant.findUnique({
+          where: { id: TENANT },
+          select: { kanban_individual: true },
+        });
+        if (atual?.kanban_individual === true) {
+          throw new Error(
+            'kanban_individual virou true durante a execucao (enable pela UI?) — transacao revertida, nada foi gravado',
+          );
+        }
+
         // As colunas de 27/08 passam a ser dela.
         const marcadas = await tx.stage.updateMany({
           where: { id: { in: daIsamara.map((s) => s.id) } },
