@@ -39,6 +39,15 @@ function makeService(minPosition: number | null) {
       typeof fn === 'function' ? fn(prisma) : Promise.all(fn),
     ),
   };
+  // Toggle DESLIGADO: as duas traducoes sao identidade, como o
+  // KanbanIndividualService real se comporta com `kanban_individual = false`.
+  // Mesmo padrao do `lead-kanban-individual.spec` — sem elas o `updateStage`
+  // morre em `remapearEtapa` e nenhuma asserção de posicao chega a rodar.
+  const kanbanIndividual: any = {
+    isOn: jest.fn().mockResolvedValue(false),
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
+  };
   const service = new LeadsService(
     prisma,
     {} as any, // instances
@@ -50,9 +59,9 @@ function makeService(minPosition: number | null) {
     {} as any, // assignment
     {} as any, // customFields
     { add: jest.fn() } as any, // autoActionsQueue
-    {} as any, // kanbanIndividual
+    kanbanIndividual,
   );
-  return { service, prisma };
+  return { service, prisma, kanbanIndividual };
 }
 
 const user: AuthUser = {
