@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { LeadsService } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -180,6 +181,25 @@ describe('reassign — a troca manual de dono deixa rastro', () => {
     expect(data.dados_antes).toEqual({ responsavel_id: null });
   });
 
+  it('lead que JA e do destino: troca e no-op, entao nao inventa atividade', async () => {
+    // "Reatribuído de Bruna para Bruna" seria ruido na timeline — e pior, faria
+    // a auditoria contar uma transferencia que nao existiu.
+    const { service, prisma, txClient } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      responsavel_id: NOVO_DONO,
+      responsavel: { nome: 'Bruna' },
+      instancia_whatsapp: null,
+      estagio_id: 'base-novo',
+    });
+
+    await service.reassign('lead-1', { novoResponsavelId: NOVO_DONO }, gerente);
+
+    expect(txClient.leadActivity.create).not.toHaveBeenCalled();
+    // O update em si continua acontecendo (assumed_at, is_private, returned_at).
+    expect(txClient.lead.update).toHaveBeenCalledTimes(1);
+  });
+
   it('update que falha nao deixa atividade: a escrita da auditoria e a mesma transacao', async () => {
     const { service, prisma, txClient } = makeService();
     txClient.lead.update.mockRejectedValue(new Error('erro no update'));
@@ -251,5 +271,67 @@ describe('bulkAssign — reatribuicao em massa tambem deixa rastro', () => {
     await service.bulkAssign({ ids: [LEAD_1], responsavel_id: NOVO_DONO }, gerente);
 
     expect(prisma.leadActivity.createMany).not.toHaveBeenCalled();
+  });
+
+  it('lead que ja e do destino sai da auditoria (selecao em massa quase sempre tem alguns)', async () => {
+    const { service, prisma } = makeService();
+    prisma.lead.findMany.mockResolvedValue([
+      { id: LEAD_1, estagio_id: 'base-novo', responsavel_id: 'u-alex' },
+      // Ja pertence a Bruna: o updateMany o inclui (idempotente), a auditoria nao.
+      { id: OUTRO_LEAD, estagio_id: 'base-novo', responsavel_id: NOVO_DONO },
+    ]);
+
+    await service.bulkAssign({ ids: [LEAD_1, OUTRO_LEAD], responsavel_id: NOVO_DONO }, gerente);
+
+    const gravadas = prisma.leadActivity.createMany.mock.calls[0][0].data;
+    expect(gravadas).toHaveLength(1);
+    expect(gravadas[0].lead_id).toBe(LEAD_1);
+  });
+
+  it('selecao inteira ja do destino: nem chega a escrever', async () => {
+    const { service, prisma } = makeService();
+    prisma.lead.findMany.mockResolvedValue([
+      { id: LEAD_1, estagio_id: 'base-novo', responsavel_id: NOVO_DONO },
+    ]);
+
+    await service.bulkAssign({ ids: [LEAD_1], responsavel_id: NOVO_DONO }, gerente);
+
+    expect(prisma.leadActivity.createMany).not.toHaveBeenCalled();
+    // Sem atividade a gravar, nem os nomes precisam ser lidos.
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it('dono que nao existe mais nao vira "sem responsável" (isso mentiria dizendo pool) nem UUID cru', async () => {
+    const { service, prisma } = makeService();
+    prisma.lead.findMany.mockResolvedValue([
+      { id: LEAD_1, estagio_id: 'base-novo', responsavel_id: 'u-demitido' },
+    ]);
+    // Nem o dono anterior nem o destino resolvem nome (usuario de outro tenant,
+    // apagado, etc.) — os dois lados precisam do MESMO rotulo legivel.
+    prisma.user.findMany.mockResolvedValue([]);
+
+    await service.bulkAssign({ ids: [LEAD_1], responsavel_id: NOVO_DONO }, gerente);
+
+    expect(prisma.leadActivity.createMany.mock.calls[0][0].data[0].descricao).toBe(
+      'Reatribuído de usuário removido para usuário removido',
+    );
+  });
+
+  it('falha ao gravar a auditoria nao derruba o bulk que JA trocou os donos', async () => {
+    // O update em massa nao roda em transacao: estourar aqui devolveria erro ao
+    // gerente com os leads ja reatribuidos, e o retry duplicaria as atividades.
+    const { service, prisma } = makeService();
+    comDoisLeads(prisma);
+    prisma.leadActivity.createMany.mockRejectedValue(new Error('createMany caiu'));
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    const r = await service.bulkAssign(
+      { ids: [LEAD_1, OUTRO_LEAD], responsavel_id: NOVO_DONO },
+      gerente,
+    );
+
+    expect(r).toEqual({ updated: 1 });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

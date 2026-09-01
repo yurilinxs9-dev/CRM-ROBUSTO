@@ -1512,9 +1512,20 @@ export class LeadsService {
     return { updated: result.count };
   }
 
+  /**
+   * Rótulo de um dono na descrição da auditoria. Os três casos são DIFERENTES e
+   * não podem colapsar: sem dono é o pool; dono que não resolve nome (usuário
+   * apagado, de outro tenant) não pode virar "sem responsável" — isso mentiria
+   * dizendo que o lead estava no pool — nem UUID cru, que não se lê na timeline.
+   */
+  private nomeDeDono(id: string | null | undefined, nomes: Map<string, string>): string {
+    if (!id) return 'sem responsável';
+    return nomes.get(id) ?? 'usuário removido';
+  }
+
   /** Texto único das duas rotas de reatribuição (uma a uma e em massa). */
-  private descricaoReatribuicao(anterior: string | null | undefined, novo: string): string {
-    return `Reatribuído de ${anterior ?? 'sem responsável'} para ${novo}`;
+  private descricaoReatribuicao(anterior: string, novo: string): string {
+    return `Reatribuído de ${anterior} para ${novo}`;
   }
 
   /**
@@ -1525,39 +1536,51 @@ export class LeadsService {
    *
    * Fora de transação de propósito: `bulkAssign` não roda numa, e envolvê-lo
    * numa agora seria mudança de risco em cima do caminho de escrita em massa.
-   * O pior caso é uma atividade a menos se o processo cair entre as escritas —
-   * ordem escolhida para nunca afirmar troca que não aconteceu.
+   * Consequência assumida: os donos JÁ trocaram quando esta escrita acontece,
+   * então falha aqui NÃO pode derrubar a chamada — o gerente receberia erro num
+   * bulk que funcionou, e o retry duplicaria as atividades. Loga e segue; o
+   * pior caso é rastro faltando, nunca rastro mentindo.
    */
   private async registrarReatribuicoes(
     alvos: { id: string; responsavel_id: string | null }[],
     novoResponsavelId: string,
     user: AuthUser,
   ): Promise<void> {
-    if (alvos.length === 0) return;
-    const envolvidos = new Set<string>([novoResponsavelId]);
-    for (const alvo of alvos) {
-      if (alvo.responsavel_id) envolvidos.add(alvo.responsavel_id);
+    // Lead que já é do destino não trocou de dono: atividade aqui seria
+    // "Reatribuído de Bruna para Bruna" — ruído na timeline e transferência
+    // fantasma na contagem. Seleção em massa quase sempre tem alguns.
+    const trocaram = alvos.filter((alvo) => alvo.responsavel_id !== novoResponsavelId);
+    if (trocaram.length === 0) return;
+    try {
+      const envolvidos = new Set<string>([novoResponsavelId]);
+      for (const alvo of trocaram) {
+        if (alvo.responsavel_id) envolvidos.add(alvo.responsavel_id);
+      }
+      const usuarios = await this.prisma.user.findMany({
+        where: { id: { in: [...envolvidos] }, tenant_id: user.tenantId },
+        select: { id: true, nome: true },
+      });
+      const nomePorId = new Map(usuarios.map((u) => [u.id, u.nome]));
+      const nomeDestino = this.nomeDeDono(novoResponsavelId, nomePorId);
+      await this.prisma.leadActivity.createMany({
+        data: trocaram.map((alvo) => ({
+          lead_id: alvo.id,
+          user_id: user.id,
+          tipo: 'REASSIGNED',
+          descricao: this.descricaoReatribuicao(
+            this.nomeDeDono(alvo.responsavel_id, nomePorId),
+            nomeDestino,
+          ),
+          dados_antes: { responsavel_id: alvo.responsavel_id },
+          dados_depois: { responsavel_id: novoResponsavelId },
+          tenant_id: user.tenantId,
+        })),
+      });
+    } catch (err) {
+      this.logger.warn(
+        `auditoria de bulkAssign falhou (${trocaram.length} leads, tenant ${user.tenantId}): ${String(err)}`,
+      );
     }
-    const usuarios = await this.prisma.user.findMany({
-      where: { id: { in: [...envolvidos] }, tenant_id: user.tenantId },
-      select: { id: true, nome: true },
-    });
-    const nomePorId = new Map(usuarios.map((u) => [u.id, u.nome]));
-    const nomeDestino = nomePorId.get(novoResponsavelId) ?? novoResponsavelId;
-    await this.prisma.leadActivity.createMany({
-      data: alvos.map((alvo) => ({
-        lead_id: alvo.id,
-        user_id: user.id,
-        tipo: 'REASSIGNED',
-        descricao: this.descricaoReatribuicao(
-          alvo.responsavel_id ? nomePorId.get(alvo.responsavel_id) : null,
-          nomeDestino,
-        ),
-        dados_antes: { responsavel_id: alvo.responsavel_id },
-        dados_depois: { responsavel_id: novoResponsavelId },
-        tenant_id: user.tenantId,
-      })),
-    });
   }
 
   async bulkTag(data: unknown, user: AuthUser) {
@@ -1798,9 +1821,20 @@ export class LeadsService {
       novoResponsavelId,
     );
     // Dono anterior lido ANTES da transação: depois do update o campo já é o
-    // novo dono, e a atividade precisa dizer de quem o lead saiu.
+    // novo dono, e a atividade precisa dizer de quem o lead saiu. `trocouDeDono`
+    // separa a reatribuição de verdade do re-clique no dono atual — este último
+    // ainda escreve o lead (assumed_at, is_private, returned_at), mas não é
+    // transferência nenhuma e não pode virar "Reatribuído de Bruna para Bruna".
     const donoAnteriorId = lead.responsavel_id;
     const donoAnteriorNome = lead.responsavel?.nome;
+    const trocouDeDono = donoAnteriorId !== novoResponsavelId;
+    // Um lado do texto nunca pode sair em UUID enquanto o outro sai em nome; o
+    // destino veio de um `findFirst` que já garantiu existência, o anterior pode
+    // ser um usuário apagado — daí o mapa (só com quem realmente resolveu nome).
+    const nomesDaAuditoria = new Map<string, string>([[novoResponsavelId, newUser.nome]]);
+    if (donoAnteriorId && donoAnteriorNome) {
+      nomesDaAuditoria.set(donoAnteriorId, donoAnteriorNome);
+    }
     // Lead update e transferência da conversa ativa na MESMA transação —
     // mesmo motivo do claim: um crash entre as duas escritas deixaria
     // Lead.responsavel_id e Conversation.responsavel_id divergentes.
@@ -1834,17 +1868,22 @@ export class LeadsService {
       // rollback não pode deixar atividade órfã afirmando uma troca que não
       // aconteceu. AssignmentLog NÃO entra: é do rodízio/fila, e reatribuição
       // manual não mexe no ponteiro do setor.
-      await tx.leadActivity.create({
-        data: {
-          lead_id: leadId,
-          user_id: user.id,
-          tipo: 'REASSIGNED',
-          descricao: this.descricaoReatribuicao(donoAnteriorNome, newUser.nome),
-          dados_antes: { responsavel_id: donoAnteriorId },
-          dados_depois: { responsavel_id: novoResponsavelId },
-          tenant_id: user.tenantId,
-        },
-      });
+      if (trocouDeDono) {
+        await tx.leadActivity.create({
+          data: {
+            lead_id: leadId,
+            user_id: user.id,
+            tipo: 'REASSIGNED',
+            descricao: this.descricaoReatribuicao(
+              this.nomeDeDono(donoAnteriorId, nomesDaAuditoria),
+              this.nomeDeDono(novoResponsavelId, nomesDaAuditoria),
+            ),
+            dados_antes: { responsavel_id: donoAnteriorId },
+            dados_depois: { responsavel_id: novoResponsavelId },
+            tenant_id: user.tenantId,
+          },
+        });
+      }
       return lead;
     });
     await this.invalidateLeadsCache(user.tenantId);

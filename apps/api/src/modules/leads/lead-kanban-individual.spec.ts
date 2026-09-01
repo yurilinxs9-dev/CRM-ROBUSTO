@@ -748,13 +748,16 @@ describe('bulkAssign — a etapa acompanha o novo dono', () => {
   });
 
   it('toggle OFF: um unico updateMany, exatamente como antes da feature', async () => {
-    const { service, prisma } = makeService();
+    const { service, prisma, kanbanIndividual } = makeService();
 
     const r = await service.bulkAssign({ ids: [L1, L2], responsavel_id: NOVO_DONO }, gerente);
 
     // O `findMany` que sobrou aqui e o da AUDITORIA (Task D2: le o dono anterior
     // de cada lead antes da troca), nao a leitura de colunas desta feature — o
-    // que esta suite trava e que o toggle OFF escreve num updateMany so.
+    // que esta suite trava e que o toggle OFF escreve num updateMany so E nao
+    // consulta traducao nenhuma (esta e a assercao que pega a regressao real:
+    // qualquer coluna escrita com a feature desligada passa por aqui antes).
+    expect(kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
     expect(prisma.lead.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.lead.updateMany.mock.calls[0][0].where).toEqual({
       id: { in: [L1, L2] },
