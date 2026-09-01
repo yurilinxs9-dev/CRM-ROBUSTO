@@ -19,6 +19,13 @@ import type { AuthUser } from '../../common/types/auth-user';
 /** Papeis que ganham board proprio. VISUALIZADOR nao move lead, entao nao clona. */
 const PAPEIS_COM_BOARD: UserRole[] = [UserRole.OPERADOR, UserRole.GERENTE, UserRole.SUPER_ADMIN];
 
+/**
+ * Ligar/desligar e O(membros x colunas) em round-trips dentro de UMA transacao.
+ * O default do Prisma (5s de timeout) estoura com tenant grande e devolve P2028
+ * no meio do remapeamento, entao os dois toggles pedem janela larga.
+ */
+const TX_OPTS = { timeout: 120_000, maxWait: 10_000 } as const;
+
 /** Colunas sao comparadas por nome normalizado — o clone nasce com o nome da base. */
 function normalizar(nome: string): string {
   return nome.toLowerCase().trim();
@@ -130,7 +137,7 @@ export class KanbanIndividualService {
       this.logger.log(
         `kanban individual ON tenant=${tenantId} membros=${membros.length} colunas_base=${base.length}`,
       );
-    });
+    }, TX_OPTS);
 
     return { success: true };
   }
@@ -189,7 +196,7 @@ export class KanbanIndividualService {
       await tx.tenant.update({ where: { id: tenantId }, data: { kanban_individual: false } });
 
       this.logger.log(`kanban individual OFF tenant=${tenantId} pessoais_removidas=${pessoais.length}`);
-    });
+    }, TX_OPTS);
 
     return { success: true };
   }

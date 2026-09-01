@@ -1,4 +1,5 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { KanbanIndividualService } from './kanban-individual.service';
 import { KanbanIndividualModule } from './kanban-individual.module';
 import { UserRole } from '../../common/types/roles';
@@ -167,10 +168,60 @@ function montar(opts: { stages?: StageRow[]; membros?: MembroRow[]; ligado?: boo
   return { service: new KanbanIndividualService(prisma as never), prisma, rows };
 }
 
+/**
+ * A base carrega config de verdade de proposito: o clone tem que levar SLA,
+ * cadencia, alertas e limites junto — coluna pessoal sem SLA e automacao morta
+ * e silenciosa. Com fixture "limpa" daria para apagar campos do create e o
+ * teste seguiria verde.
+ */
 const BASE = [
-  stage({ id: 'b1', nome: 'Novo', ordem: 0 }),
-  stage({ id: 'b2', nome: 'Ganho', ordem: 1, is_won: true }),
+  stage({
+    id: 'b1',
+    nome: 'Novo',
+    ordem: 0,
+    cor: '#FF00AA',
+    max_dias: 3,
+    probabilidade: 40,
+    campos_obrigatorios: ['telefone'],
+    sla_config: { duration: 2, unit: 'h' },
+    cadence_config: [{ degrau: 1, apos_horas: 24 }],
+    idle_alert_config: { enabled: true, duration: 6, unit: 'h' },
+  }),
+  stage({
+    id: 'b2',
+    nome: 'Ganho',
+    ordem: 1,
+    is_won: true,
+    is_lost: false,
+    auto_action: { tipo: 'webhook' },
+    on_entry_config: { createTask: true },
+    response_alert_config: { enabled: false },
+  }),
 ];
+
+/** O que o service deve mandar para o Prisma ao clonar `base` para `userId`. */
+function cloneEsperado(base: StageRow, userId: string) {
+  const json = (v: unknown) => (v ?? Prisma.JsonNull) as unknown;
+  return {
+    nome: base.nome,
+    cor: base.cor,
+    ordem: base.ordem,
+    pipeline_id: base.pipeline_id,
+    tenant_id: TENANT,
+    user_id: userId,
+    is_won: base.is_won,
+    is_lost: base.is_lost,
+    max_dias: base.max_dias,
+    probabilidade: base.probabilidade,
+    auto_action: json(base.auto_action),
+    campos_obrigatorios: json(base.campos_obrigatorios),
+    sla_config: json(base.sla_config),
+    idle_alert_config: json(base.idle_alert_config),
+    response_alert_config: json(base.response_alert_config),
+    on_entry_config: json(base.on_entry_config),
+    cadence_config: json(base.cadence_config),
+  };
+}
 
 describe('KanbanIndividualService.enable', () => {
   it('clona colunas base para cada membro e remapeia leads do responsavel', async () => {
@@ -181,15 +232,17 @@ describe('KanbanIndividualService.enable', () => {
 
     await service.enable(gerente);
 
-    // 2 membros x 2 colunas base
+    // 2 membros x 2 colunas base, com TODOS os campos de config copiados
     expect(prisma.stage.create).toHaveBeenCalledTimes(4);
     const criadas = prisma.stage.create.mock.calls.map(([arg]: [CreateStageArgs]) => arg.data);
     expect(criadas).toEqual([
-      expect.objectContaining({ nome: 'Novo', ordem: 0, user_id: 'op1', tenant_id: TENANT, pipeline_id: 'pipe-1' }),
-      expect.objectContaining({ nome: 'Ganho', ordem: 1, user_id: 'op1', is_won: true }),
-      expect.objectContaining({ nome: 'Novo', ordem: 0, user_id: 'ger1' }),
-      expect.objectContaining({ nome: 'Ganho', ordem: 1, user_id: 'ger1', is_won: true }),
+      cloneEsperado(BASE[0], 'op1'),
+      cloneEsperado(BASE[1], 'op1'),
+      cloneEsperado(BASE[0], 'ger1'),
+      cloneEsperado(BASE[1], 'ger1'),
     ]);
+
+    expect(prisma.$transaction.mock.calls[0][1]).toEqual({ timeout: 120_000, maxWait: 10_000 });
 
     expect(prisma.lead.updateMany).toHaveBeenCalledWith({
       where: { tenant_id: TENANT, responsavel_id: 'op1', estagio_id: 'b1' },
@@ -239,6 +292,50 @@ describe('KanbanIndividualService.enable', () => {
   });
 });
 
+/**
+ * As Tasks 3-6 chamam cloneBaseForUser direto (membro novo entrando no tenant,
+ * pipeline criado com o toggle ja ligado), inclusive com o filtro por pipeline.
+ * Esse braco nao passa por enable(), entao tem teste proprio.
+ */
+describe('KanbanIndividualService.cloneBaseForUser', () => {
+  it('clona toda a base do tenant com os campos de config', async () => {
+    const { service, prisma } = montar({ stages: BASE });
+
+    await service.cloneBaseForUser(prisma as never, TENANT, 'op1');
+
+    expect(prisma.stage.findMany).toHaveBeenCalledWith({
+      where: { tenant_id: TENANT, user_id: null },
+      orderBy: { ordem: 'asc' },
+    });
+    const criadas = prisma.stage.create.mock.calls.map(([arg]: [CreateStageArgs]) => arg.data);
+    expect(criadas).toEqual([cloneEsperado(BASE[0], 'op1'), cloneEsperado(BASE[1], 'op1')]);
+  });
+
+  it('com pipelineId clona so as colunas daquele pipeline', async () => {
+    const outro = stage({ id: 'x1', nome: 'Triagem', ordem: 0, pipeline_id: 'pipe-2' });
+    const { service, prisma } = montar({ stages: [...BASE, outro] });
+
+    await service.cloneBaseForUser(prisma as never, TENANT, 'op1', 'pipe-2');
+
+    expect(prisma.stage.findMany).toHaveBeenCalledWith({
+      where: { tenant_id: TENANT, user_id: null, pipeline_id: 'pipe-2' },
+      orderBy: { ordem: 'asc' },
+    });
+    expect(prisma.stage.create).toHaveBeenCalledTimes(1);
+    expect(prisma.stage.create.mock.calls[0][0].data).toEqual(cloneEsperado(outro, 'op1'));
+  });
+
+  it('nao clona coluna pessoal de outro membro', async () => {
+    const { service, prisma } = montar({
+      stages: [...BASE, stage({ id: 'p1', nome: 'Novo', ordem: 0, user_id: 'ger1' })],
+    });
+
+    await service.cloneBaseForUser(prisma as never, TENANT, 'op1');
+
+    expect(prisma.stage.create).toHaveBeenCalledTimes(BASE.length);
+  });
+});
+
 describe('KanbanIndividualService.disable', () => {
   const pessoais = [
     stage({ id: 'p1', nome: 'Novo', ordem: 0, user_id: 'op1' }),
@@ -276,6 +373,35 @@ describe('KanbanIndividualService.disable', () => {
       where: { id: TENANT },
       data: { kanban_individual: false },
     });
+
+    expect(prisma.$transaction.mock.calls[0][1]).toEqual({ timeout: 120_000, maxWait: 10_000 });
+  });
+
+  /**
+   * Lead.estagio e FK Restrict e Broadcast.stage_id aponta para a coluna: apagar
+   * as pessoais antes de esvaziar as duas referencias derruba a transacao em
+   * producao (e passa liso em qualquer teste que so olhe "foi chamado"). Esta e
+   * a ordem, travada por invocationCallOrder.
+   */
+  it('remapeia leads e solta broadcasts ANTES de apagar as colunas pessoais', async () => {
+    const { service, prisma } = montar({
+      stages: [stage({ id: 'b1', nome: 'Novo', ordem: 0 }), ...pessoais],
+      ligado: true,
+    });
+
+    await service.disable(gerente);
+
+    const ordemLeads = prisma.lead.updateMany.mock.invocationCallOrder;
+    const ordemBroadcast = prisma.broadcast.updateMany.mock.invocationCallOrder;
+    const ordemDelete = prisma.stage.deleteMany.mock.invocationCallOrder;
+
+    expect(ordemLeads).toHaveLength(2);
+    expect(ordemBroadcast).toHaveLength(1);
+    expect(ordemDelete).toHaveLength(1);
+
+    const ultimoLead = Math.max(...ordemLeads);
+    expect(ultimoLead).toBeLessThan(ordemBroadcast[0]);
+    expect(ordemBroadcast[0]).toBeLessThan(ordemDelete[0]);
   });
 
   it('com toggle ja desligado lanca ConflictException', async () => {
