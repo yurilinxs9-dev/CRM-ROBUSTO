@@ -7,7 +7,14 @@ import { UserRole } from '@/common/types/roles';
 import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '../../common/types/auth-user';
 
-export interface StageRow { id: string; nome: string; cor: string; ordem: number; is_won?: boolean; }
+export interface StageRow {
+  id: string;
+  nome: string;
+  cor: string;
+  ordem: number;
+  pipeline_id: string;
+  is_won?: boolean;
+}
 
 /** Item do funil do `stats` — o shape que o `FunnelChart` do front consome. */
 export interface FunilItem {
@@ -17,15 +24,23 @@ export interface FunilItem {
   count: number;
 }
 
-/** Colunas homonimas sao a MESMA coluna: o clone nasce com o nome da base. */
-function normalizarNomeDeColuna(nome: string): string {
-  return nome.toLowerCase().trim();
+/**
+ * Colunas homonimas sao a MESMA coluna: o clone nasce com o nome da base.
+ *
+ * O pipeline entra na chave porque a homonimia so vale DENTRO dele: dois
+ * funis do mesmo tenant costumam ter "Novo" cada um, e sao processos
+ * diferentes. Sem o pipeline os dois somariam numa linha so, exibida com o id
+ * de uma coluna que nem pertence ao outro funil.
+ */
+function chaveDeGrupo(stage: StageRow): string {
+  return `${stage.pipeline_id}::${stage.nome.toLowerCase().trim()}`;
 }
 
 /**
  * Kanban individual: cada membro tem um clone proprio de cada coluna
  * (`Stage.user_id`), entao o funil do gestor mostrava "Novo" uma vez por dono,
- * cada uma com um pedaco da contagem. Aqui as homonimas viram um item so.
+ * cada uma com um pedaco da contagem. Aqui as homonimas DO MESMO PIPELINE
+ * viram um item so.
  *
  * O representante do grupo e a coluna de MENOR `ordem` (empate decidido pelo
  * id, senao a resposta danca entre dois clones na mesma posicao): e dele que
@@ -38,7 +53,7 @@ function agregarFunilPorNome(
 ): FunilItem[] {
   const grupos = new Map<string, { representante: StageRow; count: number }>();
   for (const stage of stages) {
-    const chave = normalizarNomeDeColuna(stage.nome);
+    const chave = chaveDeGrupo(stage);
     const count = contagens.get(stage.id) ?? 0;
     const grupo = grupos.get(chave);
     if (!grupo) {
@@ -548,9 +563,14 @@ export class DashboardService {
     // Ranking e visao de GESTAO. Escopado, o groupBy so pode devolver o proprio
     // usuario e a fila sem dono — e a fila sem dono viraria uma linha
     // "Desconhecido" liderando o proprio ranking do operador.
-    const operatorRows = supervisionando
-      ? operatorGroup
-      : operatorGroup.filter((g) => g.responsavel_id === user.id);
+    //
+    // O `responsavel_id: null` tambem chega no groupBy do GESTOR, onde a nuvem
+    // costuma ser o maior balde de todos: sem o filtro ela lidera o ranking do
+    // time como "Desconhecido" e ainda come uma das 5 vagas. Nuvem e fila, nao
+    // operador.
+    const operatorRows = (
+      supervisionando ? operatorGroup : operatorGroup.filter((g) => g.responsavel_id === user.id)
+    ).filter((g) => g.responsavel_id);
     const operatorIds = operatorRows
       .map((g) => g.responsavel_id)
       .filter((id): id is string => !!id);

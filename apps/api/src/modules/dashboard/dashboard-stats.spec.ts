@@ -40,10 +40,11 @@ interface StageStub {
   ordem: number;
   is_won: boolean;
   user_id: string | null;
+  pipeline_id: string;
 }
 
 function coluna(over: Partial<StageStub> & { id: string; nome: string; ordem: number }): StageStub {
-  return { cor: '#3498DB', is_won: false, user_id: null, ...over };
+  return { cor: '#3498DB', is_won: false, user_id: null, pipeline_id: 'p-1', ...over };
 }
 
 const COLUNAS_BASE: StageStub[] = [
@@ -316,6 +317,26 @@ describe('DashboardService.getStats — escopo do usuario', () => {
     expect(r.topOperators[0].leadsCount).toBe(7);
   });
 
+  /**
+   * A nuvem (leads sem dono) tambem chega no groupBy do GESTOR, e la ela lidera
+   * o ranking como "Desconhecido" — uma fila nao e um operador, e ainda rouba
+   * uma das 5 vagas de gente de verdade.
+   */
+  it('a nuvem sem dono nao vira linha no ranking do gestor', async () => {
+    const { service } = montarStats({
+      porResponsavel: [
+        { chave: null, count: 99 },
+        { chave: 'u-a', count: 7 },
+      ],
+      operadores: [{ id: 'u-a', nome: 'Ana' }],
+    });
+
+    const r = await service.getStats(GERENTE);
+
+    expect(r.topOperators.map((o) => o.id)).toEqual(['u-a']);
+    expect(r.topOperators.map((o) => o.nome)).not.toContain('Desconhecido');
+  });
+
   it('cache separa por usuario: dois operadores nao dividem o mesmo numero', async () => {
     const { service, cache } = montarStats();
 
@@ -418,6 +439,35 @@ describe('DashboardService.getStats — funil com kanban individual', () => {
 
     // 4 ganhos em 28 leads = 14%, com ou sem agregacao.
     expect(r.conversionRate).toBe(14);
+  });
+
+  /**
+   * O clone nasce com o nome da base — DENTRO do pipeline. Dois pipelines do
+   * mesmo tenant costumam ter "Novo" cada um, e sao processos diferentes:
+   * agregar so pelo nome somaria os dois numa linha unica, com um id de coluna
+   * que nem pertence ao outro funil.
+   */
+  it('homonimas de PIPELINES diferentes continuam sendo linhas separadas', async () => {
+    const { service } = montarStats({
+      kanbanIndividual: true,
+      stages: [
+        coluna({ id: 's-a-novo', nome: 'Novo', ordem: 0, pipeline_id: 'p-a' }),
+        coluna({ id: 's-a-novo-ana', nome: 'novo', ordem: 1, pipeline_id: 'p-a', user_id: 'u-a' }),
+        coluna({ id: 's-b-novo', nome: 'Novo', ordem: 2, pipeline_id: 'p-b' }),
+      ],
+      porEstagio: [
+        { chave: 's-a-novo', count: 2 },
+        { chave: 's-a-novo-ana', count: 3 },
+        { chave: 's-b-novo', count: 7 },
+      ],
+    });
+
+    const r = await service.getStats(GERENTE);
+
+    expect(r.leadsByStage).toEqual([
+      { stageId: 's-a-novo', nome: 'Novo', cor: '#3498DB', count: 5 },
+      { stageId: 's-b-novo', nome: 'Novo', cor: '#3498DB', count: 7 },
+    ]);
   });
 
   it('para o operador a agregacao e no-op: um dono, uma coluna por nome', async () => {
