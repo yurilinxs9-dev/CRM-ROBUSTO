@@ -109,6 +109,7 @@ function build(instances: InstanceRow[]) {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'alert-1' }),
       update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     user: { findMany: jest.fn().mockResolvedValue(ADMINS) },
     notification: { create: jest.fn().mockResolvedValue({ id: 'notif-1' }) },
@@ -140,6 +141,45 @@ function build(instances: InstanceRow[]) {
 /** Silêncio de inbound: última mensagem de cliente mais velha que a janela. */
 function horasAtras(h: number): Date {
   return new Date(Date.now() - h * 3_600_000);
+}
+
+interface WebhookLogRow {
+  id: string;
+  event: string;
+  instance: string;
+  tenant_id: string | null;
+}
+
+interface WebhookLogArgs {
+  where: {
+    event?: { in?: string[] };
+    instance?: { in?: string[] };
+    OR?: Array<{ tenant_id: string | null }>;
+  };
+}
+
+/**
+ * WebhookLog de mentira que HONRA os filtros: filtro ausente casa com tudo,
+ * como no banco. É o que faz o teste enxergar a diferença entre "qualquer
+ * webhook" e "webhook de mensagem deste tenant".
+ */
+function fakeWebhookLogs(m: ReturnType<typeof build>, rows: WebhookLogRow[]): void {
+  m.prisma.webhookLog.findFirst.mockImplementation((args: WebhookLogArgs) => {
+    const w = args.where;
+    const achou = rows.find(
+      (r) =>
+        (w.event?.in === undefined || w.event.in.includes(r.event)) &&
+        (w.instance?.in === undefined || w.instance.in.includes(r.instance)) &&
+        (w.OR === undefined || w.OR.some((c) => c.tenant_id === r.tenant_id)),
+    );
+    return Promise.resolve(achou ?? null);
+  });
+}
+
+/** Instância conectada, movimentada e sem inbound há horas. */
+function comSilencio(m: ReturnType<typeof build>, horas = 10): void {
+  m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(horas) });
+  m.prisma.message.count.mockResolvedValue(42);
 }
 
 describe('InstanceHealthService.verificarTodas', () => {
@@ -764,6 +804,128 @@ describe('InstanceHealthService: detector de silêncio de inbound', () => {
 
     expect(m.prisma.message.findFirst).not.toHaveBeenCalled();
     expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  // O cooldown já foi gravado quando o aviso roda: se o aviso derruba o
+  // caminho, o sync nunca acontece e a instância fica cega por 6h.
+  it('aviso ao admin falhando não impede o sync', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-1' });
+    m.prisma.notification.create.mockRejectedValue(new Error('banco fora'));
+
+    const r = await m.service.verificarTodas();
+
+    expect(m.historySync.syncInstance).toHaveBeenCalledWith(
+      'inst-uaz',
+      HistorySyncService.RECONNECT_WINDOW_MS,
+    );
+    expect(r.silencios).toBe(1);
+  });
+
+  // Falso positivo noturno: loja fechada, ninguém escreve, mas presence/status
+  // continuam pingando. Só evento de MENSAGEM prova que o inbound funcionaria.
+  it('presence/connection não contam como canal vivo', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    fakeWebhookLogs(m, [
+      { id: 'wl-p', event: 'uazapi.presence', instance: 'atendimento-alex', tenant_id: 'tenant-1' },
+      {
+        id: 'wl-c',
+        event: 'uazapi.connection_update',
+        instance: 'atendimento-alex',
+        tenant_id: 'tenant-1',
+      },
+    ]);
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+    expect(m.historySync.syncInstance).not.toHaveBeenCalled();
+  });
+
+  it('mensagem na janela (mesmo só fromMe) é canal vivo: alerta', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    fakeWebhookLogs(m, [
+      { id: 'wl-m', event: 'uazapi.messages', instance: 'atendimento-alex', tenant_id: 'tenant-1' },
+    ]);
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  // Nome de instância só é único POR tenant (bug já conhecido no repo).
+  it('webhook de instância homônima de outro tenant não prova canal vivo', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    fakeWebhookLogs(m, [
+      { id: 'wl-x', event: 'uazapi.messages', instance: 'atendimento-alex', tenant_id: 'tenant-9' },
+    ]);
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).not.toHaveBeenCalled();
+  });
+
+  it('log legado sem tenant_id ainda conta como canal vivo', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    fakeWebhookLogs(m, [
+      { id: 'wl-legado', event: 'uazapi.messages', instance: 'atendimento-alex', tenant_id: null },
+    ]);
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('inbound volta: fecha o alerta de silêncio em silêncio (sem notificar)', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    comSilencio(m);
+    m.prisma.webhookLog.findFirst.mockResolvedValue({ id: 'wl-1' });
+
+    await m.service.verificarTodas();
+    expect(m.prisma.instanceAlert.create).toHaveBeenCalledTimes(1);
+    expect(m.prisma.notification.create).toHaveBeenCalledTimes(2);
+
+    // Cliente voltou a aparecer.
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(0) });
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.updateMany).toHaveBeenCalledWith({
+      where: {
+        instance_id: 'inst-uaz',
+        tipo: 'inbound_silencioso',
+        resolvido_em: null,
+      },
+      data: { resolvido_em: expect.any(Date) },
+    });
+    // Nada de "voltou a receber": ninguém foi avisado do problema fora do
+    // alerta original, e um segundo aviso só faria barulho.
+    expect(m.prisma.notification.create).toHaveBeenCalledTimes(2);
+    expect(m.push.sendToUsers).toHaveBeenCalledTimes(1);
+
+    // Fechou uma vez só: o ciclo seguinte não reescreve.
+    await m.service.verificarTodas();
+    expect(m.prisma.instanceAlert.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('instância que nunca alertou nesta vida do processo não escreve nada', async () => {
+    const m = build([uaz()]);
+    m.httpGet.mockReturnValue(of(uazStatusConectado));
+    m.prisma.message.findFirst.mockResolvedValue({ created_at: horasAtras(1) });
+
+    await m.service.verificarTodas();
+
+    expect(m.prisma.instanceAlert.updateMany).not.toHaveBeenCalled();
   });
 
   it('Evolution silenciosa: dispara o sync Evolution', async () => {

@@ -90,6 +90,13 @@ export class InstanceHealthService {
   private readonly desconhecidos = new Map<string, number>();
   /** Um warn por instância cega a cada 10min (mesmo padrão dos handlers). */
   private readonly avisoCega = new LogThrottle(INSTANCIA_DESCONHECIDA_JANELA_MS);
+  /**
+   * Instâncias com alerta de silêncio aberto POR ESTE processo — é o que
+   * autoriza fechar a linha quando o inbound volta, sem um findFirst extra por
+   * instância a cada ciclo. Perder o Set no restart só deixa a linha aberta
+   * (nada no produto lê), que é o comportamento de antes.
+   */
+  private readonly silenciosAbertos = new Set<string>();
 
   /** Ciclos consecutivos caída necessários pra abrir alerta. */
   private static readonly CICLOS_PARA_ALERTAR = 2;
@@ -107,6 +114,20 @@ export class InstanceHealthService {
   private static readonly COOLDOWN_SILENCIO_MS = 6 * 3_600_000;
   private static readonly TIPO_SILENCIO = 'inbound_silencioso';
   private static readonly TIPO_QUEDA = 'desconectada';
+  /**
+   * Eventos que provam que o inbound FUNCIONARIA — mensagem de verdade
+   * (inclusive `fromMe`, que foi o que continuou chegando no incidente).
+   * `presence`/`connection`/`chats` não entram: de madrugada, com a loja
+   * fechada, eles pingam sozinhos e abririam alerta de silêncio todo dia.
+   * ACK (`*_update`, `message_ack`) também fica de fora: é eco de disparo
+   * nosso, não prova nada sobre o caminho de entrada.
+   */
+  private static readonly EVENTOS_DE_MENSAGEM = [
+    'uazapi.messages',
+    'uazapi.message',
+    'messages.upsert',
+    'onmessage',
+  ];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -257,9 +278,10 @@ export class InstanceHealthService {
    * Cooldown de 6h no próprio InstanceAlert (`aberto_em`, tipo
    * `inbound_silencioso`) e não em memória como o contador anti-flap: numa
    * pane de dias o backend é redeployado várias vezes, e um Map zerado a cada
-   * restart viraria alerta+sync repetidos. O alerta de silêncio fica aberto
-   * (ninguém "resolve" um provedor) — por isso `resolverAlerta`/`abrirAlerta`
-   * são escopados ao tipo `desconectada`.
+   * restart viraria alerta+sync repetidos. A linha do alerta só é fechada
+   * quando o inbound volta (`fecharSilencio`, sem notificação) — por isso
+   * `resolverAlerta`/`abrirAlerta`, que falam de QUEDA, são escopados ao tipo
+   * `desconectada`.
    *
    * @returns true quando alertou (e disparou o sync) neste ciclo.
    */
@@ -280,7 +302,10 @@ export class InstanceHealthService {
       select: { created_at: true },
     });
     // Cliente falou dentro da janela: canal saudável, sai barato.
-    if (ultimo && ultimo.created_at.getTime() >= janela.getTime()) return false;
+    if (ultimo && ultimo.created_at.getTime() >= janela.getTime()) {
+      await this.fecharSilencio(inst);
+      return false;
+    }
 
     // Cooldown antes das consultas caras: numa pane que dura dias este ramo é
     // o que roda a cada 5 min.
@@ -299,7 +324,15 @@ export class InstanceHealthService {
     const identificadores = [inst.nome, typeof cfg.uazapi_id === 'string' ? cfg.uazapi_id : null]
       .filter((v): v is string => typeof v === 'string' && v.length > 0);
     const webhookVivo = await this.prisma.webhookLog.findFirst({
-      where: { instance: { in: identificadores }, created_at: { gte: janela } },
+      where: {
+        instance: { in: identificadores },
+        event: { in: InstanceHealthService.EVENTOS_DE_MENSAGEM },
+        created_at: { gte: janela },
+        // Nome de instância só é único POR tenant: sem isto, a homônima de
+        // outro tenant "provaria" o canal desta (bug conhecido do repo). Logs
+        // antigos podem não ter tenant resolvido — esses ainda valem.
+        OR: [{ tenant_id: inst.tenant_id }, { tenant_id: null }],
+      },
       select: { id: true },
     });
     if (!webhookVivo) return false;
@@ -330,12 +363,11 @@ export class InstanceHealthService {
       },
     });
 
-    const texto =
-      `Instância ${inst.nome} (${inst.tenant.nome}) conectada mas sem mensagens ` +
-      `de clientes há ${horas}h — possível falha de entrega do provedor; ` +
-      `sincronização de histórico disparada.`;
-    await this.avisarAdmins('Instância sem mensagens recebidas', texto, inst.id);
+    this.silenciosAbertos.add(inst.id);
 
+    // O sync vem ANTES do aviso, e o aviso não pode derrubar o caminho: o
+    // cooldown de 6h já está gravado, então uma falha aqui (banco de
+    // notificação fora, push com erro) cegaria a instância justamente na pane.
     // Best-effort e em background: o sync varre 7 dias e não pode segurar o
     // ciclo do monitor nem derrubá-lo se o gateway estiver ruim.
     const sync = cfg.evolution_token
@@ -345,11 +377,40 @@ export class InstanceHealthService {
       this.logger.warn(`history sync por silêncio (${inst.nome}) falhou: ${String(err)}`),
     );
 
+    const texto =
+      `Instância ${inst.nome} (${inst.tenant.nome}) conectada mas sem mensagens ` +
+      `de clientes há ${horas}h — possível falha de entrega do provedor; ` +
+      `sincronização de histórico disparada.`;
+    try {
+      await this.avisarAdmins('Instância sem mensagens recebidas', texto, inst.id);
+    } catch (err: unknown) {
+      this.logger.warn(`aviso de silêncio (${inst.nome}) falhou: ${String(err)}`);
+    }
+
     this.logger.warn(
       `monitor: ${inst.nome} (${inst.tenant.nome}) sem INCOMING há ${horas}h com webhook ` +
         `ativo — alerta de silêncio aberto e history sync disparado`,
     );
     return true;
+  }
+
+  /**
+   * Inbound voltou: fecha a linha do alerta de silêncio EM SILÊNCIO. Ninguém
+   * é notificado — quem leu o alerta original já sabe o que aconteceu e um
+   * "voltou a receber" a cada pane só faria barulho. Só escreve quando este
+   * processo abriu o alerta (Set), então não é um UPDATE por ciclo.
+   */
+  private async fecharSilencio(inst: InstanceRow): Promise<void> {
+    if (!this.silenciosAbertos.delete(inst.id)) return;
+    await this.prisma.instanceAlert.updateMany({
+      where: {
+        instance_id: inst.id,
+        tipo: InstanceHealthService.TIPO_SILENCIO,
+        resolvido_em: null,
+      },
+      data: { resolvido_em: new Date() },
+    });
+    this.logger.log(`monitor: ${inst.nome} voltou a receber mensagens de clientes`);
   }
 
   /**
