@@ -446,7 +446,7 @@ export class PipelinesService {
         where: { id },
         data: { ativo: false, arquivado: true },
       });
-    });
+    }, TX_OPTS);
 
     await this.invalidateLeadsCache(user.tenantId);
     return { success: true, movedTo: targetPipelineId };
