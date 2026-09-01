@@ -64,6 +64,7 @@ function makeService(args: MakeArgs) {
     {} as any, // assignment
     {} as any, // customFields
     {} as any, // autoActionsQueue
+    {} as any, // kanbanIndividual
   );
   return { service, prisma };
 }

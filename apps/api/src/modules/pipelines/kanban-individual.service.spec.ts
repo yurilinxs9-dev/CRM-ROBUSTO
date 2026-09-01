@@ -165,7 +165,14 @@ function montar(opts: { stages?: StageRow[]; membros?: MembroRow[]; ligado?: boo
 
   prisma.$transaction.mockImplementation((cb: (tx: typeof prisma) => Promise<unknown>) => cb(prisma));
 
-  return { service: new KanbanIndividualService(prisma as never), prisma, rows };
+  const gateway = { emitKanbanIndividualChanged: jest.fn() };
+
+  return {
+    service: new KanbanIndividualService(prisma as never, gateway as never),
+    prisma,
+    gateway,
+    rows,
+  };
 }
 
 /**
@@ -258,6 +265,22 @@ describe('KanbanIndividualService.enable', () => {
       where: { id: TENANT },
       data: { kanban_individual: true },
     });
+  });
+
+  it('avisa o tenant por WebSocket — o board de todo mundo trocou de colunas', async () => {
+    const { service, gateway } = montar({ stages: BASE, membros: [{ id: 'op1' }] });
+
+    await service.enable(gerente);
+
+    expect(gateway.emitKanbanIndividualChanged).toHaveBeenCalledWith(TENANT, true);
+  });
+
+  it('toggle ja ligado (409) nao avisa ninguem', async () => {
+    const { service, gateway } = montar({ stages: BASE, membros: [{ id: 'op1' }], ligado: true });
+
+    await expect(service.enable(gerente)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(gateway.emitKanbanIndividualChanged).not.toHaveBeenCalled();
   });
 
   it('so clona para membro ativo com papel operacional', async () => {
@@ -383,6 +406,17 @@ describe('KanbanIndividualService.disable', () => {
    * producao (e passa liso em qualquer teste que so olhe "foi chamado"). Esta e
    * a ordem, travada por invocationCallOrder.
    */
+  it('avisa o tenant por WebSocket — as colunas pessoais deixaram de existir', async () => {
+    const { service, gateway } = montar({
+      stages: [stage({ id: 'b1', nome: 'Novo', ordem: 0 }), ...pessoais],
+      ligado: true,
+    });
+
+    await service.disable(gerente);
+
+    expect(gateway.emitKanbanIndividualChanged).toHaveBeenCalledWith(TENANT, false);
+  });
+
   it('remapeia leads e solta broadcasts ANTES de apagar as colunas pessoais', async () => {
     const { service, prisma } = montar({
       stages: [stage({ id: 'b1', nome: 'Novo', ordem: 0 }), ...pessoais],

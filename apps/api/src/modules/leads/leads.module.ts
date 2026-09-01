@@ -12,6 +12,7 @@ import { MediaModule } from '../media/media.module';
 import { PushModule } from '../push/push.module';
 import { QueueModule } from '../queue/queue.module';
 import { PIPELINE_AUTO_ACTIONS_QUEUE } from '../pipelines/auto-actions.processor';
+import { KanbanIndividualModule } from '../pipelines/kanban-individual.module';
 
 const LEADS_SYNC_QUEUE = 'leads-sync';
 
@@ -44,6 +45,9 @@ class LeadsSyncScheduler implements OnModuleInit {
     MediaModule,
     PushModule,
     QueueModule,
+    // Só o service de tradução de coluna. O módulo não importa nada (é o
+    // desenho dele), então não abre ciclo com pipelines.
+    KanbanIndividualModule,
     BullModule.registerQueue({ name: LEADS_SYNC_QUEUE }),
     BullModule.registerQueue({ name: PIPELINE_AUTO_ACTIONS_QUEUE }),
   ],

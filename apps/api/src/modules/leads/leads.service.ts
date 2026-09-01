@@ -11,6 +11,7 @@ import {
   PIPELINE_AUTO_ACTIONS_QUEUE,
   type AutoActionJobData,
 } from '../pipelines/auto-actions.processor';
+import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
 import { InstancesService } from '../instances/instances.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { MediaService } from '../media/media.service';
@@ -241,7 +242,38 @@ export class LeadsService {
     private customFields: CustomFieldsService,
     @InjectQueue(PIPELINE_AUTO_ACTIONS_QUEUE)
     private autoActionsQueue: Queue<AutoActionJobData>,
+    // Kanban individual: com o toggle ligado a COLUNA do lead pertence ao dono
+    // dele, então toda rota que troca o dono precisa traduzir a etapa junto —
+    // ver `remapearEtapa` e o bloco `per_stage` de findAll. Com o toggle
+    // desligado o service devolve o próprio id e nada aqui muda de
+    // comportamento.
+    private kanbanIndividual: KanbanIndividualService,
   ) {}
+
+  /**
+   * Etapa equivalente no board do novo dono (ou na base, quando o lead volta
+   * pro pool), pronta para entrar num `data` de update. Devolve `null` quando
+   * não há o que mudar — que é SEMPRE o caso com o kanban individual desligado,
+   * já que aí só existe o conjunto base.
+   *
+   * `estagio_entered_at` acompanha porque a coluna nova tem SLA/cadência
+   * próprios (o clone carrega a config da base): manter o carimbo antigo faria
+   * o lead nascer no board do novo dono já com o prazo do dono anterior
+   * estourado.
+   */
+  private async remapearEtapa(
+    tenantId: string,
+    estagioAtual: string | null | undefined,
+    donoDestino: string | null,
+  ): Promise<{ estagio_id: string; estagio_entered_at: Date } | null> {
+    if (!estagioAtual) return null;
+    const destino =
+      donoDestino === null
+        ? await this.kanbanIndividual.stageForBase(tenantId, estagioAtual)
+        : await this.kanbanIndividual.stageForOwner(tenantId, donoDestino, estagioAtual);
+    if (destino === estagioAtual) return null;
+    return { estagio_id: destino, estagio_entered_at: new Date() };
+  }
 
   private async resolveMediaUrl(path: string | null): Promise<string | null> {
     if (!path) return null;
@@ -469,12 +501,14 @@ export class LeadsService {
     // Entra DEPOIS do merge da busca pelo mesmo motivo dos filtros do painel:
     // mergeSearchCondition reescreve `where.AND` do zero, e um pushAnd feito
     // antes dele sumiria em silêncio quando o gerente busca e recorta junto.
-    if (
+    const responsavelRecortado =
       filters.responsavel_id &&
       (filters.responsavel_id === user.id ||
         (isManagerRole(user.role as UserRole) && !focusMode))
-    ) {
-      pushAnd(where, { responsavel_id: filters.responsavel_id });
+        ? filters.responsavel_id
+        : null;
+    if (responsavelRecortado) {
+      pushAnd(where, { responsavel_id: responsavelRecortado });
     }
 
     // Filtros do painel lateral. Todos entram DEPOIS do merge da busca, via
@@ -555,10 +589,14 @@ export class LeadsService {
     // kanban janelado, onde é o sort-dentro-da-coluna.
     const userSort = buildSortOrder(filters.sort, filters.dir);
 
-    const runQuery = (extraWhere: Record<string, unknown>, take: number, skip: number) =>
+    // A condição da coluna entra no AND (via withCondition), NUNCA por spread:
+    // desde o kanban individual ela pode ser um OR (a nuvem na primeira coluna)
+    // e um `{...whereFinal, ...extraWhere}` apagaria o OR da VISIBILIDADE em
+    // silêncio — o furo clássico deste arquivo (ver mergeSearchCondition).
+    const runQuery = (extraWhere: Record<string, unknown> | null, take: number, skip: number) =>
       this.prisma.lead.findMany({
         relationLoadStrategy: 'join',
-        where: { ...whereFinal, ...extraWhere },
+        where: (extraWhere ? withCondition(whereFinal, extraWhere) : whereFinal) as Prisma.LeadWhereInput,
         select: leadListSelect,
         // Chat/coluna: ordem pura de recência. Lista plena do kanban:
         // agrupada por estágio (agrupamento final é no cliente).
@@ -603,12 +641,32 @@ export class LeadsService {
       // F3: janela por coluna do kanban — top-N por estágio + contagem total
       // por estágio. Board de 2k+ leads deixa de baixar tudo de uma vez.
       const perStage = Math.min(parseInt(filters.per_stage) || 50, 500);
+      // Kanban individual: o board é o do VIEWER (ou o do membro que o gestor
+      // está observando pelo recorte de responsável — o mesmo `responsavel_id`
+      // que já foi autorizado acima; usar o param cru deixaria um operador
+      // pedir o conjunto de colunas de um colega). Toggle desligado = base do
+      // tenant, que é o único conjunto que existe nesse modo.
+      const individual = await this.kanbanIndividual.isOn(user.tenantId);
+      const donoDasColunas = individual ? (responsavelRecortado ?? user.id) : null;
       const stages = await this.prisma.stage.findMany({
-        where: { pipeline_id: filters.pipeline_id },
-        select: { id: true },
+        where: { pipeline_id: filters.pipeline_id, user_id: donoDasColunas },
+        select: { id: true, ordem: true },
       });
+      // Primeira coluna do conjunto: é ela que hospeda a nuvem de devolvidos e
+      // recebe a contagem dos leads parados em colunas de outro board.
+      const primeiraColuna = stages.reduce<{ id: string; ordem: number } | null>(
+        (menor, s) => (menor === null || s.ordem < menor.ordem ? s : menor),
+        null,
+      );
+      // Lead devolvido vive numa coluna BASE (returnToPool o remapeia pra lá),
+      // que não pertence a nenhum board pessoal. Sem este OR a nuvem sumiria da
+      // tela de quem tem o kanban individual ligado.
+      const condicaoDaColuna = (id: string): Record<string, unknown> =>
+        individual && id === primeiraColuna?.id
+          ? { OR: [{ estagio_id: id }, { responsavel_id: null, returned_at: { not: null } }] }
+          : { estagio_id: id };
       const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
-        Promise.all(stages.map((s) => runQuery({ estagio_id: s.id }, perStage, 0))),
+        Promise.all(stages.map((s) => runQuery(condicaoDaColuna(s.id), perStage, 0))),
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
           where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
@@ -627,9 +685,18 @@ export class LeadsService {
       ]);
       const stage_counts: Record<string, number> = {};
       const stage_values: Record<string, number> = {};
+      // Com o kanban individual ligado o groupBy pode devolver colunas que NÃO
+      // estão no board deste viewer (a base, onde ficam os devolvidos; ou a
+      // coluna pessoal de um colega, num lead que o gestor supervisiona). Elas
+      // somam na primeira coluna — o mesmo lugar onde os cards aparecem, pelo
+      // OR acima. Sem isto o rótulo diria "0" com a coluna cheia de cards.
+      const conhecidas = new Set(stages.map((s) => s.id));
       for (const c of counts) {
-        stage_counts[c.estagio_id] = c._count._all;
-        stage_values[c.estagio_id] = Number(c._sum?.valor_estimado ?? 0);
+        const alvo =
+          individual && !conhecidas.has(c.estagio_id) ? primeiraColuna?.id : c.estagio_id;
+        if (!alvo) continue;
+        stage_counts[alvo] = (stage_counts[alvo] ?? 0) + c._count._all;
+        stage_values[alvo] = (stage_values[alvo] ?? 0) + Number(c._sum?.valor_estimado ?? 0);
       }
       result = {
         leads: lists.flat().map(mapRow),
@@ -639,7 +706,7 @@ export class LeadsService {
       };
     } else {
       const leads = await runQuery(
-        {},
+        null,
         // Chat pagina de verdade (default 60); lista plena mantém cap 10k.
         filters.limit
           ? Math.min(parseInt(filters.limit), 10000)
@@ -1415,6 +1482,12 @@ export class LeadsService {
       select: { pool_enabled: true },
     });
     const soDaNuvem = !isManagerClaim && tenant?.pool_enabled === false;
+    // Coluna de onde o lead sai — o updateMany abaixo não seleciona nada, e
+    // sem ela não dá pra traduzir a etapa para o board de quem assumiu.
+    const leadAtual = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId },
+      select: { estagio_id: true },
+    });
     // Lead update (guard incluído) e transferência da conversa ativa na MESMA
     // transação: se o processo cair entre as duas escritas, Lead e
     // Conversation divergem e a próxima msg do cliente desfaz o claim sozinha
@@ -1422,7 +1495,7 @@ export class LeadsService {
     // atômico dentro da transação — quem perder a corrida ainda cai no
     // count === 0 e recebe ConflictException, a transação só faz rollback do
     // que já tinha sido escrito (nada, nesse caso).
-    await this.prisma.$transaction(async (tx) => {
+    const etapaNova = await this.prisma.$transaction(async (tx) => {
       const result = await tx.lead.updateMany({
         where: {
           id: leadId,
@@ -1442,7 +1515,16 @@ export class LeadsService {
       if (result.count === 0) {
         throw new ConflictException('Lead ja atribuido ou nao encontrado');
       }
+      // Kanban individual: o lead saiu da base (ou do board de ninguém) e passa
+      // a viver na coluna equivalente de quem assumiu. Escrita separada de
+      // propósito — o updateMany acima é o guard atômico da corrida e não pode
+      // ganhar um campo que dependa de leitura feita antes dele.
+      const etapa = await this.remapearEtapa(user.tenantId, leadAtual?.estagio_id, user.id);
+      if (etapa) {
+        await tx.lead.update({ where: { id: leadId }, data: etapa });
+      }
       await this.transferActiveConversation(tx, leadId, user.id, user.tenantId);
+      return etapa;
     });
     const ownedInstance = await this.findOwnedInstance(user.id, user.tenantId);
     if (ownedInstance) {
@@ -1454,10 +1536,22 @@ export class LeadsService {
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
-      { responsavel_id: user.id, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
+      {
+        responsavel_id: user.id,
+        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+        // Sem o estágio novo no payload o board move o card de dono mas o
+        // deixa na coluna antiga — que no kanban individual nem existe pra
+        // quem está olhando.
+        ...(etapaNova ? { estagio_id: etapaNova.estagio_id } : {}),
+      },
       user.tenantId,
     );
-    return { id: leadId, responsavel_id: user.id, instancia_whatsapp: ownedInstance?.nome };
+    return {
+      id: leadId,
+      responsavel_id: user.id,
+      instancia_whatsapp: ownedInstance?.nome,
+      estagio_id: etapaNova?.estagio_id,
+    };
   }
 
   async reassign(leadId: string, body: unknown, user: AuthUser) {
@@ -1465,7 +1559,7 @@ export class LeadsService {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true, estagio_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
@@ -1489,6 +1583,13 @@ export class LeadsService {
     }
 
     const ownedInstance = await this.findOwnedInstance(novoResponsavelId, user.tenantId);
+    // Kanban individual: a coluna vai junto com o dono. Aqui cabe no MESMO
+    // update (ao contrário do claim, que precisa preservar o updateMany-guard).
+    const etapaNova = await this.remapearEtapa(
+      user.tenantId,
+      lead.estagio_id,
+      novoResponsavelId,
+    );
     // Lead update e transferência da conversa ativa na MESMA transação —
     // mesmo motivo do claim: um crash entre as duas escritas deixaria
     // Lead.responsavel_id e Conversation.responsavel_id divergentes.
@@ -1510,6 +1611,7 @@ export class LeadsService {
           // lead da supervisão. Alinhado com moveToSector/returnToPool.
           is_private: false,
           ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+          ...(etapaNova ?? {}),
         },
         select: { id: true, nome: true },
       });
@@ -1519,7 +1621,11 @@ export class LeadsService {
     await this.invalidateLeadsCache(user.tenantId);
     this.gateway.emitLeadUpdated(
       leadId,
-      { responsavel_id: novoResponsavelId, ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}) },
+      {
+        responsavel_id: novoResponsavelId,
+        ...(ownedInstance ? { instancia_whatsapp: ownedInstance.nome } : {}),
+        ...(etapaNova ? { estagio_id: etapaNova.estagio_id } : {}),
+      },
       user.tenantId,
     );
     void this.push.sendToUsers([novoResponsavelId], {
@@ -1662,7 +1768,7 @@ export class LeadsService {
   async returnToPool(leadId: string, user: AuthUser) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true, estagio_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     if (lead.responsavel_id === null) {
@@ -1674,6 +1780,10 @@ export class LeadsService {
       throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem devolver ao escritorio');
     }
 
+    // Kanban individual: sem dono, sem board pessoal — o lead volta para a
+    // coluna equivalente da BASE do tenant. Deixá-lo na coluna do dono anterior
+    // esconderia a nuvem de devolvidos de todo mundo, inclusive de quem devolveu.
+    const etapaNova = await this.remapearEtapa(user.tenantId, lead.estagio_id, null);
     // Lead e conversa ativa na MESMA transação — sem devolver a conversa ao
     // pool junto, a próxima mensagem do cliente reatribuía o lead ao dono
     // anterior (mesma classe de bug do claim/reassign).
@@ -1689,6 +1799,7 @@ export class LeadsService {
           assumed_at: null,
           is_private: false,
           returned_at: new Date(),
+          ...(etapaNova ?? {}),
         },
       });
       await this.transferActiveConversation(tx, leadId, null, user.tenantId);
@@ -1705,8 +1816,12 @@ export class LeadsService {
       },
     });
     await this.invalidateLeadsCache(user.tenantId);
-    this.gateway.emitLeadUpdated(leadId, { responsavel_id: null }, user.tenantId);
-    return { id: leadId, responsavel_id: null };
+    this.gateway.emitLeadUpdated(
+      leadId,
+      { responsavel_id: null, ...(etapaNova ? { estagio_id: etapaNova.estagio_id } : {}) },
+      user.tenantId,
+    );
+    return { id: leadId, responsavel_id: null, estagio_id: etapaNova?.estagio_id };
   }
 
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {

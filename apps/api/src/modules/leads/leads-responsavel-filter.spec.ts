@@ -10,6 +10,7 @@ import type { PushService } from '../push/push.service';
 import type { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import type { AssignmentService } from '../queue/assignment.service';
 import type { CustomFieldsService } from './custom-fields.service';
+import type { KanbanIndividualService } from '../pipelines/kanban-individual.service';
 import type { Queue } from 'bullmq';
 import type { Response } from 'express';
 
@@ -67,6 +68,7 @@ function makeService() {
     naoUsado<AssignmentService>(),
     naoUsado<CustomFieldsService>(),
     naoUsado<Queue>(),
+    naoUsado<KanbanIndividualService>(),
   );
   return { service, prisma, cache };
 }

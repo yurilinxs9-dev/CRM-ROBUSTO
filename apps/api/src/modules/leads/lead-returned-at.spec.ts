@@ -71,7 +71,24 @@ function makeMocks() {
   const outboundWebhooks: any = {
     dispatchLeadEvent: jest.fn().mockResolvedValue(undefined),
   };
-  return { prisma, txClient, cache, gateway, push, assignment, outboundWebhooks };
+  // Kanban individual DESLIGADO: as duas traduções de coluna são identidade,
+  // igual ao service real com `kanban_individual = false`. A rede da coluna que
+  // acompanha o dono vive em `lead-kanban-individual.spec.ts`.
+  const kanbanIndividual: any = {
+    isOn: jest.fn().mockResolvedValue(false),
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
+  };
+  return {
+    prisma,
+    txClient,
+    cache,
+    gateway,
+    push,
+    assignment,
+    outboundWebhooks,
+    kanbanIndividual,
+  };
 }
 
 function makeService() {
@@ -87,6 +104,7 @@ function makeService() {
     m.assignment,
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
+    m.kanbanIndividual,
   );
   return { service, ...m };
 }

@@ -73,6 +73,13 @@ function makeMocks() {
     fromAdReferral: jest.fn().mockReturnValue({}),
     recordFirstTouch: jest.fn().mockResolvedValue(undefined),
   };
+  // Kanban individual DESLIGADO: `stageForOwner` devolve o próprio id, que é o
+  // comportamento real do service quando o tenant não ligou a feature.
+  const kanbanIndividual: any = {
+    isOn: jest.fn().mockResolvedValue(false),
+    stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
+    stageForBase: jest.fn(async (_t: string, from: string) => from),
+  };
   return {
     prisma,
     leadsService,
@@ -86,6 +93,7 @@ function makeMocks() {
     broadcastReply,
     leadInsights,
     attribution,
+    kanbanIndividual,
   };
 }
 
@@ -149,6 +157,7 @@ function makeService() {
     m.broadcastReply,
     m.leadInsights,
     m.attribution,
+    m.kanbanIndividual,
   ) as InboundMessageService;
   return { service, ...m };
 }

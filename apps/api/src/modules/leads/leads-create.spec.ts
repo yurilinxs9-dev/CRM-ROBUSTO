@@ -69,6 +69,7 @@ function makeService() {
     {} as any, // AssignmentService
     {} as any, // CustomFieldsService
     {} as any, // autoActionsQueue (BullMQ)
+    {} as any, // KanbanIndividualService — create() nao remapeia coluna
   );
   return { service, ...m };
 }

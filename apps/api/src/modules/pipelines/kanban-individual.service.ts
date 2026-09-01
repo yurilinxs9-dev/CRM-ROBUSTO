@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
@@ -48,7 +49,15 @@ function chave(pipelineId: string, nome: string): string {
 export class KanbanIndividualService {
   private readonly logger = new Logger(KanbanIndividualService.name);
 
-  constructor(private prisma: PrismaService) {}
+  /**
+   * O CrmGateway entra por DI direta (WebSocketModule e @Global) — nao e modulo
+   * de dominio, entao a lista de imports vazia deste modulo continua valendo e
+   * nenhum ciclo nasce daqui.
+   */
+  constructor(
+    private prisma: PrismaService,
+    private gateway: CrmGateway,
+  ) {}
 
   async isOn(tenantId: string): Promise<boolean> {
     const t = await this.prisma.tenant.findUnique({
@@ -148,6 +157,11 @@ export class KanbanIndividualService {
       );
     }, TX_OPTS);
 
+    // Board de todo mundo mudou de conjunto de colunas E de posicao dos cards:
+    // sem o aviso, quem estava com a tela aberta segue arrastando card para
+    // coluna que o backend nao reconhece mais como dele.
+    this.gateway.emitKanbanIndividualChanged(tenantId, true);
+
     return { success: true };
   }
 
@@ -206,6 +220,10 @@ export class KanbanIndividualService {
 
       this.logger.log(`kanban individual OFF tenant=${tenantId} pessoais_removidas=${pessoais.length}`);
     }, TX_OPTS);
+
+    // Idem do enable: as colunas pessoais acabaram de ser APAGADAS. Sem o
+    // aviso, o board aberto fica apontando para etapas inexistentes.
+    this.gateway.emitKanbanIndividualChanged(tenantId, false);
 
     return { success: true };
   }

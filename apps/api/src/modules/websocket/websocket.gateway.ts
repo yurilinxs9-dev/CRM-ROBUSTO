@@ -149,6 +149,18 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.toTenant(tenantId).emit('lead:unread-reset', { leadId, mensagens_nao_lidas: 0 });
   }
 
+  /**
+   * Toggle do kanban individual (ligar/desligar).
+   *
+   * É a mutação de Kanban mais larga que existe: reescreve o conjunto de
+   * colunas do tenant inteiro e remapeia TODO lead de uma vez. Quem estava com
+   * o board aberto seguiria arrastando card para coluna que não existe mais —
+   * daí o evento ir para o tenant todo, e não só para quem apertou o botão.
+   */
+  emitKanbanIndividualChanged(tenantId: string, enabled: boolean) {
+    this.toTenant(tenantId).emit('kanban:individual-changed', { kanban_individual: enabled });
+  }
+
   emitLeadUpdated(leadId: string, data: unknown, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:updated', { leadId, ...(data as object) });
   }

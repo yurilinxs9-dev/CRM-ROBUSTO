@@ -14,6 +14,7 @@ import { ConversationService } from './conversation.service';
 import { type ExtractedMessage, synthesizeMessageId } from './message-extractor';
 import { AD_REFERRAL_KEY, extractAdReferral, type AdReferral } from './ad-referral';
 import { AttributionService, CLICK_CODE_PATTERN } from '../attribution/attribution.service';
+import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
 import {
   assertValidMagic,
   decryptWhatsAppMedia,
@@ -90,6 +91,10 @@ export class InboundMessageService {
     private readonly broadcastReply: BroadcastReplyService,
     private readonly leadInsights: LeadInsightsService,
     private readonly attribution: AttributionService,
+    // Kanban individual: lead que ganha dono aqui (dono da instância ou
+    // round-robin) tem que ir para a coluna DELE — nascer na base e ficar lá
+    // deixaria o card invisível no board de quem vai atender.
+    private readonly kanbanIndividual: KanbanIndividualService,
   ) {}
   /**
    * Grava de onde o lead veio. Duas fontes, nesta ordem de confiança:
@@ -277,8 +282,13 @@ export class InboundMessageService {
       });
     }
 
+    // `user_id: null` = primeira coluna da BASE. Lead novo nasce sem dono, e
+    // lead sem dono vive na base — com o kanban individual ligado, sem este
+    // recorte a `findFirst` poderia devolver a coluna pessoal de um membro
+    // qualquer (mesma ordem, ordem de criação indefinida) e o lead nasceria
+    // dentro do board de alguém que nem foi escolhido para atendê-lo.
     const firstStage = await this.prisma.stage.findFirst({
-      where: { pipeline_id: pipeline.id, tenant_id: tenantId },
+      where: { pipeline_id: pipeline.id, tenant_id: tenantId, user_id: null },
       orderBy: { ordem: 'asc' },
     });
     if (!firstStage) {
@@ -556,15 +566,38 @@ export class InboundMessageService {
     // é admin/gerente (modo Compartilhado) ou modo Individual. Nunca sobrepõe
     // claim humana.
     if (lead.responsavel_id === null && responsavelId !== null) {
+      // Kanban individual: a coluna acompanha o dono. No-op com o toggle
+      // desligado (o service devolve o próprio id).
+      const estagioDono = await this.kanbanIndividual.stageForOwner(
+        tenantId,
+        responsavelId,
+        lead.estagio_id,
+      );
+      const mudouDeColuna = estagioDono !== lead.estagio_id;
       const fixed = await this.prisma.lead.update({
         where: { id: lead.id },
         // Ganhou dono → sai da nuvem de devolvidos (`returned_at` é o marcador
         // de "está na nuvem"; deixá-lo preenchido mostraria o lead como
         // disponível pra todo mundo mesmo já tendo dono).
-        data: { responsavel_id: responsavelId, instancia_whatsapp: instance.nome, returned_at: null },
+        data: {
+          responsavel_id: responsavelId,
+          instancia_whatsapp: instance.nome,
+          returned_at: null,
+          ...(mudouDeColuna ? { estagio_id: estagioDono, estagio_entered_at: new Date() } : {}),
+        },
       });
       lead.responsavel_id = fixed.responsavel_id;
       lead.instancia_whatsapp = fixed.instancia_whatsapp;
+      lead.estagio_id = fixed.estagio_id;
+      // Mutação de Kanban emite. Só quando a coluna mudou: o caminho antigo
+      // (toggle off) não emitia nada aqui e não vai passar a emitir.
+      if (mudouDeColuna) {
+        this.gateway.emitLeadUpdated(
+          lead.id,
+          { responsavel_id: responsavelId, estagio_id: estagioDono },
+          tenantId,
+        );
+      }
     }
 
     // F-02: Round-robin por setor. Só para lead de CLIENTE (inbound) ainda no
@@ -578,19 +611,37 @@ export class InboundMessageService {
       );
       const result = await this.assignment.assignBySector(tenantId, sectorId, lead.id);
       if (result.userId) {
+        // Idem auto-assign: a coluna do sorteado. Traduzido ANTES do updateMany
+        // porque ele é o guard atômico da corrida (responsavel_id ainda null).
+        const estagioDono = await this.kanbanIndividual.stageForOwner(
+          tenantId,
+          result.userId,
+          lead.estagio_id,
+        );
+        const mudouDeColuna = estagioDono !== lead.estagio_id;
         const upd = await this.prisma.lead.updateMany({
           where: { id: lead.id, responsavel_id: null },
           // Idem: distribuição por setor dá dono, então tira da nuvem.
-          data: { responsavel_id: result.userId, instancia_whatsapp: instance.nome, returned_at: null },
+          data: {
+            responsavel_id: result.userId,
+            instancia_whatsapp: instance.nome,
+            returned_at: null,
+            ...(mudouDeColuna ? { estagio_id: estagioDono, estagio_entered_at: new Date() } : {}),
+          },
         });
         if (upd.count > 0) {
           lead.responsavel_id = result.userId;
           lead.instancia_whatsapp = instance.nome;
+          lead.estagio_id = estagioDono;
           // Kanban de todos atualiza o dono em tempo real; sorteado recebe
           // notificação dedicada dizendo que o lead veio da distribuição.
           this.gateway.emitLeadUpdated(
             lead.id,
-            { responsavel_id: result.userId, instancia_whatsapp: instance.nome },
+            {
+              responsavel_id: result.userId,
+              instancia_whatsapp: instance.nome,
+              ...(mudouDeColuna ? { estagio_id: estagioDono } : {}),
+            },
             tenantId,
           );
           await this.notifyDistributed(tenantId, result.userId, lead.id, lead.nome);

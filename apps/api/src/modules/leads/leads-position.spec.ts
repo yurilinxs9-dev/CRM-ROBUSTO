@@ -50,6 +50,7 @@ function makeService(minPosition: number | null) {
     {} as any, // assignment
     {} as any, // customFields
     { add: jest.fn() } as any, // autoActionsQueue
+    {} as any, // kanbanIndividual
   );
   return { service, prisma };
 }
