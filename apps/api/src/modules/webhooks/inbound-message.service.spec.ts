@@ -1094,3 +1094,93 @@ describe('InboundMessageService — kanban individual', () => {
     });
   });
 });
+
+/**
+ * Task D1 — rodizio no pool com instancia de GESTOR.
+ *
+ * A regra antiga (`inPool = pool_enabled && !ownerIsManager`) deixava sem
+ * rodizio estrutural o tenant em modo Compartilhado cujo numero e "da empresa"
+ * (dono SUPER_ADMIN/GERENTE): todo lead inbound nascia com o gestor como dono e
+ * a distribuicao virava trabalho manual — invisivel, foi o caso Diplapel.
+ *
+ * O opt-in e TRIPLO (pool + round_robin_enabled + `sector_id` NA INSTANCIA) e a
+ * porta continua fechada para `fromMe`: conversa iniciada pelo atendente nasce
+ * com o dono da instancia. Sem setor na instancia o comportamento e byte a byte
+ * o de antes — os testes 2 a 4 existem para travar isso.
+ */
+describe('InboundMessageService.saveIncomingMessage — rodizio no pool com instancia de gestor', () => {
+  const leadSemDono = { ...leadOwnedByA, responsavel_id: null, estagio_id: 'stage-1' };
+
+  function cenarioPool(opts: { rodizio: boolean; setor: string | null }) {
+    const m = makeService();
+    m.prisma.tenant.findFirst.mockResolvedValue({
+      pool_enabled: true,
+      round_robin_enabled: opts.rodizio,
+      kanban_individual: false,
+    });
+    // Dono da instancia e GERENTE: o numero "da empresa" do caso Diplapel.
+    m.prisma.user.findUnique.mockResolvedValue({ role: 'GERENTE', nome: 'Gestora' });
+    // O lead e NOVO: o upsert reflete o `create`, entao `responsavel_id` do lead
+    // gravado e exatamente a decisao da regra sob teste.
+    m.prisma.lead.upsert.mockImplementation((args: any) =>
+      Promise.resolve({ ...leadSemDono, responsavel_id: args.create.responsavel_id }),
+    );
+    m.prisma.lead.update.mockImplementation(({ data }: any) =>
+      Promise.resolve({ ...leadSemDono, ...data }),
+    );
+    m.prisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    m.assignment.resolveSectorForInstance.mockResolvedValue('setor-1');
+    m.assignment.assignBySector.mockResolvedValue({ userId: 'C', reason: 'round-robin' });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: null });
+    m.prisma.message.upsert.mockResolvedValue({
+      id: 'msg-1',
+      conversation_id: 'conv-b',
+      visible_to_user_id: null,
+    });
+    return { ...m, instance: { ...instanceB, sector_id: opts.setor } as any };
+  }
+
+  /** `create` do upsert do lead — a decisao de dono no nascimento. */
+  const criado = (prisma: any) => prisma.lead.upsert.mock.calls[0][0].create;
+
+  it('pool + rodizio + setor na instancia: lead nasce SEM dono e o rodizio distribui, mesmo com dono gestor', async () => {
+    const m = cenarioPool({ rodizio: true, setor: 'setor-1' });
+
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+
+    expect(criado(m.prisma).responsavel_id).toBeNull();
+    expect(m.assignment.resolveSectorForInstance).toHaveBeenCalledWith('t1', 'setor-1');
+    expect(m.assignment.assignBySector).toHaveBeenCalledWith('t1', 'setor-1', 'lead-1');
+    expect(m.prisma.lead.updateMany.mock.calls[0][0]).toEqual({
+      where: { id: 'lead-1', responsavel_id: null },
+      data: { responsavel_id: 'C', instancia_whatsapp: 'inst-b', returned_at: null },
+    });
+  });
+
+  it('sem setor na instancia: lead nasce com o dono gestor e nao ha rodizio (comportamento atual)', async () => {
+    const m = cenarioPool({ rodizio: true, setor: null });
+
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+
+    expect(criado(m.prisma).responsavel_id).toBe('B');
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+
+  it('fromMe: conversa iniciada pelo atendente nasce com o dono da instancia, nunca no rodizio', async () => {
+    const m = cenarioPool({ rodizio: true, setor: 'setor-1' });
+
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance, isFromMe: true }));
+
+    expect(criado(m.prisma).responsavel_id).toBe('B');
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+
+  it('pool sem rodizio: instancia com setor segue auto-atribuindo ao gestor', async () => {
+    const m = cenarioPool({ rodizio: false, setor: 'setor-1' });
+
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+
+    expect(criado(m.prisma).responsavel_id).toBe('B');
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+});
