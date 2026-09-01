@@ -50,15 +50,17 @@ function makeMocks() {
         Promise.resolve({ id: 'lead-1', nome: 'Cliente', ...data }),
       ),
       findFirst: jest.fn(),
+      // Auditoria da atribuicao em massa (Task D2) le os alvos antes da troca.
+      findMany: jest.fn().mockResolvedValue([]),
     },
     whatsappInstance: { findFirst: jest.fn().mockResolvedValue(null) },
     // Modo do tenant lido pelo claim. Default compartilhado (pool_enabled=true)
     // = comportamento antigo; a suíte do modo individual sobrescreve.
     tenant: { findFirst: jest.fn().mockResolvedValue({ pool_enabled: true }) },
     conversation: { findMany: jest.fn(), update: jest.fn() },
-    user: { findFirst: jest.fn() },
+    user: { findFirst: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
     sector: { findFirst: jest.fn() },
-    leadActivity: { create: jest.fn() },
+    leadActivity: { create: jest.fn(), createMany: jest.fn() },
     $transaction: jest.fn(async (arg: unknown) => {
       if (Array.isArray(arg)) return Promise.all(arg);
       return (arg as (tx: unknown) => unknown)(txClient);

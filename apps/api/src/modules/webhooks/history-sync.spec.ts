@@ -1,5 +1,6 @@
 import {
   backfillJobPayload,
+  historySyncRequestSchema,
   chatHasGap,
   messageTs,
   parseChatsPage,
@@ -194,5 +195,38 @@ describe('resolveUazapiPhone', () => {
 
   it('chatid @lid sem sender_pn → null (descarta em vez de lead fantasma)', () => {
     expect(resolveUazapiPhone({ chatid: '150122142949534@lid' })).toBeNull();
+  });
+});
+
+/**
+ * Contrato dos endpoints de history sync (usado pelos dois controllers). O
+ * limite de janela no deep é guarda de custo: deep faz 1 fetch por chat SEMPRE
+ * (até 400 chats por instância), então 30/60 dias em deep viraria varredura
+ * eterna e enxurrada na fila.
+ */
+describe('historySyncRequestSchema', () => {
+  it('vazio: sem days e sem deep (os defaults ficam no controller)', () => {
+    expect(historySyncRequestSchema.parse({})).toEqual({});
+  });
+
+  it('deep com janela curta passa', () => {
+    expect(historySyncRequestSchema.parse({ days: 7, deep: true })).toEqual({
+      days: 7,
+      deep: true,
+    });
+  });
+
+  it('deep com mais de 7 dias é recusado com mensagem clara', () => {
+    const r = historySyncRequestSchema.safeParse({ days: 8, deep: true });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0].message).toMatch(/deep/i);
+      expect(r.error.issues[0].message).toMatch(/7/);
+    }
+  });
+
+  it('janela longa sem deep continua valendo (até 60 dias)', () => {
+    expect(historySyncRequestSchema.parse({ days: 60 })).toEqual({ days: 60 });
+    expect(historySyncRequestSchema.safeParse({ days: 61 }).success).toBe(false);
   });
 });

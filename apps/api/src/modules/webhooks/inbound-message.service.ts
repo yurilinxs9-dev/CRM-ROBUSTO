@@ -451,8 +451,9 @@ export class InboundMessageService {
       select: { pool_enabled: true, round_robin_enabled: true, kanban_individual: true },
     });
 
-    // Instância dona de SUPER_ADMIN/GERENTE auto-atribui sempre ao dono,
-    // mesmo com pool_enabled=true. Só OPERADOR cai no pool quando ativo.
+    // Instância dona de SUPER_ADMIN/GERENTE auto-atribui ao dono mesmo com
+    // pool_enabled=true — a não ser que ela esteja explicitamente inscrita no
+    // rodízio (poolDistribute, abaixo). Só OPERADOR cai no pool sem opt-in.
     const ownerUser = instance.owner_user_id
       ? await this.prisma.user.findUnique({
           where: { id: instance.owner_user_id },
@@ -461,8 +462,21 @@ export class InboundMessageService {
       : null;
     const ownerIsManager =
       ownerUser?.role === 'SUPER_ADMIN' || ownerUser?.role === 'GERENTE';
-    // Modo Compartilhado para operador: lead entra sem dono (pool).
-    const inPool = Boolean(tenant?.pool_enabled) && !ownerIsManager;
+    // Rodízio no MODO COMPARTILHADO com número "da empresa": instância cujo dono
+    // é gestor nunca jogava lead no pool, então o tenant que atende por um número
+    // único de admin ficava sem distribuição automática e o gerente repassava na
+    // mão — invisível (caso Diplapel). Opt-in TRIPLO (pool + flag de rodízio do
+    // tenant + sector_id na instância); fromMe fica fora, conversa iniciada pelo
+    // atendente nasce dele. Sem setor na instância nada muda para ninguém.
+    const poolDistribute =
+      Boolean(tenant?.pool_enabled) &&
+      tenant?.round_robin_enabled === true &&
+      instance.sector_id != null &&
+      !isFromMe;
+    // Modo Compartilhado para operador: lead entra sem dono (pool). Com o opt-in
+    // acima, a instância de gestor entra no pool também.
+    const inPool =
+      Boolean(tenant?.pool_enabled) && (!ownerIsManager || poolDistribute);
     // Rodízio por instância no modo Individual: instância com setor definido
     // distribui lead inbound novo em rodízio em vez de auto-atribuir ao dono.
     // Opt-in duplo (flag do tenant + sector_id na instância); fromMe fica com
@@ -474,8 +488,9 @@ export class InboundMessageService {
       !isFromMe;
     const responsavelId =
       inPool || soloDistribute ? null : instance.owner_user_id;
-    // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E
-    // está em modo Compartilhado — ou, no Individual, na instância com setor.
+    // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E o
+    // lead ficou sem dono — pool do Compartilhado (inclusive a instância de
+    // gestor inscrita via `poolDistribute`) ou instância com setor no Individual.
     const wantRoundRobin =
       (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
 
@@ -705,7 +720,7 @@ export class InboundMessageService {
     // com o dono A — o próprio espelhamento que este arquivo existe pra
     // consertar (ver docs/specs/conversa-por-instancia.md:143-145). Não
     // "simplificar" de volta.
-    // Resíduo conhecido: em soloDistribute, responsavelId é null e o
+    // Resíduo conhecido: em soloDistribute/poolDistribute, responsavelId é null e o
     // round-robin não refire pra lead já com dono (guard `lead.responsavel_id
     // === null` acima) — esse caminho ainda cai no fallback pro dono do lead.
     // Não é resolvido aqui.

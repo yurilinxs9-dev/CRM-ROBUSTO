@@ -44,6 +44,17 @@ const ZERO: SyncSummary = { chats_scanned: 0, chats_synced: 0, messages_enqueued
  * manual via endpoints (até 60d). Evolution fica fora — acks e webhooks dela
  * funcionam; estrutura é provider-scoped pra estender depois.
  * Spec: docs/superpowers/specs/2026-08-20-history-sync-design.md.
+ *
+ * Modo `deep` (flag opcional em todas as entradas): a prova de "chat em dia"
+ * só enxerga buraco no FIM do chat — basta o operador responder pelo celular
+ * pra mensagem MAIS NOVA já estar no banco e o chat passar por são, selando
+ * mensagens de cliente perdidas no MEIO da conversa (caso Diplapel 28-31/08).
+ * Com deep=true nenhuma prova curto-circuita: cada chat da janela vai ao
+ * /message/find (UazAPI) ou findMessages (Evolution) e TUDO do período é
+ * re-injetado — quem faz o diff é o dedupe por (tenant, wamid, lead) no
+ * upsert, não a última mensagem. Custa 1 fetch por chat sempre, então NÃO
+ * entra no cron de 30min: só endpoints manuais e o detector de silêncio
+ * (janela de 1 dia, SILENCIO_DEEP_WINDOW_MS).
  */
 @Injectable()
 export class HistorySyncService {
@@ -55,10 +66,25 @@ export class HistorySyncService {
 
   static readonly CRON_WINDOW_MS = 48 * 3_600_000;
   static readonly RECONNECT_WINDOW_MS = 7 * 24 * 3_600_000;
+  /**
+   * Janela do deep disparado pelo detector de silêncio: curta de propósito —
+   * deep faz 1 fetch por chat SEMPRE, e o silêncio que o detector pega é
+   * recente (horas). 7 dias em deep varreria 400 chats à toa.
+   */
+  static readonly SILENCIO_DEEP_WINDOW_MS = 24 * 3_600_000;
   private static readonly PAGE_SIZE = 100;
   private static readonly MAX_CHATS_PER_RUN = 400;
-  private static readonly MAX_MSGS_PER_CHAT = 500;
+  static readonly MAX_MSGS_PER_CHAT = 500;
   private static readonly HTTP_TIMEOUT_MS = 12_000;
+  /**
+   * Prioridade dos jobs de backfill. BullMQ 5: o worker faz RPOPLPUSH da lista
+   * `wait` (jobs SEM priority) e só cai no ZSET `prioritized` quando o wait
+   * esvazia — então QUALQUER priority > 0 deixa o backfill atrás de todo
+   * webhook ao vivo. Sem isso um deep grande ocupa as 3 vagas de concorrência
+   * do worker e a mensagem que está chegando agora fica na fila atrás de
+   * milhares de mensagens velhas.
+   */
+  static readonly BACKFILL_PRIORITY = 10;
 
   private readonly evoBaseUrl: string;
   private readonly evoApiKey: string;
@@ -89,7 +115,7 @@ export class HistorySyncService {
     }
   }
 
-  async syncAllUazapi(windowMs: number): Promise<SyncSummary[]> {
+  async syncAllUazapi(windowMs: number, deep = false): Promise<SyncSummary[]> {
     const instances = await this.prisma.whatsappInstance.findMany({
       where: { status: 'open' },
       select: { id: true, nome: true, tenant_id: true, config: true },
@@ -97,7 +123,7 @@ export class HistorySyncService {
     const summaries: SyncSummary[] = [];
     for (const inst of instances) {
       if (!this.tokenOf(inst.config)) continue; // Evolution ou sem credencial
-      summaries.push(await this.syncInstance(inst.id, windowMs));
+      summaries.push(await this.syncInstance(inst.id, windowMs, deep));
     }
     // Evolution: mesmo espelho. O gateway guarda TODAS as mensagens no
     // Postgres dele (independente do webhook ter chegado ao CRM), então
@@ -109,7 +135,7 @@ export class HistorySyncService {
       const cfg = (inst.config ?? {}) as Record<string, unknown>;
       if (cfg.provider !== 'evolution') continue;
       try {
-        summaries.push(await this.syncEvolutionInstance(inst.id, windowMs));
+        summaries.push(await this.syncEvolutionInstance(inst.id, windowMs, deep));
       } catch (err) {
         this.logger.warn(
           `history sync evolution (${inst.nome}) falhou: ${(err as Error).message}`,
@@ -120,17 +146,25 @@ export class HistorySyncService {
   }
 
   /** Espelho WhatsApp Web para uma instância Evolution. */
-  async syncEvolutionInstance(instanceId: string, windowMs: number): Promise<SyncSummary> {
+  async syncEvolutionInstance(
+    instanceId: string,
+    windowMs: number,
+    deep = false,
+  ): Promise<SyncSummary> {
     if (this.syncing.has(instanceId)) return { ...ZERO };
     this.syncing.add(instanceId);
     try {
-      return await this.runEvolution(instanceId, windowMs);
+      return await this.runEvolution(instanceId, windowMs, deep);
     } finally {
       this.syncing.delete(instanceId);
     }
   }
 
-  private async runEvolution(instanceId: string, windowMs: number): Promise<SyncSummary> {
+  private async runEvolution(
+    instanceId: string,
+    windowMs: number,
+    deep: boolean,
+  ): Promise<SyncSummary> {
     const instance = await this.prisma.whatsappInstance.findUnique({ where: { id: instanceId } });
     if (!instance || !this.evoBaseUrl || !this.evoApiKey) return { ...ZERO };
 
@@ -157,11 +191,13 @@ export class HistorySyncService {
           instance.nome,
           chat,
           since,
+          deep,
         );
         if (enqueued > 0) {
           summary.chats_synced++;
           summary.messages_enqueued += enqueued;
         }
+        this.avisarCap(enqueued, chat.phone, `evolution ${instance.nome}`);
       } catch (err) {
         this.logger.warn(
           `sync do chat ${chat.phone} (evolution ${instance.nome}) falhou: ${(err as Error).message}`,
@@ -196,8 +232,9 @@ export class HistorySyncService {
 
     if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
       this.logger.log(
-        `history sync evolution ${instance.nome}: ${summary.chats_scanned} chats na janela, ` +
-          `${summary.chats_synced} com buraco, ${summary.messages_enqueued} msgs re-injetadas`,
+        `history sync evolution${deep ? ' DEEP' : ''} ${instance.nome}: ` +
+          `${summary.chats_scanned} chats na janela, ${this.rotuloChatsSynced(summary, deep)}, ` +
+          `${summary.messages_enqueued} msgs re-injetadas`,
       );
     }
     return summary;
@@ -209,13 +246,16 @@ export class HistorySyncService {
     instanceNome: string,
     chat: EvoSyncChat,
     sinceMs: number,
+    deep: boolean,
   ): Promise<number> {
     // Prova exata primeiro (vem de graça no findChats): última msg do chat já
     // está no banco → em dia, nem consulta o findMessages. Escopado NESTE
     // chat: a mesma wamid pode existir em outra conversa (mensagem
     // encaminhada) e isso não prova nada sobre esta — sem o filtro, o chat que
     // nunca recebeu a mensagem passaria por "em dia" e ficaria com buraco.
-    if (chat.newestId) {
+    // Em deep NENHUMA prova vale: é justamente o chat "em dia" pelo fim que
+    // pode estar furado no miolo.
+    if (!deep && chat.newestId) {
       const existing = await this.prisma.message.findFirst({
         where: {
           tenant_id: tenantId,
@@ -226,27 +266,29 @@ export class HistorySyncService {
       });
       if (existing) return 0;
     }
-    const last = await this.prisma.message.findFirst({
-      where: { tenant_id: tenantId, lead: { telefone: chat.phone, tenant_id: tenantId } },
-      orderBy: { created_at: 'desc' },
-      select: { created_at: true },
-    });
-    if (
-      !chatHasGap(
-        {
-          chatid: chat.queryJid,
-          phone: chat.phone,
-          name: chat.name,
-          contactName: null,
-          lidJid: null,
-          lastMsgTs: chat.lastMsgTs,
-          unreadCount: chat.unreadCount,
-        },
-        last ? last.created_at.getTime() : null,
-        sinceMs,
-      )
-    ) {
-      return 0;
+    if (!deep) {
+      const last = await this.prisma.message.findFirst({
+        where: { tenant_id: tenantId, lead: { telefone: chat.phone, tenant_id: tenantId } },
+        orderBy: { created_at: 'desc' },
+        select: { created_at: true },
+      });
+      if (
+        !chatHasGap(
+          {
+            chatid: chat.queryJid,
+            phone: chat.phone,
+            name: chat.name,
+            contactName: null,
+            lidJid: null,
+            lastMsgTs: chat.lastMsgTs,
+            unreadCount: chat.unreadCount,
+          },
+          last ? last.created_at.getTime() : null,
+          sinceMs,
+        )
+      ) {
+        return 0;
+      }
     }
 
     let enqueued = 0;
@@ -282,6 +324,7 @@ export class HistorySyncService {
           {
             jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
             attempts: 3,
+            priority: HistorySyncService.BACKFILL_PRIORITY,
           },
         );
         enqueued++;
@@ -294,11 +337,11 @@ export class HistorySyncService {
     return enqueued;
   }
 
-  async syncInstance(instanceId: string, windowMs: number): Promise<SyncSummary> {
+  async syncInstance(instanceId: string, windowMs: number, deep = false): Promise<SyncSummary> {
     if (this.syncing.has(instanceId)) return { ...ZERO };
     this.syncing.add(instanceId);
     try {
-      return await this.run(instanceId, windowMs);
+      return await this.run(instanceId, windowMs, deep);
     } finally {
       this.syncing.delete(instanceId);
     }
@@ -309,7 +352,7 @@ export class HistorySyncService {
     return typeof cfg.uazapi_token === 'string' && cfg.uazapi_token ? cfg.uazapi_token : null;
   }
 
-  private async run(instanceId: string, windowMs: number): Promise<SyncSummary> {
+  private async run(instanceId: string, windowMs: number, deep: boolean): Promise<SyncSummary> {
     const instance = await this.prisma.whatsappInstance.findUnique({
       where: { id: instanceId },
     });
@@ -355,11 +398,19 @@ export class HistorySyncService {
         if (summary.chats_scanned >= HistorySyncService.MAX_CHATS_PER_RUN) break paging;
         summary.chats_scanned++;
         try {
-          const enqueued = await this.syncChat(instance.tenant_id, instance.id, token, chat, since);
+          const enqueued = await this.syncChat(
+            instance.tenant_id,
+            instance.id,
+            token,
+            chat,
+            since,
+            deep,
+          );
           if (enqueued > 0) {
             summary.chats_synced++;
             summary.messages_enqueued += enqueued;
           }
+          this.avisarCap(enqueued, chat.phone, instance.nome);
           await this.refreshLeadContact(instance.tenant_id, chat);
           await this.reconcileUnread(instance.tenant_id, chat);
         } catch (err) {
@@ -384,11 +435,38 @@ export class HistorySyncService {
 
     if (summary.messages_enqueued > 0 || summary.chats_scanned > 0) {
       this.logger.log(
-        `history sync ${instance.nome}: ${summary.chats_scanned} chats na janela, ` +
-          `${summary.chats_synced} com buraco, ${summary.messages_enqueued} msgs re-injetadas`,
+        `history sync${deep ? ' DEEP' : ''} ${instance.nome}: ` +
+          `${summary.chats_scanned} chats na janela, ${this.rotuloChatsSynced(summary, deep)}, ` +
+          `${summary.messages_enqueued} msgs re-injetadas`,
       );
     }
     return summary;
+  }
+
+  /**
+   * `chats_synced` só significa "com buraco" no modo normal — é lá que o chat
+   * em dia sai antes de enfileirar. No deep NADA é filtrado por gap: todo chat
+   * com mensagem no período entra, e quem decide o que vira mensagem nova é o
+   * dedupe do upsert. Chamar isso de "com buraco" no log seria mentira.
+   */
+  private rotuloChatsSynced(summary: SyncSummary, deep: boolean): string {
+    return deep
+      ? `${summary.chats_synced} com mensagem no período`
+      : `${summary.chats_synced} com buraco`;
+  }
+
+  /**
+   * O chat bateu no teto de mensagens por execução: o resto do período ficou
+   * pra trás em silêncio. Doí sobretudo no deep (busca a janela inteira de um
+   * chat movimentado), e sem este aviso ninguém descobre que faltou miolo.
+   */
+  private avisarCap(enqueued: number, phone: string, contexto: string): void {
+    if (enqueued < HistorySyncService.MAX_MSGS_PER_CHAT) return;
+    this.logger.warn(
+      `chat ${phone} (${contexto}): cap de ${HistorySyncService.MAX_MSGS_PER_CHAT} msgs por ` +
+        `execução atingido — pode ter sobrado mensagem do período pra trás; rode de novo ` +
+        `com janela menor`,
+    );
   }
 
   /** Re-injeta as mensagens faltantes de um chat. Retorna quantas enfileirou. */
@@ -398,13 +476,19 @@ export class HistorySyncService {
     token: string,
     chat: SyncChat,
     sinceMs: number,
+    deep: boolean,
   ): Promise<number> {
-    const last = await this.prisma.message.findFirst({
-      where: { tenant_id: tenantId, lead: { telefone: chat.phone, tenant_id: tenantId } },
-      orderBy: { created_at: 'desc' },
-      select: { created_at: true },
-    });
-    if (!chatHasGap(chat, last ? last.created_at.getTime() : null, sinceMs)) return 0;
+    // Em deep as duas provas de "chat em dia" ficam de fora (a do timestamp
+    // aqui, a da wamid mais nova lá embaixo): elas fecham o chat pelo FIM e o
+    // buraco que o deep caça é no MIOLO. O diff passa a ser o dedupe do upsert.
+    if (!deep) {
+      const last = await this.prisma.message.findFirst({
+        where: { tenant_id: tenantId, lead: { telefone: chat.phone, tenant_id: tenantId } },
+        orderBy: { created_at: 'desc' },
+        select: { created_at: true },
+      });
+      if (!chatHasGap(chat, last ? last.created_at.getTime() : null, sinceMs)) return 0;
+    }
 
     let enqueued = 0;
     let offset = 0;
@@ -428,7 +512,7 @@ export class HistorySyncService {
       // re-injetar. O filtro por telefone é essencial: com o dedupe por
       // conversa a mesma wamid vive em N chats (encaminhamento), e achá-la em
       // outro chat não prova que ESTE está em dia.
-      if (!newestChecked) {
+      if (!newestChecked && !deep) {
         newestChecked = true;
         const newest = page.messages.find(
           (m) => m.isGroup !== true && (typeof m.messageid === 'string' && m.messageid),
@@ -464,6 +548,7 @@ export class HistorySyncService {
         await this.webhookQueue.add('uazapi.messages', backfillJobPayload(m, token, chat.phone), {
           jobId: `bf-${instanceId}-${messageid}`.replace(/[^A-Za-z0-9_-]/g, '_'),
           attempts: 3,
+          priority: HistorySyncService.BACKFILL_PRIORITY,
         });
         enqueued++;
         if (enqueued >= HistorySyncService.MAX_MSGS_PER_CHAT) return enqueued;

@@ -48,6 +48,9 @@ function makeMocks() {
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     },
+    // A auditoria do reassign nasce DENTRO da transação (Task D2) — ver
+    // `leads-reassign-auditoria.spec.ts`, que é quem afirma o conteúdo dela.
+    leadActivity: { create: jest.fn() },
   };
   const prisma: any = {
     lead: {

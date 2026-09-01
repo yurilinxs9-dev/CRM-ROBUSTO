@@ -384,7 +384,7 @@ describe('KanbanIndividualService.disable', () => {
     });
 
     expect(prisma.broadcast.updateMany).toHaveBeenCalledWith({
-      where: { stage_id: { in: ['p1', 'p9'] } },
+      where: { tenant_id: 'tenant-1', stage_id: { in: ['p1', 'p9'] } },
       data: { stage_id: null },
     });
 

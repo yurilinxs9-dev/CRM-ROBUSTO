@@ -2,10 +2,81 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import { inicioDoDiaLocal } from '../lead-insights/lead-insights.service';
+import { buildVisibilityWhere, isManagerRole } from '../leads/lead-visibility';
+import { UserRole } from '@/common/types/roles';
 import type { Prisma } from '@prisma/client';
 import type { AuthUser } from '../../common/types/auth-user';
 
-export interface StageRow { id: string; nome: string; cor: string; ordem: number; is_won?: boolean; }
+export interface StageRow {
+  id: string;
+  nome: string;
+  cor: string;
+  ordem: number;
+  pipeline_id: string;
+  is_won?: boolean;
+}
+
+/** Item do funil do `stats` — o shape que o `FunnelChart` do front consome. */
+export interface FunilItem {
+  stageId: string;
+  nome: string;
+  cor: string;
+  count: number;
+}
+
+/**
+ * Colunas homonimas sao a MESMA coluna: o clone nasce com o nome da base.
+ *
+ * O pipeline entra na chave porque a homonimia so vale DENTRO dele: dois
+ * funis do mesmo tenant costumam ter "Novo" cada um, e sao processos
+ * diferentes. Sem o pipeline os dois somariam numa linha so, exibida com o id
+ * de uma coluna que nem pertence ao outro funil.
+ */
+function chaveDeGrupo(stage: StageRow): string {
+  return `${stage.pipeline_id}::${stage.nome.toLowerCase().trim()}`;
+}
+
+/**
+ * Kanban individual: cada membro tem um clone proprio de cada coluna
+ * (`Stage.user_id`), entao o funil do gestor mostrava "Novo" uma vez por dono,
+ * cada uma com um pedaco da contagem. Aqui as homonimas DO MESMO PIPELINE
+ * viram um item so.
+ *
+ * O representante do grupo e a coluna de MENOR `ordem` (empate decidido pelo
+ * id, senao a resposta danca entre dois clones na mesma posicao): e dele que
+ * saem id, nome e cor, e e por ele que o item se posiciona no funil. Manter o
+ * id de uma coluna real importa — o front usa `stageId` como chave de lista.
+ */
+function agregarFunilPorNome(
+  stages: StageRow[],
+  contagens: Map<string | null, number>,
+): FunilItem[] {
+  const grupos = new Map<string, { representante: StageRow; count: number }>();
+  for (const stage of stages) {
+    const chave = chaveDeGrupo(stage);
+    const count = contagens.get(stage.id) ?? 0;
+    const grupo = grupos.get(chave);
+    if (!grupo) {
+      grupos.set(chave, { representante: stage, count });
+      continue;
+    }
+    grupo.count += count;
+    if (ehAnterior(stage, grupo.representante)) grupo.representante = stage;
+  }
+  return [...grupos.values()]
+    .sort((a, b) => (ehAnterior(a.representante, b.representante) ? -1 : 1))
+    .map(({ representante, count }) => ({
+      stageId: representante.id,
+      nome: representante.nome,
+      cor: representante.cor,
+      count,
+    }));
+}
+
+function ehAnterior(a: StageRow, b: StageRow): boolean {
+  if (a.ordem !== b.ordem) return a.ordem < b.ordem;
+  return a.id < b.id;
+}
 
 const TIMEZONE = 'America/Sao_Paulo';
 
@@ -329,12 +400,54 @@ export class DashboardService {
     }));
   }
 
+  /**
+   * A chave carrega o USUARIO, nao so o tenant: desde que as contagens
+   * respeitam a visibilidade, uma unica entrada por tenant serviria o numero do
+   * primeiro que abrisse a tela para o time inteiro — o vazamento que o recorte
+   * acabou de fechar, reaberto pelo cache.
+   *
+   * O modo foco fica FORA da chave de proposito: le-lo aqui custaria uma ida ao
+   * banco em todo acerto de cache. O preco e o teto do TTL (60s) de numero
+   * velho depois de ligar/desligar o foco.
+   */
   async getStats(user: AuthUser) {
-    return this.cached(`dash:stats:${user.tenantId}`, () => this.computeStats(user));
+    return this.cached(`dash:stats:${user.tenantId}:${user.id}`, () => this.computeStats(user));
   }
 
   private async computeStats(user: AuthUser) {
     const now = new Date();
+
+    // Mesma leitura de contexto do board (leads.service.findAll): o dashboard
+    // nao pode ter uma regra de visibilidade PROPRIA — seria uma porta lateral
+    // para o que o Kanban fecha.
+    const [tenant, me] = await Promise.all([
+      this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        select: { pool_enabled: true, kanban_individual: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const role = user.role as UserRole;
+    const focusMode = Boolean(me?.focus_mode);
+    // Supervisionando = ve os numeros da loja. Gerente em modo foco NAO
+    // supervisiona: o painel dele vira o painel da propria carteira.
+    const supervisionando = isManagerRole(role) && !focusMode;
+    const kanbanIndividual = tenant?.kanban_individual === true;
+    // Cast pontual, no padrao do lead-insights: `buildVisibilityWhere` devolve
+    // Record<string, unknown> por contrato — nao ha tipo a estreitar, so forma.
+    const visibilidade = buildVisibilityWhere({
+      userId: user.id,
+      role,
+      poolEnabled: Boolean(tenant?.pool_enabled),
+      focusMode,
+    }) as Prisma.LeadWhereInput;
+    // `tenant_id` primeiro e a visibilidade por cima: ela so escreve `OR` /
+    // `responsavel_id`, entao nunca come o recorte de tenant.
+    const leadWhere: Prisma.LeadWhereInput = { tenant_id: user.tenantId, ...visibilidade };
+
     const startOfThisWeek = new Date(now);
     startOfThisWeek.setDate(now.getDate() - 7);
     const startOfLastWeek = new Date(now);
@@ -353,26 +466,28 @@ export class DashboardService {
       (await Promise.all([
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
-          where: { tenant_id: user.tenantId },
+          where: leadWhere,
           _count: { id: true },
         }),
-        this.prisma.lead.count({ where: { tenant_id: user.tenantId } }),
+        this.prisma.lead.count({ where: leadWhere }),
         this.prisma.lead.count({
-          where: { created_at: { gte: startOfThisWeek }, tenant_id: user.tenantId },
+          where: { ...leadWhere, created_at: { gte: startOfThisWeek } },
         }),
         this.prisma.lead.count({
           where: {
+            ...leadWhere,
             created_at: { gte: startOfLastWeek, lt: startOfThisWeek },
-            tenant_id: user.tenantId,
           },
         }),
         this.prisma.lead.groupBy({
           by: ['temperatura'],
-          where: { tenant_id: user.tenantId },
+          where: leadWhere,
           _count: { id: true },
         }),
         this.prisma.leadActivity.findMany({
-          where: { tenant_id: user.tenantId },
+          // A atividade recente carrega NOME de lead: sem o recorte pela
+          // relacao, o operador lia o movimento da carteira dos colegas.
+          where: { tenant_id: user.tenantId, lead: visibilidade },
           orderBy: { created_at: 'desc' },
           take: 10,
           include: {
@@ -382,7 +497,7 @@ export class DashboardService {
         }),
         this.prisma.lead.groupBy({
           by: ['responsavel_id'],
-          where: { tenant_id: user.tenantId },
+          where: leadWhere,
           _count: { id: true },
           orderBy: { _count: { id: 'desc' } },
           take: 5,
@@ -404,19 +519,25 @@ export class DashboardService {
     const usedStages = usedStageIds.length
       ? ((await this.prisma.stage.findMany({
           where: { id: { in: usedStageIds }, tenant_id: user.tenantId },
-          orderBy: { ordem: 'asc' },
+          // Desempate pelo id: com kanban individual varios clones dividem a
+          // mesma `ordem`, e sem criterio estavel a lista muda de ordem sozinha.
+          orderBy: [{ ordem: 'asc' }, { id: 'asc' }],
         })) as StageRow[])
       : [];
 
     const stageCountMap = new Map(
       stageGroup.map((g) => [g.estagio_id, g._count.id]),
     );
-    const stageCounts = usedStages.map((s) => ({
-      stageId: s.id,
-      nome: s.nome,
-      cor: s.cor,
-      count: stageCountMap.get(s.id) ?? 0,
-    }));
+    // Com o toggle ligado o funil fala de COLUNAS (por nome), nao de clones.
+    // Desligado, nada muda: um item por estagio, como sempre foi.
+    const stageCounts: FunilItem[] = kanbanIndividual
+      ? agregarFunilPorNome(usedStages, stageCountMap)
+      : usedStages.map((s) => ({
+          stageId: s.id,
+          nome: s.nome,
+          cor: s.cor,
+          count: stageCountMap.get(s.id) ?? 0,
+        }));
 
     const wonStageIds = usedStages.filter((s) => s.is_won).map((s) => s.id);
     const wonCount = wonStageIds.length
@@ -439,7 +560,18 @@ export class DashboardService {
       createdAt: a.created_at,
     }));
 
-    const operatorIds = operatorGroup
+    // Ranking e visao de GESTAO. Escopado, o groupBy so pode devolver o proprio
+    // usuario e a fila sem dono — e a fila sem dono viraria uma linha
+    // "Desconhecido" liderando o proprio ranking do operador.
+    //
+    // O `responsavel_id: null` tambem chega no groupBy do GESTOR, onde a nuvem
+    // costuma ser o maior balde de todos: sem o filtro ela lidera o ranking do
+    // time como "Desconhecido" e ainda come uma das 5 vagas. Nuvem e fila, nao
+    // operador.
+    const operatorRows = (
+      supervisionando ? operatorGroup : operatorGroup.filter((g) => g.responsavel_id === user.id)
+    ).filter((g) => g.responsavel_id);
+    const operatorIds = operatorRows
       .map((g) => g.responsavel_id)
       .filter((id): id is string => !!id);
     const [operators, msgsByOp] = (await Promise.all([
@@ -465,7 +597,7 @@ export class DashboardService {
       Array<{ sent_by_user_id: string | null; _count: { id: number } }>,
     ];
     const msgsMap = new Map(msgsByOp.map((m) => [m.sent_by_user_id, m._count.id]));
-    const topOperators = operatorGroup.map((g) => {
+    const topOperators = operatorRows.map((g) => {
       const u = operators.find((o) => o.id === g.responsavel_id);
       return {
         id: g.responsavel_id,
@@ -485,7 +617,7 @@ export class DashboardService {
       (await Promise.all([
         this.prisma.lead.findMany({
           where: {
-            tenant_id: user.tenantId,
+            ...leadWhere,
             last_customer_message_at: { not: null },
             last_agent_message_at: { not: null },
           },
@@ -494,26 +626,36 @@ export class DashboardService {
           take: 500,
         }),
         this.prisma.lead.count({
-          where: { tenant_id: user.tenantId, mensagens_nao_lidas: { gt: 0 } },
+          where: { ...leadWhere, mensagens_nao_lidas: { gt: 0 } },
         }),
         this.prisma.task.count({
-          where: { tenant_id: user.tenantId, status: 'PENDENTE' },
+          // Tarefa segue a regra do proprio modulo (tasks.service.scopeWhere):
+          // quem nao supervisiona conta as SUAS pendencias.
+          where: {
+            tenant_id: user.tenantId,
+            status: 'PENDENTE',
+            ...(supervisionando ? {} : { responsavel_id: user.id }),
+          },
         }),
         this.prisma.lead.aggregate({
-          where: { tenant_id: user.tenantId, estagio: { is_won: true } },
+          where: { ...leadWhere, estagio: { is_won: true } },
           _sum: { valor_estimado: true },
         }),
-        this.prisma.$queryRaw<{ day: Date; count: number }[]>`
-          SELECT date_trunc('day', created_at) AS day, COUNT(*)::int AS count
-          FROM "Lead"
-          WHERE tenant_id = ${user.tenantId} AND created_at >= ${since14}
-          GROUP BY 1 ORDER BY 1 ASC`,
+        // Era SQL cru filtrando so por tenant. Repetir a visibilidade a mao em
+        // SQL seria uma segunda copia da regra (a que sempre atrasa em relacao
+        // a `buildVisibilityWhere`), entao a serie passa a ser lida pelo Prisma
+        // com o MESMO `where` e agrupada aqui — sao 14 dias de `created_at`, uma
+        // coluna por linha.
+        this.prisma.lead.findMany({
+          where: { ...leadWhere, created_at: { gte: since14 } },
+          select: { created_at: true },
+        }),
       ])) as [
         Array<{ last_customer_message_at: Date | null; last_agent_message_at: Date | null }>,
         number,
         number,
         { _sum: { valor_estimado: unknown } },
-        Array<{ day: Date; count: number }>,
+        Array<{ created_at: Date }>,
       ];
 
     // Tempo médio de resposta: delta entre última msg do cliente e nossa resposta,
@@ -533,10 +675,13 @@ export class DashboardService {
       ? Number(wonValueAgg._sum.valor_estimado)
       : 0;
 
-    // Série de 14 dias preenchendo lacunas com zero.
-    const trendMap = new Map(
-      trendRows.map((r) => [new Date(r.day).toISOString().slice(0, 10), Number(r.count)]),
-    );
+    // Série de 14 dias preenchendo lacunas com zero. O balde é o dia em UTC,
+    // igual ao `date_trunc` que rodava no banco.
+    const trendMap = new Map<string, number>();
+    for (const linha of trendRows) {
+      const chave = linha.created_at.toISOString().slice(0, 10);
+      trendMap.set(chave, (trendMap.get(chave) ?? 0) + 1);
+    }
     const leadsTrend: { date: string; count: number }[] = [];
     for (let i = 13; i >= 0; i--) {
       const d = new Date(now);

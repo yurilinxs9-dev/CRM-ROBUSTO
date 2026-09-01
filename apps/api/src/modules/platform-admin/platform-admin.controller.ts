@@ -18,11 +18,14 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { AuthUser } from '../../common/types/auth-user';
 import { PlatformScopes } from './platform-scopes.decorator';
 import { HistorySyncService } from '../webhooks/history-sync.service';
+import { historySyncRequestSchema } from '../webhooks/history-sync';
 
 const bannedSchema = z.object({ banned: z.boolean() });
 const suspendedSchema = z.object({ suspended: z.boolean() });
 const activeSchema = z.object({ active: z.boolean() });
-const historySyncSchema = z.object({ days: z.number().int().min(1).max(60).optional() });
+// deep: varre o miolo das conversas (ignora a prova de "chat em dia"). 1 fetch
+// por chat SEMPRE e em lote global — daí o teto de janela do schema.
+const historySyncSchema = historySyncRequestSchema;
 
 /**
  * TODA rota daqui declara seu escopo. O guard é fail-closed: rota nova sem
@@ -139,15 +142,19 @@ export class PlatformAdminController {
   @Post('history-sync')
   @PlatformScopes('tenant_actions')
   startHistorySync(@Body() body: unknown) {
-    const { days = 30 } = historySyncSchema.parse(body ?? {});
+    const { days = 30, deep = false } = historySyncSchema.parse(body ?? {});
     void this.historySync
-      .syncAllUazapi(days * 24 * 3_600_000)
+      .syncAllUazapi(days * 24 * 3_600_000, deep)
       .then((r) => {
         const total = r.reduce((acc, s) => acc + s.messages_enqueued, 0);
-        this.logger.log(`history sync global concluido: ${total} msgs re-injetadas`);
+        const chats = r.reduce((acc, s) => acc + s.chats_scanned, 0);
+        this.logger.log(
+          `history sync global${deep ? ' DEEP' : ''} concluido: ${chats} chats varridos, ` +
+            `${total} msgs re-injetadas`,
+        );
       })
       .catch((err) => this.logger.warn(`history sync global falhou: ${String(err)}`));
-    return { started: true, days };
+    return { started: true, days, deep };
   }
 
   @Post('impersonate/:userId')
