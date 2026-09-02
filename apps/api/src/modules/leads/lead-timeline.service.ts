@@ -154,18 +154,25 @@ export class LeadTimelineService {
     let lidas = 0;
     while (rows.length > 0 && temMais && lidas < SESSAO_MAX_MENSAGENS) {
       const ultima = rows[rows.length - 1];
+      // `lte` e nao `lt`: duas mensagens podem cair no MESMO milissegundo, e
+      // com `lt` a irma de timestamp identico ao da ultima lida nunca entrava.
+      // O preco e reler as empatadas, descartadas aqui pelo Set de ids.
+      const jaLidas = new Set(rows.map((m) => m.id));
       const proximas: MensagemParaSessao[] = await this.prisma.message.findMany({
-        where: { ...where, created_at: { lt: ultima.created_at } },
+        where: { ...where, created_at: { lte: ultima.created_at } },
         select,
         orderBy: { created_at: 'desc' },
         take: LOTE_FECHAMENTO,
       });
       if (proximas.length === 0) break;
-      const corte = proximas.findIndex((m, i) => {
-        const anterior = i === 0 ? ultima : proximas[i - 1];
+      const novas = proximas.filter((m) => !jaLidas.has(m.id));
+      if (novas.length === 0) break;
+      const corte = novas.findIndex((m, i) => {
+        const anterior = i === 0 ? ultima : novas[i - 1];
         return !mesmaSessao(anterior.created_at, m.created_at);
       });
-      const pertencem = corte === -1 ? proximas : proximas.slice(0, corte);
+      const pertencem = corte === -1 ? novas : novas.slice(0, corte);
+      if (pertencem.length === 0) break;
       rows = rows.concat(pertencem);
       lidas += pertencem.length;
       if (corte !== -1) break;
@@ -262,57 +269,59 @@ export class LeadTimelineService {
     ate: Date | undefined,
     limit: number,
   ): Promise<Fonte> {
-    // Tarefa entra duas vezes quando concluida (criacao e conclusao); o cursor
-    // vale por EVENTO, entao o where le por created_at OU completed_at e cada
-    // evento e conferido de novo abaixo.
-    const rows = await this.prisma.task.findMany({
-      where: {
-        lead_id: leadId,
-        tenant_id: user.tenantId,
-        ...(ate ? { OR: [{ created_at: { lte: ate } }, { completed_at: { lte: ate } }] } : {}),
-      },
-      orderBy: { created_at: 'desc' },
-      take: limit + 1,
-      select: {
-        id: true,
-        titulo: true,
-        tipo: true,
-        status: true,
-        scheduled_at: true,
-        completed_at: true,
-        created_at: true,
-        responsavel: { select: { id: true, nome: true } },
-      },
-    });
-    const temMais = rows.length > limit;
+    // Tarefa concluida entra DUAS vezes na timeline (criacao e conclusao), e
+    // cada evento tem `quando` proprio. Uma leitura so, ordenada por
+    // `created_at`, perdia o evento `:concluida` de tarefa antiga fechada
+    // ontem: ela cai no fim da ordenacao, o `take` corta, e nas paginas
+    // seguintes o cursor ja passou por ela — o evento sumia sem sinal.
+    // Por isso sao duas leituras, cada uma ordenada pelo campo do SEU evento.
+    const select = {
+      id: true,
+      titulo: true,
+      tipo: true,
+      status: true,
+      scheduled_at: true,
+      completed_at: true,
+      created_at: true,
+      responsavel: { select: { id: true, nome: true } },
+    } as const;
+    const doLead = { lead_id: leadId, tenant_id: user.tenantId };
+    const [criadas, concluidas] = await Promise.all([
+      this.prisma.task.findMany({
+        where: { ...doLead, ...this.ateInclusive(ate) },
+        orderBy: { created_at: 'desc' },
+        take: limit + 1,
+        select,
+      }),
+      this.prisma.task.findMany({
+        where: { ...doLead, completed_at: { not: null, ...(ate ? { lte: ate } : {}) } },
+        orderBy: { completed_at: 'desc' },
+        take: limit + 1,
+        select,
+      }),
+    ]);
+    const temMais = criadas.length > limit || concluidas.length > limit;
     const items: TarefaItem[] = [];
-    for (const r of temMais ? rows.slice(0, limit) : rows) {
-      const base = {
-        titulo: r.titulo,
-        tipo_tarefa: r.tipo,
-        status: r.status,
-        scheduled_at: r.scheduled_at.toISOString(),
-        completed_at: r.completed_at ? r.completed_at.toISOString() : null,
-        responsavel: r.responsavel ?? null,
-      };
-      if (!ate || r.created_at <= ate) {
-        items.push({
-          tipo: 'tarefa',
-          id: `${r.id}:criada`,
-          quando: r.created_at.toISOString(),
-          evento: 'criada',
-          ...base,
-        });
-      }
-      if (r.completed_at && (!ate || r.completed_at <= ate)) {
-        items.push({
-          tipo: 'tarefa',
-          id: `${r.id}:concluida`,
-          quando: r.completed_at.toISOString(),
-          evento: 'concluida',
-          ...base,
-        });
-      }
+    for (const r of criadas.length > limit ? criadas.slice(0, limit) : criadas) {
+      items.push({
+        tipo: 'tarefa',
+        id: `${r.id}:criada`,
+        quando: r.created_at.toISOString(),
+        evento: 'criada',
+        ...camposDaTarefa(r),
+      });
+    }
+    for (const r of concluidas.length > limit ? concluidas.slice(0, limit) : concluidas) {
+      // `completed_at: { not: null }` ja garante isto no where; o guard existe
+      // so para o tipo (Prisma devolve `Date | null`).
+      if (!r.completed_at) continue;
+      items.push({
+        tipo: 'tarefa',
+        id: `${r.id}:concluida`,
+        quando: r.completed_at.toISOString(),
+        evento: 'concluida',
+        ...camposDaTarefa(r),
+      });
     }
     return { items, temMais };
   }
@@ -348,6 +357,25 @@ export class LeadTimelineService {
     }));
     return { items, temMais };
   }
+}
+
+/** Campos comuns aos dois eventos (`criada` e `concluida`) da mesma tarefa. */
+function camposDaTarefa(r: {
+  titulo: string;
+  tipo: string;
+  status: string;
+  scheduled_at: Date;
+  completed_at: Date | null;
+  responsavel: Pessoa | null;
+}): Omit<TarefaItem, 'tipo' | 'id' | 'quando' | 'evento'> {
+  return {
+    titulo: r.titulo,
+    tipo_tarefa: r.tipo,
+    status: r.status,
+    scheduled_at: r.scheduled_at.toISOString(),
+    completed_at: r.completed_at ? r.completed_at.toISOString() : null,
+    responsavel: r.responsavel ?? null,
+  };
 }
 
 /** `metadata.mentions` e gravado por createInternalNote como array de ids. */

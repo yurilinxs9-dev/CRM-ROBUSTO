@@ -34,7 +34,17 @@ function make(f: Fontes = {}) {
       ),
     },
     leadActivity: { findMany: jest.fn().mockResolvedValue(f.atividades ?? []) },
-    task: { findMany: jest.fn().mockResolvedValue(f.tarefas ?? []) },
+    task: {
+      // Duas leituras (criadas por created_at, concluidas por completed_at);
+      // o mock imita o where `completed_at: { not: null }` da segunda.
+      findMany: jest.fn().mockImplementation(({ orderBy }: any) =>
+        Promise.resolve(
+          orderBy.completed_at
+            ? (f.tarefas ?? []).filter((t: any) => t.completed_at)
+            : (f.tarefas ?? []),
+        ),
+      ),
+    },
     leadLembrete: { findMany: jest.fn().mockResolvedValue(f.lembretes ?? []) },
     user: { findMany: jest.fn().mockResolvedValue([{ id: 'u-2', nome: 'Isamara' }]) },
   };
@@ -208,6 +218,46 @@ describe('LeadTimelineService.getTimeline — mescla', () => {
     });
   });
 
+  it('toda fonte recorta por lead e tenant', async () => {
+    const { service, prisma } = make();
+    await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 10 });
+    const recorte = { lead_id: LEAD_ID, tenant_id: 't1' };
+    expect(whereMensagem(prisma, false)).toMatchObject(recorte);
+    expect(whereMensagem(prisma, true)).toMatchObject(recorte);
+    expect(prisma.leadActivity.findMany.mock.calls[0][0].where).toMatchObject(recorte);
+    expect(prisma.task.findMany.mock.calls[0][0].where).toMatchObject(recorte);
+    expect(prisma.task.findMany.mock.calls[1][0].where).toMatchObject(recorte);
+    expect(prisma.leadLembrete.findMany.mock.calls[0][0].where).toMatchObject(recorte);
+  });
+
+  it('tarefa antiga concluida ontem aparece como :concluida na primeira pagina', async () => {
+    // A leitura de criadas (created_at desc) corta a tarefa antiga no `take`.
+    // So a segunda leitura, ordenada por completed_at, salva o evento.
+    const tarefa = (id: string, criada: string, concluida: string | null) => ({
+      id,
+      titulo: id,
+      tipo: 'LIGACAO',
+      status: concluida ? 'CONCLUIDA' : 'PENDENTE',
+      scheduled_at: T(criada),
+      completed_at: concluida ? T(concluida) : null,
+      created_at: T(criada),
+      responsavel: null,
+    });
+    const { service } = make({
+      tarefas: [
+        tarefa('nova2', '2026-09-01T12:00:00Z', null),
+        tarefa('nova1', '2026-09-01T11:00:00Z', null),
+        tarefa('nova0', '2026-09-01T10:00:00Z', null),
+        tarefa('antiga', '2020-01-01T09:00:00Z', '2026-09-01T13:00:00Z'),
+      ],
+    });
+    const r = await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 2 });
+    expect(r.items.map((i) => `${i.id}@${i.quando}`)).toEqual([
+      'antiga:concluida@2026-09-01T13:00:00.000Z',
+      'nova2:criada@2026-09-01T12:00:00.000Z',
+    ]);
+  });
+
   it('cursor: fontes por data leem com lte; mensagens com lt de mensagensAntes', async () => {
     const { service, prisma } = make();
     const quando = '2026-09-01T12:00:00.000Z';
@@ -219,10 +269,11 @@ describe('LeadTimelineService.getTimeline — mescla', () => {
     const lte = new Date(quando);
     expect(prisma.leadActivity.findMany.mock.calls[0][0].where.created_at).toEqual({ lte });
     expect(prisma.leadLembrete.findMany.mock.calls[0][0].where.created_at).toEqual({ lte });
-    expect(prisma.task.findMany.mock.calls[0][0].where.OR).toEqual([
-      { created_at: { lte } },
-      { completed_at: { lte } },
-    ]);
+    expect(prisma.task.findMany.mock.calls[0][0].where.created_at).toEqual({ lte });
+    expect(prisma.task.findMany.mock.calls[1][0].where.completed_at).toEqual({
+      not: null,
+      lte,
+    });
     expect(whereMensagem(prisma, true).created_at).toEqual({ lte });
     expect(whereMensagem(prisma, false).created_at).toEqual({ lt: new Date(mensagensAntes) });
   });
@@ -240,7 +291,8 @@ describe('LeadTimelineService.getTimeline — mescla', () => {
     const { service, prisma } = make();
     await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 10 });
     expect(prisma.leadActivity.findMany.mock.calls[0][0].where.created_at).toBeUndefined();
-    expect(prisma.task.findMany.mock.calls[0][0].where.OR).toBeUndefined();
+    expect(prisma.task.findMany.mock.calls[0][0].where.created_at).toBeUndefined();
+    expect(prisma.task.findMany.mock.calls[1][0].where.completed_at).toEqual({ not: null });
     expect(whereMensagem(prisma, false).created_at).toBeUndefined();
   });
 
@@ -368,8 +420,11 @@ describe('LeadTimelineService.getTimeline — fechamento da sessao cortada', () 
     };
     prisma.message.findMany.mockImplementation(({ where }: any) => {
       if (where.is_internal_note === true) return Promise.resolve([]);
-      if (where.created_at && where.created_at.lt) {
+      if (where.created_at && where.created_at.lte) {
+        // Com `lte` o lote reenvia a propria m3 (fronteira inclusiva); o
+        // service tem que descarta-la pelo id antes de calcular o corte.
         return Promise.resolve([
+          msg('m3', '2026-09-01T12:00:00Z'),
           msg('m4', '2026-09-01T11:50:00Z'),
           msg('m5', '2026-09-01T11:45:00Z'),
           msg('m6', '2026-09-01T09:00:00Z'),
@@ -405,5 +460,47 @@ describe('LeadTimelineService.getTimeline — fechamento da sessao cortada', () 
         mensagensAntes: '2026-09-01T11:45:00.000Z',
       }),
     );
+  });
+
+  it('empate de milissegundo: a irma de mesmo timestamp da ultima lida entra', async () => {
+    const prisma: any = {
+      message: { findMany: jest.fn() },
+      leadActivity: { findMany: jest.fn().mockResolvedValue([]) },
+      task: { findMany: jest.fn().mockResolvedValue([]) },
+      leadLembrete: { findMany: jest.fn().mockResolvedValue([]) },
+      user: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    prisma.message.findMany.mockImplementation(({ where }: any) => {
+      if (where.is_internal_note === true) return Promise.resolve([]);
+      if (where.created_at && where.created_at.lte) {
+        // m3b nasceu no MESMO milissegundo de m3. Com `lt` ela jamais seria
+        // lida e a sessao sairia com 3 mensagens em vez de 4.
+        return Promise.resolve([
+          msg('m3', '2026-09-01T12:00:00Z'),
+          msg('m3b', '2026-09-01T12:00:00Z'),
+          msg('m4', '2026-09-01T09:00:00Z'),
+        ]);
+      }
+      return Promise.resolve([
+        msg('m1', '2026-09-01T12:10:00Z'),
+        msg('m2', '2026-09-01T12:05:00Z'),
+        msg('m3', '2026-09-01T12:00:00Z'),
+      ]);
+    });
+    const leads: any = {
+      findOne: jest.fn().mockResolvedValue({
+        id: LEAD_ID,
+        responsavel_id: 'u-1',
+        instancia_whatsapp: 'inst-A',
+        assumed_at: null,
+        is_private: false,
+      }),
+      messageScopeFor: jest.fn().mockResolvedValue({}),
+    };
+    const service = new LeadTimelineService(prisma, leads);
+    const r = await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 2 });
+    const sessao = r.items[0];
+    expect(sessao.tipo === 'sessao' && sessao.total).toBe(4);
+    expect(sessao.tipo === 'sessao' && sessao.primeira_mensagem_id).toBe('m3b');
   });
 });
