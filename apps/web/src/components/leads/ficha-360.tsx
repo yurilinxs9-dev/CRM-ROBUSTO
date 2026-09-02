@@ -707,6 +707,11 @@ export interface Ficha360Props {
    * colapso, e uma segunda seta dentro dela seria um botao de fechar duplicado.
    */
   colapsavel?: boolean;
+  /**
+   * So tem efeito com `colapsavel`, e so na PRIMEIRA renderizacao: a ficha
+   * nasce fechada onde a tela e estreita (celular), aberta no resto.
+   */
+  abertoInicial?: boolean;
   className?: string;
 }
 
@@ -732,13 +737,14 @@ export function Ficha360({
   enabled = true,
   mostrarCabecalho = true,
   colapsavel = false,
+  abertoInicial = true,
   className,
 }: Ficha360Props) {
   const queryClient = useQueryClient();
   const papel = useAuthStore((s) => s.user?.role);
   const podeRegerar = !!papel && PAPEIS_QUE_REGERAM.includes(papel);
   /** So tem efeito com `colapsavel`. A query segue viva de qualquer jeito. */
-  const [aberto, setAberto] = useState(true);
+  const [aberto, setAberto] = useState(abertoInicial);
   /** Timestamp ate quando "Regenerar" fica travado. 0 = liberado. */
   const [bloqueadoAte, setBloqueadoAte] = useState(0);
 
