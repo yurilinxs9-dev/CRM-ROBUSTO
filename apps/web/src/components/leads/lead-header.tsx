@@ -41,6 +41,18 @@ export interface LeadHeaderProps {
   onReturnToPool: () => Promise<void>;
 }
 
+/** Bloco no formato do InlineField, mas sem edicao. */
+function CampoLeitura({ label, valor }: { label: string; valor: string }) {
+  return (
+    <div className="space-y-0.5">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p className="px-2 py-1 text-sm">{valor}</p>
+    </div>
+  );
+}
+
 function iniciais(nome: string): string {
   return nome
     .split(' ')
@@ -90,7 +102,10 @@ export function LeadHeader({
     enabled: gestor,
   });
 
-  const pipeline = pipelines.find((p) => p.id === lead.pipeline_id) ?? pipelines[0];
+  // SEM fallback para `pipelines[0]`: se o funil do lead nao veio na resposta
+  // (board de outro dono, funil arquivado, resposta ainda em voo), oferecer as
+  // colunas de OUTRO funil moveria o lead para uma etapa que nao e dele.
+  const pipeline = pipelines.find((p) => p.id === lead.pipeline_id);
   const etapas = [...(pipeline?.stages ?? [])].sort((a, b) => a.ordem - b.ordem);
   const naNuvem = !lead.responsavel && !!lead.returned_at;
   const semDono = !lead.responsavel_id;
@@ -141,31 +156,38 @@ export function LeadHeader({
           value={lead.temperatura}
           opcoes={TEMP_OPCOES}
           disabled={!editavel}
-          onSave={(v) => onPatch({ temperatura: v })}
+          onSave={(v) => (v ? onPatch({ temperatura: v }) : Promise.resolve())}
         />
-        <InlineField
-          label="Etapa"
-          variante="select"
-          value={lead.estagio_id}
-          opcoes={etapas.map((e) => ({ value: e.id, label: e.nome }))}
-          disabled={!editavel || etapas.length === 0}
-          onSave={(v) => (v ? onStage(v) : Promise.resolve())}
-        />
-        <InlineField
-          label="Responsável"
-          variante="select"
-          value={lead.responsavel_id}
-          opcoes={users.map((u) => ({ value: u.id, label: u.nome }))}
-          placeholder={semDono ? 'Sem responsável' : undefined}
-          disabled={!editavel || !gestor}
-          onSave={(v) => (v ? onReassign(v) : Promise.resolve())}
-        />
-        <div className="space-y-0.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Instância
-          </p>
-          <p className="px-2 py-1 text-sm">{lead.instancia_whatsapp ?? '—'}</p>
-        </div>
+        {/* Sem as etapas carregadas o select mostraria o UUID cru do estagio:
+            ate elas chegarem (ou se o funil do lead nao veio), so leitura. */}
+        {etapas.length > 0 ? (
+          <InlineField
+            label="Etapa"
+            variante="select"
+            value={lead.estagio_id}
+            opcoes={etapas.map((e) => ({ value: e.id, label: e.nome }))}
+            disabled={!editavel}
+            onSave={(v) => (v ? onStage(v) : Promise.resolve())}
+          />
+        ) : (
+          <CampoLeitura label="Etapa" valor={lead.estagio?.nome ?? '—'} />
+        )}
+        {/* `/api/users/list` so e chamada para gestor — sem ela o select nao tem
+            rotulo para o id e mostraria o UUID do responsavel. */}
+        {gestor ? (
+          <InlineField
+            label="Responsável"
+            variante="select"
+            value={lead.responsavel_id}
+            opcoes={users.map((u) => ({ value: u.id, label: u.nome }))}
+            placeholder={semDono ? 'Sem responsável' : undefined}
+            disabled={!editavel}
+            onSave={(v) => (v ? onReassign(v) : Promise.resolve())}
+          />
+        ) : (
+          <CampoLeitura label="Responsável" valor={lead.responsavel?.nome ?? 'Sem responsável'} />
+        )}
+        <CampoLeitura label="Instância" valor={lead.instancia_whatsapp ?? '—'} />
       </div>
 
       {/* Lead na nuvem qualquer um assume; lead sem dono so quando o tenant tem

@@ -84,7 +84,7 @@ export default function LeadDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="grid gap-4 p-4 lg:grid-cols-[380px_1fr]">
+      <div className="grid gap-4 p-4 lg:grid-cols-[380px_minmax(0,1fr)]">
         <Skeleton className="h-96 w-full" />
         <Skeleton className="h-96 w-full" />
       </div>

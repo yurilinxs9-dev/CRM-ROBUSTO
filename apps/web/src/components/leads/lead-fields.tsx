@@ -1,13 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 import { FieldGroupList } from '@/components/fields/field-group-list';
 import { LeadContactsBlock } from '@/components/fields/lead-contacts-block';
 import { useFieldSchema } from '@/components/fields/use-field-schema';
 import { Skeleton } from '@/components/ui/skeleton';
-import { buildPayload, flattenFields, groupFields, initialValues } from '@/lib/field-render';
+import {
+  buildPayload,
+  flattenFields,
+  groupFields,
+  initialValues,
+  type FieldSchema,
+} from '@/lib/field-render';
 import { InlineField } from './inline-field';
 import type { LeadDetail } from './lead-detail-types';
 
@@ -18,29 +24,50 @@ export interface LeadFieldsProps {
 }
 
 /**
- * Campos fixos (inline) + campos personalizados por grupo (salvam ao mudar,
- * sem botao) + contatos vinculados. A separacao nativo/Json e a mesma do
- * drawer (`buildPayload`).
+ * Campos fixos (inline) + campos PERSONALIZADOS por grupo (salvam ao mudar, sem
+ * botao) + contatos vinculados.
+ *
+ * Divisao de trabalho: os nativos sao editados so pelos InlineField (daqui e do
+ * cabecalho), um PATCH por campo; os personalizados so pelo FieldGroupList, um
+ * PATCH de `dados_custom`. Nenhum dos dois escreve no territorio do outro.
  */
 export function LeadFields({ lead, editavel, onPatch }: LeadFieldsProps) {
   const { schema, modo, isError } = useFieldSchema(true);
   const [values, setValues] = useState<Record<string, unknown>>({});
-  const leadDefs = schema ? flattenFields(groupFields(schema, 'LEAD')) : [];
+
+  // O schema traz os NATIVOS junto (o grupo de sistema: nome, telefone, email,
+  // empresa, cargo, valor, temperatura) — e aqui eles ja sao os InlineField do
+  // topo e do cabecalho. Renderizar o schema inteiro mostraria cada um duas
+  // vezes, com dois caminhos de gravacao. `native_key` preenchida = nativo.
+  const schemaCustom = useMemo<FieldSchema | undefined>(() => {
+    if (!schema) return undefined;
+    const fields = schema.fields.filter((f) => !f.native_key);
+    const comCampo = new Set(
+      fields.filter((f) => f.active && f.visible).map((f) => f.group_id),
+    );
+    return { ...schema, fields, groups: schema.groups.filter((g) => comCampo.has(g.id)) };
+  }, [schema]);
+
+  const defsCustom = useMemo(
+    () => (schemaCustom ? flattenFields(groupFields(schemaCustom, 'LEAD')) : []),
+    [schemaCustom],
+  );
 
   useEffect(() => {
-    if (!schema) return;
-    setValues(initialValues(flattenFields(groupFields(schema, 'LEAD')), lead));
-  }, [lead, schema]);
+    if (!schemaCustom) return;
+    setValues(initialValues(flattenFields(groupFields(schemaCustom, 'LEAD')), lead));
+  }, [lead, schemaCustom]);
 
   const alterarCampo = (key: string, v: unknown) => {
     const next = { ...values, [key]: v };
     setValues(next);
-    const { native, custom } = buildPayload(leadDefs, next);
-    const body: Record<string, unknown> = { ...native };
-    if (Object.keys(custom).length > 0) body.dados_custom = custom;
+    // SO `dados_custom`. Os nativos sao exclusivos dos InlineField: reenvia-los
+    // a partir deste snapshot sobrescreveria com valor velho o que o cabecalho
+    // acabou de gravar por outro caminho.
+    const { custom } = buildPayload(defsCustom, next);
     // Campo personalizado nao tem onde mostrar erro no lugar (o FieldGroupList
     // nao tem slot): toast. Sem o catch a rejeicao vira unhandled rejection.
-    onPatch(body).catch((e: unknown) =>
+    onPatch({ dados_custom: custom }).catch((e: unknown) =>
       toast.error(e instanceof Error ? e.message : 'Não foi possível salvar'),
     );
   };
@@ -99,9 +126,16 @@ export function LeadFields({ lead, editavel, onPatch }: LeadFieldsProps) {
         <Skeleton className="h-24 w-full" />
       ) : (
         <>
-          <div className={editavel ? '' : 'pointer-events-none opacity-70'}>
-            <FieldGroupList schema={schema} escopo="LEAD" values={values} onChange={alterarCampo} />
-          </div>
+          {defsCustom.length > 0 && schemaCustom && (
+            <div className={editavel ? '' : 'pointer-events-none opacity-70'}>
+              <FieldGroupList
+                schema={schemaCustom}
+                escopo="LEAD"
+                values={values}
+                onChange={alterarCampo}
+              />
+            </div>
+          )}
 
           {/* Contato/empresa dependem de rotas que o backend antigo nao tem —
               no modo legado o bloco some em vez de dar 404. */}
