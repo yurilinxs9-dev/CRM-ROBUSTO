@@ -75,10 +75,15 @@ describe('LeadsController — rotas de leitura da ficha (VISUALIZADOR passa)', (
   it.each(rotas)('%s declara @Roles(VISUALIZADOR)', (metodo) => {
     expect(Reflect.getMetadata(ROLES_KEY, handlerDe(metodo))).toEqual([UserRole.VISUALIZADOR]);
   });
-  it.each([UserRole.VISUALIZADOR, UserRole.OPERADOR, UserRole.GERENTE, UserRole.SUPER_ADMIN])(
-    '%s passa no guard da timeline',
-    (role) => {
-      expect(guard().canActivate(contextoDe('getTimeline', role))).toBe(true);
-    },
-  );
+  const papeis = [
+    UserRole.VISUALIZADOR,
+    UserRole.OPERADOR,
+    UserRole.GERENTE,
+    UserRole.SUPER_ADMIN,
+  ];
+  // Metadado nao basta: o guard e quem barra, entao a prova e por rota E papel.
+  const casos = rotas.flatMap((metodo) => papeis.map((role) => [metodo, role] as const));
+  it.each(casos)('%s: %s passa no guard', (metodo, role) => {
+    expect(guard().canActivate(contextoDe(metodo, role))).toBe(true);
+  });
 });

@@ -510,7 +510,7 @@ describe('LeadTimelineService.getTimeline — fechamento da sessao cortada', () 
  * (nao por data) — a ordem e estavel e o cursor nao precisa de desempate.
  */
 describe('LeadTimelineService.getMedia', () => {
-  const midia = (id: string) => ({
+  const midia = (id: string, extra: Record<string, unknown> = {}) => ({
     id,
     type: 'IMAGE',
     media_url: `path/${id}.jpg`,
@@ -520,6 +520,7 @@ describe('LeadTimelineService.getMedia', () => {
     media_duration_seconds: null,
     direction: 'INCOMING',
     created_at: T('2026-09-01T12:00:00Z'),
+    ...extra,
   });
 
   it('filtra tipos de midia, exclui notas, aplica scope e assina URL', async () => {
@@ -535,6 +536,36 @@ describe('LeadTimelineService.getMedia', () => {
     expect(r.items[0].media_url).toBe('signed:path/m1.jpg');
     expect(r.items[0].created_at).toBe('2026-09-01T12:00:00.000Z');
     expect(r.nextCursor).toBeUndefined();
+  });
+
+  // Midia arquivada pelo cleanup de 30 dias perde `media_url` e fica so com a
+  // thumbnail; ela precisa sair ASSINADA, senao a galeria mostra tile vazio.
+  it('assina a thumbnail e nao vaza o path cru de storage', async () => {
+    const { service } = make({
+      mensagens: [midia('m1', { media_url: null, media_thumbnail_path: 'thumbs/m1.jpg' })],
+    });
+    const r = await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    expect(r.items[0].media_thumbnail_url).toBe('signed:thumbs/m1.jpg');
+    expect(r.items[0].media_url).toBeNull();
+    expect(r.items[0]).not.toHaveProperty('media_thumbnail_path');
+  });
+
+  it('sem thumbnail o campo assinado sai null', async () => {
+    const { service } = make({ mensagens: [midia('m1')] });
+    const r = await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    expect(r.items[0].media_thumbnail_url).toBeNull();
+  });
+
+  // Sem este OR entrariam linhas sem `media_url` E sem thumbnail — tile vazio.
+  it('le so o que a galeria consegue desenhar e desempata por id', async () => {
+    const { service, prisma } = make({ mensagens: [midia('m1')] });
+    await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    const args = prisma.message.findMany.mock.calls[0][0];
+    expect(args.where.OR).toEqual([
+      { media_url: { not: null } },
+      { media_thumbnail_path: { not: null } },
+    ]);
+    expect(args.orderBy).toEqual([{ created_at: 'desc' }, { id: 'desc' }]);
   });
 
   // Fronteira de seguranca: sem lead_id + tenant_id no where, o recorte do
@@ -575,5 +606,13 @@ describe('LeadTimelineService.getMedia', () => {
     expect(args.take).toBe(3);
     expect(r.items).toHaveLength(2);
     expect(r.nextCursor).toBe('m1');
+  });
+
+  it('sem cursor nao manda cursor nem skip pro Prisma', async () => {
+    const { service, prisma } = make({ mensagens: [midia('m1')] });
+    await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    const args = prisma.message.findMany.mock.calls[0][0];
+    expect(args.cursor).toBeUndefined();
+    expect(args.skip).toBeUndefined();
   });
 });

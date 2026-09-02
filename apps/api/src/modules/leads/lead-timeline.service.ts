@@ -44,7 +44,9 @@ export interface MediaItem {
   media_url: string | null;
   media_mimetype: string | null;
   media_filename: string | null;
-  media_thumbnail_path: string | null;
+  // Assinada (nao o path cru): e o unico visual que sobra da midia arquivada
+  // pelo cleanup de 30 dias, que zera `media_url` e preserva a thumbnail.
+  media_thumbnail_url: string | null;
   media_duration_seconds: number | null;
   direction: 'INCOMING' | 'OUTGOING';
   created_at: string;
@@ -132,7 +134,9 @@ export class LeadTimelineService {
    * Mesmo gate da timeline (`findOne` + `messageScopeFor`), mas paginacao por
    * id (`cursor` + `skip: 1` do Prisma) em vez de cursor por data: a lista e
    * plana, sem agrupamento por sessao, entao o id da ultima linha servida
-   * basta. `media_url` sai sempre assinada por `resolveMediaUrl`.
+   * basta. `media_url` e `media_thumbnail_url` saem sempre assinadas por
+   * `resolveMediaUrl` (que trata qualquer path de storage: devolve `null` para
+   * path vazio e deixa passar URL absoluta).
    */
   async getMedia(
     leadId: string,
@@ -159,6 +163,11 @@ export class LeadTimelineService {
         ...this.baseMensagem(leadId, user, scope),
         is_internal_note: false,
         type: { in: [...TIPOS_MIDIA] },
+        // So o que a galeria consegue desenhar. Midia arquivada pelo cleanup
+        // fica sem `media_url` mas com a thumbnail; midia sem nenhum dos dois
+        // seria um tile vazio. `buildMessageScope` so devolve `{}` ou `{ AND }`,
+        // entao este `OR` de topo nao colide com o recorte do chat.
+        OR: [{ media_url: { not: null } }, { media_thumbnail_path: { not: null } }],
       },
       select: {
         id: true,
@@ -171,16 +180,19 @@ export class LeadTimelineService {
         direction: true,
         created_at: true,
       },
-      orderBy: { created_at: 'desc' },
+      // Desempate por id: duas midias podem cair no mesmo milissegundo, e sem
+      // o tiebreaker a ordem relativa delas muda entre paginas.
+      orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
       take: q.limit + 1,
       ...(q.cursor ? { cursor: { id: q.cursor }, skip: 1 } : {}),
     });
     const temMais = rows.length > q.limit;
     const usadas = temMais ? rows.slice(0, q.limit) : rows;
     const items: MediaItem[] = await Promise.all(
-      usadas.map(async (r) => ({
+      usadas.map(async ({ media_thumbnail_path, ...r }) => ({
         ...r,
         media_url: await this.leads.resolveMediaUrl(r.media_url),
+        media_thumbnail_url: await this.leads.resolveMediaUrl(media_thumbnail_path),
         created_at: r.created_at.toISOString(),
       })),
     );
