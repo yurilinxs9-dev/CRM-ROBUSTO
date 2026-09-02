@@ -30,6 +30,8 @@ import {
   withCondition,
 } from './lead-filters';
 import { buildSortOrder } from './lead-sort';
+import { buildMessageScope, isSupervising } from './lead-message-scope';
+import type { MessageScopeLead } from './lead-message-scope';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
@@ -2092,6 +2094,47 @@ export class LeadsService {
     return { id: leadId, responsavel_id: null, estagio_id: etapaNova?.estagio_id };
   }
 
+  /**
+   * Recorte de mensagens do lead para o usuário (`null` = nada visível). Usado
+   * por getMessages, pela timeline e pela galeria — uma regra só.
+   */
+  async messageScopeFor(
+    lead: MessageScopeLead & { id: string },
+    user: AuthUser,
+  ): Promise<Prisma.MessageWhereInput | null> {
+    const [tenantCfg, me] = await Promise.all([
+      this.prisma.tenant.findFirst({
+        where: { id: user.tenantId },
+        select: { share_history_enabled: true, pool_enabled: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const focusMode = Boolean(me?.focus_mode);
+    let ownConversationIds: string[] = [];
+    let ownedInstances: string[] = [];
+    if (!isSupervising(lead, user.role, focusMode)) {
+      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
+      ownConversationIds = (
+        await this.prisma.conversation.findMany({
+          where: { lead_id: lead.id, responsavel_id: user.id },
+          select: { id: true },
+        })
+      ).map((c) => c.id);
+    }
+    return buildMessageScope(lead, {
+      userId: user.id,
+      role: user.role,
+      focusMode,
+      shareHistoryEnabled: Boolean(tenantCfg?.share_history_enabled),
+      poolEnabled: Boolean(tenantCfg?.pool_enabled),
+      ownConversationIds,
+      ownedInstances,
+    });
+  }
+
   async getMessages(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
@@ -2104,93 +2147,13 @@ export class LeadsService {
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
-    const isManager =
-      (roleHierarchy[user.role] ?? 0) >= roleHierarchy[UserRole.GERENTE];
-
-    // Lead privado: só o responsável atual lê msgs. Privacidade total após
-    // claim de manager — nem outros managers veem.
-    if (lead.is_private && lead.responsavel_id !== user.id) {
-      return { messages: [], nextCursor: undefined };
-    }
-    // Manager (GERENTE/SUPER_ADMIN) SEM modo foco vê msgs de qualquer lead
-    // não-privado, sem filtro por instância nem por assumed_at — supervisão
-    // completa. Com foco ligado ele passa pelo mesmo gate do operador.
-    // Operador segue restrito a leads onde é responsável OU da própria
-    // instância (Individual).
-    const isResponsavel = lead.responsavel_id === user.id;
-    const [tenantCfg, me] = await Promise.all([
-      this.prisma.tenant.findFirst({
-        where: { id: user.tenantId },
-        select: { share_history_enabled: true, pool_enabled: true },
-      }),
-      this.prisma.user.findUnique({
-        where: { id: user.id },
-        select: { focus_mode: true },
-      }),
-    ]);
-    const poolEnabled = Boolean(tenantCfg?.pool_enabled);
-    // Gerente focado abre mão da visão total — MENOS em lead sem dono, onde
-    // ler a conversa é o insumo da distribuição.
-    const supervising =
-      isManager && (!me?.focus_mode || lead.responsavel_id === null);
-    let ownConversationIds: string[] = [];
-    let ownedInstances: string[] = [];
-    if (!supervising) {
-      ownedInstances = await this.getOwnedInstanceNames(user.id, user.tenantId);
-      ownConversationIds = (
-        await this.prisma.conversation.findMany({
-          where: { lead_id: leadId, responsavel_id: user.id },
-          select: { id: true },
-        })
-      ).map((c) => c.id);
-      const accessibleByInstance =
-        !!lead.instancia_whatsapp && ownedInstances.includes(lead.instancia_whatsapp);
-      // Sem conversa própria, sem ser o responsável do card e sem a instância
-      // do lead entre as próprias: nada a ver aqui.
-      if (ownConversationIds.length === 0 && !isResponsavel && !accessibleByInstance) {
-        return { messages: [], nextCursor: undefined };
-      }
-    }
-    // Histórico antes do claim só é escondido pra OPERADOR; manager sempre
-    // tem visão completa. Tenant com share_history_enabled (ex.: Diplapel)
-    // desliga o corte: quem recebe o lead transferido vê a conversa inteira
-    // pra ter contexto e dar sequência.
-    const hideHistory =
-      !isManager && !!lead.assumed_at && !tenantCfg?.share_history_enabled;
-    // Visão total da conversa (todas as instâncias): gerente supervisionando,
-    // ou dono no modo COMPARTILHADO. No INDIVIDUAL o dono comum vê só as
-    // conversas dele — era o vazamento original do espelhamento.
-    // Quem não tem visão total vê só a(s) conversa(s) própria(s) — mais um ramo de TRANSIÇÃO:
-    // mensagens anteriores ao backfill (Task 7) ainda não têm conversation_id,
-    // então sem esse ramo quem tem conversa própria (ou acessa pela instância
-    // que já era sua antes deste modelo) perde todo o histórico até o backfill
-    // rodar. Remover o ramo transitório depois que a Task 8 apertar a coluna
-    // conversation_id para NOT NULL (vira código morto nesse ponto).
-    const conversationScope: Prisma.MessageWhereInput | null =
-      supervising || (isResponsavel && poolEnabled)
-        ? null
-        : {
-            OR: [
-              { conversation_id: { in: ownConversationIds } },
-              { conversation_id: null, instance_name: { in: ownedInstances } },
-            ],
-          };
-    const historyScope: Prisma.MessageWhereInput | null = hideHistory
-      ? {
-          OR: [
-            { created_at: { gte: lead.assumed_at as Date } },
-            { visible_to_user_id: user.id },
-          ],
-        }
-      : null;
-    const scopes = [conversationScope, historyScope].filter(
-      (scope): scope is Prisma.MessageWhereInput => scope !== null,
-    );
+    const scope = await this.messageScopeFor(lead, user);
+    if (scope === null) return { messages: [], nextCursor: undefined };
     const rows = await this.prisma.message.findMany({
       where: {
         lead_id: leadId,
         tenant_id: user.tenantId,
-        ...(scopes.length ? { AND: scopes } : {}),
+        ...scope,
       },
       orderBy: { created_at: 'desc' },
       take: limit + 1,
