@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { LeadsService, type ExportLeadFilters } from './leads.service';
+import { LeadTimelineService, timelineQuerySchema } from './lead-timeline.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -10,7 +11,10 @@ import type { Response } from 'express';
 @Controller('leads')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class LeadsController {
-  constructor(private leadsService: LeadsService) {}
+  constructor(
+    private leadsService: LeadsService,
+    private timeline: LeadTimelineService,
+  ) {}
 
   @Get()
   findAll(@Req() req: Record<string, unknown>, @Query() filters: Record<string, string>) {
@@ -105,6 +109,19 @@ export class LeadsController {
   @Get(':id/activities')
   getActivities(@Param('id') id: string, @Req() req: Record<string, unknown>) {
     return this.leadsService.getActivities(id, req.user as AuthUser);
+  }
+
+  // Ficha do lead: timeline unica (sessoes de conversa, notas, tarefas,
+  // lembretes, atividades). Leitura — VISUALIZADOR passa; o service recusa
+  // por lead (findOne) e recorta mensagens como o chat.
+  @Get(':id/timeline')
+  @Roles(UserRole.VISUALIZADOR)
+  getTimeline(
+    @Param('id') id: string,
+    @Req() req: Record<string, unknown>,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.timeline.getTimeline(id, req.user as AuthUser, timelineQuerySchema.parse(query));
   }
 
   @Post(':id/sync-profile')

@@ -62,3 +62,23 @@ describe('LeadsController — GET /leads/export exige pelo menos OPERADOR', () =
     },
   );
 });
+
+/**
+ * Ficha do lead (Task 3+): rotas de LEITURA. `@Roles(VISUALIZADOR)` explicito
+ * — o RolesGuard e hierarquico (>=), entao todo mundo passa e o recorte fino
+ * (lead privado, operador sem acesso, mensagens fora do escopo) fica com o
+ * service. Sem o decorator a rota herdaria o default do controller, e a
+ * intencao "quem so olha tambem le a timeline" ficaria implicita.
+ */
+describe('LeadsController — rotas de leitura da ficha (VISUALIZADOR passa)', () => {
+  const rotas = ['getTimeline'] as const; // Task 4 acrescenta 'getMedia'
+  it.each(rotas)('%s declara @Roles(VISUALIZADOR)', (metodo) => {
+    expect(Reflect.getMetadata(ROLES_KEY, handlerDe(metodo))).toEqual([UserRole.VISUALIZADOR]);
+  });
+  it.each([UserRole.VISUALIZADOR, UserRole.OPERADOR, UserRole.GERENTE, UserRole.SUPER_ADMIN])(
+    '%s passa no guard da timeline',
+    (role) => {
+      expect(guard().canActivate(contextoDe('getTimeline', role))).toBe(true);
+    },
+  );
+});
