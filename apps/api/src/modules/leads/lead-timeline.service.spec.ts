@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { LeadTimelineService } from './lead-timeline.service';
-import { codificarCursor } from './lead-timeline';
+import { codificarCursor, decodificarCursor, SESSAO_MAX_MENSAGENS } from './lead-timeline';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
@@ -614,5 +614,119 @@ describe('LeadTimelineService.getMedia', () => {
     const args = prisma.message.findMany.mock.calls[0][0];
     expect(args.cursor).toBeUndefined();
     expect(args.skip).toBeUndefined();
+  });
+});
+
+/**
+ * F1: a fonte de mensagens tem horizonte proprio (`mensagensAntes`), diferente
+ * do `cursor.quando` das fontes por data. Se a pagina desce ABAIXO da mensagem
+ * mais antiga lida, as sessoes remontadas na pagina seguinte nascem com
+ * `quando` MAIOR que o cursor e o filtro do cursor as apaga para sempre.
+ */
+describe('LeadTimelineService.getTimeline — clamp no horizonte de mensagens', () => {
+  const msg = (id: string, iso: string) => ({
+    id,
+    created_at: T(iso),
+    direction: 'INCOMING',
+    type: 'TEXT',
+    content: id,
+    instance_name: 'inst-A',
+  });
+  const atividade = (id: string, iso: string) => ({
+    id,
+    tipo: 'lead_updated',
+    descricao: '',
+    dados_antes: null,
+    dados_depois: null,
+    created_at: T(iso),
+    user: null,
+  });
+
+  // limit+1 mensagens recentes (a fonte de sessoes fica com temMais) contra
+  // atividades MUITO mais velhas que a mensagem mais antiga lida.
+  const RECENTES = [
+    msg('m4', '2026-09-01T12:30:00Z'),
+    msg('m3', '2026-09-01T12:20:00Z'),
+    msg('m2', '2026-09-01T12:10:00Z'),
+    msg('m1', '2026-09-01T12:00:00Z'),
+  ];
+  const ANTIGAS = [
+    atividade('a3', '2026-08-01T10:00:00Z'),
+    atividade('a2', '2026-08-01T09:00:00Z'),
+    atividade('a1', '2026-08-01T08:00:00Z'),
+  ];
+  const HORIZONTE = '2026-09-01T12:00:00.000Z';
+
+  it('pagina 1 para no horizonte: as atividades antigas nao entram', async () => {
+    const { service } = make({ mensagens: RECENTES, atividades: ANTIGAS });
+    const r = await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 3 });
+    expect(r.items.map((i) => i.id)).toEqual(['sessao-m1']);
+    expect(decodificarCursor(r.nextCursor ?? '')).toEqual({
+      quando: '2026-09-01T12:30:00.000Z',
+      id: 'sessao-m1',
+      mensagensAntes: HORIZONTE,
+    });
+  });
+
+  it('pagina 2 traz a sessao antiga E as atividades adiadas', async () => {
+    const cursor = codificarCursor({
+      quando: '2026-09-01T12:30:00.000Z',
+      id: 'sessao-m1',
+      mensagensAntes: HORIZONTE,
+    });
+    const { service } = make({
+      // Com `lt: mensagensAntes` a leitura seguinte so alcanca estas.
+      mensagens: [msg('m0b', '2026-08-15T10:05:00Z'), msg('m0', '2026-08-15T10:00:00Z')],
+      atividades: ANTIGAS,
+    });
+    const r = await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { cursor, limit: 3 });
+    expect(r.items.map((i) => i.id)).toEqual(['sessao-m0', 'a3', 'a2']);
+  });
+
+  it('o fechamento da sessao para no teto de SESSAO_MAX_MENSAGENS', async () => {
+    // Conversa infinita sem gap: sem o teto o while leria o lead inteiro.
+    const t0 = Date.parse('2026-09-01T12:00:00.000Z');
+    const LOTE = 50;
+    const emSequencia = (quantidade: number, aPartirDe: number) =>
+      Array.from({ length: quantidade }, (_, i) => {
+        const at = aPartirDe - (i + 1) * 60_000;
+        return msg(`m-${at}`, new Date(at).toISOString());
+      });
+    const prisma: any = {
+      message: {
+        findMany: jest.fn().mockImplementation(({ where }: any) => {
+          if (where.is_internal_note === true) return Promise.resolve([]);
+          const lte = where.created_at?.lte;
+          if (lte) return Promise.resolve(emSequencia(LOTE, lte.getTime()));
+          return Promise.resolve([
+            msg(`m-${t0}`, new Date(t0).toISOString()),
+            ...emSequencia(2, t0),
+          ]);
+        }),
+      },
+      leadActivity: { findMany: jest.fn().mockResolvedValue([]) },
+      task: { findMany: jest.fn().mockResolvedValue([]) },
+      leadLembrete: { findMany: jest.fn().mockResolvedValue([]) },
+      user: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const leads: any = {
+      findOne: jest.fn().mockResolvedValue({
+        id: LEAD_ID,
+        responsavel_id: 'u-1',
+        instancia_whatsapp: 'inst-A',
+        assumed_at: null,
+        is_private: false,
+      }),
+      messageScopeFor: jest.fn().mockResolvedValue({}),
+    };
+    const service = new LeadTimelineService(prisma, leads);
+    const r = await service.getTimeline(LEAD_ID, user(UserRole.GERENTE), { limit: 2 });
+    const lotes = prisma.message.findMany.mock.calls.filter(
+      (c: any[]) => c[0].where.created_at?.lte,
+    );
+    expect(lotes).toHaveLength(SESSAO_MAX_MENSAGENS / LOTE);
+    const sessao = r.items[0];
+    expect(sessao.tipo === 'sessao' && sessao.total).toBe(SESSAO_MAX_MENSAGENS);
+    expect(sessao.tipo === 'sessao' && sessao.truncada).toBe(true);
   });
 });

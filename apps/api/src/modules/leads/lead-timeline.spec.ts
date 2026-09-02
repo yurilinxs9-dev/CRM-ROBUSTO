@@ -227,3 +227,55 @@ describe('mesclarTimeline', () => {
     });
   });
 });
+
+/**
+ * Clamp da pagina no horizonte de mensagens: quando a fonte de sessoes ainda
+ * tem mais, a pagina nao pode passar do ponto ate onde as mensagens foram
+ * lidas — senao o `quando` do proximo cursor fica ABAIXO desse ponto e as
+ * sessoes remontadas na pagina seguinte caem no filtro do cursor e somem.
+ */
+describe('mesclarTimeline — clamp no horizonte de mensagens', () => {
+  const item = (
+    tipo: TimelineItem['tipo'],
+    quando: string,
+    id = `${tipo}-${quando}`,
+  ): TimelineItem => ({ tipo, id, quando }) as unknown as TimelineItem;
+  const sessao = (quando: string, inicio: string, id = `sessao-${quando}`): TimelineItem =>
+    ({ tipo: 'sessao', id, quando, inicio }) as unknown as TimelineItem;
+
+  const horizonte = '2026-09-01T12:00:00.000Z';
+  const fontes = () => [
+    [sessao('2026-09-01T12:30:00.000Z', horizonte, 'sessao-m1')],
+    [
+      item('atividade', '2026-08-01T10:00:00.000Z', 'a3'),
+      item('atividade', '2026-08-01T09:00:00.000Z', 'a2'),
+      item('atividade', '2026-08-01T08:00:00.000Z', 'a1'),
+    ],
+  ];
+
+  it('atividade antiga fica para a proxima pagina e o nextCursor para no horizonte', () => {
+    const r = mesclarTimeline(fontes(), 3, true, undefined, horizonte);
+    expect(r.items.map((i) => i.id)).toEqual(['sessao-m1']);
+    expect(decodificarCursor(r.nextCursor ?? '')).toEqual({
+      quando: '2026-09-01T12:30:00.000Z',
+      id: 'sessao-m1',
+      mensagensAntes: horizonte,
+    });
+  });
+
+  it('sem horizonte a pagina desce livre (comportamento antigo)', () => {
+    const r = mesclarTimeline(fontes(), 3, true);
+    expect(r.items.map((i) => i.id)).toEqual(['sessao-m1', 'a3', 'a2']);
+  });
+
+  it('o item exatamente NO horizonte continua na pagina', () => {
+    const r = mesclarTimeline(
+      [[item('nota', horizonte, 'n-no-horizonte')], ...fontes()],
+      3,
+      true,
+      undefined,
+      horizonte,
+    );
+    expect(r.items.map((i) => i.id)).toEqual(['sessao-m1', 'n-no-horizonte']);
+  });
+});

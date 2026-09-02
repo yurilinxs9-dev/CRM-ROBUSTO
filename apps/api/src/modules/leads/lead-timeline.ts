@@ -220,19 +220,36 @@ function compararItens(a: TimelineItem, b: TimelineItem): number {
  *
  * `nextCursor` carrega `mensagensAntes` = menor `inicio` entre as sessões desta
  * pagina; se a pagina nao tiver sessão, repete o valor que veio no cursor.
+ *
+ * `horizonteMensagens` (so quando a fonte de sessões ainda tem mais) e o
+ * `inicio` da sessão mais ANTIGA construida nesta pagina — ate onde as
+ * mensagens foram lidas. A pagina e cortada nesse ponto: item abaixo dele fica
+ * para a proxima pagina. Sem esse corte, uma pagina cheia de itens VELHOS (as
+ * demais fontes vao muito mais para tras que as mensagens) deixaria
+ * `cursor.quando` ABAIXO do horizonte, e as sessões remontadas na pagina
+ * seguinte — vindas de mensagens entre `cursor.quando` e `mensagensAntes` —
+ * nasceriam com `quando` MAIOR que o cursor e o filtro daqui as apagaria para
+ * sempre. O que foi cortado volta na proxima pagina: as fontes por data leem
+ * com `<= cursor.quando` e o novo `cursor.quando` fica >= o horizonte.
  */
 export function mesclarTimeline(
   fontes: TimelineItem[][],
   limit: number,
   algumaFonteTemMais: boolean,
   cursor?: TimelineCursor,
+  horizonteMensagens?: string,
 ): { items: TimelineItem[]; nextCursor?: string } {
   const ordenados = fontes.flat().sort(compararItens);
-  const restantes = cursor
+  const aposCursor = cursor
     ? ordenados.filter(
         (i) => i.quando < cursor.quando || (i.quando === cursor.quando && i.id < cursor.id),
       )
     : ordenados;
+  // O horizonte e inclusivo: a sessão mais antiga da pagina tem `quando` >=
+  // `inicio`, entao ela sempre sobrevive ao corte (a pagina nunca fica vazia).
+  const restantes = horizonteMensagens
+    ? aposCursor.filter((i) => i.quando >= horizonteMensagens)
+    : aposCursor;
   const items = restantes.slice(0, limit);
   const sobrou = restantes.length > limit;
   if (items.length === 0 || !(sobrou || algumaFonteTemMais)) return { items, nextCursor: undefined };

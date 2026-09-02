@@ -58,6 +58,8 @@ const LOTE_FECHAMENTO = 50;
 interface Fonte {
   items: TimelineItem[];
   temMais: boolean;
+  /** So a fonte de sessoes preenche: ate onde as mensagens foram lidas. */
+  horizonte?: string;
 }
 const VAZIA: Fonte = { items: [], temMais: false };
 
@@ -74,7 +76,11 @@ const VAZIA: Fonte = { items: [], temMais: false };
  * - a fonte de mensagens le com `created_at < cursor.mensagensAntes` —
  *   ESTRITO, e so quando o campo existe; `cursor.quando` NAO vale para
  *   mensagens (uma nota no meio de uma sessao ja servida faria a pagina
- *   seguinte reagrupar um pedaco dessa sessao).
+ *   seguinte reagrupar um pedaco dessa sessao);
+ * - como as duas frentes andam em ritmos diferentes, a pagina e cortada no
+ *   horizonte das mensagens (`sessoes().horizonte`) quando ainda ha mensagem
+ *   para ler; sem isso o cursor desceria abaixo do que foi lido e sessoes
+ *   inteiras sumiriam entre paginas.
  */
 @Injectable()
 export class LeadTimelineService {
@@ -125,6 +131,8 @@ export class LeadTimelineService {
       q.limit,
       fontes.some((f) => f.temMais),
       cursor,
+      // Fonte 0 = sessoes; so ela tem horizonte, e so quando sobrou mensagem.
+      fontes[0].horizonte,
     );
   }
 
@@ -272,7 +280,12 @@ export class LeadTimelineService {
       lidas += pertencem.length;
       if (corte !== -1) break;
     }
-    return { items: agruparSessoes(rows), temMais };
+    // Horizonte = `created_at` da mensagem mais antiga lida = `inicio` da
+    // sessao mais antiga desta pagina. So faz sentido quando sobrou mensagem
+    // para ler; sem `temMais` a fonte chegou ao fim e nao limita nada.
+    const horizonte =
+      temMais && rows.length > 0 ? rows[rows.length - 1].created_at.toISOString() : undefined;
+    return { items: agruparSessoes(rows), temMais, horizonte };
   }
 
   private async notas(
