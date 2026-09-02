@@ -67,7 +67,9 @@ export function LeadMediaGrid({ leadId }: { leadId: string }) {
     );
   }
 
-  if (q.isError) {
+  // Erro de tela cheia so quando nao ha nada carregado: se a primeira pagina ja
+  // veio, o erro (tipico de `fetchNextPage`) aparece inline la embaixo.
+  if (q.isError && itens.length === 0) {
     return (
       <div className="m-4 rounded-md border border-destructive/40 p-4 text-center text-sm">
         <p className="text-destructive">Não foi possível carregar as mídias.</p>
@@ -89,12 +91,20 @@ export function LeadMediaGrid({ leadId }: { leadId: string }) {
       {visuais.length > 0 && (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5">
           {visuais.map((m) => {
-            // A miniatura prefere a thumbnail; sem ela, o proprio arquivo serve.
-            const src = m.media_thumbnail_url ?? m.media_url;
+            // A miniatura prefere a thumbnail. Video sem thumbnail NAO cai no
+            // proprio arquivo: o mp4 dentro de um <img> quebra a caixa, entao
+            // so IMAGE usa `media_url` como miniatura; VIDEO vai ao placeholder.
+            const src =
+              m.type === 'IMAGE' ? (m.media_thumbnail_url ?? m.media_url) : m.media_thumbnail_url;
             const miniatura = src ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" />
+                <img
+                  src={src}
+                  alt={rotuloMidia(m.type, m.media_filename)}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
                 {m.type === 'VIDEO' && (
                   <span className="absolute inset-0 flex items-center justify-center bg-black/30 text-white">
                     <Play className="h-6 w-6" />
@@ -102,7 +112,8 @@ export function LeadMediaGrid({ leadId }: { leadId: string }) {
                 )}
               </>
             ) : (
-              // Nao deveria acontecer: o backend so devolve linha com url ou thumbnail.
+              // Video sem thumbnail para aqui (caso comum); imagem sem nenhuma
+              // das duas urls nao deveria acontecer, mas o icone segura o tile.
               <div className="flex h-full w-full items-center justify-center text-muted-foreground">
                 {m.type === 'VIDEO' ? <Play className="h-6 w-6" /> : <ImageOff className="h-6 w-6" />}
               </div>
@@ -186,17 +197,31 @@ export function LeadMediaGrid({ leadId }: { leadId: string }) {
         </ul>
       )}
 
-      {q.hasNextPage && (
-        <div className="flex justify-center">
+      {q.isError ? (
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-xs text-destructive">Não foi possível carregar mais mídias.</p>
           <Button
             size="sm"
-            variant="ghost"
-            disabled={q.isFetchingNextPage}
-            onClick={() => void q.fetchNextPage()}
+            variant="outline"
+            disabled={q.isFetching}
+            onClick={() => void (q.hasNextPage ? q.fetchNextPage() : q.refetch())}
           >
-            {q.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}
+            Tentar de novo
           </Button>
         </div>
+      ) : (
+        q.hasNextPage && (
+          <div className="flex justify-center">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={q.isFetchingNextPage}
+              onClick={() => void q.fetchNextPage()}
+            >
+              {q.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}
+            </Button>
+          </div>
+        )
       )}
     </div>
   );
