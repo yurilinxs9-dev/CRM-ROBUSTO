@@ -136,7 +136,19 @@ de `getMessages`, ordenadas por `created_at` desc, com `id`, `tipo`,
 `media_url`, `media_mimetype`, `media_filename`, `media_thumbnail_path`,
 `media_duration_seconds`, `direction`, `created_at`. Cursor
 por id como em `getMessages`. Substitui o aviso da aba Mídia do drawer, que
-passa a mostrar um link para a ficha.
+passa a mostrar um link para a ficha. Na implementação: devolve
+`media_thumbnail_url` assinada (não o path); só linhas com `media_url` ou
+thumbnail; `orderBy created_at desc, id desc`.
+
+### Cursor da timeline (decisão da revisão da Task 2)
+
+O cursor não é um ISO simples: é opaco, no formato
+`quando|id|mensagensAntes?`. Cada fonte por data lê com `<=` **inclusivo**
+sobre `quando` e o desempate fica em memória, por `(quando, id)` — assim dois
+itens no mesmo instante não se perdem entre páginas. A fonte de mensagens usa
+o terceiro campo, `mensagensAntes`, com `<` **estrito**, porque uma sessão já
+devolvida cobre um intervalo inteiro e precisa ficar de fora da próxima
+página. Cursor malformado é tratado como ausente (primeira página).
 
 ### Extração do escopo de mensagens
 
@@ -189,10 +201,10 @@ Componentes novos (todos em `apps/web/src/components/leads/`):
   de rótulo/ícone por `subtipo` para `lib/activity-label.ts` e usar nos dois).
   Tarefa e lembrete: ícone próprio, status como badge.
 - `lead-media-grid.tsx` — aba Mídia.
-- `nota-interna-composer.tsx` (em `components/chat/`) — **extraído** da página
-  do chat (`chat/[id]/page.tsx`, resolução de `@menções` contra a equipe do
-  tenant) e usado nos dois lugares. A página do chat passa a importar o
-  componente; comportamento idêntico, sem mudança visual lá.
+- `nota-interna-composer.tsx` (em `components/chat/`) — **novo componente**; a
+  resolução de `@menção` saiu da página do chat para `lib/mentions.ts` e as
+  duas telas a importam (o chat continua usando o toggle de nota do
+  `ChatComposer`).
 
 Atualização ao vivo: a página assina `message:new`, `lead:updated`,
 `lead:stage-changed` e `lead:new-message` (helper de socket existente em
@@ -219,7 +231,8 @@ Pontos de entrada:
 
 Sem acesso ao lead: API 404; a página mostra "Lead não encontrado ou fora do
 seu alcance" com botão de voltar. A UI **não** é a barreira: os endpoints
-recusam por conta própria.
+recusam por conta própria. Sem acesso: 403 (privado de outro, operador fora)
+ou 404 (outro tenant); a página trata os dois igual.
 
 ## Tratamento de erro
 
@@ -245,14 +258,14 @@ API:
 - Specs existentes de `getMessages` intactos após a extração do escopo.
 - `leads.roles.spec.ts`: as duas rotas novas com papel mínimo VISUALIZADOR.
 
-Web (jest + testing-library, padrão do repo):
+Web (jest só roda `src/lib/**/*.spec.ts`, ambiente node — não há runner de
+componente):
 
-- `inline-field.spec.tsx`: salva no Enter, salva no blur, Esc cancela, valor
-  igual não chama onSave, erro restaura valor, `disabled` não entra em edição.
-- `timeline-item.spec.tsx`: um caso por tipo; sessão mostra contagem e
-  intervalo; nota destaca menções.
-- `nota-interna-composer.spec.tsx`: resolve `@nome` para id, envia
-  `mentioned_user_ids`, Ctrl+Enter envia.
+- `mentions.spec.ts`, `activity-label.spec.ts`, `lead-timeline-view.spec.ts`,
+  `inline-field-state.spec.ts`.
+- Componentes (`InlineField`, `LeadTimeline`, `TimelineItemView`,
+  `NotaInternaComposer`, `LeadMediaGrid`, página) são verificados por `tsc`,
+  `eslint` e conferência manual no navegador.
 
 Rodar sempre `npx jest --maxWorkers=2` (16 GB de RAM nesta máquina).
 
