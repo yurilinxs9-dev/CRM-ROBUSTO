@@ -90,6 +90,8 @@ export function InlineField({
   const abrirEdicao = () => {
     if (disabled) return;
     escolheuRef.current = false;
+    // Erro de um PATCH que falhou nao pode sobreviver ate a proxima edicao.
+    setErro(null);
     setEstado('edicao');
   };
 
@@ -107,7 +109,7 @@ export function InlineField({
             if (!aberto && !escolheuRef.current) cancelar();
           }}
         >
-          <SelectTrigger className="h-8 text-sm">
+          <SelectTrigger className="h-8 text-sm" aria-label={label}>
             <SelectValue placeholder={placeholder} />
           </SelectTrigger>
           <SelectContent>
@@ -124,6 +126,7 @@ export function InlineField({
       <Input
         ref={inputRef}
         className="h-8 text-sm"
+        aria-label={label}
         value={rascunho}
         placeholder={placeholder}
         inputMode={variante === 'currency' || variante === 'phone' ? 'decimal' : undefined}
@@ -173,7 +176,11 @@ export function InlineField({
         {label}
       </p>
       {estado === 'edicao' ? renderEdicao() : renderLeitura()}
-      {erro && <p className="px-2 text-xs text-destructive">{erro}</p>}
+      {erro && (
+        <p role="alert" className="px-2 text-xs text-destructive">
+          {erro}
+        </p>
+      )}
     </div>
   );
 }

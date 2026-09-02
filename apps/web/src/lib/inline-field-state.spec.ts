@@ -46,3 +46,41 @@ describe('formatarExibicao', () => {
     expect(formatarExibicao('text', null)).toBe('');
   });
 });
+
+describe('normalizar currency: ponto como milhar', () => {
+  it('sem virgula, grupos de 3 depois do ponto sao milhar', () => {
+    expect(normalizar('currency', '1.500')).toBe('1500');
+    expect(normalizar('currency', '1.500.000')).toBe('1500000');
+  });
+  it('ponto que nao forma grupos de 3 continua decimal', () => {
+    expect(normalizar('currency', '1.5')).toBe('1.5');
+    expect(normalizar('currency', '1234.56')).toBe('1234.56');
+  });
+});
+
+describe('decidirCommit: casos extras', () => {
+  it('phone nao vazio sem digito e invalido', () => {
+    expect(decidirCommit('phone', null, 'abc')).toEqual({ acao: 'ignorar', motivo: 'invalido' });
+  });
+  it('email preenchido com rascunho vazio limpa', () => {
+    expect(decidirCommit('email', 'a@b.com', '')).toEqual({ acao: 'salvar', valor: null });
+  });
+  it('select igual ao atual ignora', () => {
+    expect(decidirCommit('select', 'QUENTE', 'QUENTE')).toEqual({ acao: 'ignorar', motivo: 'igual' });
+  });
+  it('texto so com espacos com atual null ignora como igual', () => {
+    expect(decidirCommit('text', null, '   ')).toEqual({ acao: 'ignorar', motivo: 'igual' });
+  });
+});
+
+describe('formatarExibicao phone', () => {
+  it('11 digitos vira (31) 99999-0000', () => {
+    expect(formatarExibicao('phone', '31999990000')).toBe('(31) 99999-0000');
+  });
+  it('13 digitos comecando com 55 vira +55 (31) 99999-0000', () => {
+    expect(formatarExibicao('phone', '5531999990000')).toBe('+55 (31) 99999-0000');
+  });
+  it('outro tamanho volta cru', () => {
+    expect(formatarExibicao('phone', '3199990000')).toBe('3199990000');
+  });
+});

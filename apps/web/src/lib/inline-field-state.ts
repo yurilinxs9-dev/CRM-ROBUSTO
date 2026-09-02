@@ -6,6 +6,21 @@ export type Variante = 'text' | 'phone' | 'email' | 'currency' | 'select';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// "1.500" e "1.500.000" sao milhar em pt-BR; "1.5" e "1234.56" sao decimal.
+const MILHAR_COM_PONTO = /^-?\d{1,3}(\.\d{3})+$/;
+
+/** Mesma regra do formatPhone do card de lead (a lib nao importa de components). */
+function mascararTelefone(valor: string): string {
+  const digitos = valor.replace(/\D/g, '');
+  if (digitos.length === 13 && digitos.startsWith('55')) {
+    return `+55 (${digitos.slice(2, 4)}) ${digitos.slice(4, 9)}-${digitos.slice(9)}`;
+  }
+  if (digitos.length === 11) {
+    return `(${digitos.slice(0, 2)}) ${digitos.slice(2, 7)}-${digitos.slice(7)}`;
+  }
+  return valor;
+}
+
 /** Normaliza o rascunho antes de comparar/salvar; null = campo limpo. */
 export function normalizar(variante: Variante, rascunho: string): string | null {
   const t = rascunho.trim();
@@ -20,8 +35,15 @@ export function normalizar(variante: Variante, rascunho: string): string | null 
     case 'currency': {
       const limpo = t.replace(/[^\d.,-]/g, '');
       if (limpo === '') return null;
-      // "1.234,56" -> "1234.56"; "1234.56" fica; "50" fica.
-      const semMilhar = limpo.includes(',') ? limpo.replace(/\./g, '').replace(',', '.') : limpo;
+      // "1.234,56" -> "1234.56"; "1.500" -> "1500"; "1234.56" e "1.5" ficam.
+      let semMilhar: string;
+      if (limpo.includes(',')) {
+        semMilhar = limpo.replace(/\./g, '').replace(',', '.');
+      } else if (MILHAR_COM_PONTO.test(limpo)) {
+        semMilhar = limpo.replace(/\./g, '');
+      } else {
+        semMilhar = limpo;
+      }
       const n = Number(semMilhar);
       return Number.isFinite(n) ? String(n) : null;
     }
@@ -62,6 +84,7 @@ export function formatarExibicao(
       ? n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
       : valor;
   }
+  if (variante === 'phone') return mascararTelefone(valor);
   if (variante === 'select') return opcoes.find((o) => o.value === valor)?.label ?? valor;
   return valor;
 }
