@@ -5,6 +5,7 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { ArrowRight, CheckSquare, Pencil, Plus, Activity } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { rotuloAtividade } from '@/lib/activity-label';
 import { api } from '@/lib/api';
 
 // ---------------------------------------------------------------------------
@@ -24,17 +25,6 @@ interface LeadActivityItem {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const TIPO_LABEL: Record<string, string> = {
-  stage_change: 'Estagio alterado',
-  lead_created: 'Lead criado',
-  lead_updated: 'Lead atualizado',
-  task_created: 'Tarefa criada',
-};
-
-function getTipoLabel(tipo: string): string {
-  return TIPO_LABEL[tipo] ?? tipo;
-}
 
 function getTipoIcon(tipo: string) {
   switch (tipo) {
@@ -123,7 +113,7 @@ export function ActivityTimeline({ leadId }: ActivityTimelineProps) {
 
           {/* Content */}
           <div className="pb-4 flex-1 min-w-0">
-            <p className="text-xs font-medium leading-tight">{getTipoLabel(item.tipo)}</p>
+            <p className="text-xs font-medium leading-tight">{rotuloAtividade(item.tipo)}</p>
             <p className="text-xs text-muted-foreground mt-0.5 break-words">{item.descricao}</p>
             <p className="text-[10px] text-muted-foreground/70 mt-1">
               {formatRelative(item.created_at)}
