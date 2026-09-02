@@ -1514,7 +1514,7 @@ export default function RadarPage() {
   };
 
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
+    queryKey: ['pipelines', 'radar-resumo'],
     queryFn: async () => lerPipelines((await api.get('/api/pipelines')).data),
     staleTime: 5 * 60_000,
   });
