@@ -17,6 +17,7 @@ import {
 import { MessageCircle, Send, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { extractMentionIds } from '@/lib/mentions';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
 import { useAuthStore } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
@@ -61,34 +62,6 @@ const MESSAGES_STALE = 10_000;
 /** Throttle de auto-reconciliação por lead (evita re-sync a cada abrir). */
 const autoSyncCache = new Map<string, number>();
 const AUTO_SYNC_THROTTLE_MS = 120_000;
-
-/** Normaliza pra comparação de menção: minúsculas, sem acento. */
-function normalizeName(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase();
-}
-
-/**
- * Resolve @menções digitadas numa nota interna contra a equipe do tenant.
- * Casa `@primeironome` ou `@nome completo` (case/acento-insensitive).
- */
-function extractMentionIds(
-  content: string,
-  users: Array<{ id: string; nome: string }>,
-): string[] {
-  const normalized = normalizeName(content);
-  const ids: string[] = [];
-  for (const u of users) {
-    const full = normalizeName(u.nome);
-    const first = full.split(/\s+/)[0];
-    if (normalized.includes(`@${full}`) || normalized.includes(`@${first}`)) {
-      ids.push(u.id);
-    }
-  }
-  return ids;
-}
 
 export default function ChatDetailPage() {
   const params = useParams();
