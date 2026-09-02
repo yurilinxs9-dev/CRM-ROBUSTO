@@ -1,6 +1,10 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { LeadsService, type ExportLeadFilters } from './leads.service';
-import { LeadTimelineService, timelineQuerySchema } from './lead-timeline.service';
+import {
+  LeadTimelineService,
+  mediaQuerySchema,
+  timelineQuerySchema,
+} from './lead-timeline.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -122,6 +126,17 @@ export class LeadsController {
     @Query() query: Record<string, unknown>,
   ) {
     return this.timeline.getTimeline(id, req.user as AuthUser, timelineQuerySchema.parse(query));
+  }
+
+  // Galeria de midia da ficha: mesmo recorte do chat, paginada por id.
+  @Get(':id/media')
+  @Roles(UserRole.VISUALIZADOR)
+  getMedia(
+    @Param('id') id: string,
+    @Req() req: Record<string, unknown>,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.timeline.getMedia(id, req.user as AuthUser, mediaQuerySchema.parse(query));
   }
 
   @Post(':id/sync-profile')

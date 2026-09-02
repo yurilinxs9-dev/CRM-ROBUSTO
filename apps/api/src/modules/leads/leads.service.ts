@@ -277,7 +277,7 @@ export class LeadsService {
     return { estagio_id: destino, estagio_entered_at: new Date() };
   }
 
-  private async resolveMediaUrl(path: string | null): Promise<string | null> {
+  public async resolveMediaUrl(path: string | null): Promise<string | null> {
     if (!path) return null;
     if (/^https?:\/\//i.test(path)) return path;
     try {

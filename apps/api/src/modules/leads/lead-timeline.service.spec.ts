@@ -504,3 +504,76 @@ describe('LeadTimelineService.getTimeline — fechamento da sessao cortada', () 
     expect(sessao.tipo === 'sessao' && sessao.primeira_mensagem_id).toBe('m3b');
   });
 });
+
+/**
+ * Galeria de midia: mesmo gate e mesmo recorte do chat, mas paginacao por id
+ * (nao por data) — a ordem e estavel e o cursor nao precisa de desempate.
+ */
+describe('LeadTimelineService.getMedia', () => {
+  const midia = (id: string) => ({
+    id,
+    type: 'IMAGE',
+    media_url: `path/${id}.jpg`,
+    media_mimetype: 'image/jpeg',
+    media_filename: null,
+    media_thumbnail_path: null,
+    media_duration_seconds: null,
+    direction: 'INCOMING',
+    created_at: T('2026-09-01T12:00:00Z'),
+  });
+
+  it('filtra tipos de midia, exclui notas, aplica scope e assina URL', async () => {
+    const { service, prisma } = make({
+      mensagens: [midia('m1')],
+      scope: { AND: [{ conversation_id: { in: ['c1'] } }] },
+    });
+    const r = await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    const where = prisma.message.findMany.mock.calls[0][0].where;
+    expect(where.type).toEqual({ in: ['IMAGE', 'VIDEO', 'AUDIO', 'DOCUMENT'] });
+    expect(where.is_internal_note).toBe(false);
+    expect(where.AND).toEqual([{ conversation_id: { in: ['c1'] } }]);
+    expect(r.items[0].media_url).toBe('signed:path/m1.jpg');
+    expect(r.items[0].created_at).toBe('2026-09-01T12:00:00.000Z');
+    expect(r.nextCursor).toBeUndefined();
+  });
+
+  // Fronteira de seguranca: sem lead_id + tenant_id no where, o recorte do
+  // chat sozinho deixaria vazar midia de outro lead ou de outra empresa.
+  it('o where carrega lead_id e tenant_id', async () => {
+    const { service, prisma } = make({ mensagens: [midia('m1')] });
+    await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    const where = prisma.message.findMany.mock.calls[0][0].where;
+    expect(where.lead_id).toBe(LEAD_ID);
+    expect(where.tenant_id).toBe('t1');
+  });
+
+  it('scope null devolve vazio sem consultar', async () => {
+    const { service, prisma } = make({ scope: null });
+    const r = await service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 });
+    expect(r.items).toEqual([]);
+    expect(r.nextCursor).toBeUndefined();
+    expect(prisma.message.findMany).not.toHaveBeenCalled();
+  });
+
+  it('o gate roda antes da leitura de midia', async () => {
+    const { service, prisma } = make({ findOne: () => Promise.reject(new ForbiddenException()) });
+    await expect(
+      service.getMedia(LEAD_ID, user(UserRole.OPERADOR), { limit: 40 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.message.findMany).not.toHaveBeenCalled();
+  });
+
+  it('cursor por id com skip 1 e nextCursor no limit+1', async () => {
+    const { service, prisma } = make({ mensagens: [midia('m0'), midia('m1'), midia('m2')] });
+    const r = await service.getMedia(LEAD_ID, user(UserRole.GERENTE), {
+      cursor: 'm-prev',
+      limit: 2,
+    });
+    const args = prisma.message.findMany.mock.calls[0][0];
+    expect(args.cursor).toEqual({ id: 'm-prev' });
+    expect(args.skip).toBe(1);
+    expect(args.take).toBe(3);
+    expect(r.items).toHaveLength(2);
+    expect(r.nextCursor).toBe('m1');
+  });
+});

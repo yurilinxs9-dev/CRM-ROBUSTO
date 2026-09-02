@@ -71,7 +71,7 @@ describe('LeadsController — GET /leads/export exige pelo menos OPERADOR', () =
  * intencao "quem so olha tambem le a timeline" ficaria implicita.
  */
 describe('LeadsController — rotas de leitura da ficha (VISUALIZADOR passa)', () => {
-  const rotas = ['getTimeline'] as const; // Task 4 acrescenta 'getMedia'
+  const rotas = ['getTimeline', 'getMedia'] as const;
   it.each(rotas)('%s declara @Roles(VISUALIZADOR)', (metodo) => {
     expect(Reflect.getMetadata(ROLES_KEY, handlerDe(metodo))).toEqual([UserRole.VISUALIZADOR]);
   });

@@ -28,6 +28,28 @@ export const timelineQuerySchema = z.object({
 });
 export type TimelineQuery = z.infer<typeof timelineQuerySchema>;
 
+export const mediaQuerySchema = z.object({
+  // Aqui o cursor e o proprio id da mensagem (uuid), nao um cursor opaco: a
+  // galeria pagina por id via `cursor` + `skip` do Prisma.
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(40),
+});
+export type MediaQuery = z.infer<typeof mediaQuerySchema>;
+
+export const TIPOS_MIDIA = ['IMAGE', 'VIDEO', 'AUDIO', 'DOCUMENT'] as const;
+
+export interface MediaItem {
+  id: string;
+  type: string;
+  media_url: string | null;
+  media_mimetype: string | null;
+  media_filename: string | null;
+  media_thumbnail_path: string | null;
+  media_duration_seconds: number | null;
+  direction: 'INCOMING' | 'OUTGOING';
+  created_at: string;
+}
+
 /** Lote extra lido para fechar a sessao cortada pela paginacao. */
 const LOTE_FECHAMENTO = 50;
 
@@ -102,6 +124,67 @@ export class LeadTimelineService {
       fontes.some((f) => f.temMais),
       cursor,
     );
+  }
+
+  /**
+   * Galeria: mensagens de midia do lead, no mesmo recorte do chat.
+   *
+   * Mesmo gate da timeline (`findOne` + `messageScopeFor`), mas paginacao por
+   * id (`cursor` + `skip: 1` do Prisma) em vez de cursor por data: a lista e
+   * plana, sem agrupamento por sessao, entao o id da ultima linha servida
+   * basta. `media_url` sai sempre assinada por `resolveMediaUrl`.
+   */
+  async getMedia(
+    leadId: string,
+    user: AuthUser,
+    q: MediaQuery,
+  ): Promise<{ items: MediaItem[]; nextCursor?: string }> {
+    // Gate primeiro: nada e lido antes de saber que este usuario ve o lead.
+    const lead = await this.leads.findOne(leadId, user);
+    const scope = await this.leads.messageScopeFor(
+      {
+        id: lead.id,
+        responsavel_id: lead.responsavel_id,
+        instancia_whatsapp: lead.instancia_whatsapp,
+        assumed_at: lead.assumed_at ? new Date(lead.assumed_at) : null,
+        is_private: lead.is_private,
+      },
+      user,
+    );
+    // `scope === null` = nenhuma mensagem visivel; nem consulta o banco.
+    if (scope === null) return { items: [], nextCursor: undefined };
+
+    const rows = await this.prisma.message.findMany({
+      where: {
+        ...this.baseMensagem(leadId, user, scope),
+        is_internal_note: false,
+        type: { in: [...TIPOS_MIDIA] },
+      },
+      select: {
+        id: true,
+        type: true,
+        media_url: true,
+        media_mimetype: true,
+        media_filename: true,
+        media_thumbnail_path: true,
+        media_duration_seconds: true,
+        direction: true,
+        created_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+      take: q.limit + 1,
+      ...(q.cursor ? { cursor: { id: q.cursor }, skip: 1 } : {}),
+    });
+    const temMais = rows.length > q.limit;
+    const usadas = temMais ? rows.slice(0, q.limit) : rows;
+    const items: MediaItem[] = await Promise.all(
+      usadas.map(async (r) => ({
+        ...r,
+        media_url: await this.leads.resolveMediaUrl(r.media_url),
+        created_at: r.created_at.toISOString(),
+      })),
+    );
+    return { items, nextCursor: temMais ? items[items.length - 1].id : undefined };
   }
 
   /** Fontes por data: recorte INCLUSIVO, o desempate fica com mesclarTimeline. */
