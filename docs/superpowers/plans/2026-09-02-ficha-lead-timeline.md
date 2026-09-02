@@ -3112,6 +3112,8 @@ git add apps/web/src/components/chat/nota-interna-composer.tsx apps/web/src/comp
 
 ### Task 10: Galeria de mídia
 
+**AJUSTE PÓS-TASK 4 (governa sobre o código abaixo):** a API devolve `media_thumbnail_url: string | null` (URL ASSINADA da miniatura, quando existe) em vez de `media_thumbnail_path`; mídia arquivada pelo cleanup de 30 dias vem com `media_url: null` e só a thumbnail. Na grade: imagem/vídeo usam `media_thumbnail_url ?? media_url` como `src` da miniatura e abrem `media_url` no clique (se `media_url` for null, o tile mostra a thumbnail com selo "arquivada" e não é clicável). Tipo `MediaItem` do front: trocar `media_thumbnail_path` por `media_thumbnail_url`.
+
 **Files:**
 - Create: `apps/web/src/components/leads/lead-media-grid.tsx`
 - Modify: `apps/web/src/app/(dashboard)/leads/[id]/page.tsx` (aba Mídia)
