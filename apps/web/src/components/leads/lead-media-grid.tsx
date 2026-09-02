@@ -31,6 +31,10 @@ interface MediaPage {
   nextCursor?: string;
 }
 
+function statusDe(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status;
+}
+
 const data = (iso: string) => new Date(iso).toLocaleDateString('pt-BR');
 
 const duracao = (segundos: number) => {
@@ -51,6 +55,9 @@ export function LeadMediaGrid({ leadId }: { leadId: string }) {
     },
     initialPageParam: undefined,
     getNextPageParam: (last) => last.nextCursor,
+    // Backend sem o endpoint (404) ou lead fora do alcance (403) nao melhora
+    // com retry: mostra o bloco de erro na hora.
+    retry: (count, err) => ![403, 404].includes(statusDe(err) ?? 0) && count < 2,
   });
 
   const itens = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data]);

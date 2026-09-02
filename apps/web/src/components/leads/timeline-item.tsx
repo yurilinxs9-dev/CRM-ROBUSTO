@@ -40,7 +40,9 @@ function iconeAtividade(subtipo: string) {
 }
 
 /** Destaca `@Nome` das pessoas mencionadas dentro do texto da nota. */
-function comMencoes(texto: string, nomes: string[]): ReactNode {
+function comMencoes(texto: string, todos: string[]): ReactNode {
+  // Nome vazio viraria alternativa vazia no regex, que casaria qualquer `@`.
+  const nomes = todos.filter(Boolean);
   if (nomes.length === 0) return texto;
   const re = new RegExp(
     `@(${nomes.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,

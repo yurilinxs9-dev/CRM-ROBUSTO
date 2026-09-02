@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
@@ -16,6 +16,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { NotaInternaComposer } from '@/components/chat/nota-interna-composer';
 import { TimelineItemView } from './timeline-item';
 import { cn } from '@/lib/cn';
+
+function statusDe(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status;
+}
+
+/** Rajada de mensagem nova vira UMA invalidacao (a timeline recarrega todas
+ *  as paginas ja abertas; sem isto cada mensagem do burst refazia tudo). */
+const DEBOUNCE_WS_MS = 400;
 
 // Meio-dia evita que o fuso jogue a data para o dia anterior.
 const diaLegivel = (dia: string) =>
@@ -40,33 +48,48 @@ export function LeadTimeline({ leadId, editavel }: { leadId: string; editavel: b
     initialPageParam: undefined,
     getNextPageParam: (last) => last.nextCursor,
     staleTime: 0,
+    // Backend sem o endpoint (404) ou lead fora do alcance (403) nao melhora
+    // com retry: mostra o bloco de erro na hora.
+    retry: (count, err) => ![403, 404].includes(statusDe(err) ?? 0) && count < 2,
   });
 
   // Ao vivo: sala do lead (message:new) e eventos do tenant com leadId.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     joinLead(leadId);
     const socket = getSocket();
     const invalidarTimeline = () =>
       void queryClient.invalidateQueries({ queryKey: ['lead-timeline', leadId] });
+    // Mensagem nova chega em rajada (sync, conversa quente): so a ultima vale.
+    const invalidarComDebounce = () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null;
+        invalidarTimeline();
+      }, DEBOUNCE_WS_MS);
+    };
     const seForEsteLead = (payload: { leadId?: string; lead_id?: string }) => {
       if ((payload?.leadId ?? payload?.lead_id) !== leadId) return;
+      // Etapa/responsavel muda uma vez: invalida direto, sem espera.
       invalidarTimeline();
       // O cabecalho e os campos leem ['lead', id] — mudanca de etapa ou de
       // responsavel precisa aparecer nos dois lugares, nao so na timeline.
       void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
     };
     const soTimeline = (payload: { leadId?: string; lead_id?: string }) => {
-      if ((payload?.leadId ?? payload?.lead_id) === leadId) invalidarTimeline();
+      if ((payload?.leadId ?? payload?.lead_id) === leadId) invalidarComDebounce();
     };
-    socket.on('message:new', invalidarTimeline);
+    socket.on('message:new', invalidarComDebounce);
     socket.on('lead:updated', seForEsteLead);
     socket.on('lead:stage-changed', seForEsteLead);
     socket.on('lead:new-message', soTimeline);
     return () => {
-      socket.off('message:new', invalidarTimeline);
+      socket.off('message:new', invalidarComDebounce);
       socket.off('lead:updated', seForEsteLead);
       socket.off('lead:stage-changed', seForEsteLead);
       socket.off('lead:new-message', soTimeline);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = null;
       leaveLead(leadId);
     };
   }, [leadId, queryClient]);

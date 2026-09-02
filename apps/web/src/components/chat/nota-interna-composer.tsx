@@ -122,6 +122,13 @@ export function NotaInternaComposer({
           }}
           onSelect={(e) => setCursor((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            // Antes da lista: com a sugestao aberta, Ctrl/Cmd+Enter ENVIA a
+            // nota (o Enter puro e que escolhe a mencao).
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              submeter();
+              return;
+            }
             if (sugestoes.length > 0) {
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -139,14 +146,12 @@ export function NotaInternaComposer({
                 return;
               }
             }
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              submeter();
-            }
           }}
         />
         {sugestoes.length > 0 && (
-          <ul className="absolute left-0 top-full z-20 mt-1 w-56 rounded-md border bg-popover p-1 shadow-md">
+          // No celular o composer gruda no rodape: a lista tem que subir. De
+          // `lg` para cima o composer volta ao topo da coluna e ela desce.
+          <ul className="absolute left-0 z-20 w-56 rounded-md border bg-popover p-1 shadow-md bottom-full mb-1 lg:bottom-auto lg:top-full lg:mt-1">
             {sugestoes.map((u, i) => (
               <li key={u.id}>
                 <button

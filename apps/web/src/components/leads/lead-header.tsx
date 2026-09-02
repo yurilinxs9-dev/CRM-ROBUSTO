@@ -172,9 +172,11 @@ export function LeadHeader({
         ) : (
           <CampoLeitura label="Etapa" valor={lead.estagio?.nome ?? '—'} />
         )}
-        {/* `/api/users/list` so e chamada para gestor — sem ela o select nao tem
-            rotulo para o id e mostraria o UUID do responsavel. */}
-        {gestor ? (
+        {/* `/api/users/list` so e chamada para gestor — e ela demora a voltar.
+            Sem a lista o select nao tem rotulo para o id e mostraria o UUID cru
+            do responsavel: ate ela chegar (ou para quem nao e gestor), so
+            leitura, igual a Etapa. */}
+        {gestor && users.length > 0 ? (
           <InlineField
             label="Responsável"
             variante="select"
