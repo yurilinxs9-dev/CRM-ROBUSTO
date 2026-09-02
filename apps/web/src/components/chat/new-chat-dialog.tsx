@@ -77,11 +77,11 @@ export function NewChatDialog({
   // skipped — an empty group heading would be pure noise.
   const groupedStages = useMemo(() => {
     return pipelines
-      .filter((p) => p.stages.length > 0)
+      .filter((p) => (p.stages ?? []).length > 0)
       .map((p) => ({
         pipelineId: p.id,
         pipelineNome: p.nome,
-        stages: [...p.stages].sort((a, b) => a.ordem - b.ordem),
+        stages: [...(p.stages ?? [])].sort((a, b) => a.ordem - b.ordem),
       }));
   }, [pipelines]);
 
