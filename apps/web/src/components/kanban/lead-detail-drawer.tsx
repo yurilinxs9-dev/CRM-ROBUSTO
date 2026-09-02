@@ -15,6 +15,7 @@ import {
   ImageIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import Link from 'next/link';
 
 import {
   Sheet,
@@ -374,6 +375,9 @@ export function LeadDetailDrawer({
                 />
                 {TEMP_LABELS[lead.temperatura]}
               </Badge>
+              <Button asChild size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs">
+                <Link href={`/leads/${lead.id}`}>Abrir ficha completa</Link>
+              </Button>
             </div>
           )}
         </SheetHeader>
@@ -584,12 +588,15 @@ export function LeadDetailDrawer({
 
             {/* ---------------- Mídia ---------------- */}
             <TabsContent value="midia" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-              {/* Não existe endpoint de listagem de mídias da conversa; inventar
-                  um aqui geraria chamada quebrada. Fica explícito até a rota
-                  existir. */}
+              {/* A galeria real mora na ficha completa do lead; aqui fica só o
+                  atalho para lá. */}
               <p className="rounded-md border border-dashed px-3 py-8 text-center text-xs text-muted-foreground">
-                A galeria de mídias da conversa ainda não está disponível. As imagens, áudios e
-                documentos continuam acessíveis dentro do chat.
+                A galeria de mídias fica na ficha completa do lead.{' '}
+                {leadId && (
+                  <Link href={`/leads/${leadId}`} className="underline">
+                    Abrir ficha
+                  </Link>
+                )}
               </p>
             </TabsContent>
 

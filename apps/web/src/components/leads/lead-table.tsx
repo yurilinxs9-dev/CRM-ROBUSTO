@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
@@ -239,6 +240,22 @@ function conteudoCelula(lead: LeadRow, key: string, tipo: string): JSX.Element {
       >
         {cor.label}
       </span>
+    );
+  }
+
+  // O nome é a porta de entrada da ficha completa. A linha inteira já abre o
+  // drawer, então o clique no link precisa parar a propagação — senão abriria
+  // os dois. Ctrl/clique do meio continua abrindo em outra aba, de graça.
+  if (key === 'nome') {
+    return (
+      <Link
+        href={`/leads/${lead.id}`}
+        onClick={(e) => e.stopPropagation()}
+        className="block truncate hover:underline"
+        title={lead.nome || undefined}
+      >
+        {lead.nome}
+      </Link>
     );
   }
 

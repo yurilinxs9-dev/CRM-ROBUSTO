@@ -1,6 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
 import { Building2, UserRound } from 'lucide-react';
 import {
   Sheet,
@@ -11,6 +12,7 @@ import {
 } from '@/components/ui/sheet';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
@@ -92,6 +94,9 @@ export function LeadDetailsSheet({ lead, open, onOpenChange }: LeadDetailsSheetP
               <Badge variant="secondary">
                 {TEMP_LABEL[lead.temperatura] ?? lead.temperatura}
               </Badge>
+              <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                <Link href={`/leads/${lead.id}`}>Abrir ficha completa</Link>
+              </Button>
             </div>
 
             <Separator />
