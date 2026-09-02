@@ -1,10 +1,13 @@
 import {
+  CATEGORIAS,
   agruparPorDia,
   categoriaDoItem,
   filtrarPorCategoria,
+  rotuloLembrete,
   rotuloMidia,
   rotuloSessao,
   rotuloTarefa,
+  type LembreteItem,
   type SessaoItem,
   type TarefaItem,
   type TimelineItem,
@@ -21,7 +24,7 @@ const tarefa: TarefaItem = {
   tipo_tarefa: 'LIGACAO', status: 'CONCLUIDA', scheduled_at: '2026-09-01T09:00:00.000Z', completed_at: '2026-09-02T09:00:00.000Z', responsavel: null,
 };
 const atividade: TimelineItem = { tipo: 'atividade', id: 'a1', quando: '2026-09-01T11:00:00.000Z', subtipo: 'stage_change', descricao: '', dados_antes: null, dados_depois: null, autor: null };
-const lembrete: TimelineItem = { tipo: 'lembrete', id: 'l1', quando: '2026-09-01T10:00:00.000Z', motivo: 'retorno', avisar_em: '2026-09-03T09:00:00.000Z', status: 'pendente', origem: 'ia' };
+const lembrete: LembreteItem = { tipo: 'lembrete', id: 'l1', quando: '2026-09-01T10:00:00.000Z', motivo: 'retorno', avisar_em: '2026-09-03T09:00:00.000Z', status: 'pendente', origem: 'ia' };
 
 describe('categoriaDoItem / filtrarPorCategoria', () => {
   it('mapeia os 5 tipos em 4 categorias', () => {
@@ -53,6 +56,10 @@ describe('rotulos', () => {
     expect(rotuloTarefa(tarefa)).toBe('Tarefa concluída: Ligar');
     expect(rotuloTarefa({ ...tarefa, evento: 'criada' })).toBe('Tarefa criada: Ligar');
   });
+  it('lembrete distingue a origem', () => {
+    expect(rotuloLembrete(lembrete)).toBe('Lembrete da IA: retorno');
+    expect(rotuloLembrete({ ...lembrete, origem: 'manual' })).toBe('Lembrete: retorno');
+  });
   it('midia por tipo', () => {
     expect(rotuloMidia('IMAGE', null)).toBe('Imagem');
     expect(rotuloMidia('DOCUMENT', 'orcamento.pdf')).toBe('orcamento.pdf');
@@ -68,5 +75,12 @@ describe('agruparPorDia', () => {
     expect(grupos[0].items.map((i) => i.id)).toEqual(['t1']);
     expect(grupos[1].items.map((i) => i.id)).toEqual(['n1', 'a1']);
     expect(grupos[1].dia).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('CATEGORIAS', () => {
+  it('tem as 5 abas na ordem da tela', () => {
+    expect(CATEGORIAS.map((c) => c.key)).toEqual(['tudo', 'conversas', 'notas', 'tarefas', 'eventos']);
+    expect(CATEGORIAS.map((c) => c.label)).toEqual(['Tudo', 'Conversas', 'Notas', 'Tarefas', 'Eventos']);
   });
 });
