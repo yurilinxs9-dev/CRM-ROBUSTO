@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Ficha360 } from '@/components/leads/ficha-360';
 import { LeadHeader } from '@/components/leads/lead-header';
 import { LeadFields } from '@/components/leads/lead-fields';
+import { LeadMediaGrid } from '@/components/leads/lead-media-grid';
 import { LeadTimeline } from '@/components/leads/lead-timeline';
 import {
   lerValorEstimado,
@@ -163,7 +164,7 @@ export default function LeadDetailPage() {
           />
         </aside>
 
-        {/* Coluna direita: timeline do lead; a galeria entra na Task 10. */}
+        {/* Coluna direita: timeline do lead e galeria de midia. */}
         <section className="flex min-h-0 flex-col">
           <Tabs defaultValue="atividade" className="flex min-h-0 flex-1 flex-col">
             <TabsList className="shrink-0 self-start">
@@ -174,7 +175,7 @@ export default function LeadDetailPage() {
               <LeadTimeline leadId={lead.id} editavel={editavel} />
             </TabsContent>
             <TabsContent value="midia" className="min-h-0 flex-1 overflow-y-auto">
-              <p className="p-4 text-sm text-muted-foreground">Galeria entra na Task 10.</p>
+              <LeadMediaGrid leadId={lead.id} />
             </TabsContent>
           </Tabs>
         </section>
