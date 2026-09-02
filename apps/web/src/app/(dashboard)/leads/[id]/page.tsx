@@ -1,11 +1,13 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
 
 import { api } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 import { useAuthStore } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -13,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Ficha360 } from '@/components/leads/ficha-360';
 import { LeadHeader } from '@/components/leads/lead-header';
 import { LeadFields } from '@/components/leads/lead-fields';
+import { LeadTimeline } from '@/components/leads/lead-timeline';
 import {
   lerValorEstimado,
   podeEditar,
@@ -46,6 +49,23 @@ export default function LeadDetailPage() {
     // Lead fora do alcance (403) ou inexistente (404) nao melhora com retry.
     retry: (count, err) => ![403, 404].includes(statusDe(err) ?? 0) && count < 2,
   });
+
+  // Se o lead for arquivado enquanto a ficha esta aberta, nao adianta ficar
+  // numa tela que o backend ja nao serve — avisa e volta para a lista.
+  useEffect(() => {
+    if (!leadId) return;
+    const socket = getSocket();
+    const aoAtualizar = (payload: { leadId?: string; arquivado?: boolean }) => {
+      if (payload?.arquivado === true && payload?.leadId === leadId) {
+        toast.info('Lead arquivado');
+        router.push('/leads');
+      }
+    };
+    socket.on('lead:updated', aoAtualizar);
+    return () => {
+      socket.off('lead:updated', aoAtualizar);
+    };
+  }, [leadId, router]);
 
   const invalidar = () => {
     void queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
@@ -143,15 +163,15 @@ export default function LeadDetailPage() {
           />
         </aside>
 
-        {/* Coluna direita — Task 9 e 10 preenchem as abas */}
+        {/* Coluna direita: timeline do lead; a galeria entra na Task 10. */}
         <section className="flex min-h-0 flex-col">
           <Tabs defaultValue="atividade" className="flex min-h-0 flex-1 flex-col">
             <TabsList className="shrink-0 self-start">
               <TabsTrigger value="atividade">Atividade</TabsTrigger>
               <TabsTrigger value="midia">Mídia</TabsTrigger>
             </TabsList>
-            <TabsContent value="atividade" className="min-h-0 flex-1 overflow-y-auto">
-              <p className="p-4 text-sm text-muted-foreground">Timeline entra na Task 9.</p>
+            <TabsContent value="atividade" className="flex min-h-0 flex-1 flex-col">
+              <LeadTimeline leadId={lead.id} editavel={editavel} />
             </TabsContent>
             <TabsContent value="midia" className="min-h-0 flex-1 overflow-y-auto">
               <p className="p-4 text-sm text-muted-foreground">Galeria entra na Task 10.</p>
