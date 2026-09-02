@@ -754,6 +754,15 @@ git add apps/api/src/modules/leads/lead-timeline.ts apps/api/src/modules/leads/l
 
 ### Task 3: `LeadTimelineService.getTimeline` + rota `GET /leads/:id/timeline`
 
+**AJUSTES PÓS-TASK 2 (valem sobre qualquer trecho abaixo que diga o contrário):** a revisão da Task 2 mudou o contrato do cursor. Ler `lead-timeline.ts` antes de codar; o que está lá governa.
+
+- O cursor é opaco para o cliente: string `quando|id|mensagensAntes?` (`codificarCursor` / `decodificarCursor` / tipo `TimelineCursor` exportados por `lead-timeline.ts`). `timelineQuerySchema.cursor` vira `z.string().optional()`; o service decodifica e lança `BadRequestException('cursor invalido')` se `decodificarCursor` devolver `null`.
+- Fontes por data (notas, atividades, tarefas, lembretes): consultar com `created_at <= cursor.quando` (INCLUSIVO, `lte`), não `lt`. Tarefas: `OR: [{ created_at: { lte } }, { completed_at: { lte } }]` e as condições por item também com `<=`. O desempate por `(quando, id)` é feito em memória por `mesclarTimeline(fontes, limit, algumaFonteTemMais, cursor)` — passar o cursor decodificado como 4º argumento.
+- Fonte de mensagens (sessões): quando `cursor.mensagensAntes` existe, consultar com `created_at < new Date(cursor.mensagensAntes)` (ESTRITO); quando não existe, sem limite superior. NÃO usar `cursor.quando` para mensagens.
+- `nextCursor` sai pronto de `mesclarTimeline` (já codificado). O service não monta cursor.
+- O spec do service muda de acordo: o teste "cursor entra como created_at < cursor" passa a verificar `lte` nas fontes por data e `lt` com `mensagensAntes` nas mensagens; o teste de `nextCursor` compara com `codificarCursor({...})` do último item. Cursor de entrada nos testes: usar `codificarCursor`.
+- A sessão parcial no fim da lista de mensagens é fechada pelo loop de `LOTE_FECHAMENTO` deste service (já previsto); manter.
+
 **Files:**
 - Create: `apps/api/src/modules/leads/lead-timeline.service.ts`
 - Create: `apps/api/src/modules/leads/lead-timeline.service.spec.ts`
