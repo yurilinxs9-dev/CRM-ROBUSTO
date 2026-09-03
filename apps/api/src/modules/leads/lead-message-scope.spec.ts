@@ -73,11 +73,43 @@ describe('buildMessageScope', () => {
       OR: [{ created_at: { gte: assumed } }, { visible_to_user_id: 'u-dono' }],
     });
   });
-  it('share_history_enabled desliga o corte de historico', () => {
+  it('share_history_enabled desliga o corte de historico (operador com conversa propria, nao dono)', () => {
     const where = buildMessageScope(
-      lead({ assumed_at: new Date('2026-08-01') }),
+      lead({ responsavel_id: 'u-outro', assumed_at: new Date('2026-08-01') }),
       ctx({ shareHistoryEnabled: true }),
     );
     expect(where?.AND).toHaveLength(1);
+    expect(where?.AND).toContainEqual({
+      OR: [
+        { conversation_id: { in: ['conv-1'] } },
+        { conversation_id: null, instance_name: { in: ['inst-A'] } },
+      ],
+    });
+  });
+  // Caso Cajuru (2026-09-03): cliente escreve no numero da loja (instancia do
+  // admin), lead vai pro vendedor, e o vendedor abria o chat sem ver a conversa
+  // de origem — "lead chegou sem historico". Com share_history ligado, o DONO
+  // do lead ve todas as conversas dele, seja qual for o numero.
+  it('dono com share_history ve todas as conversas do lead (sem corte)', () => {
+    expect(
+      buildMessageScope(
+        lead({ assumed_at: new Date('2026-08-01') }),
+        ctx({ shareHistoryEnabled: true, ownConversationIds: [] }),
+      ),
+    ).toEqual({});
+  });
+  it('quem NAO e dono segue com corte por conversa mesmo com share_history (anti-espelhamento)', () => {
+    const where = buildMessageScope(
+      lead({ responsavel_id: 'u-outro' }),
+      ctx({ shareHistoryEnabled: true }),
+    );
+    expect(where?.AND).toEqual([
+      {
+        OR: [
+          { conversation_id: { in: ['conv-1'] } },
+          { conversation_id: null, instance_name: { in: ['inst-A'] } },
+        ],
+      },
+    ]);
   });
 });

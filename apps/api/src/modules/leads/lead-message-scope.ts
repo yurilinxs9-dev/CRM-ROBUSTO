@@ -71,12 +71,21 @@ export function buildMessageScope(
   // Visão total da conversa (todas as instâncias): gerente supervisionando ou
   // dono no modo COMPARTILHADO. No INDIVIDUAL o dono comum vê só as conversas
   // dele — era o vazamento original do espelhamento.
+  //
+  // Exceção: tenant com `share_history_enabled` quer que quem RECEBE o lead
+  // veja a conversa inteira pra dar sequência — e isso inclui a conversa que
+  // nasceu em OUTRO número (caso Cajuru, 2026-09-03: cliente escreve no número
+  // da loja, dono da instância é o admin, lead vai pro vendedor pelo rodízio ou
+  // pela mão do gerente, e o vendedor abria o chat só com as mensagens que ele
+  // mesmo mandou do próprio celular — "lead chegou sem histórico"). O corte
+  // continua valendo pra quem NÃO é o dono atual: o vendedor antigo segue vendo
+  // só a conversa dele, então o anti-espelhamento não regride.
   // O ramo `conversation_id: null` é de TRANSIÇÃO: mensagens anteriores ao
   // backfill ainda não têm conversation_id, e sem ele quem acessa pela própria
   // instância perderia todo o histórico. Vira código morto quando a coluna
   // conversation_id passar a NOT NULL.
   const conversationScope: Prisma.MessageWhereInput | null =
-    supervising || (isResponsavel && ctx.poolEnabled)
+    supervising || (isResponsavel && (ctx.poolEnabled || ctx.shareHistoryEnabled))
       ? null
       : {
           OR: [
