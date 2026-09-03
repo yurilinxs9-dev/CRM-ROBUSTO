@@ -73,19 +73,24 @@ console.log(stat);
 
 if (!apply) {
   console.log('dry-run — nada alterado. Rode com --apply para aplicar.');
+} else if (rows.length === 0) {
+  console.log('nada a aplicar.');
 } else {
-  const result = await prisma.$transaction(async (tx) => {
-    let n = 0;
-    for (const r of rows) {
-      const u = await tx.conversation.updateMany({
-        // Guard: só se ainda estiver como lemos (nada mudou entre a leitura e a escrita).
-        where: { id: r.conversation_id, responsavel_id: r.conv_resp ?? null },
-        data: { responsavel_id: r.lead_resp },
-      });
-      n += u.count;
-    }
-    return n;
-  });
+  // Um UPDATE só (atômico por natureza) em vez de N updates numa transação
+  // interativa — pelo pooler, 210 round-trips estouravam o timeout de 5s do
+  // Prisma e o script morria com P2028 sem aplicar nada. O guard por
+  // `responsavel_id IS NOT DISTINCT FROM <lido>` mantém a proteção contra
+  // mudança entre a leitura e a escrita.
+  const values = rows
+    .map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`)
+    .join(', ');
+  const params = rows.flatMap((r) => [r.conversation_id, r.conv_resp, r.lead_resp]);
+  const result = await prisma.$executeRawUnsafe(
+    `UPDATE "Conversation" c SET responsavel_id = v.novo, updated_at = now()
+       FROM (VALUES ${values}) AS v(id, atual, novo)
+      WHERE c.id = v.id AND c.responsavel_id IS NOT DISTINCT FROM v.atual`,
+    ...params,
+  );
   console.log(`aplicado: ${result}/${rows.length} conversas atualizadas`);
   const left = await prisma.$queryRawUnsafe(SELECT_MISMATCH, tenantId);
   console.log(`restantes: ${left.length}`);
