@@ -166,7 +166,157 @@ export class SheetImportService implements OnModuleInit {
     this.logger.log(`Campos do formulário Meta criados no tenant ${tenantId}: ${faltam.map((f) => f.key).join(', ')}`);
   }
 
-  // run() e processRow() entram nas Tasks 6 e 7.
+  /**
+   * Cria o lead da linha ou anexa os dados a um lead existente com o mesmo
+   * telefone no pipeline. Lead + atividade + tags + registro da linha saem numa
+   * transação curta; WS, atribuição e ficha ficam fora e nunca lançam.
+   */
+  async processRow(lead: ImportedLead, ctx: RunContext): Promise<'created' | 'attached'> {
+    const dadosCustom = (await this.customFields.validateValues(
+      lead.dadosCustom,
+      ctx.tenantId,
+      'LEAD',
+    )) as Prisma.InputJsonObject;
+
+    const existente = await this.prisma.lead.findUnique({
+      where: {
+        telefone_pipeline_scope: {
+          telefone: lead.telefone,
+          pipeline_id: ctx.pipelineId,
+          lead_scope: ctx.tenantId,
+        },
+      },
+      select: { id: true, email: true, tags: true, dados_custom: true },
+    });
+
+    const tagIds = await this.upsertTags(ctx.tenantId, lead.tags);
+
+    if (existente) {
+      const atuais = (existente.dados_custom ?? {}) as Record<string, unknown>;
+      const merged: Record<string, unknown> = { ...atuais };
+      for (const [k, v] of Object.entries(dadosCustom)) {
+        const atual = atuais[k];
+        if (atual === undefined || atual === null || atual === '') merged[k] = v;
+      }
+      const tagsAtuais = Array.isArray(existente.tags) ? (existente.tags as string[]) : [];
+      const tagsMerged = [...new Set([...tagsAtuais, ...lead.tags])];
+
+      const data: Prisma.LeadUpdateInput = {
+        dados_custom: merged as Prisma.InputJsonObject,
+        tags: tagsMerged,
+      };
+      if (!existente.email && lead.email) data.email = lead.email;
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.lead.update({ where: { id: existente.id }, data });
+        await tx.leadActivity.create({
+          data: {
+            lead_id: existente.id,
+            tenant_id: ctx.tenantId,
+            tipo: 'lead_updated',
+            descricao: `Dados do formulário Meta anexados. ${lead.atividadeTexto}`,
+          },
+        });
+        await this.vincularTags(tx, existente.id, ctx.tenantId, tagIds);
+        await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, existente.id);
+      });
+      return 'attached';
+    }
+
+    const agora = new Date();
+    const novo = await this.prisma.$transaction(async (tx) => {
+      const criado = await tx.lead.create({
+        data: {
+          nome: lead.nome,
+          telefone: lead.telefone,
+          email: lead.email,
+          origem: 'IMPORT',
+          temperatura: 'FRIO',
+          responsavel_id: null,
+          lead_scope: ctx.tenantId,
+          tenant_id: ctx.tenantId,
+          pipeline_id: ctx.pipelineId,
+          estagio_id: ctx.stageId,
+          estagio_entered_at: agora,
+          position: -agora.getTime(),
+          instancia_whatsapp: ctx.instancia,
+          tags: lead.tags,
+          dados_custom: dadosCustom,
+        },
+        select: { id: true },
+      });
+      await tx.leadActivity.create({
+        data: {
+          lead_id: criado.id,
+          tenant_id: ctx.tenantId,
+          tipo: 'lead_created',
+          descricao: `Importado da planilha de leads (Meta Lead Ads). ${lead.atividadeTexto}`,
+        },
+      });
+      await this.vincularTags(tx, criado.id, ctx.tenantId, tagIds);
+      await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, criado.id);
+      return criado;
+    });
+
+    // Fora da transação e à prova de falha: o lead já existe.
+    try {
+      this.gateway.emitLeadCreated(novo.id, { pipeline_id: ctx.pipelineId, estagio_id: ctx.stageId }, ctx.tenantId);
+    } catch (err) {
+      this.logger.warn(`WS lead:created falhou para ${novo.id}: ${(err as Error).message}`);
+    }
+    // `recordFirstTouch` engole os próprios erros; não precisa de try/catch.
+    await this.attribution.recordFirstTouch(novo.id, ctx.tenantId, lead.attribution);
+    try {
+      await this.insights.enfileirarImportado(novo.id, ctx.tenantId);
+    } catch (err) {
+      this.logger.warn(`Ficha IA não enfileirada para ${novo.id}: ${(err as Error).message}`);
+    }
+    return 'created';
+  }
+
+  private async upsertTags(tenantId: string, nomes: string[]): Promise<string[]> {
+    const unicos = [...new Set(nomes.map((n) => n.trim()).filter((n) => n !== ''))];
+    if (unicos.length === 0) return [];
+    const tags = await Promise.all(
+      unicos.map((nome) =>
+        this.prisma.tag.upsert({
+          where: { tenant_id_nome: { tenant_id: tenantId, nome } },
+          update: {},
+          create: { nome, tenant_id: tenantId },
+          select: { id: true, nome: true },
+        }),
+      ),
+    );
+    return tags.map((t) => t.id);
+  }
+
+  private async vincularTags(
+    tx: Prisma.TransactionClient,
+    leadId: string,
+    tenantId: string,
+    tagIds: string[],
+  ): Promise<void> {
+    if (tagIds.length === 0) return;
+    await tx.leadTag.createMany({
+      data: tagIds.map((tag_id) => ({ lead_id: leadId, tag_id, tenant_id: tenantId })),
+      skipDuplicates: true,
+    });
+  }
+
+  private async registrarLinha(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    sourceRowId: string,
+    leadId: string,
+  ): Promise<void> {
+    await tx.sheetImportRow.upsert({
+      where: { tenant_id_source_row_id: { tenant_id: tenantId, source_row_id: sourceRowId } },
+      create: { tenant_id: tenantId, source_row_id: sourceRowId, lead_id: leadId, status: 'ok', detail: null },
+      update: { lead_id: leadId, status: 'ok', detail: null },
+    });
+  }
+
+  // run() entra na Task 7.
   async run(): Promise<RunSummary> {
     throw new Error('não implementado');
   }
