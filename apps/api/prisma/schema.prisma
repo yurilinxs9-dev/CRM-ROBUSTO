@@ -1412,3 +1412,23 @@ model TenantSiteConfig {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 }
+
+// Registro de linha da planilha Meta Lead Ads já vista pela importação
+// (modules/sheet-import). Dedupe por (tenant, id da linha no Meta).
+// Sem FK para Lead/Tenant de propósito: nenhum ALTER em tabela existente —
+// mesmo compromisso de LeadAttribution e ApiRequestLog.
+// status: 'ok' (lead criado ou anexado) | 'skipped' (teste/telefone inválido) | 'error'.
+model SheetImportRow {
+  id            String   @id @default(uuid())
+  tenant_id     String
+  source_row_id String
+  lead_id       String?
+  status        String
+  detail        String?
+  attempts      Int      @default(1)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([tenant_id, source_row_id])
+  @@index([tenant_id, status])
+}
