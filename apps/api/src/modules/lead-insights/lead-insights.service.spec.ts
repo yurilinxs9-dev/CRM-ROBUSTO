@@ -2013,7 +2013,9 @@ describe('LeadInsightsService.gerarInsight — cadastro e pré-contato', () => {
         origem: 'IMPORT',
         email: 'e@x.com',
         dados_custom: { tipo_empresa: 'MEI', producao_mensal: '500 mil', vazio: '' },
-        attribution: { utm_campaign: '[LEADS] V3', campaign_name: null },
+        // `campaign_name: ''` de proposito: com `??` a string vazia encobriria a
+        // UTM e a linha da campanha sumiria do prompt.
+        attribution: { utm_campaign: '[LEADS] V3', campaign_name: '' },
       }),
     );
     m.customFieldDef.findMany.mockResolvedValue([
@@ -2023,6 +2025,7 @@ describe('LeadInsightsService.gerarInsight — cadastro e pré-contato', () => {
     m.message.findMany.mockResolvedValue([]);
     m.leadInsight.findUnique.mockResolvedValue(null);
     m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+    m.message.count.mockResolvedValue(0);
 
     await m.service.gerarInsight('lead-1', 't1');
 
@@ -2040,8 +2043,35 @@ describe('LeadInsightsService.gerarInsight — cadastro e pré-contato', () => {
     expect(args.create.ultima_msg_processada_at).toBeNull();
     // Pré-contato: próxima ação é AGORA ajustada à janela comercial (10:00 BRT de terça já está dentro).
     expect(args.create.proxima_acao_at).toEqual(new Date('2026-09-08T13:00:00Z'));
-    // Sem watermark não há "novidade durante a geração" para rechecar.
-    expect(m.message.count).not.toHaveBeenCalled();
+    // Pré-contato recheca com a época: qualquer mensagem que exista agora chegou
+    // durante a geração. Sem novidade, nada é re-enfileirado.
+    expect(m.message.count).toHaveBeenCalledWith({
+      where: { lead_id: 'lead-1', is_internal_note: false, created_at: { gt: new Date(0) } },
+    });
+    expect(m.queue.add).not.toHaveBeenCalled();
+  });
+
+  it('pré-contato: resposta que chega durante a geração é re-enfileirada com jobId derivado', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(
+      leadCompleto({ origem: 'IMPORT', dados_custom: { tipo_empresa: 'LTDA' } }),
+    );
+    m.customFieldDef.findMany.mockResolvedValue([{ key: 'tipo_empresa', nome: 'Tipo de empresa' }]);
+    m.message.findMany.mockResolvedValue([]);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+    // O cliente respondeu enquanto o modelo rodava: o gatilho do inbound foi
+    // engolido pela colisão de jobId (`lead-<id>` ainda ATIVO), então quem
+    // resgata a mensagem é este recheque.
+    m.message.count.mockResolvedValue(1);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.queue.add).toHaveBeenCalledWith(
+      'gerar',
+      { leadId: 'lead-1', tenantId: 't1' },
+      expect.objectContaining({ jobId: 'lead-lead-1-0', delay: 2 * 60 * 1000 }),
+    );
   });
 
   it('só campos custom do tenant entram: chave sem CustomFieldDef fica de fora', async () => {
@@ -2057,6 +2087,7 @@ describe('LeadInsightsService.gerarInsight — cadastro e pré-contato', () => {
     m.message.findMany.mockResolvedValue([]);
     m.leadInsight.findUnique.mockResolvedValue(null);
     m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+    m.message.count.mockResolvedValue(0);
 
     await m.service.gerarInsight('lead-1', 't1');
 

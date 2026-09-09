@@ -1557,7 +1557,9 @@ export class LeadInsightsService {
       email: lead.email,
       empresa: lead.empresa,
       dados_custom: lead.dados_custom,
-      campanha: lead.attribution?.campaign_name ?? lead.attribution?.utm_campaign ?? null,
+      // `||` e nao `??`: campanha gravada como string vazia nao pode encobrir a
+      // UTM que tem o nome de verdade.
+      campanha: lead.attribution?.campaign_name || lead.attribution?.utm_campaign || null,
     });
     // Sem conversa E sem cadastro nao ha o que analisar. Com cadastro, a ficha
     // pre-contato (perfil + abordagem) e justamente o que a importacao pede.
@@ -1699,8 +1701,12 @@ export class LeadInsightsService {
     // que o cliente deu vale muito, mas nao mais do que a ficha ja gravada.
     await this.criarLembretesExtraidos(leadId, tenantId, insight.lembretes);
 
-    // Sem watermark (pre-contato) nao existe "chegou mensagem durante a geracao".
-    if (watermark !== null) await this.rechecarNovidade(leadId, tenantId, watermark);
+    // Pre-contato tem a MESMA corrida: `enfileirarImportado` usa o jobId
+    // `lead-<id>`, entao a resposta que chega durante a geracao e descartada pelo
+    // inbound. Sem watermark, a epoca e o corte certo — em pre-contato QUALQUER
+    // mensagem nao-interna chegou durante esta geracao — e o jobId derivado
+    // (`lead-<id>-0`) continua sem colidir com o job ativo.
+    await this.rechecarNovidade(leadId, tenantId, watermark ?? new Date(0));
   }
 
   /**
@@ -1929,6 +1935,10 @@ export class LeadInsightsService {
    * `lead-<id>` ainda existe — o job esta ACTIVE, nao so delayed. Sem esta
    * reconferencia pos-upsert, a ultima mensagem do cliente ficaria fora da ficha
    * ate a proxima mensagem ou ate o cron de 7 dias.
+   *
+   * Ficha pre-contato (lead importado, zero mensagem) entra aqui com a epoca:
+   * nao ha mensagem anterior, entao toda mensagem nao-interna que existir agora
+   * chegou durante esta geracao.
    */
   private async rechecarNovidade(
     leadId: string,
