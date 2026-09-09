@@ -114,9 +114,12 @@ export class SheetImportService implements OnModuleInit {
       stageId = stage.id;
     }
 
+    // `ultimo_check` é nullable e o Postgres ordena DESC como NULLS FIRST: sem
+    // `nulls: 'last'` uma instância nunca checada passaria na frente da mais
+    // recente de verdade, e o desempate por `created_at` nunca valeria.
     const inst = await this.prisma.whatsappInstance.findFirst({
       where: { tenant_id: this.tenantId },
-      orderBy: [{ ultimo_check: 'desc' }, { created_at: 'asc' }],
+      orderBy: [{ ultimo_check: { sort: 'desc', nulls: 'last' } }, { created_at: 'asc' }],
       select: { nome: true },
     });
 

@@ -87,6 +87,20 @@ describe('SheetImportService.resolveContext', () => {
     expect(m.prisma.pipeline.findFirst).not.toHaveBeenCalled();
   });
 
+  it('ordena instâncias por ultimo_check desc com nulls last (nunca checada não vence)', async () => {
+    const m = montar({ ...ENV_OK, SHEET_IMPORT_PIPELINE_ID: 'pX', SHEET_IMPORT_STAGE_ID: 'sX' });
+    m.prisma.whatsappInstance.findFirst.mockResolvedValue({ nome: 'leads' });
+
+    await m.service.resolveContext();
+
+    expect(m.prisma.whatsappInstance.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenant_id: 't1' },
+        orderBy: [{ ultimo_check: { sort: 'desc', nulls: 'last' } }, { created_at: 'asc' }],
+      }),
+    );
+  });
+
   it('tenant sem pipeline lança erro claro', async () => {
     const m = montar(ENV_OK);
     m.prisma.pipeline.findFirst.mockResolvedValue(null);
