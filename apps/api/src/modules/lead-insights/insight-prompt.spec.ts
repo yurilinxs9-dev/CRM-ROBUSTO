@@ -100,6 +100,8 @@ function ctxMinimo(): InsightContexto {
       valor_estimado: 1500,
       ultima_interacao: new Date('2026-08-20'),
       etapas_disponiveis: [],
+      origem: 'WHATSAPP_INCOMING',
+      cadastro: [],
     },
     insightAnterior: { resumo: 'antigo', memoria: [{ fato: 'gripe', quando_dito: '2026-08-10' }] },
     mensagens: [{ de: 'cliente', texto: 'quero orçamento', em: new Date('2026-08-20') }],
@@ -383,5 +385,67 @@ describe('montarPromptInsight', () => {
     expect(msgs[1].content).toContain('Ana');
     expect(msgs[1].content).toContain('gripe');
     expect(msgs[1].content).toContain('quero orçamento');
+  });
+});
+
+function contexto(
+  overrides: Partial<InsightContexto['lead']> = {},
+  mensagens: InsightContexto['mensagens'] = [],
+): InsightContexto {
+  return {
+    lead: {
+      nome: 'Eduardo',
+      telefone: '5519997094696',
+      etapa: 'Novo',
+      temperatura: 'FRIO',
+      valor_estimado: null,
+      ultima_interacao: null,
+      etapas_disponiveis: ['Em contato', 'Qualificado'],
+      origem: 'IMPORT',
+      cadastro: [],
+      ...overrides,
+    },
+    insightAnterior: null,
+    mensagens,
+  };
+}
+
+const MSG = { de: 'cliente' as const, texto: 'oi', em: new Date('2026-09-08T12:00:00Z') };
+
+describe('montarPromptInsight — cadastro e pré-contato', () => {
+  it('sem cadastro e com conversa: prompt igual ao de antes (sem bloco de cadastro, sem pré-contato)', () => {
+    const [, user] = montarPromptInsight(contexto({}, [MSG]));
+    expect(user.content).not.toContain('## Cadastro e formulário');
+    expect(user.content).not.toContain('AINDA NAO HOUVE CONVERSA');
+    expect(user.content).toContain('Analise a conversa acima');
+  });
+
+  it('cadastro entra como bloco com uma linha por item, achatado', () => {
+    const [, user] = montarPromptInsight(
+      contexto(
+        {
+          cadastro: [
+            { rotulo: 'Tipo de empresa', valor: 'MEI' },
+            { rotulo: 'Cidade', valor: 'Paulínia\nSP' },
+          ],
+        },
+        [MSG],
+      ),
+    );
+    expect(user.content).toContain('## Cadastro e formulário\n- Tipo de empresa: MEI\n- Cidade: Paulínia SP');
+  });
+
+  it('sem mensagens e com cadastro: modo pré-contato substitui a instrução final', () => {
+    const [, user] = montarPromptInsight(contexto({ cadastro: [{ rotulo: 'Tipo de empresa', valor: 'MEI' }] }));
+    expect(user.content).toContain('AINDA NAO HOUVE CONVERSA');
+    expect(user.content).toContain('Origem do lead: IMPORT');
+    expect(user.content).toContain('"nota_atendimento": null');
+    expect(user.content).toContain('"proxima_acao_em_dias": 1');
+    expect(user.content).not.toContain('Analise a conversa acima');
+  });
+
+  it('origem em texto legível quando é IMPORT', () => {
+    const [, user] = montarPromptInsight(contexto({ cadastro: [{ rotulo: 'x', valor: 'y' }] }));
+    expect(user.content).toContain('planilha de leads do Meta Lead Ads');
   });
 });

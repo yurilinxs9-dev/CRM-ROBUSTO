@@ -1567,6 +1567,10 @@ export class LeadInsightsService {
         // A etapa atual fica de fora: oferecer a etapa em que o lead ja esta so
         // convidaria o modelo a "sugerir" o que nao muda nada.
         etapas_disponiveis: etapas.filter((e) => e.id !== lead.estagio_id).map((e) => e.nome),
+        // Placeholder: quem preenche origem e cadastro de verdade e a proxima etapa
+        // (ficha pre-contato de lead importado). Vazio = prompt igual ao de hoje.
+        origem: '',
+        cadastro: [],
       },
       insightAnterior: anterior
         ? { resumo: anterior.resumo, memoria: lerMemoria(anterior.memoria) }

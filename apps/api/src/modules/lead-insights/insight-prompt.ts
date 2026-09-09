@@ -20,6 +20,14 @@ export interface InsightContexto {
      * Lista vazia = nada a sugerir (o prompt pede `etapa_sugerida: null`).
      */
     etapas_disponiveis: string[];
+    /** `Lead.origem` cru (WHATSAPP_INCOMING, IMPORT, MANUAL...). */
+    origem: string;
+    /**
+     * Dados de cadastro e formulário (campos custom com rótulo do tenant,
+     * e-mail, campanha). Lista vazia = nada além do que já está em `nome`/`telefone`.
+     * É o que permite ficha ANTES da primeira mensagem (lead importado).
+     */
+    cadastro: Array<{ rotulo: string; valor: string }>;
   };
   insightAnterior: { resumo: string; memoria: MemoriaFato[] } | null;
   /** Ja limitadas a 40 pelo chamador, em ordem cronologica. */
@@ -461,6 +469,34 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
       ].join('\n')
     : '## Ficha anterior deste lead\nNao existe ficha anterior: esta e a primeira analise.';
 
+  const LIMITE_CADASTRO = 200;
+  const blocoCadastro =
+    lead.cadastro.length > 0
+      ? [
+          '## Cadastro e formulário',
+          ...lead.cadastro.map(
+            (c) => `- ${comoTexto(c.rotulo, 60)}: ${comoTexto(c.valor.replace(/\s*\n+\s*/g, ' '), LIMITE_CADASTRO)}`,
+          ),
+        ].join('\n')
+      : '';
+
+  const preContato = mensagens.length === 0 && lead.cadastro.length > 0;
+  const origemLegivel = lead.origem === 'IMPORT' ? 'planilha de leads do Meta Lead Ads (tráfego pago)' : lead.origem;
+
+  const instrucaoFinal = preContato
+    ? [
+        `AINDA NAO HOUVE CONVERSA com este lead. Origem do lead: ${lead.origem} (${origemLegivel}).`,
+        'Monte a ficha SOMENTE a partir do cadastro e formulário acima:',
+        '- "resumo": perfil do lead (quem é, tempo de atuação, estrutura, produção) e ADERÊNCIA ao perfil que a empresa atende — a empresa só cadastra parceiros ME/LTDA para cima; MEI e pessoa física estão fora do perfil e isso deve ser dito com clareza no resumo.',
+        '- "memoria_novos_fatos": fatos objetivos do formulário (tipo de empresa, cidade, produção, vendedores), com "quando_dito" = data do formulário se houver.',
+        '- "msg_sugerida": abertura da LIGAÇÃO ou primeira mensagem de WhatsApp para este lead, citando algo do formulário.',
+        '- "proxima_acao_em_dias": 1 e "proxima_acao_motivo": por que ligar já.',
+        '- "nota_atendimento": null, "nota_ponto_forte": "", "nota_ponto_melhoria": "" (não há atendimento para avaliar).',
+        '- "temperatura_sugerida", "etapa_sugerida", "ultima_compra": null. "lembretes": [].',
+        'Responda apenas com o objeto JSON das 14 chaves.',
+      ].join('\n')
+    : 'Analise a conversa acima e responda apenas com o objeto JSON das 14 chaves.';
+
   const blocoMensagens =
     mensagens.length > 0
       ? mensagens
@@ -475,11 +511,12 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     blocoEtapas,
     '',
     blocoAnterior,
+    ...(blocoCadastro !== '' ? ['', blocoCadastro] : []),
     '',
     '## Conversa (mais antiga primeiro)',
     blocoMensagens,
     '',
-    'Analise a conversa acima e responda apenas com o objeto JSON das 14 chaves.',
+    instrucaoFinal,
   ].join('\n');
 
   return [
