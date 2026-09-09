@@ -102,8 +102,11 @@ export class CustomFieldsService {
    *
    * Idempotente por construção — todo write é `skipDuplicates` ou filtrado por
    * `group_id: null`, então duas requisições simultâneas não duplicam nada.
+   *
+   * Público porque a importação de planilha (modules/sheet-import) cria
+   * definições de campo por baixo da UI e precisa do bootstrap feito antes.
    */
-  private async ensureBootstrap(tenantId: string): Promise<void> {
+  async ensureTenantBootstrap(tenantId: string): Promise<void> {
     const jaTem = await this.prisma.customFieldGroup.count({ where: { tenant_id: tenantId } });
     if (jaTem > 0) return;
 
@@ -178,7 +181,7 @@ export class CustomFieldsService {
    * nova usa `schema()`.
    */
   async list(user: AuthUser) {
-    await this.ensureBootstrap(user.tenantId);
+    await this.ensureTenantBootstrap(user.tenantId);
     return this.prisma.customFieldDef.findMany({
       where: { tenant_id: user.tenantId, active: true, escopo: 'LEAD', native_key: null },
       orderBy: [{ ordem: 'asc' }, { created_at: 'asc' }],
@@ -187,7 +190,7 @@ export class CustomFieldsService {
 
   /** Schema completo: grupos + campos dos três escopos, nativos incluídos. */
   async schema(user: AuthUser) {
-    await this.ensureBootstrap(user.tenantId);
+    await this.ensureTenantBootstrap(user.tenantId);
     const [groups, fields] = await Promise.all([
       this.prisma.customFieldGroup.findMany({
         where: { tenant_id: user.tenantId },
@@ -239,7 +242,7 @@ export class CustomFieldsService {
 
   async create(body: unknown, user: AuthUser) {
     const data = createSchema.parse(body);
-    await this.ensureBootstrap(user.tenantId);
+    await this.ensureTenantBootstrap(user.tenantId);
 
     if (OPTION_TYPES.includes(data.tipo) && !data.options?.length) {
       throw new BadRequestException('Campo de seleção precisa de opções');
@@ -379,7 +382,7 @@ export class CustomFieldsService {
 
   async createGroup(body: unknown, user: AuthUser) {
     const data = groupCreateSchema.parse(body);
-    await this.ensureBootstrap(user.tenantId);
+    await this.ensureTenantBootstrap(user.tenantId);
     const existe = await this.prisma.customFieldGroup.findFirst({
       where: { tenant_id: user.tenantId, escopo: data.escopo, nome: data.nome },
     });
