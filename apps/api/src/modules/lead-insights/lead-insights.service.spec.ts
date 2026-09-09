@@ -37,7 +37,10 @@ function montar() {
     create: jest.fn(),
     update: jest.fn(),
   };
-  const prisma = { leadInsight, message, lead, stage, leadActivity, leadLembrete };
+  // Rotulos dos campos custom do tenant (ficha pre-contato). Vazio por default:
+  // a maioria dos testes nao tem cadastro nenhum.
+  const customFieldDef = { findMany: jest.fn().mockResolvedValue([]) };
+  const prisma = { leadInsight, message, lead, stage, leadActivity, leadLembrete, customFieldDef };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn(), updateStage: jest.fn(), invalidateLeadsCache: jest.fn() };
@@ -58,6 +61,7 @@ function montar() {
     stage,
     leadActivity,
     leadLembrete,
+    customFieldDef,
     queue,
     ai,
     leads,
@@ -99,6 +103,11 @@ function leadCompleto(overrides: Record<string, unknown> = {}) {
     estagio_id: 'st-proposta',
     pipeline_id: 'pipe-1',
     tenant: tenantComercial,
+    email: null,
+    empresa: null,
+    origem: 'WHATSAPP_INCOMING',
+    dados_custom: {},
+    attribution: null,
     ...overrides,
   };
 }
@@ -1976,5 +1985,139 @@ describe('LeadInsightsService.varrerLeadsParados (cron)', () => {
     expect(primeira[2].delay).toBe(0);
     expect(segunda[1]).toEqual({ leadId: 'b', tenantId: 't1' });
     expect(segunda[2].delay).toBe(30_000);
+  });
+});
+
+describe('LeadInsightsService.gerarInsight — cadastro e pré-contato', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-09-08T13:00:00Z')); // terça, 10:00 BRT
+  });
+  afterEach(() => jest.useRealTimers());
+
+  it('lead sem mensagens e sem cadastro: não chama o modelo', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto());
+    m.message.findMany.mockResolvedValue([]);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.ai.chat).not.toHaveBeenCalled();
+    expect(m.leadInsight.upsert).not.toHaveBeenCalled();
+  });
+
+  it('lead importado sem mensagens mas com formulário: gera ficha pré-contato, watermark null, próxima ação hoje', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(
+      leadCompleto({
+        origem: 'IMPORT',
+        email: 'e@x.com',
+        dados_custom: { tipo_empresa: 'MEI', producao_mensal: '500 mil', vazio: '' },
+        attribution: { utm_campaign: '[LEADS] V3', campaign_name: null },
+      }),
+    );
+    m.customFieldDef.findMany.mockResolvedValue([
+      { key: 'tipo_empresa', nome: 'Tipo de empresa' },
+      { key: 'producao_mensal', nome: 'Produção mensal' },
+    ]);
+    m.message.findMany.mockResolvedValue([]);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const [req] = m.ai.chat.mock.calls[0] as [{ messages: Array<{ role: string; content: string }> }];
+    const user = req.messages[1].content;
+    expect(user).toContain('## Cadastro e formulário');
+    expect(user).toContain('- E-mail: e@x.com');
+    expect(user).toContain('- Tipo de empresa: MEI');
+    expect(user).toContain('- Produção mensal: 500 mil');
+    expect(user).toContain('- Campanha: [LEADS] V3');
+    expect(user).not.toContain('vazio');
+    expect(user).toContain('AINDA NAO HOUVE CONVERSA');
+
+    const [args] = m.leadInsight.upsert.mock.calls[0] as [{ create: Record<string, unknown> }];
+    expect(args.create.ultima_msg_processada_at).toBeNull();
+    // Pré-contato: próxima ação é AGORA ajustada à janela comercial (10:00 BRT de terça já está dentro).
+    expect(args.create.proxima_acao_at).toEqual(new Date('2026-09-08T13:00:00Z'));
+    // Sem watermark não há "novidade durante a geração" para rechecar.
+    expect(m.message.count).not.toHaveBeenCalled();
+  });
+
+  it('só campos custom do tenant entram: chave sem CustomFieldDef fica de fora', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(
+      leadCompleto({
+        origem: 'IMPORT',
+        empresa: '  Portas & Cia  ',
+        dados_custom: { cidade: 'Curitiba', lixo_interno: 'nao mostrar' },
+      }),
+    );
+    m.customFieldDef.findMany.mockResolvedValue([{ key: 'cidade', nome: 'Cidade' }]);
+    m.message.findMany.mockResolvedValue([]);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const [chamada] = m.customFieldDef.findMany.mock.calls[0] as [Record<string, unknown>];
+    expect(chamada).toMatchObject({
+      where: { tenant_id: 't1', escopo: 'LEAD', native_key: null, key: { in: ['cidade', 'lixo_interno'] } },
+    });
+    const [req] = m.ai.chat.mock.calls[0] as [{ messages: Array<{ role: string; content: string }> }];
+    const user = req.messages[1].content;
+    expect(user).toContain('- Empresa: Portas & Cia');
+    expect(user).toContain('- Cidade: Curitiba');
+    expect(user).not.toContain('lixo_interno');
+    expect(user).not.toContain('nao mostrar');
+  });
+
+  it('lead com conversa E cadastro: bloco de cadastro entra, mas o fluxo continua o normal (watermark = última msg)', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto({ dados_custom: { cidade: 'Curitiba' } }));
+    m.customFieldDef.findMany.mockResolvedValue([{ key: 'cidade', nome: 'Cidade' }]);
+    m.message.findMany.mockResolvedValue([
+      { direction: 'INCOMING', type: 'TEXT', content: 'oi', created_at: new Date('2026-09-08T12:00:00Z') },
+    ]);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+    m.message.count.mockResolvedValue(0);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    const [req] = m.ai.chat.mock.calls[0] as [{ messages: Array<{ role: string; content: string }> }];
+    expect(req.messages[1].content).toContain('- Cidade: Curitiba');
+    expect(req.messages[1].content).not.toContain('AINDA NAO HOUVE CONVERSA');
+    const [args] = m.leadInsight.upsert.mock.calls[0] as [{ create: Record<string, unknown> }];
+    expect(args.create.ultima_msg_processada_at).toEqual(new Date('2026-09-08T12:00:00Z'));
+  });
+
+  it('sem nenhuma chave em dados_custom nao consulta os rotulos do tenant', async () => {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto({ dados_custom: null }));
+    m.message.findMany.mockResolvedValue([
+      { direction: 'INCOMING', type: 'TEXT', content: 'oi', created_at: new Date('2026-09-08T12:00:00Z') },
+    ]);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.ai.chat.mockResolvedValue({ text: RESPOSTA_OK, tokensIn: 10, tokensOut: 20 });
+    m.message.count.mockResolvedValue(0);
+
+    await m.service.gerarInsight('lead-1', 't1');
+
+    expect(m.customFieldDef.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('LeadInsightsService.enfileirarImportado', () => {
+  it('enfileira gerar com jobId lead-<id> e delay do gatilho', async () => {
+    const m = montar();
+
+    await m.service.enfileirarImportado('lead-9', 't1');
+
+    expect(m.queue.add).toHaveBeenCalledWith(
+      'gerar',
+      { leadId: 'lead-9', tenantId: 't1' },
+      expect.objectContaining({ jobId: 'lead-lead-9', delay: 2 * 60 * 1000 }),
+    );
   });
 });

@@ -889,6 +889,16 @@ export class LeadInsightsService {
     return true;
   }
 
+  /**
+   * Lead que nasceu de importacao (planilha Meta Lead Ads): nao ha mensagem
+   * para disparar o gatilho normal, entao a importacao pede a ficha
+   * diretamente. Mesmo jobId `lead-<id>` do gatilho: se a pessoa mandar
+   * mensagem nesse meio-tempo, os dois pedidos viram um so.
+   */
+  async enfileirarImportado(leadId: string, tenantId: string): Promise<void> {
+    await this.enfileirar(leadId, tenantId, `lead-${leadId}`, ATRASO_GATILHO_MS);
+  }
+
   private async enfileirar(
     leadId: string,
     tenantId: string,
@@ -1514,6 +1524,13 @@ export class LeadInsightsService {
         estagio_id: true,
         pipeline_id: true,
         estagio: { select: { nome: true } },
+        // Ficha pre-contato: sem conversa, o cadastro e o formulario sao tudo
+        // o que o modelo tem para trabalhar.
+        email: true,
+        empresa: true,
+        origem: true,
+        dados_custom: true,
+        attribution: { select: { utm_campaign: true, campaign_name: true } },
         tenant: {
           select: {
             broadcast_window_start: true,
@@ -1536,7 +1553,16 @@ export class LeadInsightsService {
       take: MSGS_CONTEXTO,
       select: { direction: true, type: true, content: true, created_at: true },
     });
-    if (recentes.length === 0) return;
+    const cadastro = await this.montarCadastro(tenantId, {
+      email: lead.email,
+      empresa: lead.empresa,
+      dados_custom: lead.dados_custom,
+      campanha: lead.attribution?.campaign_name ?? lead.attribution?.utm_campaign ?? null,
+    });
+    // Sem conversa E sem cadastro nao ha o que analisar. Com cadastro, a ficha
+    // pre-contato (perfil + abordagem) e justamente o que a importacao pede.
+    if (recentes.length === 0 && cadastro.length === 0) return;
+    const preContato = recentes.length === 0;
     const mensagens = [...recentes].reverse();
 
     const anterior = await this.prisma.leadInsight.findUnique({
@@ -1567,10 +1593,8 @@ export class LeadInsightsService {
         // A etapa atual fica de fora: oferecer a etapa em que o lead ja esta so
         // convidaria o modelo a "sugerir" o que nao muda nada.
         etapas_disponiveis: etapas.filter((e) => e.id !== lead.estagio_id).map((e) => e.nome),
-        // Placeholder: quem preenche origem e cadastro de verdade e a proxima etapa
-        // (ficha pre-contato de lead importado). Vazio = prompt igual ao de hoje.
-        origem: '',
-        cadastro: [],
+        origem: String(lead.origem),
+        cadastro,
       },
       insightAnterior: anterior
         ? { resumo: anterior.resumo, memoria: lerMemoria(anterior.memoria) }
@@ -1602,11 +1626,14 @@ export class LeadInsightsService {
       anterior ? lerMemoria(anterior.memoria) : [],
       insight.memoria_novos_fatos,
     );
-    const proximaAcao = ajustarParaJanela(
-      new Date(Date.now() + insight.proxima_acao_em_dias * DIA),
-      lead.tenant,
-    );
-    const watermark = mensagens[mensagens.length - 1].created_at;
+    // Pre-contato: o lead acabou de entrar e a acao e ligar AGORA (ajustado a
+    // janela comercial), nao daqui a N dias como numa conversa em andamento.
+    const baseProximaAcao = preContato
+      ? Date.now()
+      : Date.now() + insight.proxima_acao_em_dias * DIA;
+    const proximaAcao = ajustarParaJanela(new Date(baseProximaAcao), lead.tenant);
+    const watermark: Date | null =
+      mensagens.length > 0 ? mensagens[mensagens.length - 1].created_at : null;
 
     // Sugerir a temperatura que o lead JA tem nao e sugestao: vira card mudo na
     // ficha e, com o toggle ligado, um update que nao muda nada.
@@ -1672,7 +1699,58 @@ export class LeadInsightsService {
     // que o cliente deu vale muito, mas nao mais do que a ficha ja gravada.
     await this.criarLembretesExtraidos(leadId, tenantId, insight.lembretes);
 
-    await this.rechecarNovidade(leadId, tenantId, watermark);
+    // Sem watermark (pre-contato) nao existe "chegou mensagem durante a geracao".
+    if (watermark !== null) await this.rechecarNovidade(leadId, tenantId, watermark);
+  }
+
+  /**
+   * Linhas "rotulo: valor" do cadastro para o prompt. Campos custom entram com
+   * o rotulo do tenant (CustomFieldDef.nome) em vez da chave; nativos (native_key)
+   * ficam de fora porque ja aparecem em "Dados do lead". Valor vazio nao entra.
+   */
+  private async montarCadastro(
+    tenantId: string,
+    lead: { email: string | null; empresa: string | null; dados_custom: unknown; campanha: string | null },
+  ): Promise<Array<{ rotulo: string; valor: string }>> {
+    const itens: Array<{ rotulo: string; valor: string }> = [];
+    // Rotulo vazio viraria "- : algo" no prompt e valor vazio, linha morta.
+    const juntar = (rotulo: string, valor: string): void => {
+      const r = rotulo.trim();
+      const v = valor.trim();
+      if (r !== '' && v !== '') itens.push({ rotulo: r, valor: v });
+    };
+
+    juntar('E-mail', lead.email ?? '');
+    juntar('Empresa', lead.empresa ?? '');
+
+    const dados =
+      lead.dados_custom && typeof lead.dados_custom === 'object' && !Array.isArray(lead.dados_custom)
+        ? (lead.dados_custom as Record<string, unknown>)
+        : {};
+    const chaves = Object.keys(dados);
+    if (chaves.length > 0) {
+      const defs = await this.prisma.customFieldDef.findMany({
+        where: { tenant_id: tenantId, escopo: 'LEAD', native_key: null, key: { in: chaves } },
+        select: { key: true, nome: true },
+        orderBy: { ordem: 'asc' },
+      });
+      for (const d of defs) {
+        // O prompt trata `valor` como string (chama .replace nele): tudo o que
+        // nao for texto/numero/booleano/lista vira '' e cai fora.
+        const v = dados[d.key];
+        const texto =
+          typeof v === 'string'
+            ? v
+            : typeof v === 'number' || typeof v === 'boolean'
+              ? String(v)
+              : Array.isArray(v)
+                ? v.map(String).join(', ')
+                : '';
+        juntar(d.nome, texto);
+      }
+    }
+    juntar('Campanha', lead.campanha ?? '');
+    return itens;
   }
 
   /**
