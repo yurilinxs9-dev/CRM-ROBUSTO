@@ -52,3 +52,9 @@ as do CRM (zero tabelas Evolution).
 - Helper read-only: `apps/api/scripts/introspect-db.mjs`.
 - rtk hook quebra `npx prisma migrate ...` (PATH) — chamar via
   `node ../../node_modules/prisma/build/index.js ...`.
+
+## Meta Lead Ads sheet import
+- `apps/api/src/modules/sheet-import/`: public CSV at boot and every 5 minutes, scoped by SHEET_IMPORT_TENANT_ID and SHEET_IMPORT_SHEET_ID. Empty values disable it.
+- SheetImportRow deduplicates rows; telephone/pipeline/scope deduplicates leads. New leads are unassigned in the base stage with form fields, tags and pre-contact AI insights.
+- Apply only the additive SheetImportRow migration before enabling. Never migrate deploy or db push.
+- Spec: docs/superpowers/specs/2026-09-08-importacao-planilha-meta-design.md.

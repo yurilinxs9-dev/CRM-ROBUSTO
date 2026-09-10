@@ -39,6 +39,12 @@ services:
       - AI_ALLOWED_HOSTS=api.anthropic.com,api.openai.com,openrouter.ai,api.groq.com,api.deepseek.com,api.mistral.ai,api.x.ai,api.together.xyz,generativelanguage.googleapis.com,api.z.ai
       # Paralelismo do worker de fichas: 1 p/ modelo local; 10 p/ API remota.
       - LEAD_INSIGHTS_CONCURRENCY=${LEAD_INSIGHTS_CONCURRENCY:-1}
+      # Meta Lead Ads: disabled without tenant and sheet.
+      - SHEET_IMPORT_TENANT_ID=${SHEET_IMPORT_TENANT_ID:-}
+      - SHEET_IMPORT_SHEET_ID=${SHEET_IMPORT_SHEET_ID:-}
+      - SHEET_IMPORT_GID=${SHEET_IMPORT_GID:-}
+      - SHEET_IMPORT_PIPELINE_ID=${SHEET_IMPORT_PIPELINE_ID:-}
+      - SHEET_IMPORT_STAGE_ID=${SHEET_IMPORT_STAGE_ID:-}
       - WEBHOOK_PUBLIC_URL=${WEBHOOK_PUBLIC_URL}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}

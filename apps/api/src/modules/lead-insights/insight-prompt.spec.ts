@@ -449,3 +449,21 @@ describe('montarPromptInsight — cadastro e pré-contato', () => {
     expect(user.content).toContain('planilha de leads do Meta Lead Ads');
   });
 });
+
+describe('pre-contact policy tenant isolation', () => {
+  it('does not apply the pilot sales policy to another tenant', () => {
+    const ctx = ctxMinimo();
+    ctx.mensagens = [];
+    ctx.lead.cadastro = [{ rotulo: 'Empresa', valor: 'MEI' }];
+    const prompt = montarPromptInsight(ctx);
+    expect(prompt[1].content).not.toContain('a empresa só cadastra parceiros ME/LTDA');
+  });
+});
+
+it('preserves the pilot sales policy for Taynara', () => {
+  const ctx = ctxMinimo();
+  ctx.tenantId = 'a44772ed-1382-4400-84fc-3fa350e23e42';
+  ctx.mensagens = [];
+  ctx.lead.cadastro = [{ rotulo: 'Empresa', valor: 'MEI' }];
+  expect(montarPromptInsight(ctx)[1].content).toContain('a empresa só cadastra parceiros ME/LTDA');
+});

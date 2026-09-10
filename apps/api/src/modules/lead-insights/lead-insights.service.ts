@@ -1584,6 +1584,7 @@ export class LeadInsightsService {
     });
 
     const contexto: InsightContexto = {
+      tenantId,
       lead: {
         nome: achatar(lead.nome),
         telefone: achatar(lead.telefone),

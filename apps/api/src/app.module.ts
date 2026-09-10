@@ -1,3 +1,4 @@
+import { SheetImportModule } from './modules/sheet-import/sheet-import.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -130,6 +131,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     AiModule,
     BroadcastsModule,
     LeadInsightsModule,
+    SheetImportModule,
     QueueModule,
   ],
   providers: [

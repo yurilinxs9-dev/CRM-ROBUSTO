@@ -8,6 +8,8 @@ export interface MemoriaFato {
 
 /** Contexto que o worker (Task 4) monta antes de chamar o modelo. */
 export interface InsightContexto {
+  /** Business policy applies only to this pilot tenant. */
+  tenantId?: string;
   lead: {
     nome: string | null;
     telefone: string | null;
@@ -487,7 +489,9 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     ? [
         `AINDA NAO HOUVE CONVERSA com este lead. Origem do lead: ${lead.origem} (${origemLegivel}).`,
         'Monte a ficha SOMENTE a partir do cadastro e formulário acima:',
-        '- "resumo": perfil do lead (quem é, tempo de atuação, estrutura, produção) e ADERÊNCIA ao perfil que a empresa atende — a empresa só cadastra parceiros ME/LTDA para cima; MEI e pessoa física estão fora do perfil e isso deve ser dito com clareza no resumo.',
+        ctx.tenantId === 'a44772ed-1382-4400-84fc-3fa350e23e42'
+          ? '- "resumo": perfil do lead (quem é, tempo de atuação, estrutura, produção) e ADERÊNCIA ao perfil que a empresa atende — a empresa só cadastra parceiros ME/LTDA para cima; MEI e pessoa física estão fora do perfil e isso deve ser dito com clareza no resumo.'
+          : '- resumo: descreva o perfil com base no cadastro, sem presumir criterios comerciais de elegibilidade.',
         '- "memoria_novos_fatos": fatos objetivos do formulário (tipo de empresa, cidade, produção, vendedores), com "quando_dito" = data do formulário se houver.',
         '- "msg_sugerida": abertura da LIGAÇÃO ou primeira mensagem de WhatsApp para este lead, citando algo do formulário.',
         '- "proxima_acao_em_dias": 1 e "proxima_acao_motivo": por que ligar já.',

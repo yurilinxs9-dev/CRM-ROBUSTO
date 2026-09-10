@@ -220,6 +220,11 @@ export class SheetImportService implements OnModuleInit {
         await this.vincularTags(tx, existente.id, ctx.tenantId, tagIds);
         await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, existente.id);
       });
+      try {
+        this.gateway.emitLeadUpdated(existente.id, data, ctx.tenantId);
+      } catch (err) {
+        this.logger.warn(`WS lead:updated failed for ${existente.id}: ${String(err)}`);
+      }
       return 'attached';
     }
 
@@ -316,8 +321,101 @@ export class SheetImportService implements OnModuleInit {
     });
   }
 
-  // run() entra na Task 7.
-  async run(): Promise<RunSummary> {
-    throw new Error('não implementado');
+  sheetUrl(): string {
+    const base = `https://docs.google.com/spreadsheets/d/${this.sheetId}/export?format=csv`;
+    return this.gid !== '' ? `${base}&gid=${encodeURIComponent(this.gid)}` : base;
   }
+
+  private async baixarCsv(): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(this.sheetUrl(), { signal: controller.signal, redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ao baixar a planilha`);
+      const texto = await res.text();
+      // Planilha privada devolve a página de login do Google com status 200.
+      const cabecalho = texto.slice(0, 2000);
+      if (!cabecalho.includes('id') || !cabecalho.includes('Telefone') || cabecalho.trimStart().startsWith('<')) {
+        throw new Error('planilha não está acessível por link público (resposta não é CSV com colunas id/Telefone)');
+      }
+      return texto;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async run(): Promise<RunSummary> {
+    const csv = await this.baixarCsv();
+    const hash = createHash('sha256').update(csv).digest('hex');
+    const rows = parseCsv(csv);
+    const resumo: RunSummary = { total: rows.length, novas: 0, anexadas: 0, puladas: 0, erros: 0, semMudanca: false };
+
+    if (hash === this.lastHash) {
+      resumo.semMudanca = true;
+      this.logger.debug('Planilha sem mudanças desde a última rodada');
+      return resumo;
+    }
+
+    const vistas = await this.prisma.sheetImportRow.findMany({
+      where: { tenant_id: this.tenantId },
+      select: { source_row_id: true, status: true, attempts: true },
+    });
+    const registro = new Map(vistas.map((v) => [v.source_row_id, v]));
+
+    const pendentes = rows.filter((row) => {
+      const id = (row.id ?? '').trim();
+      const visto = registro.get(id);
+      if (!visto) return true;
+      return visto.status === 'error' && visto.attempts < MAX_TENTATIVAS;
+    });
+
+    if (pendentes.length > 0) {
+      await this.ensureFieldDefs(this.tenantId);
+      const ctx = await this.resolveContext();
+
+      for (const row of pendentes) {
+        const mapped = mapRow(row);
+        if (!mapped.ok) {
+          const id = (row.id ?? '').trim() || `sem-id:${resumo.puladas}`;
+          await this.marcarLinha(id, 'skipped', mapped.motivo);
+          resumo.puladas++;
+          continue;
+        }
+        try {
+          const r = await this.processRow(mapped.lead, ctx);
+          if (r === 'created') resumo.novas++;
+          else resumo.anexadas++;
+        } catch (err) {
+          resumo.erros++;
+          const msg = (err as Error).message ?? String(err);
+          this.logger.warn(`Linha ${mapped.lead.sourceRowId} falhou: ${msg}`);
+          await this.marcarLinha(mapped.lead.sourceRowId, 'error', msg);
+        }
+      }
+    }
+
+    if (resumo.erros === 0) this.lastHash = hash;
+    this.logger.log(
+      `Importação da planilha: ${resumo.total} linhas, ${resumo.novas} novas, ${resumo.anexadas} anexadas, ${resumo.puladas} puladas, ${resumo.erros} erros`,
+    );
+    return resumo;
+  }
+
+  private async marcarLinha(sourceRowId: string, status: 'skipped' | 'error', detail: string): Promise<void> {
+    const where = { tenant_id_source_row_id: { tenant_id: this.tenantId, source_row_id: sourceRowId } };
+    if (status === 'skipped') {
+      await this.prisma.sheetImportRow.upsert({
+        where,
+        create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail },
+        update: { status, detail },
+      });
+      return;
+    }
+    await this.prisma.sheetImportRow.upsert({
+      where,
+      create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail, attempts: 1 },
+      update: { status, detail, attempts: { increment: 1 } },
+    });
+  }
+
 }
