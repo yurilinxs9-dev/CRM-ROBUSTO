@@ -174,11 +174,23 @@ export default function LoginPage() {
               </p>
             </form>
           </CardContent>
-          <CardFooter className="justify-center">
+          <CardFooter className="flex-col gap-3">
             <span className="text-sm text-muted-foreground">
               Não tem conta?{' '}
               <a href="/register" className="text-primary hover:underline font-medium">
                 Criar agora
+              </a>
+            </span>
+            {/* Os documentos legais precisam de uma porta publica. O login e a
+                unica tela que alguem de fora alcanca sem sessao — inclusive o
+                revisor da Meta, que checa se as URLs estao acessiveis. */}
+            <span className="text-xs text-muted-foreground">
+              <a href="/privacidade" className="hover:underline">
+                Política de Privacidade
+              </a>
+              {' · '}
+              <a href="/termos" className="hover:underline">
+                Termos de Serviço
               </a>
             </span>
           </CardFooter>
