@@ -33,7 +33,12 @@ export interface DadosEmpresa {
    * Pode ser uma pessoa ou um setor; o que a lei exige e que seja identificavel.
    */
   encarregado: string;
-  /** Dominio publico onde os documentos legais ficam servidos, sem barra final. */
+  /**
+   * Dominio publico onde os documentos legais ficam servidos, sem barra final.
+   * Vira a URL canonica das duas paginas — e e a URL que a Meta cadastra no
+   * App Review, entao ela precisa ser a que fica de pe a longo prazo. Trocar
+   * aqui assim que houver dominio proprio no lugar do subdominio da Vercel.
+   */
   dominioPublico: string;
   /** Foro eleito para dirimir conflitos (comarca/UF). */
   foro: string;
@@ -47,7 +52,7 @@ export const EMPRESA: DadosEmpresa = {
   emailPrivacidade: PENDENTE,
   emailSuporte: PENDENTE,
   encarregado: PENDENTE,
-  dominioPublico: 'https://painel.gestaorm.online',
+  dominioPublico: 'https://crm-robusto-nine.vercel.app',
   foro: PENDENTE,
 };
 
