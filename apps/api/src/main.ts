@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './common/socket/redis-io.adapter';
 import { json, raw, urlencoded } from 'express';
+import type { IncomingMessage } from 'node:http';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { Logger as PinoLogger } from 'nestjs-pino';
@@ -33,6 +34,27 @@ async function bootstrap() {
     app.use(path, json({ limit: '60mb' }));
     app.use(path, urlencoded({ extended: true, limit: '60mb' }));
   }
+  // Webhook da Meta: guarda o corpo BRUTO antes do parse.
+  //
+  // A Meta assina cada POST com X-Hub-Signature-256, um HMAC sobre os bytes
+  // exatos que trafegaram. Depois do JSON.parse esses bytes nao voltam —
+  // ordem de chaves, espacos e escape de unicode mudam — e a assinatura nunca
+  // conferiria. Como a rota e @Public(), sem a assinatura qualquer um poderia
+  // injetar evento.
+  //
+  // Montado ANTES do json() global e restrito a este path: body-parser marca
+  // req._body apos o primeiro parse, entao o parser generico adiante nao mexe
+  // mais no corpo. Mesmo padrao dos LARGE_BODY_PATHS acima.
+  app.use(
+    '/api/webhook/meta',
+    json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as IncomingMessage & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+
   app.use(json({ limit: '1mb' }));
   app.use(urlencoded({ extended: true, limit: '1mb' }));
   app.use(raw({ limit: '60mb', type: 'application/octet-stream' }));

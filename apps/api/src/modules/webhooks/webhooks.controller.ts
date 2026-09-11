@@ -1,9 +1,13 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
+  Get,
+  Header,
   Logger,
   Param,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -21,6 +25,13 @@ import {
   WebhookContext,
   WebhookSecretGuard,
 } from './guards/webhook-secret.guard';
+import {
+  extrairPhoneNumberIds,
+  nomearEvento,
+  resolverDesafio,
+  verificarAssinatura,
+  type QueryVerificacao,
+} from './meta-signature';
 
 const webhookSchema = z.object({
   event: z.string(),
@@ -199,6 +210,125 @@ export class WebhooksController {
       null;
 
     return this.enqueueUazapi(body, ctx.tenantId, instanceName);
+  }
+
+  // -------------------------------------------------------------------------
+  // Meta — WhatsApp Cloud API (API oficial)
+  // -------------------------------------------------------------------------
+  //
+  // Diferente dos outros dois providers em tres pontos que mudam o desenho:
+  //
+  //   1. A URL e UMA so para o App inteiro. Nao ha segredo por instancia na
+  //      URL (UazAPI) nem nome de instancia no corpo (Evolution): o tenant sai
+  //      do phone_number_id dentro do payload.
+  //   2. A Meta valida a URL com um GET antes de mandar qualquer POST. Sem a
+  //      rota GET abaixo, o webhook nao chega a ser aceito no painel.
+  //   3. A autenticidade vem da assinatura HMAC do corpo bruto com o App
+  //      Secret — por isso o main.ts guarda o buffer so nesta rota.
+
+  /**
+   * Resolve o tenant pelo numero que recebeu o evento.
+   *
+   * Enquanto nao houver instancia `meta_cloud` cadastrada isso devolve null, e
+   * o evento e registrado sem tenant — mesmo comportamento dos outros
+   * providers diante de instancia desconhecida.
+   */
+  private async resolveTenantByPhoneNumberId(
+    phoneNumberIds: string[],
+  ): Promise<string | null> {
+    for (const id of phoneNumberIds) {
+      const inst = await this.prisma.whatsappInstance.findFirst({
+        where: { config: { path: ['phone_number_id'], equals: id } },
+        select: { tenant_id: true },
+      });
+      if (inst) return inst.tenant_id;
+    }
+    return null;
+  }
+
+  /**
+   * Handshake de verificacao do webhook.
+   *
+   * A resposta tem que ser o `hub.challenge` CRU — daí o Content-Type text/plain
+   * explicito: o default do Nest para string e text/html, e a Meta ja recusou
+   * configuracao por causa disso.
+   *
+   * Token errado responde 403, nao 200: um 200 generoso deixaria qualquer um
+   * apontar o proprio App para esta URL.
+   */
+  @Public()
+  @Get('meta')
+  @Header('Content-Type', 'text/plain; charset=utf-8')
+  verifyMeta(@Query() query: QueryVerificacao): string {
+    const challenge = resolverDesafio(query, process.env.META_VERIFY_TOKEN ?? '');
+    if (challenge === null) {
+      this.logger.warn({
+        event: 'webhook.meta.verify_rejected',
+        mode: query['hub.mode'] ?? null,
+        token_configurado: Boolean(process.env.META_VERIFY_TOKEN),
+      });
+      throw new ForbiddenException();
+    }
+    this.logger.log({ event: 'webhook.meta.verify_ok' });
+    return challenge;
+  }
+
+  /**
+   * Recebimento de eventos.
+   *
+   * Por ora apenas autentica e registra: o `webhook.processor` ainda nao tem
+   * via para `meta.*`, e enfileirar agora so marcaria os eventos como
+   * processados no default do switch — perdendo-os de vez. Ficam no WebhookLog
+   * com processed=false, prontos para reprocessamento quando o handler existir.
+   *
+   * ATENCAO: o WebhookLog e podado em 7 dias (data-retention.service). Nao
+   * assine o campo `messages` em producao antes do handler, ou mensagem real
+   * de cliente entra aqui e expira sem ser atendida.
+   */
+  @Public()
+  @Post('meta')
+  async handleMeta(
+    @Body() body: Record<string, unknown>,
+    @Req() req: Request & { rawBody?: Buffer },
+  ): Promise<{ received: true }> {
+    const assinaturaOk = verificarAssinatura(
+      req.rawBody,
+      req.header('x-hub-signature-256'),
+      process.env.META_APP_SECRET ?? '',
+    );
+    if (!assinaturaOk) {
+      this.logger.warn({
+        event: 'webhook.meta.bad_signature',
+        tem_raw_body: Boolean(req.rawBody),
+        segredo_configurado: Boolean(process.env.META_APP_SECRET),
+      });
+      throw new UnauthorizedException();
+    }
+
+    const phoneNumberIds = extrairPhoneNumberIds(body);
+    const tenantId = await this.resolveTenantByPhoneNumberId(phoneNumberIds);
+    const evento = nomearEvento(body);
+
+    await this.prisma.webhookLog.create({
+      data: {
+        event: evento,
+        instance: phoneNumberIds[0] ?? null,
+        payload: JSON.parse(JSON.stringify(body)),
+        processed: false,
+        tenant_id: tenantId,
+      },
+    });
+
+    this.logger.log({
+      event: 'webhook.meta.received',
+      tipo: evento,
+      tenant_resolvido: tenantId !== null,
+      numeros: phoneNumberIds.length,
+    });
+
+    // 200 imediato: a Meta reenvia o evento se demorarmos, e reenvio duplica
+    // trabalho la na frente.
+    return { received: true };
   }
 
   private async enqueueUazapi(
