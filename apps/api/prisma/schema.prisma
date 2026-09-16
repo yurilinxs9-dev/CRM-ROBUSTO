@@ -112,6 +112,10 @@ model Tenant {
   /// (Stage.user_id). Spec docs/superpowers/specs/2026-09-01-kanban-individual-design.md.
   kanban_individual         Boolean   @default(false)
 
+  sales_partners SalesPartner[]
+  partner_productions PartnerDailyProduction[]
+  partner_goals PartnerMonthlyGoal[]
+  partner_audits PartnerProductionAudit[]
   owner               User               @relation("TenantOwner", fields: [owner_id], references: [id])
   users               User[]             @relation("TenantMembers")
   pipelines           Pipeline[]
@@ -172,6 +176,10 @@ model User {
   // será NOT NULL usamos Restrict (setor só some via soft delete active=false).
   sector_id         String?
   sector            Sector?            @relation(fields: [sector_id], references: [id], onDelete: Restrict)
+  sales_partners SalesPartner[] @relation("PartnerOwner")
+  partner_productions PartnerDailyProduction[] @relation("PartnerProductionActor")
+  partner_goals PartnerMonthlyGoal[] @relation("PartnerGoalActor")
+  partner_audits PartnerProductionAudit[] @relation("PartnerAuditActor")
   owned_tenants     Tenant[]           @relation("TenantOwner")
   owned_instances   WhatsappInstance[] @relation("OwnedInstances")
   created_at        DateTime           @default(now())
@@ -409,6 +417,7 @@ model Lead {
   conversations Conversation[]
   // Relação virtual: NÃO gera coluna nem DDL em "Lead". A FK vive em
   // LeadContact, tabela nova. Ver "Interpretação" no plano da feature.
+  sales_partners SalesPartner[]
   lead_contacts LeadContact[]
   // Idem: a FK vive em LeadAttribution. Nenhum ALTER em "Lead".
   attribution   LeadAttribution?
@@ -1432,3 +1441,74 @@ model SheetImportRow {
   @@unique([tenant_id, source_row_id])
   @@index([tenant_id, status])
 }
+model SalesPartner {
+  id String @id @default(uuid())
+  tenant_id String
+  name String
+  contact String?
+  phone String?
+  notes String?
+  joined_on DateTime @db.Date
+  active Boolean @default(true)
+  owner_id String?
+  lead_id String?
+  version Int @default(1)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  tenant Tenant @relation(fields:[tenant_id], references:[id], onDelete:Restrict)
+  owner User? @relation("PartnerOwner", fields:[owner_id], references:[id], onDelete:Restrict)
+  lead Lead? @relation(fields:[lead_id], references:[id], onDelete:Restrict)
+  productions PartnerDailyProduction[]
+  audits PartnerProductionAudit[]
+  @@unique([tenant_id,id])
+  @@unique([tenant_id,lead_id])
+  @@index([tenant_id,active])
+}
+model PartnerDailyProduction {
+  id String @id @default(uuid())
+  tenant_id String
+  partner_id String
+  date DateTime @db.Date
+  amount Decimal @db.Decimal(16,2)
+  note String?
+  version Int @default(1)
+  updated_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  tenant Tenant @relation(fields:[tenant_id], references:[id], onDelete:Restrict)
+  partner SalesPartner @relation(fields:[tenant_id,partner_id], references:[tenant_id,id], onDelete:Restrict)
+  actor User @relation("PartnerProductionActor", fields:[updated_by], references:[id], onDelete:Restrict)
+  @@unique([tenant_id,partner_id,date])
+  @@index([tenant_id,date])
+}
+model PartnerMonthlyGoal {
+  id String @id @default(uuid())
+  tenant_id String
+  month String
+  amount Decimal @db.Decimal(16,2)
+  version Int @default(1)
+  updated_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  tenant Tenant @relation(fields:[tenant_id], references:[id], onDelete:Restrict)
+  actor User @relation("PartnerGoalActor", fields:[updated_by], references:[id], onDelete:Restrict)
+  @@unique([tenant_id,month])
+}
+model PartnerProductionAudit {
+  id String @id @default(uuid())
+  tenant_id String
+  partner_id String?
+  action String
+  entity_id String
+  actor_id String
+  before Json?
+  after Json
+  created_at DateTime @default(now())
+  tenant Tenant @relation(fields:[tenant_id], references:[id], onDelete:Restrict)
+  partner SalesPartner? @relation(fields:[tenant_id,partner_id], references:[tenant_id,id], onDelete:Restrict)
+  actor User @relation("PartnerAuditActor", fields:[actor_id], references:[id], onDelete:Restrict)
+  @@index([tenant_id,created_at])
+  @@index([tenant_id,partner_id,created_at])
+}
+
+

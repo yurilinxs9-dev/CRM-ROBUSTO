@@ -1,6 +1,7 @@
 'use client';
 
-import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle } from 'lucide-react';
+import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle, Users } from 'lucide-react';
+import { canAccessPartners } from '@/lib/partners';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -19,6 +20,7 @@ export interface NavEntry {
 export const NAV_ITEMS: NavEntry[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { href: '/analytics', label: 'Analytics', icon: BarChart3, exact: true },
+  { href: '/partners', label: 'Parceiros', icon: Users, exact: true },
   { href: '/kanban', label: 'Kanban', icon: Kanban },
   // Vizinho do Kanban de propósito: são a MESMA view de leads vista de dois
   // jeitos, e o toggle da ViewBar leva de um para o outro.
@@ -45,7 +47,8 @@ export const NAV_ITEMS: NavEntry[] = [
  * predicado faria a palette virar porta dos fundos para tela que o menu esconde
  * do mesmo usuário — e a divergência só apareceria em produção, no papel errado.
  */
-export function navVisivelPara(item: NavEntry, role: string | undefined): boolean {
+export function navVisivelPara(item: NavEntry, role: string | undefined, tenantId?: string): boolean {
+  if (item.href === '/partners') return canAccessPartners(tenantId);
   // VISUALIZADOR nao tem acesso a Conversas.
   if (item.href === '/chat' && role === 'VISUALIZADOR') return false;
   // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).
@@ -62,8 +65,9 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, className }: SidebarProps) {
   const role = useAuthStore((s) => s.user?.role);
+  const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
-  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role));
+  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId));
 
   return (
     <aside

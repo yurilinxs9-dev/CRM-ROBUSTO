@@ -1,0 +1,10 @@
+import { z } from 'zod';
+export const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data deve ser YYYY-MM-DD').refine(v => { const d = new Date(`${v}T00:00:00Z`); return !Number.isNaN(d.valueOf()) && d.toISOString().slice(0,10) === v && Number(v.slice(0,4)) >= 1900; }, 'Data inválida');
+export const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Mês deve ser YYYY-MM').refine(v => Number(v.slice(0,4)) >= 1900, 'Mês inválido');
+export const moneySchema = z.string().regex(/^(0|[1-9]\d{0,11})(\.\d{1,2})?$/, 'Informe valor positivo com até dois centavos (máximo 999999999999.99)');
+const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
+const fields = { name: z.string().trim().min(1).max(200), contact: nullableText(200), phone: nullableText(40), notes: nullableText(3000), joined_on: dateSchema, owner_id: z.string().uuid().nullable().optional() };
+export const createPartnerSchema = z.object({ ...fields, lead_id: z.string().uuid().nullable().optional() }).strict();
+export const updatePartnerSchema = z.object({ ...fields, active: z.boolean() }).partial().extend({ expectedVersion: z.number().int().min(1) }).strict();
+export const productionSchema = z.object({ amount: moneySchema, note: z.string().trim().max(3000).nullable().optional(), expectedVersion: z.number().int().min(0) }).strict();
+export const goalSchema = z.object({ amount: moneySchema, expectedVersion: z.number().int().min(0) }).strict();

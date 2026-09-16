@@ -61,6 +61,7 @@ export function CommandPalette(): JSX.Element {
   const router = useRouter();
   const pathname = usePathname();
   const role = useAuthStore((s) => s.user?.role);
+  const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
   const [open, setOpen] = useState(false);
   const [busca, setBusca] = useState('');
@@ -193,10 +194,10 @@ export function CommandPalette(): JSX.Element {
 
   const filtro = busca.trim().toLowerCase();
   const navegacaoVisivel = useMemo(() => {
-    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role));
+    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId));
     if (isPlatformAdmin) itens.push(ITEM_ADMIN);
     return itens.filter((item) => contem(item.label, filtro));
-  }, [role, isPlatformAdmin, filtro]);
+  }, [role, tenantId, isPlatformAdmin, filtro]);
   const viewsVisiveis = useMemo(
     () => views.filter((v) => contem(v.nome, filtro)),
     [views, filtro],

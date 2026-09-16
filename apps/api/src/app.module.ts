@@ -1,3 +1,4 @@
+import { PartnersModule } from './modules/partners/partners.module';
 import { SheetImportModule } from './modules/sheet-import/sheet-import.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -132,6 +133,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     BroadcastsModule,
     LeadInsightsModule,
     SheetImportModule,
+    PartnersModule,
     QueueModule,
   ],
   providers: [
@@ -140,3 +142,4 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
   ],
 })
 export class AppModule {}
+
