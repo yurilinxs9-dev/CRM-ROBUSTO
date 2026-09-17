@@ -61,6 +61,33 @@ export class PartnersService {
     this.authorize(user,'manager'); const {expectedVersion,...data}=parse(updatePartnerSchema,input);
     const result=await this.transaction(async tx=>{ const before=await this.partner(tx,user.tenantId,id); await this.validateOwner(tx,user.tenantId,data.owner_id); const updated=await tx.salesPartner.updateMany({where:{id,tenant_id:user.tenantId,version:expectedVersion},data:{...data,...(data.joined_on ? {joined_on:dateValue(data.joined_on)} : {}),version:{increment:1}}}); if(updated.count !== 1) throw new ConflictException('Parceiro alterado. Recarregue antes de salvar'); const after=await this.partner(tx,user.tenantId,id); await this.audit(tx,user,'partner.updated',id,id,before,after); return {...after,joined_on:dateString(after.joined_on)}; }); this.notify(user.tenantId); return result;
   }
+  async remove(user: AuthUser, id: string, input: unknown) {
+    this.authorize(user, 'manager');
+    const { expectedVersion } = parse(z.object({ expectedVersion: z.number().int().min(1) }).strict(), input);
+    try {
+      const result = await this.transaction(async tx => {
+        const before = await this.partner(tx, user.tenantId, id);
+        if (before.version !== expectedVersion) throw new ConflictException('Parceiro alterado. Recarregue antes de excluir.');
+        // Check every month, including zero-value entries: no sales history is erased.
+        if (await tx.partnerDailyProduction.findFirst({ where: { tenant_id: user.tenantId, partner_id: id }, select: { id: true } })) {
+          throw new BadRequestException('Este parceiro possui lançamentos de vendas e não pode ser excluído. Use Editar para desativá-lo e preservar o histórico.');
+        }
+        // Keep the audit snapshots and entity IDs, removing only the restrictive FK.
+        await tx.partnerProductionAudit.updateMany({ where: { tenant_id: user.tenantId, partner_id: id }, data: { partner_id: null } });
+        const deleted = await tx.salesPartner.deleteMany({ where: { id, tenant_id: user.tenantId, version: expectedVersion } });
+        if (deleted.count !== 1) throw new ConflictException('Parceiro alterado. Recarregue antes de excluir.');
+        await this.audit(tx, user, 'partner.deleted', id, null, before, { deleted: true, name: before.name });
+        return { id, deleted: true };
+      });
+      this.notify(user.tenantId);
+      return result;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new ConflictException('O parceiro recebeu um registro vinculado. Atualize a lista antes de continuar.');
+      }
+      throw error;
+    }
+  }
   async production(user: AuthUser, id: string, dateInput: unknown, input: unknown) {
     this.authorize(user,'operator'); const date=parse(dateSchema,dateInput); if(date>businessToday()) throw new BadRequestException('Datas futuras não são permitidas'); const data=parse(productionSchema,input);
     const result=await this.transaction(async tx=>{ const partner=await this.partner(tx,user.tenantId,id); const where={tenant_id_partner_id_date:{tenant_id:user.tenantId,partner_id:id,date:dateValue(date)}}; const before=await tx.partnerDailyProduction.findUnique({where});

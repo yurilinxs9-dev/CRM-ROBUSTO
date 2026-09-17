@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthUser } from '../../common/types/auth-user';
 import { PartnersService } from './partners.service';
@@ -11,6 +11,7 @@ export class PartnersController {
   @Get('audit') audit(@Req() req: {user:AuthUser}, @Query('partner_id') id?: string) { return this.service.history(req.user,id); }
   @Post() create(@Req() req: {user:AuthUser}, @Body() body: unknown) { return this.service.create(req.user,body); }
   @Patch(':id') update(@Req() req: {user:AuthUser}, @Param('id') id: string, @Body() body: unknown) { return this.service.update(req.user,id,body); }
+  @Delete(':id') remove(@Req() req: {user:AuthUser}, @Param('id') id: string, @Body() body: unknown) { return this.service.remove(req.user,id,body); }
   @Put('goals/:month') goal(@Req() req: {user:AuthUser}, @Param('month') month: string, @Body() body: unknown) { return this.service.goal(req.user,month,body); }
   @Put(':id/production/:date') production(@Req() req: {user:AuthUser}, @Param('id') id: string, @Param('date') date: string, @Body() body: unknown) { return this.service.production(req.user,id,date,body); }
 }

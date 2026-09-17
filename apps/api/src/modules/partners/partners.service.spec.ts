@@ -10,7 +10,7 @@ const user:AuthUser={id,nome:'Operator',email:'local@example.test',role:'OPERADO
 const partner={id,tenant_id:PARTNER_TENANT_ID,active:true,name:'Local partner',version:1};
 const existing={id,tenant_id:PARTNER_TENANT_ID,partner_id:id,date:new Date('2026-01-01T00:00:00Z'),amount:new Prisma.Decimal('1'),note:null,version:1,updated_at:new Date('2026-01-01T00:00:00Z')};
 function fixture() {
- const tx={salesPartner:{findMany:jest.fn(),findFirst:jest.fn().mockResolvedValue(partner),updateMany:jest.fn().mockResolvedValue({count:1}),create:jest.fn()},partnerDailyProduction:{findMany:jest.fn(),findUnique:jest.fn().mockResolvedValue(null),create:jest.fn().mockResolvedValue({...existing,amount:new Prisma.Decimal('12.34')}),updateMany:jest.fn().mockResolvedValue({count:1}),findUniqueOrThrow:jest.fn().mockResolvedValue({...existing,version:2})},partnerMonthlyGoal:{findUnique:jest.fn().mockResolvedValue(null),create:jest.fn(),updateMany:jest.fn(),findUniqueOrThrow:jest.fn()},partnerProductionAudit:{create:jest.fn().mockResolvedValue({})},user:{findMany:jest.fn(),findFirst:jest.fn().mockResolvedValue(null)},lead:{findFirst:jest.fn().mockResolvedValue(null),findMany:jest.fn().mockResolvedValue([])}};
+ const tx={salesPartner:{deleteMany:jest.fn().mockResolvedValue({count:1}),findMany:jest.fn(),findFirst:jest.fn().mockResolvedValue(partner),updateMany:jest.fn().mockResolvedValue({count:1}),create:jest.fn()},partnerDailyProduction:{findFirst:jest.fn().mockResolvedValue(null),findMany:jest.fn(),findUnique:jest.fn().mockResolvedValue(null),create:jest.fn().mockResolvedValue({...existing,amount:new Prisma.Decimal('12.34')}),updateMany:jest.fn().mockResolvedValue({count:1}),findUniqueOrThrow:jest.fn().mockResolvedValue({...existing,version:2})},partnerMonthlyGoal:{findUnique:jest.fn().mockResolvedValue(null),create:jest.fn(),updateMany:jest.fn(),findUniqueOrThrow:jest.fn()},partnerProductionAudit:{updateMany:jest.fn().mockResolvedValue({count:1}),create:jest.fn().mockResolvedValue({})},user:{findMany:jest.fn(),findFirst:jest.fn().mockResolvedValue(null)},lead:{findFirst:jest.fn().mockResolvedValue(null),findMany:jest.fn().mockResolvedValue([])}};
  const prisma={...tx,$transaction:jest.fn(async (fn: (value:typeof tx)=>Promise<unknown>)=>fn(tx))}; const emit=jest.fn(); const to=jest.fn().mockReturnValue({emit}); const service=new PartnersService(prisma as unknown as PrismaService,{server:{to}} as unknown as CrmGateway); return {service,tx,prisma,emit,to};
 }
 describe('partners service isolation and concurrency',()=>{
@@ -41,3 +41,39 @@ describe('partners dashboard',()=>{
  it('rejects stale goal and partner version and never audits them',async()=>{const f=fixture();f.tx.partnerMonthlyGoal.findUnique.mockResolvedValue({...existing,month:'2026-01'});await expect(f.service.goal({...user,role:'GERENTE'},'2026-01',{amount:'99',expectedVersion:0})).rejects.toBeInstanceOf(ConflictException);f.tx.salesPartner.updateMany.mockResolvedValue({count:0});await expect(f.service.update({...user,role:'GERENTE'},id,{name:'Changed',expectedVersion:1})).rejects.toBeInstanceOf(ConflictException);expect(f.tx.partnerProductionAudit.create).not.toHaveBeenCalled();});
 });
 
+
+describe('partner deletion',()=>{
+ const manager:AuthUser={...user,role:'SUPER_ADMIN'};
+ it('deletes an empty partner and preserves audit snapshots in one transaction',async()=>{
+  const f=fixture();await expect(f.service.remove(manager,id,{expectedVersion:1})).resolves.toEqual({id,deleted:true});
+  expect(f.tx.partnerDailyProduction.findFirst).toHaveBeenCalledWith({where:{tenant_id:PARTNER_TENANT_ID,partner_id:id},select:{id:true}});
+  expect(f.tx.partnerProductionAudit.updateMany).toHaveBeenCalledWith({where:{tenant_id:PARTNER_TENANT_ID,partner_id:id},data:{partner_id:null}});
+  expect(f.tx.salesPartner.deleteMany).toHaveBeenCalledWith({where:{id,tenant_id:PARTNER_TENANT_ID,version:1}});
+  expect(f.tx.partnerProductionAudit.create).toHaveBeenCalledWith({data:expect.objectContaining({action:'partner.deleted',partner_id:null,entity_id:id,before:partner,after:{deleted:true,name:partner.name}})});
+  expect(f.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function),{isolationLevel:'Serializable'});
+  expect(f.emit).toHaveBeenCalledWith('partners:updated',{});
+ });
+ it('blocks any sales entry, including zero amounts and old months',async()=>{
+  const f=fixture();f.tx.partnerDailyProduction.findFirst.mockResolvedValue({id});
+  await expect(f.service.remove(manager,id,{expectedVersion:1})).rejects.toThrow('lançamentos');
+  expect(f.tx.salesPartner.deleteMany).not.toHaveBeenCalled();expect(f.tx.partnerProductionAudit.updateMany).not.toHaveBeenCalled();
+ });
+ it('blocks non-managers and foreign workspaces before touching the database',async()=>{
+  const f=fixture();for(const caller of [user,{...manager,tenantId:'other'},{...user,role:'VISUALIZADOR' as const}]) await expect(f.service.remove(caller,id,{expectedVersion:1})).rejects.toBeInstanceOf(ForbiddenException);
+  expect(f.prisma.$transaction).not.toHaveBeenCalled();
+ });
+ it('does not delete missing or stale partners',async()=>{
+  const f=fixture();await expect(f.service.remove(manager,id,{expectedVersion:2})).rejects.toBeInstanceOf(ConflictException);
+  f.tx.salesPartner.findFirst.mockResolvedValue(null);await expect(f.service.remove(manager,id,{expectedVersion:1})).rejects.toBeInstanceOf(NotFoundException);
+  expect(f.tx.salesPartner.deleteMany).not.toHaveBeenCalled();
+ });
+ it('rejects concurrent edits and foreign-key races',async()=>{
+  const f=fixture();f.tx.salesPartner.deleteMany.mockResolvedValueOnce({count:0});await expect(f.service.remove(manager,id,{expectedVersion:1})).rejects.toBeInstanceOf(ConflictException);
+  f.tx.salesPartner.deleteMany.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('linked record',{code:'P2003',clientVersion:'5'}));await expect(f.service.remove(manager,id,{expectedVersion:1})).rejects.toBeInstanceOf(ConflictException);
+  expect(f.emit).not.toHaveBeenCalled();expect(f.tx.partnerProductionAudit.create).not.toHaveBeenCalled();
+ });
+ it('propagates audit failure so the deletion transaction rolls back without notification',async()=>{
+  const f=fixture();f.tx.partnerProductionAudit.create.mockRejectedValueOnce(new Error('audit unavailable'));
+  await expect(f.service.remove(manager,id,{expectedVersion:1})).rejects.toThrow('audit unavailable');expect(f.emit).not.toHaveBeenCalled();
+ });
+});

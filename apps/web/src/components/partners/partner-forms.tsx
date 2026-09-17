@@ -9,10 +9,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 
 export const fieldClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50';
 export function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="block space-y-1.5 text-sm font-medium"><span>{label}</span>{children}</label>; }
-function SaveForm({ children, save, label = 'Salvar' }: { children: ReactNode; save: () => Promise<void>; label?: string }) {
+function SaveForm({ children, save, label = 'Salvar', destructive = false }: { children: ReactNode; save: () => Promise<void>; label?: string; destructive?: boolean }) {
   const lock = useRef(false); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [conflict, setConflict] = useState(false);
   async function submit(e: FormEvent) { e.preventDefault(); if (lock.current || conflict) return; lock.current = true; setBusy(true); setError(''); try { await save(); } catch (err) { if (isAxiosError(err) && err.response?.status === 409) { setConflict(true); setError('Este registro já foi alterado. Feche esta janela, atualize a lista e confira o total antes de salvar novamente.'); } else { const message = isAxiosError(err) ? err.response?.data?.message : err instanceof Error ? err.message : ''; setError(typeof message === 'string' ? message : 'Não foi possível salvar. Confira os dados e tente novamente.'); } } finally { setBusy(false); lock.current = false; } }
-  return <form onSubmit={submit} className="space-y-4"><fieldset disabled={busy || conflict} className="space-y-4">{children}</fieldset>{error && <p role="alert" className="text-sm text-destructive">{error}</p>}<Button type="submit" disabled={busy || conflict} className="w-full">{busy ? 'Salvando…' : label}</Button></form>;
+  return <form onSubmit={submit} className="space-y-4"><fieldset disabled={busy || conflict} className="space-y-4">{children}</fieldset>{error && <p role="alert" className="text-sm text-destructive">{error}</p>}<Button type="submit" variant={destructive ? 'destructive' : 'default'} disabled={busy || conflict} className="w-full">{busy ? destructive ? 'Excluindo…' : 'Salvando…' : label}</Button></form>;
 }
 export function PartnerModal({ title, description, children, close }: { title: string; description: string; children: ReactNode; close: () => void }) { return <Dialog open onOpenChange={open => { if (!open) close(); }}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{description}</DialogDescription></DialogHeader>{children}</DialogContent></Dialog>; }
 
@@ -43,4 +43,15 @@ export function ProductionForm({ partner, entry, date, today, saved }: { partner
 export function GoalForm({ data, saved }: { data: PartnerDashboard; saved: () => Promise<void> }) {
   const [amount, setAmount] = useState(data.goal ? amountInput(data.goal.amount) : '');
   return <SaveForm save={async () => { await api.put(`/api/partners/goals/${data.month}`, { amount: parsePartnerAmount(amount), expectedVersion: data.goal?.version ?? 0 }); await saved(); }} label="Salvar meta do mês"><Field label={`Meta de vendas — ${data.month.split('-').reverse().join('/')}`}><input required className={fieldClass} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="Informe a meta em reais" /></Field><p className="text-sm text-muted-foreground">A meta considera a soma das vendas de todos os parceiros no mês selecionado.</p></SaveForm>;
+}
+
+export function DeletePartnerForm({ partner, saved, cancel }: { partner: Partner; saved: () => Promise<void>; cancel: () => void }) {
+  return <SaveForm destructive label="Excluir definitivamente" save={async () => {
+    await api.delete(`/api/partners/${partner.id}`, { data: { expectedVersion: partner.version } });
+    await saved();
+  }}>
+    <p className="text-sm">Excluir o cadastro de <strong>{partner.name}</strong>?</p>
+    <p className="text-sm text-muted-foreground">Esta ação não pode ser desfeita. Apenas parceiros sem lançamentos de vendas podem ser excluídos. O histórico de alterações e o lead original são preservados.</p>
+    <Button type="button" variant="outline" className="w-full" onClick={cancel}>Cancelar</Button>
+  </SaveForm>;
 }
