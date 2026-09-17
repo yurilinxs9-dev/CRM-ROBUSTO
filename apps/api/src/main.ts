@@ -87,7 +87,7 @@ async function bootstrap() {
       return cb(new Error(`CORS blocked: ${origin}`), false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   const port = process.env.PORT || 3001;
