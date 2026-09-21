@@ -72,6 +72,7 @@ export class PartnersService {
         if (await tx.partnerDailyProduction.findFirst({ where: { tenant_id: user.tenantId, partner_id: id }, select: { id: true } })) {
           throw new BadRequestException('Este parceiro possui lançamentos de vendas e não pode ser excluído. Use Editar para desativá-lo e preservar o histórico.');
         }
+        if (await tx.partnerTeamActivity.findFirst({ where: { tenant_id: user.tenantId, OR: [{ partner_id: id }, ...(before.lead_id ? [{ lead_id: before.lead_id }] : [])] }, select: { id: true } })) throw new BadRequestException('Este parceiro possui histórico de atividades da equipe. Desative-o para preservar os resultados.');
         // Keep the audit snapshots and entity IDs, removing only the restrictive FK.
         await tx.partnerProductionAudit.updateMany({ where: { tenant_id: user.tenantId, partner_id: id }, data: { partner_id: null } });
         const deleted = await tx.salesPartner.deleteMany({ where: { id, tenant_id: user.tenantId, version: expectedVersion } });

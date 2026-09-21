@@ -1,0 +1,66 @@
+// All writes are intentionally rolled back. No real consultant performance is seeded.
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { PrismaClient, Prisma } = require('@prisma/client');
+const { PartnerTeamService } = require('../dist/modules/partners/partner-team.service');
+const p = new PrismaClient();
+const tenantId = 'a44772ed-1382-4400-84fc-3fa350e23e42';
+(async () => {
+  const managerAccount = await p.user.findFirstOrThrow({ where: { tenant_id: tenantId, role: 'SUPER_ADMIN', ativo: true } });
+  const operatorAccount = await p.user.findFirstOrThrow({ where: { tenant_id: tenantId, role: 'OPERADOR', ativo: true } });
+  const asUser = a => ({ id: a.id, tenantId, role: a.role, ativo: a.ativo, nome: a.nome, email: a.email });
+  const manager = asUser(managerAccount), operator = asUser(operatorAccount);
+  const lead = await p.lead.findFirstOrThrow({ where: { tenant_id: tenantId, sales_partners: { none: {} } }, select: { id: true } });
+  const ids = [], request = randomUUID(), rollback = new Error('ROLLBACK_TEAM_PROOF'); let passed = false; let createdPartner;
+  try {
+    await p.$transaction(async tx => {
+      const facade = new Proxy(tx, { get(target, key) { if (key === '$transaction') return async input => typeof input === 'function' ? input(tx) : Promise.all(input); return Reflect.get(target, key); } });
+      const svc = new PartnerTeamService(facade, {});
+      const month = '2001-01', date = '2001-01-15';
+      const before = await svc.dashboard(manager, { month, consultant_id: operator.id });
+      const base = { consultant_id: operator.id, occurred_on: date, occurred_time: '10:00', subject_type: 'lead', subject_id: lead.id, company_name: 'Verification only - rolled back' };
+      await assert.rejects(() => svc.create(operator, { ...base, consultant_id: manager.id, kind: 'meeting', request_id: randomUUID() }), /próprio nome/);
+      await assert.rejects(() => svc.dashboard({ ...manager, tenantId: 'other' }, { month }));
+      const meeting = await svc.create(operator, { ...base, request_id: randomUUID(), kind: 'meeting' }); ids.push(meeting.id);
+      const registration = await svc.create(operator, { ...base, request_id: request, kind: 'registration' }); ids.push(registration.id); createdPartner = registration.partner_id;
+      assert(createdPartner);
+      const partner = await tx.salesPartner.findUniqueOrThrow({ where: { id: createdPartner } });
+      assert.equal(partner.lead_id, lead.id); assert.equal(partner.owner_id, operator.id);
+      assert.equal((await svc.create(operator, { ...base, request_id: request, kind: 'registration' })).id, registration.id);
+      await assert.rejects(() => svc.create(operator, { ...base, subject_type: 'partner', subject_id: createdPartner, request_id: randomUUID(), kind: 'registration', occurred_on: '2001-02-15' }), /uma única vez/);
+      await assert.rejects(() => svc.create(operator, { ...base, subject_type: 'partner', subject_id: createdPartner, request_id: randomUUID(), kind: 'meeting' }), /dia e horário/);
+      const training = await svc.create(operator, { ...base, subject_type: 'partner', subject_id: createdPartner, request_id: randomUUID(), kind: 'training' }); ids.push(training.id);
+      await assert.rejects(() => svc.goal(operator, operator.id, month, { target: 8, expectedVersion: 0 }));
+      const initialGoal = before.performance.find(r => r.id === operator.id);
+      const goal = await svc.goal(manager, operator.id, month, { target: 8, expectedVersion: initialGoal?.goal_version ?? 0 });
+      await assert.rejects(() => svc.goal(manager, operator.id, month, { target: 99, expectedVersion: goal.version - 1 }), /Meta alterada/);
+      const after = await svc.dashboard(manager, { month, consultant_id: operator.id });
+      assert.equal(after.summary.registrations, before.summary.registrations + 1);
+      assert.equal(after.summary.meetings, before.summary.meetings + 1);
+      assert.equal(after.summary.trainings, before.summary.trainings + 1);
+      assert.equal(after.summary.target, 8);
+      assert.equal((await svc.dashboard(manager, { month, consultant_id: manager.id })).summary.registrations, 0);
+      await tx.salesPartner.update({ where: { id: createdPartner }, data: { owner_id: manager.id } });
+      assert.equal((await svc.dashboard(manager, { month, consultant_id: operator.id })).summary.registrations, before.summary.registrations + 1);
+      let corrected = await svc.update(operator, meeting.id, { consultant_id: operator.id, occurred_on: '2001-02-15', occurred_time: '11:00', expectedVersion: meeting.version, note: 'Date correction' });
+      assert.equal((await svc.dashboard(manager, { month, consultant_id: operator.id })).summary.meetings, before.summary.meetings);
+      await assert.rejects(() => svc.update(operator, meeting.id, { consultant_id: operator.id, occurred_on: date, occurred_time: '10:00', expectedVersion: meeting.version }), /Atividade alterada/);
+      const cancelled = await svc.cancel(operator, registration.id, { expectedVersion: registration.version, cancelled: true, reason: 'Verification cancellation' });
+      assert.equal((await svc.dashboard(manager, { month, consultant_id: operator.id })).summary.registrations, before.summary.registrations);
+      assert((await svc.dashboard(manager, { month, status: 'cancelled', kind: 'registration' })).history.rows.some(r => r.id === registration.id));
+      await svc.cancel(manager, registration.id, { expectedVersion: cancelled.version, cancelled: false, reason: 'Verification restoration' });
+      assert.equal((await svc.dashboard(manager, { month, consultant_id: operator.id })).summary.registrations, before.summary.registrations + 1);
+      assert(await tx.partnerProductionAudit.count({ where: { tenant_id: tenantId, entity_id: { in: ids }, action: { startsWith: 'team.activity.' } } }) >= 6);
+      passed = true;
+      console.log('PASS: effective registration atomically creates partner; retries and cross-month/lead-partner duplicates blocked; meetings/training, attribution, goals, dates, cancellations and permissions verified.');
+      throw rollback;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 90000 });
+  } catch (e) { if (e !== rollback) throw e; }
+  assert(passed);
+  assert.equal(await p.partnerTeamActivity.count({ where: { id: { in: ids } } }), 0);
+  assert.equal(await p.partnerProductionAudit.count({ where: { entity_id: { in: ids } } }), 0);
+  assert.equal(await p.salesPartner.count({ where: { id: createdPartner } }), 0);
+  const rls = await p.$queryRawUnsafe(`SELECT relrowsecurity FROM pg_class WHERE relnamespace='public'::regnamespace AND relname IN ('PartnerTeamActivity','PartnerConsultantGoal')`);
+  assert.equal(rls.length, 2); assert(rls.every(r => r.relrowsecurity));
+  console.log('PASS: rolled back all test records; both new tables have RLS.');
+})().catch(e => { console.error(e.name, e.message); process.exitCode = 1; }).finally(() => p.$disconnect());

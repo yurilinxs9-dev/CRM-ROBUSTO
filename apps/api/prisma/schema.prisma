@@ -1458,6 +1458,7 @@ model SalesPartner {
   tenant Tenant @relation(fields:[tenant_id], references:[id], onDelete:Restrict)
   owner User? @relation("PartnerOwner", fields:[owner_id], references:[id], onDelete:Restrict)
   lead Lead? @relation(fields:[lead_id], references:[id], onDelete:Restrict)
+  team_activities PartnerTeamActivity[]
   productions PartnerDailyProduction[]
   audits PartnerProductionAudit[]
   @@unique([tenant_id,id])
@@ -1598,4 +1599,47 @@ model FinanceAudit {
   after Json
   created_at DateTime @default(now())
   @@index([tenant_id,created_at])
+}
+
+// Historical team performance: attribution belongs to the completed event.
+model PartnerTeamActivity {
+  id String @id @default(uuid())
+  tenant_id String
+  request_id String
+  kind String
+  subject_key String
+  dedupe_key String
+  partner_id String?
+  lead_id String?
+  company_name String
+  consultant_id String
+  consultant_name String
+  occurred_on DateTime @db.Date
+  occurred_time String
+  note String @default("")
+  cancelled Boolean @default(false)
+  version Int @default(1)
+  created_by String
+  updated_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  partner SalesPartner? @relation(fields:[tenant_id,partner_id], references:[tenant_id,id], onDelete:Restrict)
+  @@unique([tenant_id,request_id])
+  @@unique([tenant_id,dedupe_key])
+  @@index([tenant_id,occurred_on,consultant_id])
+  @@index([tenant_id,subject_key])
+}
+model PartnerConsultantGoal {
+  id String @id @default(uuid())
+  tenant_id String
+  consultant_id String
+  consultant_name String
+  month String
+  target Int
+  version Int @default(1)
+  updated_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  @@unique([tenant_id,consultant_id,month])
+  @@index([tenant_id,month])
 }
