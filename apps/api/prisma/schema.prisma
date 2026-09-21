@@ -1512,3 +1512,90 @@ model PartnerProductionAudit {
 }
 
 
+
+// Isolated financial ledger: only Paloma's workspace + user are authorized.
+model FinanceAccess {
+  tenant_id String @id
+  user_id String @unique
+  password_hash String
+  failed_attempts Int @default(0)
+  locked_until DateTime?
+  version Int @default(1)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+model FinanceSession {
+  token_hash String @id
+  tenant_id String
+  user_id String
+  access_version Int
+  expires_at DateTime
+  revoked_at DateTime?
+  created_at DateTime @default(now())
+  @@index([tenant_id,user_id])
+  @@index([expires_at])
+}
+model FinanceRule {
+  id String @id @default(uuid())
+  tenant_id String
+  version Int
+  total_bps Int
+  distribution Json
+  created_by String
+  created_at DateTime @default(now())
+  sales FinanceSale[]
+  @@unique([tenant_id,version])
+  @@unique([tenant_id,id])
+}
+model FinanceSale {
+  id String @id @default(uuid())
+  tenant_id String
+  source_type String
+  source_key String
+  source_version Int?
+  description String
+  amount Decimal @db.Decimal(16,2)
+  closed_on DateTime @db.Date
+  rule_id String
+  commission_total Decimal @db.Decimal(16,2)
+  needs_review Boolean @default(false)
+  cancelled Boolean @default(false)
+  version Int @default(1)
+  created_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  rule FinanceRule @relation(fields:[tenant_id,rule_id], references:[tenant_id,id], onDelete:Restrict)
+  installments FinanceInstallment[]
+  @@unique([tenant_id,source_type,source_key])
+  @@unique([tenant_id,id])
+  @@index([tenant_id,closed_on])
+}
+model FinanceInstallment {
+  id String @id @default(uuid())
+  tenant_id String
+  sale_id String
+  number Int
+  rate_bps Int
+  due_on DateTime @db.Date
+  due_overridden Boolean @default(false)
+  amount Decimal @db.Decimal(16,2)
+  received_on DateTime? @db.Date
+  received_by String?
+  version Int @default(1)
+  updated_at DateTime @updatedAt
+  sale FinanceSale @relation(fields:[tenant_id,sale_id], references:[tenant_id,id], onDelete:Restrict)
+  @@unique([tenant_id,sale_id,number])
+  @@index([tenant_id,due_on])
+  @@index([tenant_id,received_on])
+}
+model FinanceAudit {
+  id String @id @default(uuid())
+  tenant_id String
+  user_id String
+  action String
+  entity_id String
+  before Json?
+  after Json
+  created_at DateTime @default(now())
+  @@index([tenant_id,created_at])
+}

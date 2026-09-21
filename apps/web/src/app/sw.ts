@@ -8,7 +8,7 @@ declare const self: ServiceWorkerGlobalScope & {
 
 // Bump on any SW behavior change to force install/activate on every client.
 // Old caches are nuked in `activate` so users never get stuck on stale assets.
-const SW_VERSION = 'v3-2026-04-28';
+const SW_VERSION = 'v4-2026-09-21-finance';
 
 // Hard-bypass the service worker for realtime + API traffic. Registered
 // before serwist so its respondWith wins and serwist never sees the
@@ -16,7 +16,7 @@ const SW_VERSION = 'v3-2026-04-28';
 // long-poll xhr or interfering with WS upgrades on flaky networks.
 self.addEventListener('fetch', (event: FetchEvent) => {
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/api/')) {
+  if (url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/api/') || url.pathname.startsWith('/financeiro')) {
     event.respondWith(fetch(event.request));
   }
 });

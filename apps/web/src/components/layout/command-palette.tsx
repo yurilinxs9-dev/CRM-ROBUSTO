@@ -60,6 +60,8 @@ const contem = (texto: string, filtro: string) =>
 export function CommandPalette(): JSX.Element {
   const router = useRouter();
   const pathname = usePathname();
+  const impersonating = useAuthStore((s) => s.impersonating);
+  const userId = useAuthStore((s) => s.user?.id);
   const role = useAuthStore((s) => s.user?.role);
   const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
@@ -194,10 +196,10 @@ export function CommandPalette(): JSX.Element {
 
   const filtro = busca.trim().toLowerCase();
   const navegacaoVisivel = useMemo(() => {
-    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId));
+    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating ? undefined : userId));
     if (isPlatformAdmin) itens.push(ITEM_ADMIN);
     return itens.filter((item) => contem(item.label, filtro));
-  }, [role, tenantId, isPlatformAdmin, filtro]);
+  }, [role, tenantId, userId, impersonating, isPlatformAdmin, filtro]);
   const viewsVisiveis = useMemo(
     () => views.filter((v) => contem(v.nome, filtro)),
     [views, filtro],

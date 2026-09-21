@@ -78,6 +78,16 @@ export class AllExceptionFilter implements ExceptionFilter {
       message = isProd ? 'Internal server error' : exception.message;
     }
 
+    if (req.url.startsWith('/api/financeiro')) {
+      res.setHeader('Cache-Control', 'no-store, private');
+      if (exception instanceof HttpException) {
+        const financeResponse = exception.getResponse();
+        if (typeof financeResponse === 'object' && financeResponse !== null && 'code' in financeResponse) {
+          const financeCode = (financeResponse as { code?: unknown }).code;
+          if (financeCode === 'FINANCE_LOCKED' || financeCode === 'FINANCE_AUTH') code = financeCode;
+        }
+      }
+    }
     const body: ErrorBody = {
       error: errorLabel,
       message,

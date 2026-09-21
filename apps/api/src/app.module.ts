@@ -1,3 +1,4 @@
+import { FinanceModule } from './modules/finance/finance.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { SheetImportModule } from './modules/sheet-import/sheet-import.module';
 import { Module } from '@nestjs/common';
@@ -63,6 +64,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
             redact: {
               paths: [
                 'req.headers.authorization',
+                'req.headers["x-finance-session"]',
                 'req.headers.cookie',
                 'req.headers["x-api-key"]',
                 'req.body.password',
@@ -134,6 +136,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
     LeadInsightsModule,
     SheetImportModule,
     PartnersModule,
+    FinanceModule,
     QueueModule,
   ],
   providers: [

@@ -1,0 +1,16 @@
+import { z } from 'zod';
+import { today } from './finance.domain';
+export const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida').refine(v => { const d = new Date(v + 'T00:00:00Z'); return !isNaN(d.valueOf()) && d.toISOString().slice(0, 10) === v && v >= '2000-01-01' && v <= '2100-12-31'; }, 'Data inválida');
+export const monthSchema = z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/, 'Mês inválido');
+export const amountSchema = z.string().regex(/^(0|[1-9]\d{0,11})(\.\d{1,2})?$/, 'Informe um valor válido com até dois centavos').refine(v => Number(v) > 0, 'O valor da venda deve ser maior que zero');
+export const versionSchema = z.object({ expectedVersion: z.number().int().positive() }).strict();
+export const passwordSchema = z.string().min(8, 'Use pelo menos 8 caracteres').max(72, 'Use até 72 caracteres').refine(v => Buffer.byteLength(v, 'utf8') <= 72, 'Senha excede o tamanho permitido');
+export const setupSchema = z.object({ currentPassword: z.string().min(1).max(100), newPassword: passwordSchema }).strict();
+export const loginSchema = z.object({ password: z.string().min(1).max(100) }).strict();
+export const ruleSchema = z.object({ expectedVersion: z.number().int().positive(), total_bps: z.number().int().min(1).max(10000), distribution: z.array(z.number().int().min(1).max(10000)).min(1).max(12) }).strict().refine(v => v.distribution.reduce((a, b) => a + b, 0) === v.total_bps, 'A distribuição deve somar o percentual total');
+export const manualSchema = z.object({ requestId: z.string().uuid(), description: z.string().trim().min(1).max(200), amount: amountSchema, closed_on: dateSchema.refine(v => v <= today(), 'O fechamento não pode estar no futuro') }).strict();
+export const manualUpdateSchema = manualSchema.omit({ requestId: true }).extend({ expectedVersion: z.number().int().positive() }).strict();
+export const installmentSchema = z.object({ expectedVersion: z.number().int().positive(), due_on: dateSchema.optional(), received_on: dateSchema.refine(v => v <= today(), 'O recebimento não pode estar no futuro').nullable().optional() }).strict().refine(v => v.due_on !== undefined || v.received_on !== undefined, 'Informe a alteração');
+export const dashboardSchema = z.object({ month: monthSchema.default(() => today().slice(0, 7)), months: z.coerce.number().int().min(1).max(24).default(5) });
+export const historySchema = z.object({ month: monthSchema.optional(), sale_id: z.string().uuid().optional(), status: z.enum(['all', 'pending', 'received', 'overdue']).default('all'), page: z.coerce.number().int().min(1).max(10000).default(1) });
+export const reconcileSchema = versionSchema.extend({ expectedSourceVersion: z.number().int().positive() }).strict();

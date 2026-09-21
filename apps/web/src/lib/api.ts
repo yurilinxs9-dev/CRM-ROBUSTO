@@ -49,6 +49,9 @@ api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as RetryConfig | undefined;
+    // A separate finance password/session failure must not log out the CRM.
+    const financeCode = (error.response?.data as { code?: string } | undefined)?.code;
+    if (originalRequest?.url?.startsWith('/api/financeiro/') && (financeCode === 'FINANCE_LOCKED' || financeCode === 'FINANCE_AUTH')) return Promise.reject(error);
 
     // Sem config (erro de rede puro) ou status diferente de 401 → propaga.
     if (!originalRequest || error.response?.status !== 401) {
