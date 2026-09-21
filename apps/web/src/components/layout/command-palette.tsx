@@ -1,4 +1,5 @@
 'use client';
+import { isFinanceOwner } from '@/lib/finance';
 
 /**
  * Palette global Ctrl+K (rodada Twenty item 2). Montada UMA vez no layout
@@ -60,6 +61,7 @@ const contem = (texto: string, filtro: string) =>
 export function CommandPalette(): JSX.Element {
   const router = useRouter();
   const pathname = usePathname();
+  const financeOwner = useAuthStore((s) => isFinanceOwner(s.adminBackup?.user));
   const impersonating = useAuthStore((s) => s.impersonating);
   const userId = useAuthStore((s) => s.user?.id);
   const role = useAuthStore((s) => s.user?.role);
@@ -196,10 +198,10 @@ export function CommandPalette(): JSX.Element {
 
   const filtro = busca.trim().toLowerCase();
   const navegacaoVisivel = useMemo(() => {
-    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating ? undefined : userId));
+    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId));
     if (isPlatformAdmin) itens.push(ITEM_ADMIN);
     return itens.filter((item) => contem(item.label, filtro));
-  }, [role, tenantId, userId, impersonating, isPlatformAdmin, filtro]);
+  }, [role, tenantId, userId, impersonating, financeOwner, isPlatformAdmin, filtro]);
   const viewsVisiveis = useMemo(
     () => views.filter((v) => contem(v.nome, filtro)),
     [views, filtro],

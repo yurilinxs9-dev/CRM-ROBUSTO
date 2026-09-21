@@ -30,3 +30,6 @@ Sidebar Financeiro -> acesso separado -> Visão geral, Calendário, Parcelas, Ve
 ## Implementação e validação
 Ordem: modelos e SQL, domínio/cálculo, autenticação/serviço/guard/API, frontend, verificação e publicação. Implementação direta nesta tarefa conforme preferência por processo essencial, sem subagentes.
 20 testes focados da API e 2 de visibilidade, typechecks, lint e builds. Script `apps/api/scripts/verify-paloma-finance.cjs` verifica importação repetida, exemplo de R$ 20 milhões, regras versionadas, ajuste de datas, recebimento, reversão, cancelamento e sessões em uma transação obrigatoriamente desfeita. Checagens de acesso HTTP em produção sem credenciais financeiras da usuária e sem receber parcelas reais.
+
+## Exceção autorizada para Yuri
+O titular da plataforma (user_id 6b854bc0-c935-45a1-b0b4-5a333703dc73) pode abrir e operar o financeiro diretamente ao usar ver como Paloma. Cada requisição valida a assinatura do JWT, o impersonatedBy exato, conta ativa, is_platform_admin e escopo *. Demais administradores seguem bloqueados. O menu considera a conta de origem; a API confirma a permissão antes de abrir. Senha e sessões da Paloma permanecem exclusivas dela. A auditoria registra actor_user_id e acting_as_user_id no snapshot das operações do titular.

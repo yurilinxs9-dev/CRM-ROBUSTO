@@ -18,7 +18,7 @@ export class FinanceService {
             throw new ConflictException('Os dados mudaram durante a operação. Atualize e tente novamente.');
         throw e;
     } }
-    private async audit(tx: Tx, user: AuthUser, action: string, id: string, before: unknown, after: unknown) { await tx.financeAudit.create({ data: { tenant_id: user.tenantId, user_id: user.id, action, entity_id: id, before: before === null ? Prisma.DbNull : json(before), after: json(after) } }); }
+    private async audit(tx: Tx, user: AuthUser, action: string, id: string, before: unknown, after: unknown) { await tx.financeAudit.create({ data: { tenant_id: user.tenantId, user_id: user.id, action, entity_id: id, before: before === null ? Prisma.DbNull : json(before), after: json(user.financeActorId ? { data: after, actor_user_id: user.financeActorId, acting_as_user_id: user.id } : after) } }); }
     private async currentRule(tx: Tx, user: AuthUser) { const rule = await tx.financeRule.findFirst({ where: { tenant_id: user.tenantId }, orderBy: { version: 'desc' } }); if (rule)
         return rule; return tx.financeRule.create({ data: { tenant_id: user.tenantId, version: 1, total_bps: 50, distribution: DEFAULT_DISTRIBUTION, created_by: user.id } }); }
     async rule(user: AuthUser) { authorizeFinance(user); return this.transaction(tx => this.currentRule(tx, user)); }

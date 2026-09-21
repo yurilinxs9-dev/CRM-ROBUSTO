@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { AuthUser } from '../../common/types/auth-user';
 export const FINANCE_TENANT = 'a44772ed-1382-4400-84fc-3fa350e23e42';
+export const FINANCE_PLATFORM_OWNER = '6b854bc0-c935-45a1-b0b4-5a333703dc73';
 export const FINANCE_USER = '4f72be61-f5a6-4222-bbfd-074c4da31b87';
 export const DEFAULT_DISTRIBUTION = [20, 10, 10, 5, 5];
 export function authorizeFinance(user: AuthUser) {

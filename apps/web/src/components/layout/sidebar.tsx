@@ -1,5 +1,5 @@
 'use client';
-import { canAccessFinance } from '@/lib/finance';
+import { canAccessFinance, isFinanceOwner } from '@/lib/finance';
 
 import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle, Users, Wallet } from 'lucide-react';
 import { canAccessPartners } from '@/lib/partners';
@@ -67,12 +67,13 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, className }: SidebarProps) {
+  const financeOwner = useAuthStore((s) => isFinanceOwner(s.adminBackup?.user));
   const impersonating = useAuthStore((s) => s.impersonating);
   const userId = useAuthStore((s) => s.user?.id);
   const role = useAuthStore((s) => s.user?.role);
   const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
-  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating ? undefined : userId));
+  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId));
 
   return (
     <aside

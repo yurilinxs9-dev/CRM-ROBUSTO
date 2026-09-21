@@ -12,7 +12,7 @@ export class FinanceController {
     @SetMetadata('finance:auth-route', true)
     access(
     @Req()
-    r: FinanceRequest) { return this.auth.status(r.user, r.get('x-finance-session')); }
+    r: FinanceRequest) { return r.user.financeActorId ? { platform_access: true, unlocked: true } : this.auth.status(r.user, r.get('x-finance-session')); }
     @Post('access/setup')
     @SetMetadata('finance:auth-route', true)
     @Throttle({ default: { limit: 5, ttl: 900000 } })

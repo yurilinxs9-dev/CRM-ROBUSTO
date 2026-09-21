@@ -1,6 +1,8 @@
 import { api } from './api';
 import { isAxiosError } from 'axios';
 export const FINANCE_TENANT = 'a44772ed-1382-4400-84fc-3fa350e23e42';
+export const FINANCE_PLATFORM_OWNER = '6b854bc0-c935-45a1-b0b4-5a333703dc73';
+export const isFinanceOwner = (user?: { id: string; is_platform_admin?: boolean; platform_scopes?: string[] } | null) => user?.id === FINANCE_PLATFORM_OWNER && user.is_platform_admin === true && user.platform_scopes?.includes('*') === true;
 export const FINANCE_USER = '4f72be61-f5a6-4222-bbfd-074c4da31b87';
 export const canAccessFinance = (tenant?: string, user?: string) => tenant === FINANCE_TENANT && user === FINANCE_USER;
 export const financeError = (e: unknown) => { if (isAxiosError(e)) {
