@@ -145,6 +145,14 @@ export class OutboundWebhooksService {
     channel: 'whatsapp';
     direction: 'inbound' | 'outbound';
     type: string;
+    // Identificação da mensagem no WhatsApp (útil p/ integrações que baixam a
+    // mídia direto do provider). Ausente em backfill/histórico antigo.
+    whatsappMessageId?: string | null;
+    // Mídia já processada: signed URL do Supabase Storage (TTL 1h) + mimetype.
+    // Só vem preenchido no disparo pós-`media-ready` (ver InboundMessageService);
+    // no disparo imediato de uma mensagem de mídia ainda é null.
+    mediaUrl?: string | null;
+    mediaMimetype?: string | null;
   }) {
     const lead = await this.prisma.lead.findUnique({
       where: { id: args.leadId },
@@ -156,10 +164,14 @@ export class OutboundWebhooksService {
     return this.dispatch(args.tenantId, 'message.created', {
       message: {
         id: args.messageId,
+        whatsapp_message_id: args.whatsappMessageId ?? null,
         text: args.text,
         type: args.type,
         channel: args.channel,
         direction: args.direction,
+        media: args.mediaUrl
+          ? { url: args.mediaUrl, mimetype: args.mediaMimetype ?? null }
+          : null,
       },
       contact: lead && {
         id: lead.id,

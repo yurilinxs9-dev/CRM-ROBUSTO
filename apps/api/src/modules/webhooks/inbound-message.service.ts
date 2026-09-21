@@ -991,6 +991,9 @@ export class InboundMessageService {
         channel: 'whatsapp',
         direction: isFromMe ? 'outbound' : 'inbound',
         type: String(extracted.type),
+        whatsappMessageId: messageId,
+        // Mídia ainda não subiu aqui (upload é background). Mensagens de mídia
+        // recebem um 2º disparo com a signed URL em processMediaInBackground.
       }).catch((err) => this.logger.warn(`dispatch message.created: ${String(err)}`));
     }
 
@@ -1069,6 +1072,9 @@ export class InboundMessageService {
         messageId: message.id,
         whatsappMessageId: messageId,
         extracted,
+        direction: isFromMe ? 'outbound' : 'inbound',
+        text: extracted.content ?? null,
+        backfill: Boolean(backfill),
       });
     }
 
@@ -1146,6 +1152,10 @@ export class InboundMessageService {
     messageId: string;
     whatsappMessageId: string;
     extracted: ExtractedMessage;
+    // Contexto p/ redisparar o webhook message.created já com a signed URL.
+    direction: 'inbound' | 'outbound';
+    text: string | null;
+    backfill: boolean;
   }): Promise<void> {
     try {
       // Download the raw buffer once so we can reuse it for pipeline processing.
@@ -1243,6 +1253,29 @@ export class InboundMessageService {
         media_url: signedUrl,
         media_mimetype: input.extracted.media?.mimetype ?? null,
       });
+
+      // 2º disparo do webhook message.created — agora com a signed URL da mídia
+      // pronta. Integrações (ex.: n8n) usam esta URL p/ transcrever áudio /
+      // ler imagem. O disparo imediato (sem mídia) já saiu na criação; o
+      // debounce do consumidor naturalmente prefere este, mais recente.
+      if (input.tenantId && !input.backfill) {
+        void this.outboundWebhooks
+          .dispatchMessageCreated({
+            tenantId: input.tenantId,
+            messageId: input.messageId,
+            leadId: input.leadId,
+            text: input.text,
+            channel: 'whatsapp',
+            direction: input.direction,
+            type: String(input.extracted.type),
+            whatsappMessageId: input.whatsappMessageId,
+            mediaUrl: signedUrl,
+            mediaMimetype: input.extracted.media?.mimetype ?? null,
+          })
+          .catch((err) =>
+            this.logger.warn(`dispatch media message.created: ${String(err)}`),
+          );
+      }
     } catch (err) {
       this.logger.error(
         `processMediaInBackground falhou para ${input.whatsappMessageId}: ${String(err)}`,
