@@ -14,6 +14,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { sendPasswordResetEmail } from './password-reset-email';
 
 /** Janela de contagem de falhas de login (s). */
 const FAIL_WINDOW_SECONDS = 15 * 60;
@@ -216,7 +217,7 @@ export class AuthService {
 
   /**
    * Esqueci minha senha. SEMPRE responde igual (não vaza se o email existe).
-   * Sem SMTP configurado, loga a URL no servidor — admin encaminha manualmente.
+   * Envia via Resend sem expor token ou existência da conta na resposta/logs.
    */
   async forgotPassword(email: string) {
     const user = await this.prisma.user.findUnique({
@@ -224,20 +225,34 @@ export class AuthService {
       select: { id: true, ativo: true },
     });
     if (user?.ativo) {
+      const apiKey = this.config.get<string>('RESEND_API_KEY');
+      const from = this.config.get<string>('EMAIL_FROM');
+      if (!apiKey || !from) {
+        this.logger.error('Password reset delivery is not configured');
+        return { message: 'Se o e-mail existir, um link de redefinicao foi enviado.' };
+      }
+      const attempts = await this.cache.incr(`auth:reset-send:${user.id}`, 60);
+      if (attempts > 1) return { message: 'Se o e-mail existir, um link de redefinicao foi enviado.' };
       const raw = randomBytes(32).toString('hex');
+      const tokenHash = this.hashToken(raw);
       await this.prisma.passwordResetToken.create({
         data: {
           user_id: user.id,
-          token_hash: this.hashToken(raw),
+          token_hash: tokenHash,
           expires_at: new Date(Date.now() + 60 * 60 * 1000),
         },
       });
       const frontend = (this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3000')
         .split(',')[0]
         .trim();
-      const resetUrl = `${frontend}/reset-password?token=${raw}`;
-      // TODO(SMTP): enviar por e-mail quando houver provedor configurado.
-      this.logger.warn(`[password-reset] URL de reset para ${email}: ${resetUrl}`);
+      const resetUrl = `${frontend.replace(/\/$/, '')}/reset-password?token=${raw}`;
+      try {
+        await sendPasswordResetEmail(apiKey, from, email, resetUrl, tokenHash);
+        this.logger.log('Password reset email accepted by Resend');
+      } catch {
+        await this.prisma.passwordResetToken.deleteMany({ where: { token_hash: tokenHash } });
+        this.logger.error('Password reset email delivery failed');
+      }
     }
     return { message: 'Se o e-mail existir, um link de redefinicao foi enviado.' };
   }

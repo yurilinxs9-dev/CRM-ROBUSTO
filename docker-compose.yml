@@ -56,6 +56,8 @@ services:
       - JWT_REFRESH_EXPIRY_REMEMBER=${JWT_REFRESH_EXPIRY_REMEMBER:-365d}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - EMAIL_FROM=${EMAIL_FROM:-CRM PRO <noreply@email.crmpro.uk>}
       - FFMPEG_PATH=/usr/bin/ffmpeg
       - FFPROBE_PATH=${FFPROBE_PATH:-/usr/bin/ffprobe}
       - TMP_VIDEO_DIR=${TMP_VIDEO_DIR:-/tmp/video}

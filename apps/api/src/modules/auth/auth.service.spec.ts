@@ -59,6 +59,65 @@ function makeService() {
   return { service, ...m };
 }
 
+describe('AuthService.forgotPassword — Resend', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  function setup() {
+    const mocks = makeService();
+    mocks.config.get.mockImplementation((key: string) => ({
+      RESEND_API_KEY: 'test-key', EMAIL_FROM: 'CRM PRO <noreply@email.crmpro.uk>',
+      FRONTEND_URL: 'https://crm-robusto-nine.vercel.app/',
+    })[key as 'RESEND_API_KEY' | 'EMAIL_FROM' | 'FRONTEND_URL']);
+    return mocks;
+  }
+
+  it('sends branded HTML and text with a working CRM URL; stores only the token hash', async () => {
+    const { service, prisma } = setup();
+    prisma.user.findUnique.mockResolvedValue(activeUser);
+    const send = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    await service.forgotPassword(activeUser.email);
+    const payload = JSON.parse(String(send.mock.calls[0][1]?.body)) as { html: string; text: string; to: string[] };
+    expect(payload.to).toEqual([activeUser.email]);
+    expect(payload.html).toContain('CRM PRO');
+    const rawToken = payload.text.match(/reset-password\?token=([a-f0-9]{64})/)?.[1];
+    expect(rawToken).toBeDefined();
+    expect(payload.text).toContain('https://crm-robusto-nine.vercel.app/reset-password?token=');
+    expect(payload.html).not.toContain('{{');
+    expect(prisma.passwordResetToken.create.mock.calls[0][0].data.token_hash).not.toBe(rawToken);
+  });
+
+  it('does not send for unknown/inactive accounts and returns the same public response', async () => {
+    const { service, prisma } = setup();
+    const send = jest.spyOn(global, 'fetch');
+    prisma.user.findUnique.mockResolvedValue(null);
+    const unknown = await service.forgotPassword('missing@example.com');
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, ativo: false });
+    expect(await service.forgotPassword(activeUser.email)).toEqual(unknown);
+    expect(send).not.toHaveBeenCalled();
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the new token when Resend rejects delivery without exposing the failure', async () => {
+    const { service, prisma } = setup();
+    prisma.user.findUnique.mockResolvedValue(activeUser);
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 403 }));
+    await expect(service.forgotPassword(activeUser.email)).resolves.toHaveProperty('message');
+    expect(prisma.passwordResetToken.deleteMany).toHaveBeenCalledWith({ where: {
+      token_hash: prisma.passwordResetToken.create.mock.calls[0][0].data.token_hash,
+    } });
+  });
+
+  it('limits delivery to once per minute per account', async () => {
+    const { service, prisma, cache } = setup();
+    prisma.user.findUnique.mockResolvedValue(activeUser);
+    cache.incr.mockResolvedValue(2);
+    const send = jest.spyOn(global, 'fetch');
+    await service.forgotPassword(activeUser.email);
+    expect(send).not.toHaveBeenCalled();
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('AuthService.login — lockout progressivo', () => {
   it('login válido zera contadores e persiste sessão de refresh', async () => {
     const { service, prisma, cache } = makeService();
@@ -266,7 +325,9 @@ describe('AuthService.resetPassword', () => {
 
 describe('AuthService.forgotPassword', () => {
   it('email existente cria token de reset com expiração ~1h', async () => {
-    const { service, prisma } = makeService();
+    const { service, prisma, config } = makeService();
+    config.get.mockImplementation((key: string) => key === 'FRONTEND_URL' ? 'https://crm-robusto-nine.vercel.app' : 'test');
+    const send = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
     prisma.user.findUnique.mockResolvedValue({ id: 'u1', ativo: true });
 
     const r = await service.forgotPassword('a@b.com');
@@ -276,6 +337,7 @@ describe('AuthService.forgotPassword', () => {
     const delta = call.data.expires_at.getTime() - Date.now();
     expect(delta).toBeGreaterThan(55 * 60 * 1000);
     expect(delta).toBeLessThanOrEqual(60 * 60 * 1000);
+    send.mockRestore();
   });
 
   it('email inexistente responde IGUAL sem criar token (anti-enumeração)', async () => {
