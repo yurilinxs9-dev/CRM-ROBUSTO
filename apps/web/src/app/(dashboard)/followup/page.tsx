@@ -1,38 +1,34 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { CampaignEditor, type CampaignConfig } from './campaign-editor';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Plus, Play, Pause, X, Megaphone, Sparkles, FileText, Eye, Trash2, RotateCcw, AlertTriangle, Search, Send, MessageSquare, Clock } from 'lucide-react';
+import { Plus, Play, Pause, X, Megaphone, Sparkles, FileText, Eye, Trash2, RotateCcw, AlertTriangle, Search, Send, MessageSquare, Clock, Copy, Pencil, ShieldCheck, ArrowUpRight, Users } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/page-header';
-import { ModelSelect, useAvailableAiModels } from '@/components/ai/model-select';
 import { estimateFinish } from '@/lib/followup-eta';
 import { useAuthStore, useIsKanbanIndividual } from '@/stores/auth.store';
 
 interface Stage { id: string; nome: string; cor?: string }
 interface Pipeline { id: string; nome: string; stages: Stage[] }
-interface Broadcast {
+interface Broadcast extends CampaignConfig {
   id: string; name: string; mode: 'template' | 'ai'; status: string;
   throttle_seconds: number; daily_limit: number; stage_id: string | null;
   _count?: { targets: number }; target_counts?: Record<string, number>;
-  sent_today?: number;
+  sent_today?: number; attempts_today?: number;
   /** Motivo da falha → quantos alvos. Vem agrupado da API. */
   failure_reasons?: Record<string, number>;
 }
-interface LeadOption { id: string; nome: string; telefone?: string | null }
 interface Target {
   lead_id: string; nome: string; telefone: string | null;
-  responsavel_nome: string | null; ai_blocked: boolean; status: string; error: string | null;
+  responsavel_nome: string | null; ai_blocked: boolean; status: string; error: string | null; sent_at?: string | null; replied_at?: string | null; error_code?: string | null;
 }
-interface Preview { lead_nome: string; content: string }
 
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', running: 'Rodando', paused: 'Pausado', done: 'Concluído', canceled: 'Cancelado',
@@ -40,19 +36,6 @@ const STATUS_LABEL: Record<string, string> = {
 const STATUS_DOT: Record<string, string> = {
   draft: 'bg-ink-3', running: 'bg-success', paused: 'bg-warning', done: 'bg-info', canceled: 'bg-danger',
 };
-const ALL_STAGES = 'all';
-const MANUAL = 'manual';
-
-/** Variáveis do texto fixo — chips clicáveis que inserem no template. */
-const TEMPLATE_VARS: { tag: string; hint: string }[] = [
-  { tag: '{nome}', hint: 'nome completo' },
-  { tag: '{primeiro_nome}', hint: 'primeiro nome' },
-  { tag: '{saudacao}', hint: 'bom dia/boa tarde/boa noite' },
-  { tag: '{empresa}', hint: 'empresa do lead' },
-  { tag: '{telefone}', hint: 'telefone do lead' },
-  { tag: '{atendente}', hint: 'responsável pelo lead' },
-];
-
 function apiError(e: unknown, fallback: string): string {
   const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
   return typeof msg === 'string' ? msg : fallback;
@@ -83,38 +66,14 @@ export default function FollowupPage() {
   // Cancelar/excluir usavam confirm() do navegador — bloqueia a aba e ignora o tema.
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [stageId, setStageId] = useState(ALL_STAGES);
-  const [mode, setMode] = useState<'template' | 'ai'>('ai');
-  const [template, setTemplate] = useState('');
-  const [aiInstruction, setAiInstruction] = useState('');
-  const [modelId, setModelId] = useState<string | null>(null);
-  const [throttleMin, setThrottleMin] = useState('15');
-  const [dailyLimit, setDailyLimit] = useState('30');
-  const [respectAiBlock, setRespectAiBlock] = useState(true);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  // Envio separado: leads escolhidos a dedo
-  const [leadSearch, setLeadSearch] = useState('');
-  const [leadSearchDeb, setLeadSearchDeb] = useState('');
-  const [selectedLeads, setSelectedLeads] = useState<LeadOption[]>([]);
+  const [editing, setEditing] = useState<Broadcast | null>(null);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [detailsOnly, setDetailsOnly] = useState(false);
+  const [targetSearch, setTargetSearch] = useState('');
+  const [targetFilter, setTargetFilter] = useState('all');
 
-  useEffect(() => {
-    const t = setTimeout(() => setLeadSearchDeb(leadSearch.trim()), 300);
-    return () => clearTimeout(t);
-  }, [leadSearch]);
-
-  const { data: leadResults = [], isFetching: leadSearchLoading } = useQuery<LeadOption[]>({
-    queryKey: ['followup-lead-search', leadSearchDeb],
-    queryFn: async () => {
-      const { data } = await api.get('/api/leads', { params: { search: leadSearchDeb, limit: 8 } });
-      const arr = Array.isArray(data) ? data : (data?.data ?? []);
-      return arr as LeadOption[];
-    },
-    enabled: stageId === MANUAL && leadSearchDeb.length >= 2,
-    staleTime: 10_000,
-  });
-
-  const { data: broadcasts = [], isLoading } = useQuery<Broadcast[]>({
+  const { data: broadcasts = [], isLoading, isError, refetch } = useQuery<Broadcast[]>({
     queryKey: ['broadcasts'],
     queryFn: async () => (await api.get<Broadcast[]>('/api/broadcasts')).data,
     refetchInterval: 15_000, // acompanha o progresso enquanto roda
@@ -127,52 +86,8 @@ export default function FollowupPage() {
     staleTime: 5 * 60_000,
   });
 
-  const { data: aiModels = [], isLoading: aiModelsLoading } = useAvailableAiModels();
-  const hasAiModel = aiModels.length > 0;
-
-  const stages = pipelines.flatMap((p) => (p.stages ?? []).map((s) => ({ ...s, pipeline: p.nome })));
-
-  function reset() {
-    setName(''); setStageId(ALL_STAGES); setMode('ai'); setTemplate(''); setAiInstruction('');
-    setModelId(null); setThrottleMin('15'); setDailyLimit('30'); setRespectAiBlock(true); setPreview(null);
-    setLeadSearch(''); setSelectedLeads([]);
-  }
-
-  function createPayload() {
-    return {
-      stage_id: stageId === ALL_STAGES || stageId === MANUAL ? null : stageId,
-      lead_ids: stageId === MANUAL ? selectedLeads.map((l) => l.id) : null,
-      mode,
-      template: mode === 'template' ? template.trim() : null,
-      ai_instruction: mode === 'ai' ? aiInstruction.trim() : null,
-      model_config_id: mode === 'ai' ? modelId : null,
-    };
-  }
-
-  const create = useMutation({
-    mutationFn: async () => api.post('/api/broadcasts', {
-      name: name.trim(),
-      ...createPayload(),
-      throttle_seconds: Math.max(30, Math.round(Number(throttleMin) * 60)),
-      daily_limit: Math.min(200, Math.max(1, Math.round(Number(dailyLimit) || 30))),
-      respect_ai_block: respectAiBlock,
-    }),
-    onSuccess: () => {
-      toast.success('Follow-up criado (rascunho) — aperte o Play pra disparar');
-      setOpen(false); reset();
-      qc.invalidateQueries({ queryKey: ['broadcasts'] });
-    },
-    onError: (e: unknown) => toast.error(apiError(e, 'Falha ao criar follow-up')),
-  });
-
-  const genPreview = useMutation({
-    mutationFn: async () => (await api.post<Preview>('/api/broadcasts/preview', createPayload())).data,
-    onSuccess: (p) => setPreview(p),
-    onError: (e: unknown) => toast.error(apiError(e, 'Falha ao gerar exemplo')),
-  });
-
   const action = useMutation({
-    mutationFn: async ({ id, op }: { id: string; op: 'start' | 'pause' | 'cancel' | 'retry' }) =>
+    mutationFn: async ({ id, op }: { id: string; op: 'start' | 'pause' | 'cancel' | 'retry' | 'duplicate' }) =>
       api.post(`/api/broadcasts/${id}/${op}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['broadcasts'] }),
     onError: (e: unknown) => toast.error(apiError(e, 'Falha na ação')),
@@ -183,7 +98,7 @@ export default function FollowupPage() {
     mutationFn: async ({ id, leadId }: { id: string; leadId: string }) =>
       (await api.post<{ sent: boolean; sent_today: number; daily_limit: number }>(`/api/broadcasts/${id}/send-now/${leadId}`)).data,
     onSuccess: (r) => {
-      toast.success(`Enviado agora (${r.sent_today}/${r.daily_limit} hoje)`);
+      toast.success(`Mensagem encaminhada (${r.sent_today}/${r.daily_limit} hoje)`);
       qc.invalidateQueries({ queryKey: ['broadcasts'] });
       qc.invalidateQueries({ queryKey: ['broadcast-targets'] });
     },
@@ -205,28 +120,37 @@ export default function FollowupPage() {
   const confirmBroadcast = broadcasts.find((b) => b.id === confirmId) ?? null;
   const willSend = previewTargets.filter((t) => t.status === 'pending' && !t.ai_blocked);
 
-  const targetsOk = stageId !== MANUAL || selectedLeads.length > 0;
-  const valid = name.trim() && targetsOk && (mode === 'template' ? template.trim() : aiInstruction.trim() && hasAiModel);
-  const previewable = (mode === 'template' ? !!template.trim() : !!aiInstruction.trim() && hasAiModel) && targetsOk;
+  const visible = broadcasts.filter(b => (!search || b.name.toLocaleLowerCase().includes(search.toLocaleLowerCase())) && (statusFilter === 'all' || b.status === statusFilter));
+  const metrics = broadcasts.reduce((m,b) => ({ today: m.today+(b.sent_today??0), pending: m.pending+(b.target_counts?.pending??0), replied: m.replied+(b.target_counts?.replied??0), failed: m.failed+(b.target_counts?.failed??0) }), { today:0,pending:0,replied:0,failed:0 });
+  function showDetails(id: string, readOnly = true) { setConfirmId(id); setDetailsOnly(readOnly); setTargetSearch(''); setTargetFilter('all'); }
+  const filteredTargets = previewTargets.filter(t => (targetFilter==='all'||t.status===targetFilter) && `${t.nome} ${t.telefone??''} ${t.responsavel_nome??''}`.toLocaleLowerCase().includes(targetSearch.toLocaleLowerCase()));
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between">
-        <PageHeader title="Follow-up" subtitle="Disparo por etapa do funil — texto fixo ou mensagem personalizada por IA" />
-        <Button onClick={() => { reset(); setOpen(true); }}><Plus className="mr-1.5 h-4 w-4" /> Novo follow-up</Button>
+      <div className="rounded-2xl border border-brand-border bg-gradient-to-br from-brand-subtle to-surface-2 p-5 sm:p-7">
+        <div className="flex flex-wrap gap-4 items-center justify-between">
+          <div><p className="text-[10px] uppercase tracking-[.2em] text-brand font-semibold mb-2">RELACIONAMENTO QUE CONTINUA</p><PageHeader title="Central de Follow-up" subtitle="O público certo, no momento certo. Organize campanhas e acompanhe cada conversa." /></div>
+          <Button onClick={() => { setEditing(null); setOpen(true); }}><Plus className="mr-1.5 h-4 w-4" /> Nova campanha</Button>
+        </div>
+        <div className="mt-5 flex flex-wrap gap-3 text-xs text-ink-2"><span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-4 w-4 text-brand"/>Limites e intervalos protegidos</span><span>Horário da empresa: {janela.start}h–{janela.end}h · Brasília</span><a href="/settings" className="text-brand underline">Ajustar horário da empresa</a></div>
       </div>
-
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{[
+        {label:'Encaminhados hoje',value:metrics.today,icon:Send}, {label:'Contatos na fila',value:metrics.pending,icon:Users},
+        {label:'Respostas registradas',value:metrics.replied,icon:MessageSquare}, {label:'Precisam de atenção',value:metrics.failed,icon:AlertTriangle},
+      ].map(({label,value,icon:Icon})=><div key={label} className="rounded-xl border border-line-2 bg-surface-2 p-4"><div className="flex justify-between text-ink-3 text-xs">{label}<Icon className="h-4 w-4"/></div><p className="text-3xl font-semibold mt-3 text-ink-1">{value}</p></div>)}</div>
+      <div className="flex flex-wrap gap-3 items-center"><div className="relative flex-1 min-w-48"><Search className="absolute left-3 top-3 h-4 w-4 text-ink-3"/><Input aria-label="Buscar campanhas" className="pl-9" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar campanha..."/></div><Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger className="w-44"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="all">Todos os status</SelectItem>{Object.entries(STATUS_LABEL).map(([v,l])=><SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={()=>refetch()} title="Atualizar campanhas"><RotateCcw className="h-4 w-4"/></Button></div>
+      {isError && <div role="alert" className="rounded-xl border border-danger p-4 text-sm text-danger">Não foi possível carregar as campanhas. <button onClick={()=>refetch()} className="underline">Tentar novamente</button></div>}
       {isLoading ? (
         <div className="space-y-2">{Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-lg" />)}</div>
-      ) : broadcasts.length === 0 ? (
+      ) : !isError && visible.length === 0 ? (
         <div className="rounded-xl border border-dashed p-10 text-center" style={{ borderColor: 'var(--border-default)' }}>
           <Megaphone className="mx-auto h-8 w-8 mb-2" style={{ color: 'var(--text-muted)' }} />
-          <p className="text-sm mb-3" style={{ color: 'var(--text-muted)' }}>Nenhum follow-up criado ainda.</p>
-          <Button variant="outline" onClick={() => { reset(); setOpen(true); }}><Plus className="mr-1.5 h-4 w-4" /> Criar o primeiro</Button>
+          <p className="text-sm mb-3" style={{ color: 'var(--text-muted)' }}>Nenhuma campanha encontrada. Crie uma campanha ou ajuste os filtros.</p>
+          <Button variant="outline" onClick={() => { setEditing(null); setOpen(true); }}><Plus className="mr-1.5 h-4 w-4" /> Criar o primeiro</Button>
         </div>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {broadcasts.map((b) => {
+          {visible.map((b) => {
             const tc = b.target_counts ?? {};
             const total = b._count?.targets ?? Object.values(tc).reduce((a, n) => a + n, 0);
             // 'replied' é alvo que JÁ recebeu e respondeu — conta como enviado
@@ -236,16 +160,16 @@ export default function FollowupPage() {
             const pending = tc.pending ?? 0;
             const failed = tc.failed ?? 0;
             const dailyLimit = b.daily_limit ?? 30;
-            const sentToday = b.sent_today ?? 0;
+            const sentToday = b.attempts_today ?? b.sent_today ?? 0;
             const deletable = b.status === 'draft' || b.status === 'done' || b.status === 'canceled';
             const eta =
-              b.status === 'running'
+              b.status === 'running' && (!b.segment?.scheduled_at || new Date(b.segment.scheduled_at) <= new Date())
                 ? estimateFinish({
                     pending,
                     throttleSeconds: b.throttle_seconds,
                     dailyLimit,
                     sentToday,
-                    janela,
+                    janela: { start: Math.max(janela.start,b.segment?.window_start??0), end: Math.min(janela.end,b.segment?.window_end??24), days: janela.days.filter(d=>!b.segment?.window_days||b.segment.window_days.includes(d)) },
                     agora: new Date(),
                   })
                 : null;
@@ -263,20 +187,22 @@ export default function FollowupPage() {
                     </div>
                     <p className="text-xs mt-0.5 text-ink-3">
                       {STATUS_LABEL[b.status] ?? b.status} · 1 msg a cada {Math.round(b.throttle_seconds / 60)}min
-                      {' · '}hoje {sentToday}/{dailyLimit}
+                      {' · '}tentativas hoje {sentToday}/{dailyLimit}
                       {b.status === 'running' && sentToday >= dailyLimit ? ' (limite do dia — retoma amanhã)' : ''}
                     </p>
                   </div>
-                  <div className="flex gap-1 shrink-0">
+                  <div className="flex gap-1 shrink-0 flex-wrap justify-end">
+                    {b.status==='draft'&&<Button size="icon" variant="ghost" className="h-8 w-8" title="Editar rascunho" onClick={()=>{setEditing(b);setOpen(true);}}><Pencil className="h-4 w-4"/></Button>}
+                    <Button size="icon" variant="ghost" className="h-8 w-8" title="Duplicar como rascunho" disabled={action.isPending} onClick={()=>action.mutate({id:b.id,op:'duplicate'},{onSuccess:()=>toast.success('Cópia criada como rascunho')})}><Copy className="h-4 w-4"/></Button>
                     {(b.status === 'draft' || b.status === 'paused') && (
-                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => setConfirmId(b.id)}><Play className="h-4 w-4 text-success" /></Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title="Iniciar" onClick={() => showDetails(b.id, false)}><Play className="h-4 w-4 text-success" /></Button>
                     )}
                     {b.status === 'running' && (
                       <Button size="icon" variant="ghost" className="h-8 w-8" title="Pausar" onClick={() => action.mutate({ id: b.id, op: 'pause' })}><Pause className="h-4 w-4 text-warning" /></Button>
                     )}
                     {failed > 0 && b.status !== 'running' && b.status !== 'canceled' && (
                       <Button size="icon" variant="ghost" className="h-8 w-8" title={`Reenviar ${failed} falha(s)`} onClick={() => {
-                        action.mutate({ id: b.id, op: 'retry' }, { onSuccess: () => toast.success(`${failed} alvo(s) de volta na fila`) });
+                        action.mutate({ id: b.id, op: 'retry' }, { onSuccess: () => toast.success('Falhas disponíveis recolocadas na fila') });
                       }}><RotateCcw className="h-4 w-4 text-info" /></Button>
                     )}
                     {b.status !== 'done' && b.status !== 'canceled' && (
@@ -288,16 +214,18 @@ export default function FollowupPage() {
                   </div>
                 </div>
 
+                {b.segment?.scheduled_at && <p className="text-xs text-ink-3">Programado a partir de {new Date(b.segment.scheduled_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</p>}
                 <div>
                   <div className="h-2 rounded-full overflow-hidden bg-surface-3 flex">
                     <div className="h-full bg-brand transition-all" style={{ width: total ? `${((sent - replied) / total) * 100}%` : '0%' }} />
                     <div className="h-full bg-success transition-all" style={{ width: total ? `${(replied / total) * 100}%` : '0%' }} />
                   </div>
                   <p className="text-[11px] mt-1 text-ink-3">
-                    {sent}/{total} enviados{pending ? ` · ${pending} na fila` : ''}{tc.skipped ? ` · ${tc.skipped} pulados` : ''}
+                    {sent}/{total} encaminhados{pending ? ` · ${pending} na fila` : ''}{tc.skipped ? ` · ${tc.skipped} pulados` : ''}
                   </p>
                 </div>
 
+                <button onClick={()=>showDetails(b.id)} className="w-full flex items-center justify-between text-xs text-brand border-t border-line-2 pt-3">Ver destinatários e histórico<ArrowUpRight className="h-4 w-4"/></button>
                 {/* Respostas: a única métrica que diz se o disparo virou conversa. */}
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
@@ -310,7 +238,7 @@ export default function FollowupPage() {
                   {eta && (
                     <span
                       className={`inline-flex items-center gap-1.5 text-[11px] ${eta.paused ? 'text-warning' : 'text-ink-3'}`}
-                      title={`${pending} na fila, 1 a cada ${Math.round(b.throttle_seconds / 60)}min, limite ${dailyLimit}/dia, janela ${janela.start}h–${janela.end}h`}
+                      title={`Previsão aproximada; outras campanhas podem ampliar o prazo. ${pending} na fila, 1 a cada ${Math.round(b.throttle_seconds / 60)}min, limite ${dailyLimit}/dia, janela ${janela.start}h–${janela.end}h`}
                     >
                       <Clock className="h-3.5 w-3.5" />
                       {eta.paused ? eta.label : eta.label.startsWith('termina') ? eta.label : `termina em ${eta.label}`}
@@ -342,205 +270,42 @@ export default function FollowupPage() {
         </div>
       )}
 
-      {/* Dialog criar */}
-      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader><DialogTitle>Novo follow-up</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label>Nome</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Reativar leads frios" autoComplete="off" />
-            </div>
-
-            <div>
-              <Label>Quem recebe</Label>
-              <Select value={stageId} onValueChange={(v) => { setStageId(v); setPreview(null); }}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_STAGES}>Todos os leads (todas as etapas)</SelectItem>
-                  <SelectItem value={MANUAL}>Leads específicos (escolher um a um)</SelectItem>
-                  {stages.map((s) => <SelectItem key={s.id} value={s.id}>{s.pipeline} · {s.nome}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {stageId === MANUAL && (
-                <div className="mt-2 space-y-2">
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
-                    <Input className="pl-8" value={leadSearch} onChange={(e) => setLeadSearch(e.target.value)} placeholder="Buscar lead por nome ou telefone..." autoComplete="off" />
-                  </div>
-                  {leadSearchDeb.length >= 2 && (
-                    <div className="rounded-md border divide-y max-h-40 overflow-y-auto" style={{ borderColor: 'var(--border-default)' }}>
-                      {leadSearchLoading ? (
-                        <p className="p-2 text-xs" style={{ color: 'var(--text-muted)' }}>Buscando...</p>
-                      ) : leadResults.filter((l) => !selectedLeads.some((s) => s.id === l.id)).length === 0 ? (
-                        <p className="p-2 text-xs" style={{ color: 'var(--text-muted)' }}>Nenhum lead encontrado.</p>
-                      ) : (
-                        leadResults.filter((l) => !selectedLeads.some((s) => s.id === l.id)).map((l) => (
-                          <button key={l.id} type="button" className="flex w-full items-center justify-between gap-2 p-2 text-left text-sm hover:opacity-80"
-                            onClick={() => { setSelectedLeads((prev) => [...prev, l]); setLeadSearch(''); }}>
-                            <span className="truncate" style={{ color: 'var(--text-primary)' }}>{l.nome}</span>
-                            <span className="text-[11px] shrink-0" style={{ color: 'var(--text-muted)' }}>{l.telefone ?? ''}</span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  )}
-                  {selectedLeads.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedLeads.map((l) => (
-                        <span key={l.id} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
-                          style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}>
-                          {l.nome}
-                          <button type="button" onClick={() => setSelectedLeads((prev) => prev.filter((x) => x.id !== l.id))} aria-label={`Remover ${l.nome}`}>
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                    {selectedLeads.length} lead(s) selecionado(s) — envio separado, só pra esses.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Modo: dois cartões clicáveis — mais claro que um select */}
-            <div>
-              <Label>Mensagem</Label>
-              <div className="grid grid-cols-2 gap-2 mt-1">
-                {([
-                  { key: 'ai' as const, icon: Sparkles, title: 'IA personaliza', desc: 'Uma mensagem única por lead' },
-                  { key: 'template' as const, icon: FileText, title: 'Texto fixo', desc: 'Mesmo texto pra todos' },
-                ]).map(({ key, icon: Icon, title, desc }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => { setMode(key); setPreview(null); }}
-                    className="rounded-lg border p-3 text-left transition-colors"
-                    style={{
-                      borderColor: mode === key ? 'var(--primary)' : 'var(--border-default)',
-                      background: mode === key ? 'color-mix(in srgb, var(--primary) 8%, transparent)' : 'transparent',
-                    }}
-                  >
-                    <Icon className="h-4 w-4 mb-1" style={{ color: mode === key ? 'var(--primary)' : 'var(--text-muted)' }} />
-                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{title}</p>
-                    <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{desc}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {mode === 'template' ? (
-              <div>
-                <Label>Texto da mensagem</Label>
-                <textarea value={template} onChange={(e) => { setTemplate(e.target.value); setPreview(null); }} rows={3} placeholder="{saudacao} {primeiro_nome}, tudo bem? Passando p/ retomar nosso contato..."
-                  className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--primary)]" style={{ borderColor: 'var(--border-default)' }} />
-                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {TEMPLATE_VARS.map((v) => (
-                    <button key={v.tag} type="button" title={v.hint}
-                      onClick={() => { setTemplate((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${v.tag}`); setPreview(null); }}
-                      className="rounded-full border px-2 py-0.5 text-[11px] font-mono hover:opacity-80"
-                      style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}>
-                      {v.tag}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                  Clique pra inserir — cada variável é trocada pelos dados do lead na hora do envio.
-                </p>
-              </div>
-            ) : !aiModelsLoading && !hasAiModel ? (
-              <div className="flex items-start gap-2 rounded-lg border p-3 text-sm" style={{ borderColor: '#f59e0b', background: 'color-mix(in srgb, #f59e0b 10%, transparent)' }}>
-                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
-                <div style={{ color: 'var(--text-secondary)' }}>
-                  <p className="font-medium" style={{ color: 'var(--text-primary)' }}>Nenhum modelo de IA configurado</p>
-                  <p className="text-xs mt-0.5">O admin da plataforma precisa cadastrar um modelo em <strong>Admin → IA</strong>. Enquanto isso, use o modo <strong>Texto fixo</strong>.</p>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div>
-                  <Label>O que a IA deve dizer</Label>
-                  <textarea value={aiInstruction} onChange={(e) => { setAiInstruction(e.target.value); setPreview(null); }} rows={3} placeholder="Ex: Reative o lead frio com tom amigável, lembre do interesse anterior e ofereça uma conversa rápida."
-                    className="w-full rounded-md border bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--primary)]" style={{ borderColor: 'var(--border-default)' }} />
-                </div>
-                <div>
-                  <Label>Modelo <span style={{ color: 'var(--text-muted)' }}>(vazio = padrão da plataforma)</span></Label>
-                  <ModelSelect value={modelId} onChange={setModelId} placeholder="Modelo padrão" />
-                </div>
-              </>
-            )}
-
-            {/* Preview real: gera a mensagem pra um lead do segmento, sem enviar */}
-            <div className="space-y-2">
-              <Button type="button" variant="outline" size="sm" disabled={!previewable || genPreview.isPending} onClick={() => genPreview.mutate()}>
-                <Eye className="mr-1.5 h-3.5 w-3.5" />
-                {genPreview.isPending ? 'Gerando exemplo...' : 'Ver exemplo da mensagem'}
-              </Button>
-              {preview && (
-                <div className="rounded-lg border p-3" style={{ borderColor: 'var(--border-default)', background: 'var(--bg-surface-3)' }}>
-                  <p className="text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>Exemplo pra <strong>{preview.lead_nome}</strong>:</p>
-                  <p className="text-sm whitespace-pre-wrap" style={{ color: 'var(--text-primary)' }}>{preview.content}</p>
-                </div>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label>Intervalo entre msgs (min)</Label>
-                <Input type="number" min="0.5" step="0.5" value={throttleMin} onChange={(e) => setThrottleMin(e.target.value)} />
-                <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>Padrão: 15 min</p>
-              </div>
-              <div>
-                <Label>Limite diário de envios</Label>
-                <Input type="number" min="1" max="200" value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} />
-                <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>Padrão: 30/dia — retoma sozinho no dia seguinte</p>
-              </div>
-            </div>
-            <label className="flex items-center justify-between rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-default)' }}>
-              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Pular leads em atendimento humano</span>
-              <Switch checked={respectAiBlock} onCheckedChange={setRespectAiBlock} />
-            </label>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button>
-            <Button onClick={() => create.mutate()} disabled={!valid || create.isPending}>{create.isPending ? 'Criando...' : 'Criar follow-up'}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <CampaignEditor open={open} onClose={()=>{setOpen(false);setEditing(null);}} initial={editing} pipelines={pipelines} window={janela}/>
 
       {/* Confirmação antes do Play — mostra exatamente quais leads serão atingidos */}
       <Dialog open={!!confirmId} onOpenChange={(o) => { if (!o) setConfirmId(null); }}>
         <DialogContent className="max-h-[85vh] overflow-hidden flex flex-col">
-          <DialogHeader><DialogTitle>Disparar &quot;{confirmBroadcast?.name}&quot;?</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{detailsOnly ? 'Histórico: ' : 'Iniciar: '}{confirmBroadcast?.name}</DialogTitle></DialogHeader>
           {previewLoading ? (
             <div className="space-y-2 py-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-9 w-full rounded-md" />)}</div>
           ) : (
             <>
               <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                Vai enviar para <strong style={{ color: 'var(--text-primary)' }}>{willSend.length}</strong> lead(s)
+                Na fila para envio: <strong style={{ color: 'var(--text-primary)' }}>{willSend.length}</strong> lead(s)
                 {previewTargets.length !== willSend.length && (
-                  <span style={{ color: 'var(--text-muted)' }}> · {previewTargets.length - willSend.length} pulado(s)</span>
+                  <span style={{ color: 'var(--text-muted)' }}> · {previewTargets.length} contatos no histórico</span>
                 )}:
               </p>
+              <div className="flex gap-2"><Input aria-label="Buscar destinatário" value={targetSearch} onChange={e=>setTargetSearch(e.target.value)} placeholder="Nome, telefone ou responsável"/><select aria-label="Status do destinatário" value={targetFilter} onChange={e=>setTargetFilter(e.target.value)} className="rounded border border-line-2 bg-surface-2 text-sm px-2"><option value="all">Todos</option><option value="pending">Na fila</option><option value="sent">Encaminhados</option><option value="replied">Responderam</option><option value="failed">Falhas</option><option value="skipped">Ignorados</option></select></div>
+              <p className="text-xs text-ink-3">Envios seguem limite diário, intervalo e horários. Encaminhado significa inserido na fila de mensagens; a entrega é acompanhada na conversa.</p>
               <div className="overflow-y-auto -mx-2 px-2 divide-y" style={{ borderColor: 'var(--border-default)' }}>
-                {previewTargets.map((t) => {
+                {filteredTargets.map((t) => {
                   const skip = t.status !== 'pending' || t.ai_blocked;
                   // Alvo que já respondeu não está mais na fila: o backend
                   // recusa o envio manual com 400, então nem oferece o botão.
-                  const canSendNow = t.status !== 'sent' && t.status !== 'replied';
+                  const canSendNow = t.status === 'pending' && t.error_code !== 'dispatching' && !t.ai_blocked && confirmBroadcast?.status === 'running';
                   return (
                     <div key={t.lead_id} className="flex items-center justify-between gap-2 py-2 text-sm" style={{ opacity: skip ? 0.5 : 1 }}>
                       <div className="min-w-0">
                         <p className="truncate" style={{ color: 'var(--text-primary)' }}>{t.nome}</p>
                         <p className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-                          {t.responsavel_nome ? `Dono: ${t.responsavel_nome}` : 'Sem dono'}{t.telefone ? ` · ${t.telefone}` : ''}
+                          {t.responsavel_nome ? `Dono: ${t.responsavel_nome}` : 'Sem dono'}{t.telefone ? ` · ${t.telefone}` : ''}{t.sent_at ? ` · ${new Date(t.sent_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}` : ''}
                         </p>
+                        {t.error&&<p className="text-xs text-warning mt-1">{t.error}</p>}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <span className="text-[11px] text-right" style={{ color: t.status === 'failed' ? '#ef4444' : 'var(--text-muted)' }} title={t.error ?? undefined}>
-                          {t.status === 'sent' ? 'já enviado'
+                          {t.error_code === 'dispatching' ? 'processando' : t.status === 'sent' ? 'encaminhado'
                             : t.status === 'replied' ? 'respondeu'
                             : t.status === 'failed' ? 'falhou'
                             : t.status === 'skipped' ? 'pulado'
@@ -548,7 +313,7 @@ export default function FollowupPage() {
                             : t.status === 'pending' ? '' : t.status}
                         </span>
                         {canSendNow && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Enviar agora (fora da fila)"
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title="Enviar respeitando limites e intervalo"
                             disabled={sendNow.isPending}
                             onClick={() => { if (confirmId) sendNow.mutate({ id: confirmId, leadId: t.lead_id }); }}>
                             <Send className="h-3.5 w-3.5" style={{ color: 'var(--primary)' }} />
@@ -566,7 +331,7 @@ export default function FollowupPage() {
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConfirmId(null)}>Cancelar</Button>
-            <Button
+            {!detailsOnly && <Button
               disabled={previewLoading || willSend.length === 0 || action.isPending}
               onClick={() => {
                 if (!confirmId) return;
@@ -576,7 +341,7 @@ export default function FollowupPage() {
               }}
             >
               {action.isPending ? 'Iniciando...' : `Confirmar e disparar (${willSend.length})`}
-            </Button>
+            </Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -585,7 +350,7 @@ export default function FollowupPage() {
         <DialogContent>
           <DialogHeader><DialogTitle>Cancelar follow-up?</DialogTitle></DialogHeader>
           <p className="text-sm text-ink-2">
-            Os alvos que ainda não receberam ficam de fora. O histórico do que já foi enviado permanece.
+            Os próximos envios da campanha serão interrompidos. Mensagens já encaminhadas à fila de envio podem ser entregues. O histórico do que já foi enviado permanece.
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCancelId(null)}>Voltar</Button>

@@ -1,6 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { z } from 'zod';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -8,33 +7,7 @@ import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { BroadcastsService } from './broadcasts.service';
 
-const createSchema = z
-  .object({
-    name: z.string().min(1).max(120),
-    stage_id: z.string().uuid().optional().nullable(),
-    mode: z.enum(['template', 'ai']),
-    template: z.string().max(2000).optional().nullable(),
-    ai_instruction: z.string().max(2000).optional().nullable(),
-    model_config_id: z.string().uuid().optional().nullable(),
-    throttle_seconds: z.number().int().min(30).max(86_400).optional(),
-    daily_limit: z.number().int().min(1).max(200).optional(),
-    respect_ai_block: z.boolean().optional(),
-    temperatura: z.string().optional().nullable(),
-    lead_ids: z.array(z.string().uuid()).max(500).optional().nullable(),
-  })
-  .strict();
-
-const previewSchema = z
-  .object({
-    mode: z.enum(['template', 'ai']),
-    template: z.string().max(2000).optional().nullable(),
-    ai_instruction: z.string().max(2000).optional().nullable(),
-    model_config_id: z.string().uuid().optional().nullable(),
-    stage_id: z.string().uuid().optional().nullable(),
-    temperatura: z.string().optional().nullable(),
-    lead_ids: z.array(z.string().uuid()).max(500).optional().nullable(),
-  })
-  .strict();
+import { campaignSchema as createSchema, previewSchema, audienceSchema } from './broadcast-config';
 
 /**
  * Follow-up / broadcast por IA. Criação e controle restritos a GERENTE+ (não
@@ -42,6 +15,7 @@ const previewSchema = z
  */
 @Controller('broadcasts')
 @UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.GERENTE)
 export class BroadcastsController {
   constructor(private readonly svc: BroadcastsService) {}
 
@@ -52,6 +26,21 @@ export class BroadcastsController {
   @Get()
   list(@Req() req: Request) {
     return this.svc.list(this.user(req));
+  }
+
+  @Post('audience')
+  audience(@Body() body: unknown, @Req() req: Request) {
+    return this.svc.audience(this.user(req), audienceSchema.parse(body));
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() body: unknown, @Req() req: Request) {
+    return this.svc.update(this.user(req), id, createSchema.parse(body));
+  }
+
+  @Post(':id/duplicate')
+  duplicate(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.duplicate(this.user(req), id);
   }
 
   @Get(':id')

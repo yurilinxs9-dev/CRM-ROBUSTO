@@ -35,6 +35,16 @@ export class BroadcastDispatcher {
     private readonly sender: BroadcastSenderService,
   ) {}
 
+  // A restart may leave a claimed recipient without a final result. Never
+  // automatically resend an ambiguous attempt; expose it for manual review.
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async recoverInterrupted() {
+    await this.prisma.broadcastTarget.updateMany({
+      where: { status: 'pending', error_code: 'dispatching', sent_at: { lt: new Date(Date.now() - 20 * 60_000) } },
+      data: { status: 'failed', error_code: 'envio_interrompido', error: 'Envio interrompido. Confira a conversa antes de tentar novamente.' },
+    });
+  }
+
   @Cron(CronExpression.EVERY_MINUTE)
   async tick() {
     const now = new Date();
@@ -87,23 +97,25 @@ export class BroadcastDispatcher {
       if (sentToday >= b.daily_limit) continue;
 
       const target = await this.prisma.broadcastTarget.findFirst({
-        where: { broadcast_id: b.id, status: 'pending' },
+        where: { broadcast_id: b.id, status: 'pending', OR: [{ error_code: null }, { error_code: { not: 'dispatching' } }] },
         orderBy: { created_at: 'asc' },
       });
 
       if (!target) {
-        await this.prisma.broadcast.update({ where: { id: b.id }, data: { status: 'done' } });
+        const inFlight = await this.prisma.broadcastTarget.count({ where: { broadcast_id: b.id, status: 'pending', error_code: 'dispatching' } });
+        if (!inFlight) await this.prisma.broadcast.updateMany({ where: { id: b.id, status: 'running' }, data: { status: 'done' } });
         continue;
       }
 
       try {
-        await this.sender.sendToTarget(b, target);
+        const result = await this.sender.sendToTarget(b, target);
+        if (result?.outcome === 'deferred') continue;
       } catch (err) {
         this.logger.error(`Broadcast ${b.id} alvo ${target.id} falhou: ${String(err)}`);
         if (isAiConfigError(err)) {
           // Problema de config, não do lead: pausa o broadcast e mantém o alvo
           // pendente. O gerente corrige o modelo e dá Play de novo.
-          await this.prisma.broadcast.update({ where: { id: b.id }, data: { status: 'paused' } });
+          await this.prisma.broadcast.updateMany({ where: { id: b.id, status: 'running' }, data: { status: 'paused' } });
           continue;
         }
         await this.prisma.broadcastTarget.update({
@@ -117,7 +129,7 @@ export class BroadcastDispatcher {
       }
 
       // Consome a janela de throttle independentemente do resultado do alvo.
-      await this.prisma.broadcast.update({ where: { id: b.id }, data: { last_dispatch_at: new Date() } });
+      // The sender reserves cadence atomically before handing a message to the queue.
     }
   }
 }

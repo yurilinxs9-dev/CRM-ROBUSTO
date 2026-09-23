@@ -7,30 +7,9 @@ import { BroadcastSenderService, startOfDayBrt } from './broadcast-sender.servic
 import { aggregateFailureReasons, type FailureRow } from './broadcast-error';
 import type { AuthUser } from '../../common/types/auth-user';
 
-export interface CreateBroadcastInput {
-  name: string;
-  stage_id?: string | null;
-  mode: BroadcastMode;
-  template?: string | null;
-  ai_instruction?: string | null;
-  model_config_id?: string | null;
-  throttle_seconds?: number;
-  daily_limit?: number;
-  respect_ai_block?: boolean;
-  temperatura?: string | null; // filtro de segmento opcional
-  /** Envio separado: leads escolhidos a dedo (ignora etapa/temperatura). */
-  lead_ids?: string[] | null;
-}
-
-export interface PreviewBroadcastInput {
-  mode: BroadcastMode;
-  template?: string | null;
-  ai_instruction?: string | null;
-  model_config_id?: string | null;
-  stage_id?: string | null;
-  temperatura?: string | null;
-  lead_ids?: string[] | null;
-}
+import { resolveAudienceWhere, campaignOptions, type CampaignInput, type AudienceInput } from './broadcast-config';
+export type CreateBroadcastInput = CampaignInput;
+export type PreviewBroadcastInput = AudienceInput & Pick<CampaignInput, 'mode' | 'template' | 'ai_instruction' | 'model_config_id'>;
 
 /**
  * Follow-up / broadcast por IA: cria um disparo segmentado (por etapa) e gera os
@@ -78,6 +57,8 @@ export class BroadcastsService {
       },
       _count: { _all: true },
     });
+    const attempts = await this.prisma.broadcastTarget.groupBy({ by: ['broadcast_id'], where: { broadcast_id: { in: rows.map(r => r.id) }, sent_at: { gte: startOfDayBrt() } }, _count: { _all: true } });
+    const attemptsByBroadcast = new Map(attempts.map(c => [c.broadcast_id, c._count._all]));
     const todayByBroadcast = new Map(todayCounts.map((c) => [c.broadcast_id, c._count._all]));
     // Motivo das falhas agrupado: a contagem sozinha não diz nada acionável —
     // "3 falhas" pode ser instância desconectada ou lead sem telefone, e a
@@ -100,6 +81,7 @@ export class BroadcastsService {
       ...r,
       target_counts: byBroadcast.get(r.id) ?? {},
       sent_today: todayByBroadcast.get(r.id) ?? 0,
+      attempts_today: attemptsByBroadcast.get(r.id) ?? 0,
       failure_reasons: failuresByBroadcast.get(r.id) ?? {},
     }));
   }
@@ -133,7 +115,7 @@ export class BroadcastsService {
     const rows = await this.prisma.broadcastTarget.findMany({
       where: { broadcast_id: id },
       orderBy: { created_at: 'asc' },
-      select: { lead_id: true, status: true, error: true },
+      select: { lead_id: true, status: true, error: true, sent_at: true, replied_at: true, error_code: true },
     });
     const leadIds = rows.map((r) => r.lead_id);
     const leads = await this.prisma.lead.findMany({
@@ -158,7 +140,7 @@ export class BroadcastsService {
         responsavel_nome: lead?.responsavel_id ? ownerById.get(lead.responsavel_id) ?? null : null,
         ai_blocked: b.respect_ai_block ? (lead?.ai_blocked ?? false) : false,
         status: r.status,
-        error: r.error,
+        error: r.error, sent_at: r.sent_at, replied_at: r.replied_at, error_code: r.error_code,
       };
     });
   }
@@ -186,15 +168,48 @@ export class BroadcastsService {
   }
 
   /** Seleciona os leads do segmento (por etapa e/ou temperatura). */
-  private segmentWhere(user: AuthUser, dto: { stage_id?: string | null; temperatura?: string | null }) {
-    return {
-      tenant_id: user.tenantId,
-      ...(dto.stage_id ? { estagio_id: dto.stage_id } : {}),
-      ...(dto.temperatura ? { temperatura: dto.temperatura as never } : {}),
-    };
+  private segmentWhere(user: AuthUser, dto: AudienceInput) {
+    return resolveAudienceWhere(this.prisma, user.tenantId, dto);
+  }
+
+  async audience(user: AuthUser, dto: AudienceInput) {
+    const where = await this.segmentWhere(user, dto);
+    const [total, leads] = await Promise.all([
+      this.prisma.lead.count({ where }),
+      this.prisma.lead.findMany({ where, orderBy: { created_at: 'asc' }, take: 50,
+        select: { id: true, nome: true, telefone: true, ai_blocked: true, responsavel: { select: { nome: true } } } }),
+    ]);
+    return { total, leads };
+  }
+
+  async update(user: AuthUser, id: string, dto: CreateBroadcastInput) {
+    const data = await this.prepare(user, dto);
+    return this.prisma.$transaction(async tx => {
+      const locked = await tx.broadcast.updateMany({ where: { id, tenant_id: user.tenantId, status: 'draft' }, data: { name: dto.name } });
+      if (!locked.count) throw new BadRequestException('Somente rascunhos podem ser editados. Duplique para criar uma nova campanha.');
+      const touched = await tx.broadcastTarget.count({ where: { broadcast_id: id, OR: [{ sent_at: { not: null } }, { error_code: 'dispatching' }] } });
+      if (touched) throw new BadRequestException('Este rascunho já possui envios. Duplique para editar.');
+      await tx.broadcastTarget.deleteMany({ where: { broadcast_id: id } });
+      return tx.broadcast.update({ where: { id }, data, include: { _count: { select: { targets: true } } } });
+    });
+  }
+
+  async duplicate(user: AuthUser, id: string) {
+    const b = await this.get(user, id);
+    const { scheduled_at: _schedule, ...options } = campaignOptions(b.segment);
+    return this.create(user, {
+      ...options, name: `${b.name.slice(0, 110)} (cópia)`, stage_id: b.stage_id,
+      mode: b.mode, template: b.template, ai_instruction: b.ai_instruction,
+      model_config_id: b.model_config_id, throttle_seconds: b.throttle_seconds,
+      daily_limit: b.daily_limit, respect_ai_block: b.respect_ai_block,
+    });
   }
 
   async create(user: AuthUser, dto: CreateBroadcastInput) {
+    return this.prisma.broadcast.create({ data: await this.prepare(user, dto), include: { _count: { select: { targets: true } } } });
+  }
+
+  private async prepare(user: AuthUser, dto: CreateBroadcastInput) {
     if (dto.mode === 'template' && !dto.template?.trim()) {
       throw new BadRequestException('template é obrigatório no modo template');
     }
@@ -205,34 +220,33 @@ export class BroadcastsService {
       await this.ensureAiConfigured(dto.model_config_id);
     }
 
-    // Seleção manual (envio separado) tem precedência sobre o segmento.
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: user.tenantId }, select: { broadcast_window_start: true, broadcast_window_end: true, broadcast_window_days: true } });
+    if (!tenant) throw new BadRequestException('Empresa não encontrada');
+    if (Math.max(dto.window_start ?? 0, tenant.broadcast_window_start) >= Math.min(dto.window_end ?? 24, tenant.broadcast_window_end) || !(dto.window_days ?? [1,2,3,4,5,6,7]).some(d => tenant.broadcast_window_days.includes(d))) {
+      throw new BadRequestException('A programação precisa ter dias e horários em comum com a janela da empresa.');
+    }
+
+    // A seleção manual também respeita os filtros adicionais.
     const manualIds = dto.lead_ids?.length ? [...new Set(dto.lead_ids)] : null;
-    const leads = manualIds
-      ? await this.prisma.lead.findMany({
-          where: { id: { in: manualIds }, tenant_id: user.tenantId },
-          select: { id: true },
-        })
-      : await this.prisma.lead.findMany({
-          where: this.segmentWhere(user, dto),
-          select: { id: true },
-        });
+    const leads = await this.prisma.lead.findMany({ where: await this.segmentWhere(user, dto), select: { id: true } });
     if (leads.length === 0) {
       throw new BadRequestException(
         manualIds ? 'Nenhum lead válido na seleção' : 'Nenhum lead no segmento selecionado',
       );
     }
 
-    return this.prisma.broadcast.create({
-      data: {
+    return {
         tenant_id: user.tenantId,
         name: dto.name.trim(),
-        // Seleção manual não trava por etapa (o lead foi escolhido a dedo).
-        stage_id: manualIds ? null : dto.stage_id ?? null,
-        segment: manualIds
-          ? { lead_ids: leads.map((l) => l.id) }
-          : dto.temperatura
-            ? { temperatura: dto.temperatura }
-            : undefined,
+        // Mantém o filtro de etapa também para seleções manuais.
+        stage_id: dto.stage_id ?? null,
+        segment: JSON.parse(JSON.stringify({
+          pipeline_id: dto.pipeline_id, responsavel_id: dto.responsavel_id,
+          temperatura: dto.temperatura, tags: dto.tags, inactive_days: dto.inactive_days,
+          exclude_closed: dto.exclude_closed ?? true, scheduled_at: dto.scheduled_at,
+          window_start: dto.window_start, window_end: dto.window_end, window_days: dto.window_days,
+          ...(manualIds ? { lead_ids: leads.map(l => l.id) } : {}),
+        })) as import('@prisma/client').Prisma.InputJsonObject,
         mode: dto.mode,
         template: dto.template ?? null,
         ai_instruction: dto.ai_instruction ?? null,
@@ -242,20 +256,14 @@ export class BroadcastsService {
         respect_ai_block: dto.respect_ai_block ?? true,
         created_by: user.id,
         targets: { create: leads.map((l) => ({ lead_id: l.id })) },
-      },
-      include: { _count: { select: { targets: true } } },
-    });
+    };
   }
 
-  /**
-   * Envio separado: dispara AGORA um alvo específico, fora da cadência do cron
-   * (não mexe no last_dispatch_at). Conta no limite diário. Guardas de etapa/
-   * ai_block são ignoradas — o gerente escolheu o lead explicitamente.
-   */
+  /** Envio manual obedece às mesmas reservas, horários e intervalos do cron. */
   async sendNow(user: AuthUser, id: string, leadId: string) {
     const b = await this.prisma.broadcast.findFirst({ where: { id, tenant_id: user.tenantId } });
     if (!b) throw new NotFoundException('Broadcast não encontrado');
-    if (b.status === 'canceled') throw new BadRequestException('Follow-up cancelado');
+    if (b.status !== 'running') throw new BadRequestException('Inicie a campanha antes de enviar um destinatário.');
     if (b.mode === BroadcastMode.ai) await this.ensureAiConfigured(b.model_config_id);
 
     const sentToday = await this.sender.sentToday(b.id);
@@ -264,7 +272,7 @@ export class BroadcastsService {
     }
 
     const target = await this.prisma.broadcastTarget.findFirst({
-      where: { broadcast_id: id, lead_id: leadId, status: { in: ['pending', 'skipped', 'failed'] } },
+      where: { broadcast_id: id, lead_id: leadId, status: 'pending' },
     });
     if (!target) throw new BadRequestException('Lead não está na fila deste follow-up');
 
@@ -292,9 +300,7 @@ export class BroadcastsService {
     }
 
     const lead = await this.prisma.lead.findFirst({
-      where: dto.lead_ids?.length
-        ? { id: { in: dto.lead_ids }, tenant_id: user.tenantId }
-        : this.segmentWhere(user, dto),
+      where: await this.segmentWhere(user, dto),
       orderBy: { updated_at: 'desc' },
       select: {
         id: true,
@@ -332,7 +338,9 @@ export class BroadcastsService {
     if (!allowedFrom.includes(b.status)) {
       throw new BadRequestException(`Transição inválida de ${b.status} para ${status}`);
     }
-    return this.prisma.broadcast.update({ where: { id }, data: { status } });
+    const changed = await this.prisma.broadcast.updateMany({ where: { id, tenant_id: user.tenantId, status: { in: allowedFrom } }, data: { status } });
+    if (!changed.count) throw new BadRequestException('A campanha mudou. Atualize a página e tente novamente.');
+    return this.get(user, id);
   }
 
   async start(user: AuthUser, id: string) {
@@ -363,19 +371,22 @@ export class BroadcastsService {
   async retryFailed(user: AuthUser, id: string) {
     const b = await this.prisma.broadcast.findFirst({ where: { id, tenant_id: user.tenantId } });
     if (!b) throw new NotFoundException('Broadcast não encontrado');
+    if (b.status === 'canceled') throw new BadRequestException('Campanha cancelada. Duplique para criar outra.');
     if (b.mode === BroadcastMode.ai) await this.ensureAiConfigured(b.model_config_id);
 
-    const reset = await this.prisma.broadcastTarget.updateMany({
-      where: { broadcast_id: id, status: 'failed' },
-      data: { status: 'pending', error: null, error_code: null },
+    return this.prisma.$transaction(async tx => {
+      const resumed = await tx.broadcast.updateMany({
+        where: { id, tenant_id: user.tenantId, status: { not: 'canceled' } },
+        data: { status: BroadcastStatus.running },
+      });
+      if (!resumed.count) throw new BadRequestException('Campanha cancelada ou removida.');
+      const reset = await tx.broadcastTarget.updateMany({
+        where: { broadcast_id: id, status: 'failed', OR: [{ sent_at: null }, { sent_at: { lt: startOfDayBrt() } }] },
+        data: { status: 'pending', error: null, error_code: null },
+      });
+      if (!reset.count) throw new BadRequestException('Nenhuma falha disponível para nova tentativa. Tentativas de hoje poderão ser repetidas amanhã, preservando a cota diária');
+      return { retried: reset.count };
     });
-    if (reset.count === 0) throw new BadRequestException('Nenhum alvo com falha para reenviar');
-
-    await this.prisma.broadcast.update({
-      where: { id },
-      data: { status: BroadcastStatus.running },
-    });
-    return { retried: reset.count };
   }
 
   /** Exclui broadcasts finalizados/rascunho (targets caem por cascade). */
@@ -386,6 +397,8 @@ export class BroadcastsService {
     if (!deletable.includes(b.status)) {
       throw new BadRequestException('Pause ou cancele o follow-up antes de excluir');
     }
+    const attemptsToday = await this.prisma.broadcastTarget.count({ where: { broadcast_id: id, sent_at: { gte: startOfDayBrt() } } });
+    if (attemptsToday) throw new BadRequestException('Campanhas com tentativas hoje só podem ser excluídas amanhã, para preservar o limite diário.');
     await this.prisma.broadcast.delete({ where: { id } });
     return { deleted: true };
   }
