@@ -1,6 +1,6 @@
 import type { Broadcast } from '@prisma/client';
 import { dispatchWaitReason } from './broadcast-gate';
-import { campaignSchema, audienceWhere } from './broadcast-config';
+import { campaignSchema, audienceWhere, audienceSchema, previewSchema } from './broadcast-config';
 import { BroadcastSenderService } from './broadcast-sender.service';
 
 const now = new Date('2026-09-23T15:00:00Z'); // Wednesday, noon in Brasília
@@ -8,6 +8,13 @@ const tenant = { broadcast_window_start: 9, broadcast_window_end: 18, broadcast_
 const campaign = { id: 'b', tenant_id: 't', status: 'running', daily_limit: 30, throttle_seconds: 900, segment: null, last_dispatch_at: null } as Broadcast;
 
 describe('Follow-up scheduling and validation', () => {
+  it('accepts the existing default pipeline across audience, preview and campaign save', () => {
+    const input = { pipeline_id: 'pipeline-default', stage_id: 'ab269a5b-8895-4c8c-aed8-899f05a0010d', exclude_closed: true };
+    expect(audienceSchema.safeParse(input).success).toBe(true);
+    expect(previewSchema.safeParse({ ...input, mode: 'template', template: 'Hello {nome}' }).success).toBe(true);
+    expect(campaignSchema.safeParse({ ...input, name: 'Legacy pipeline', mode: 'template', template: 'Hello {nome}' }).success).toBe(true);
+    expect(audienceWhere('tenant-a', input)).toMatchObject({ tenant_id: 'tenant-a', pipeline_id: 'pipeline-default' });
+  });
   it('keeps future campaigns waiting and respects company hours even with a wider campaign window', () => {
     expect(dispatchWaitReason({ ...campaign, segment: { scheduled_at: '2026-09-24T15:00:00Z' } }, tenant, now)).toContain('data programada');
     expect(dispatchWaitReason({ ...campaign, segment: { window_start: 0, window_end: 24 } }, tenant, new Date('2026-09-23T23:00:00Z'))).toContain('empresa');

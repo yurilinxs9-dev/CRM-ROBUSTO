@@ -4,7 +4,8 @@ import type { PrismaService } from '../../common/prisma/prisma.service';
 
 export const audienceSchema = z.object({
   stage_id: z.string().uuid().nullable().optional(),
-  pipeline_id: z.string().uuid().nullable().optional(),
+  // The original seeded pipeline predates UUID identifiers.
+  pipeline_id: z.union([z.string().uuid(), z.literal('pipeline-default')]).nullable().optional(),
   responsavel_id: z.string().uuid().nullable().optional(),
   temperatura: z.enum(['FRIO', 'MORNO', 'QUENTE', 'MUITO_QUENTE']).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
