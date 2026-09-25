@@ -196,6 +196,7 @@ interface LeadFilters {
   search?: string;
   limit?: string;
   offset?: string;
+  include_total?: string;
   scope?: string;
   unread?: string;
   per_stage?: string;
@@ -219,7 +220,7 @@ interface LeadFilters {
   dir?: string;
 }
 
-export interface ExportLeadFilters {
+export interface ExportLeadFilters extends LeadFilters {
   pipeline_id?: string;
   estagio_id?: string;
   responsavel_id?: string;
@@ -742,6 +743,9 @@ export class LeadsService {
         filters.offset ? parseInt(filters.offset) : 0,
       );
       result = leads.map(mapRow);
+      if (filters.include_total === 'true') {
+        result = { data: result, total: await this.prisma.lead.count({ where: whereFinal }) };
+      }
     }
 
     await this.cache.set(cacheKey, result, LEADS_LIST_TTL_SECONDS);
@@ -2264,6 +2268,7 @@ export class LeadsService {
       if (filters.to) createdAt.lte = new Date(filters.to);
       where.created_at = createdAt;
     }
+    applyPanelFilters(where, filters);
 
     // Lead privado continua regra suprema — mas isso já vem de dentro de
     // `buildVisibilityWhere` (todo ramo carrega `is_private: false`). O OR de

@@ -6,6 +6,10 @@ import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { toast } from 'sonner';
+import { useAuthStore } from '@/stores/auth.store';
+import { currentMonthRange, entryReportParams } from '@/lib/lead-entry-report';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toQueryParams } from '@/lib/lead-filters';
 import {
@@ -57,12 +61,15 @@ export default function LeadsPage(): JSX.Element {
   const [pagina, setPagina] = useState(0);
   const [painelAberto, setPainelAberto] = useState(false);
   const [leadAberto, setLeadAberto] = useState<string | null>(null);
+  const [exportando, setExportando] = useState(false);
+  const user = useAuthStore((s) => s.user);
 
   const { config, filters, setConfig } = view;
 
   const params = useMemo<Record<string, string>>(
     () => ({
-      ...toQueryParams(filters),
+      ...entryReportParams(toQueryParams(filters)),
+      include_total: 'true',
       ...(config.sort ? { sort: config.sort.campo, dir: config.sort.dir } : {}),
       limit: String(POR_PAGINA),
       offset: String(pagina * POR_PAGINA),
@@ -93,16 +100,35 @@ export default function LeadsPage(): JSX.Element {
     setPagina(0);
   }
 
-  const { data: leads = [], isLoading, isFetching } = useQuery<LeadRow[]>({
+  const periodoInvalido = !!(filters.created_from && filters.created_to && filters.created_from > filters.created_to);
+  const { data: result, isLoading, isFetching, isError } = useQuery<{ data: LeadRow[]; total: number }>({
     // Prefixo `['leads']` de propósito: a ficha (LeadDetailDrawer) invalida por
     // esse prefixo depois de salvar, e uma chave própria tipo 'leads-lista'
     // ficaria de fora — o usuário editaria o nome do lead e veria o antigo na
     // tabela atrás do drawer.
-    queryKey: ['leads', 'lista', params],
-    queryFn: async () => (await api.get<LeadRow[]>('/api/leads', { params })).data,
+    queryKey: ['leads', 'lista', user?.tenantId, user?.id, params],
+    queryFn: async () => (await api.get<{ data: LeadRow[]; total: number }>('/api/leads', { params })).data,
+    enabled: !periodoInvalido,
     // A tabela some entre páginas sem isto, e o layout pula a cada Próxima.
     placeholderData: keepPreviousData,
   });
+  const leads = periodoInvalido || isError ? [] : result?.data ?? [];
+  const total = result?.total;
+  const exportar = async () => {
+    setExportando(true);
+    try {
+      const response = await api.get('/api/leads/export', {
+        params: entryReportParams(toQueryParams(filters)), responseType: 'blob',
+      });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `entrada-leads-${filters.created_from || 'inicio'}-${filters.created_to || 'hoje'}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error('Não foi possível exportar os leads. Tente novamente.'); }
+    finally { setExportando(false); }
+  };
 
   const { schema, isLoading: carregandoCampos } = useFieldSchema();
 
@@ -147,12 +173,29 @@ export default function LeadsPage(): JSX.Element {
     [config, setConfig],
   );
 
-  const temProxima = leads.length === POR_PAGINA;
+  const temProxima = total !== undefined && (pagina + 1) * POR_PAGINA < total;
   const primeiroDaPagina = pagina * POR_PAGINA;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ViewBar view={view} mode="lista" onOpenFilters={() => setPainelAberto(true)} />
+      <section aria-label="Relatório de entrada de leads" className="border-b p-3 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1 text-xs">Data de entrada — de
+            <Input aria-label="Data de entrada inicial" type="date" value={filters.created_from} onChange={(e) => view.setFilters({ ...filters, created_from: e.target.value })} />
+          </label>
+          <label className="space-y-1 text-xs">Até
+            <Input aria-label="Data de entrada final" type="date" value={filters.created_to} onChange={(e) => view.setFilters({ ...filters, created_to: e.target.value })} />
+          </label>
+          <Button variant="outline" onClick={() => view.setFilters({ ...filters, ...currentMonthRange() })}>Este mês até hoje</Button>
+          <Button variant="ghost" onClick={() => view.setFilters({ ...filters, created_from: '', created_to: '' })}>Limpar período</Button>
+          {user && user.role !== 'VISUALIZADOR' && <Button variant="outline" disabled={periodoInvalido || isFetching || isError || exportando || total === undefined} onClick={exportar}>{exportando ? 'Exportando…' : 'Exportar CSV'}</Button>}
+        </div>
+        <p className="text-sm" role="status">
+          {periodoInvalido ? 'A data final deve ser igual ou posterior à inicial.' : isError ? 'Não foi possível consultar o relatório. Tente novamente.' : isFetching || total === undefined ? 'Calculando total…' : `${total.toLocaleString('pt-BR')} leads ${filters.created_from || filters.created_to ? 'no período' : 'encontrados'}`}
+        </p>
+        <p className="text-xs text-muted-foreground">Conta a criação do lead no CRM, em horário de Brasília, incluindo o último dia inteiro. O total considera todas as páginas, os demais filtros e os leads que você tem permissão para ver.</p>
+      </section>
 
       <LeadFilterPanel
         value={view.filters}
@@ -165,7 +208,7 @@ export default function LeadsPage(): JSX.Element {
         {/* O schema entra no gate junto com os leads: sem ele `fieldDefs` só
             tem os pseudo, e o cabeçalho piscaria as chaves cruas (`nome`,
             `valor_estimado`) com o menu de colunas vazio. */}
-        {isLoading || carregandoCampos ? (
+        {(isLoading && !periodoInvalido) || carregandoCampos ? (
           <div className="space-y-2">
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} className="h-10 w-full rounded-lg" />
@@ -186,7 +229,7 @@ export default function LeadsPage(): JSX.Element {
         <div className="flex items-center gap-2">
           <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)' }}>
             {leads.length > 0
-              ? `${primeiroDaPagina + 1}–${primeiroDaPagina + leads.length}`
+              ? `${primeiroDaPagina + 1}–${primeiroDaPagina + leads.length} de ${total ?? '…'}`
               : 'Sem resultados'}
           </span>
 
@@ -205,13 +248,11 @@ export default function LeadsPage(): JSX.Element {
               <ChevronLeft className="h-3.5 w-3.5" />
               Anterior
             </Button>
-            {/* A API não devolve total; página cheia é o único indício de que
-                pode haver mais. Página curta = acabou. */}
             <Button
               variant="outline"
               size="sm"
               className="h-8 gap-1 text-xs"
-              disabled={!temProxima || isFetching}
+              disabled={!temProxima || isFetching || periodoInvalido || isError}
               onClick={() => setPagina((p) => p + 1)}
             >
               Próxima
