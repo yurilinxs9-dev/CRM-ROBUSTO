@@ -114,16 +114,16 @@ export default function LeadsPage(): JSX.Element {
   });
   const leads = periodoInvalido || isError ? [] : result?.data ?? [];
   const total = result?.total;
-  const exportar = async () => {
+  const exportar = async (format: 'xlsx' | 'csv') => {
     setExportando(true);
     try {
       const response = await api.get('/api/leads/export', {
-        params: entryReportParams(toQueryParams(filters)), responseType: 'blob',
+        params: { ...entryReportParams(toQueryParams(filters)), format }, responseType: 'blob',
       });
       const url = URL.createObjectURL(response.data);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `entrada-leads-${filters.created_from || 'inicio'}-${filters.created_to || 'hoje'}.csv`;
+      link.download = `entrada-leads-${filters.created_from || 'inicio'}-${filters.created_to || 'hoje'}.${format}`;
       link.click();
       URL.revokeObjectURL(url);
     } catch { toast.error('Não foi possível exportar os leads. Tente novamente.'); }
@@ -189,7 +189,10 @@ export default function LeadsPage(): JSX.Element {
           </label>
           <Button variant="outline" onClick={() => view.setFilters({ ...filters, ...currentMonthRange() })}>Este mês até hoje</Button>
           <Button variant="ghost" onClick={() => view.setFilters({ ...filters, created_from: '', created_to: '' })}>Limpar período</Button>
-          {user && user.role !== 'VISUALIZADOR' && <Button variant="outline" disabled={periodoInvalido || isFetching || isError || exportando || total === undefined} onClick={exportar}>{exportando ? 'Exportando…' : 'Exportar CSV'}</Button>}
+          {user && user.role !== 'VISUALIZADOR' && <>
+            <Button variant="outline" disabled={periodoInvalido || isFetching || isError || exportando || total === undefined} onClick={() => exportar('xlsx')}>{exportando ? 'Exportando…' : 'Exportar Excel'}</Button>
+            <Button variant="ghost" disabled={periodoInvalido || isFetching || isError || exportando || total === undefined} onClick={() => exportar('csv')}>CSV</Button>
+          </>}
         </div>
         <p className="text-sm" role="status">
           {periodoInvalido ? 'A data final deve ser igual ou posterior à inicial.' : isError ? 'Não foi possível consultar o relatório. Tente novamente.' : isFetching || total === undefined ? 'Calculando total…' : `${total.toLocaleString('pt-BR')} leads ${filters.created_from || filters.created_to ? 'no período' : 'encontrados'}`}
