@@ -1,4 +1,24 @@
 import { Workbook } from 'exceljs';
+import JSZip from 'jszip';
+
+/** Store text inline so spreadsheet previews cannot mistake string indexes for data. */
+export async function serializeLeadsWorkbook(workbook: Workbook): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await workbook.xlsx.writeBuffer());
+  const shared = await zip.file('xl/sharedStrings.xml')?.async('string');
+  if (shared) {
+    const strings = Array.from(shared.matchAll(/<si>([\s\S]*?)<\/si>/g), (match) => match[1]);
+    for (const path of Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))) {
+      const xml = await zip.file(path)!.async('string');
+      zip.file(path, xml.replace(/<c\b([^>]*?)\bt="s"([^>]*)><v>(\d+)<\/v><\/c>/g,
+        (_match, before: string, after: string, index: string) => {
+          const value = strings[Number(index)];
+          if (value === undefined) throw new Error('Invalid spreadsheet string reference');
+          return `<c${before}t="inlineStr"${after}><is>${value}</is></c>`;
+        }));
+    }
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
 
 type ExportRow = Record<string, unknown>;
 
@@ -49,7 +69,7 @@ export function buildLeadsWorkbook(rows: ExportRow[], from?: string, to?: string
       const value = source[key];
       if (key === 'created_at' || key === 'ultima_interacao') return excelDate(value);
       if (key === 'valor_estimado' || key === 'mensagens_nao_lidas') return value == null ? null : Number(value);
-      return value == null ? '' : String(value);
+      return value == null || value === '' ? null : String(value);
     }));
     const lines = columns.map(([key, , width]) => String(source[key] ?? '').split('\n')
       .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / (width - 2))), 0));

@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import type { Response } from 'express';
 import { toCsv } from '../../common/csv/csv.util';
-import { buildLeadsWorkbook } from './leads-workbook';
+import { buildLeadsWorkbook, serializeLeadsWorkbook } from './leads-workbook';
 import { createHash } from 'node:crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -2346,7 +2346,7 @@ export class LeadsService {
 
     if (filters.format === 'xlsx') {
       const workbook = buildLeadsWorkbook(rows, filters.created_from || filters.from, filters.created_to || filters.to);
-      const buffer = await workbook.xlsx.writeBuffer();
+      const buffer = await serializeLeadsWorkbook(workbook);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="entrada-leads-${Date.now()}.xlsx"`);
       res.send(Buffer.from(buffer));
