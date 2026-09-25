@@ -126,7 +126,7 @@ export function ApiDocs() {
           <Zap className="w-4 h-4 text-primary" /> Início rápido
         </div>
         <ol className="space-y-2 text-sm text-muted-foreground list-decimal list-inside">
-          <li>Crie uma chave acima (<strong>Nova chave</strong>) e copie o token <code className="bg-secondary px-1 rounded">crmk_…</code> (exibido só uma vez).</li>
+          <li>Crie uma chave acima (<strong>Nova chave</strong>) e copie o valor <code className="bg-secondary px-1 rounded">Bearer crmk_…</code> (exibido só uma vez) — já vem pronto para o header.</li>
           <li>Envie o token no header <code className="bg-secondary px-1 rounded">Authorization</code> em toda requisição.</li>
           <li>Faça a chamada — respostas e payloads em JSON.</li>
         </ol>

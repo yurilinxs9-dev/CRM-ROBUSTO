@@ -28,7 +28,9 @@ export class ApiKeyGuard implements CanActivate {
       throw new UnauthorizedException('Token de API ausente ou não fornecido.');
     }
 
-    const token = header.replace(/^bearer\s+/i, '').trim();
+    // Tolera "Bearer Bearer crmk_…": a UI copia o valor já com "Bearer ", e
+    // clientes como o credencial "Bearer Auth" do n8n prefixam de novo.
+    const token = header.replace(/^(bearer\s+)+/i, '').trim();
     const auth = await this.keys.verify(token);
     if (!auth) {
       throw new UnauthorizedException('Token de API inválido ou não fornecido.');

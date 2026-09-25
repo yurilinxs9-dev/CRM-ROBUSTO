@@ -39,7 +39,7 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
   const [scopes, setScopes] = useState<string[]>([]);
   const [isAi, setIsAi] = useState(false);
   const [created, setCreated] = useState<CreatedKey | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'header' | 'raw' | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -47,7 +47,7 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
       setScopes([]);
       setIsAi(false);
       setCreated(null);
-      setCopied(false);
+      setCopied(null);
     }
   }, [open]);
 
@@ -70,12 +70,15 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
     },
   });
 
-  const copy = async () => {
+  // Valor pronto para o header Authorization (formato da documentação).
+  const headerValue = created ? `Bearer ${created.token}` : '';
+
+  const copy = async (kind: 'header' | 'raw') => {
     if (!created) return;
-    await navigator.clipboard.writeText(created.token);
-    setCopied(true);
-    toast.success('Token copiado');
-    setTimeout(() => setCopied(false), 2000);
+    await navigator.clipboard.writeText(kind === 'header' ? headerValue : created.token);
+    setCopied(kind);
+    toast.success(kind === 'header' ? 'Copiado com "Bearer"' : 'Token copiado');
+    setTimeout(() => setCopied(null), 2000);
   };
 
   const valid = name.trim().length > 0 && scopes.length > 0;
@@ -165,19 +168,30 @@ export function ApiKeyFormDialog({ open, onClose }: Props) {
               </div>
 
               <div>
-                <Label>Token</Label>
+                <Label>Valor do header Authorization</Label>
                 <div className="flex gap-2 mt-1">
                   <code className="flex-1 min-w-0 break-all text-xs font-mono bg-secondary rounded p-2">
-                    {created.token}
+                    {headerValue}
                   </code>
-                  <Button size="icon" variant="outline" onClick={copy} title="Copiar">
-                    {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                  <Button size="icon" variant="outline" onClick={() => copy('header')} title="Copiar com Bearer">
+                    {copied === 'header' ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                   </Button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => copy('raw')}
+                  className="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  {copied === 'raw' ? 'Token copiado' : 'Copiar só o token (sem "Bearer")'}
+                </button>
               </div>
 
               <div className="text-xs text-muted-foreground space-y-1">
                 <div><strong>Como usar:</strong></div>
+                <div>
+                  n8n → credencial <strong>Header Auth</strong>: Name <code>Authorization</code>,
+                  Value = o valor acima.
+                </div>
                 <code className="block bg-secondary rounded p-2 break-all">
                   curl https://SEU_DOMINIO/api/v1/users \<br />
                   &nbsp;&nbsp;-H "Authorization: Bearer {created.prefix}..."
