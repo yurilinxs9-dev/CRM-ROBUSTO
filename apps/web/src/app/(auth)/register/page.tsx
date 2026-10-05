@@ -16,6 +16,7 @@ import {
 import { AuthBranding, AuthLogo } from '@/components/layout/auth-branding';
 import { useAuthStore } from '@/stores/auth.store';
 import { api } from '@/lib/api';
+import { formError, validateRegistration } from '@/lib/form-error';
 
 type AccountModel = 'shared' | 'individual';
 
@@ -38,6 +39,8 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const validation = validateRegistration(nome, email, senha, workspaceName);
+    if (validation) { setError(validation); return; }
     setIsPending(true);
     setError('');
     try {
@@ -45,10 +48,10 @@ export default function RegisterPage() {
         accessToken: string;
         user: { id: string; nome: string; email: string; role: string; tenant_id: string };
       }>('/api/auth/register', {
-        nome,
-        email,
+        nome: nome.trim(),
+        email: email.trim(),
         senha,
-        workspace_name: workspaceName || undefined,
+        workspace_name: workspaceName.trim() || undefined,
         account_model: accountModel,
       });
       setAuth(
@@ -69,8 +72,7 @@ export default function RegisterPage() {
       } catch { /* não-crítico */ }
       router.push('/instances');
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Falha ao criar conta');
+      setError(formError(err, 'account'));
     } finally {
       setIsPending(false);
     }
@@ -126,12 +128,14 @@ export default function RegisterPage() {
                 autoComplete="new-password"
                 required
                 minLength={8}
+                maxLength={100}
                 value={senha}
                 onChange={(e) => setSenha(e.target.value)}
                 placeholder="mínimo 8 caracteres"
                 disabled={isPending}
               />
             </div>
+            <p className="text-xs text-muted-foreground">A senha deve ter entre 8 e 100 caracteres.</p>
             <div className="space-y-2">
               <Label htmlFor="workspace">Nome do workspace (opcional)</Label>
               <Input

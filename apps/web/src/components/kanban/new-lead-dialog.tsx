@@ -45,6 +45,7 @@ interface NewLeadDialogProps {
   stages: Stage[];
   defaultStageId?: string | null;
   isLoading?: boolean;
+  error?: string;
   onSubmit: (data: NewLeadFormData) => void;
 }
 
@@ -64,6 +65,7 @@ export function NewLeadDialog({
   stages,
   defaultStageId,
   isLoading,
+  error,
   onSubmit,
 }: NewLeadDialogProps) {
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -160,6 +162,11 @@ export function NewLeadDialog({
               </Select>
             </div>
 
+            {error && (
+              <p role="alert" className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            )}
             <DialogFooter>
               <Button
                 type="button"

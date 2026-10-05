@@ -6,13 +6,13 @@ import Providers from './providers';
 import { cn } from '@/lib/cn';
 
 export const metadata: Metadata = {
-  title: 'CRM Yurilins',
+  title: 'CRM PRO',
   description: 'CRM com funil Kanban e WhatsApp integrado',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'CRM',
+    title: 'CRM PRO',
   },
   icons: {
     icon: '/icons/icon-192.svg',

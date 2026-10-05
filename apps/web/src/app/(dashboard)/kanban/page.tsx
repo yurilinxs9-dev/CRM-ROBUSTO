@@ -27,6 +27,7 @@ import { Search, Plus, Download, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
+import { formError } from '@/lib/form-error';
 import { getSocket } from '@/lib/socket';
 import { useAuthStore, useIsPoolEnabled, useIsKanbanIndividual } from '@/stores/auth.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -677,8 +678,7 @@ export default function KanbanPage() {
     // Mostra a mensagem do backend em vez de "Erro ao criar lead." genérico:
     // era esse texto que escondia qual campo o Zod tinha rejeitado.
     onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      toast.error(msg ?? 'Erro ao criar lead.');
+      toast.error(formError(err, 'lead'), { duration: 10000 });
     },
   });
 
@@ -1298,9 +1298,10 @@ export default function KanbanPage() {
 
       <NewLeadDialog
         open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        onOpenChange={(open) => { createLeadMutation.reset(); setDialogOpen(open); }}
         stages={stages}
         defaultStageId={defaultStageId}
+        error={createLeadMutation.isError ? formError(createLeadMutation.error, 'lead') : undefined}
         isLoading={createLeadMutation.isPending}
         onSubmit={(data) => createLeadMutation.mutate(data)}
       />
