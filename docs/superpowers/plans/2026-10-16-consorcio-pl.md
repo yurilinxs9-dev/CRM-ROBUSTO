@@ -29,7 +29,7 @@
 - [x] 2. Serviço/controlador PL: resumo mensal, consulta de candidatos, CRUD versionado, metas, auditoria e bloqueio cross-tenant; testes transação/validação.
 - [x] 3. Roteamento webhook/prompt e distribuição manual: preservar conversas, contexto do novo funil e histórico. Testes inbound/regressão de parceiros.
 - [x] 4. Interface Vendas da PL: resumo, ranking, formulário de venda, metas geral/individual, edição/cancelamento/histórico; link ao funil e testes de dados.
-- [ ] 5. Verificações: Prisma validate/generate, Jest serial, tsc, lint focado, revisão. Aplicar SQL aditivo/provisionar funil, deploy API/web, health e smoke de acesso sem criar dados comerciais falsos.
+- [x] 5. Verificações: Prisma validate/generate, Jest serial, tsc, lint focado, revisão. Aplicar SQL aditivo/provisionar funil, deploy API/web, health e smoke de acesso sem criar dados comerciais falsos.
 
 ## Ledger
 - A autorização de implementar no tenant foi explícita. Configuração e publicação necessárias fazem parte da entrega; seguir sem solicitar autorização repetida.
@@ -47,3 +47,10 @@
 
 - Ajuste solicitado durante publicação: área exclusiva `/consorcio-pl`, com navegação Leads do consórcio e Vendas da PL e metas. Funil fixo sem seletor para parceiros; filtros locais independentes. Parceiros restaurado à interface anterior.
 - Backend publicado e health OK; teste de banco real criar/corrigir/cancelar e auditoria aprovado dentro de transação revertida, sem dados comerciais fictícios persistidos.
+
+## Entrega verificada
+- API publicada (health 200, zero reinícios após ativação); web fede4b4 publicado com sucesso na Vercel. Memória observada backend144MiB/2GiB, VPS disponível3,7GiB.
+- Smoke HTTP em produção: sem sessão401, gestão200, outro tenant403, operador restrito às próprias vendas. Parceiros200 e ambos os funis com suas etapas preservadas.
+- Browser Edge em sessão temporária: Parceiros sem aba PL; sidebar Consórcio PL; consultas de leads só para o funil PL; Vendas da PL/metas; modal de metas sem Lívia; Ctrl+K Novo lead mantém funil dedicado (na área de leads e na de vendas); retorno ao Kanban geral e Parceiros aprovado. Desktop1440 e mobile390 conferidos visualmente; nenhum erro JavaScript. Nenhum cadastro comercial salvo no smoke.
+- Revisão da navegação apontou contexto do atalho Novo lead; corrigido e confirmado na revisão e no navegador.
+- Limitação operacional: WhatsApp leads do tenant permanece sem conexão ativa/telefone registrado. É necessário reconectar o número do simulador para validar recebimento real de novas mensagens; nenhum teste de envio externo realizado.
