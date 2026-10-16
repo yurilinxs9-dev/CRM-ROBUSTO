@@ -19,7 +19,7 @@
 - [x] 2. Política de acesso restrito API: deny-by-default para áreas gerais/financeiro/parceiros, allowlist de atendimento com checagem de propriedade. Listas e mensagens limitadas ao responsável atual, entrada pessoal preservada. Testes IDOR, busca e filtro adulterado.
 - [x] 3. WebSocket: perfil verificado no banco, fora de broadcast tenant/lead; entregar eventos só ao dono atual e impedir joins arbitrários. Invalidar conexões em mudança de perfil.
 - [x] 4. Frontend: opção na Equipe, sessão atualizada pelo /me, menus/rotas limitados, página inicial Consórcio PL, vendas/meta própria e controles de atribuição bloqueados para perfil restrito.
-- [ ] 5. Typecheck/lint/testes focados e revisão independente. Aplicar coluna sem ativar ninguém, publicar e verificar API/contas atuais; smoke de perfil com fixtures isoladas/revertidas sem alteração dos acessos reais.
+- [x] 5. Typecheck/lint/testes focados e revisão independente. Aplicar coluna sem ativar ninguém, publicar e verificar API/contas atuais; smoke de perfil com fixtures isoladas/revertidas sem alteração dos acessos reais.
 
 ## Ownership
 - Principal: schema/migração, usuários/auth, consultas de leads/mensagens/entrada, integração e deploy.
@@ -38,4 +38,9 @@
 - Corrigida corrida entre autenticação assíncrona do WebSocket e join imediato; regressão reproduzida antes do fix e teste aprovado depois.
 - Typecheck API (1152 MB) e web (1024 MB) aprovados; lint sem erros (avisos legados). Testes web 204/19 suítes pelo executor, recorte independente 45/4 suítes aprovado.
 - Notificações de celular, sino e tarefas também consultam responsável atual; dados de conexões restritas limitados a nome/número/status.
-- Publicação e smoke HTTP/browser: pendentes.
+- API: 318 testes em 23 suítes aprovados, incluindo os casos novos da revisão. Build Docker aprovado, limite 1536 MB no builder e heap de compilação 1152 MB.
+- Publicado: commit funcional `446cdb0492cd1ffbff40792bd31a1cb2699710be`; Vercel success; imagem backend `sha256:f1502ec37d981634c58e5f9605b2c165838bd465750d4603149d880149b574ac` em execução, sem reinícios, health OK. Tag de rollback `crm-whatsapp-crm-backend:pre-pl-access-20261016` preservada.
+- Smoke HTTP após troca: /auth/me, /partners e /pl-sales 200 para as quatro contas atuais; flag false para todas; operadores continuam com vendas próprias. WebSocket real: join imediato reconhecido após autenticação.
+- Browser no site publicado: Taynara vê checkbox nas duas contas OPERADOR, ambos desmarcados. Simulação de /me restrito (somente resposta interceptada no teste, sem alterar conta) confirmou redirect de /partners, sidebar restrito, texto de vendas/meta individual e configurações somente de perfil.
+- Memória após publicação: backend aproximadamente 96 MiB / limite 2 GiB, servidor com 3774 MiB disponíveis. Não foram feitos builds locais pesados.
+- Resultado: perfil pronto em Configurações > Equipe, opt-in ainda desligado. A futura vendedora não foi definida; ativar somente quando o usuário identificar a conta.
