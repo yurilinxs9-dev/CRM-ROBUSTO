@@ -1,8 +1,9 @@
 'use client';
 import { canAccessFinance, isFinanceOwner } from '@/lib/finance';
 
-import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle, Users, Wallet } from 'lucide-react';
+import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle, Users, Wallet, Handshake } from 'lucide-react';
 import { canAccessPartners } from '@/lib/partners';
+import { canAccessPlSales } from '@/lib/pl-sales';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
@@ -23,6 +24,7 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/analytics', label: 'Analytics', icon: BarChart3, exact: true },
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, exact: true },
   { href: '/partners', label: 'Parceiros', icon: Users, exact: true },
+  { href: '/consorcio-pl', label: 'Consórcio PL', icon: Handshake },
   { href: '/kanban', label: 'Kanban', icon: Kanban },
   // Vizinho do Kanban de propósito: são a MESMA view de leads vista de dois
   // jeitos, e o toggle da ViewBar leva de um para o outro.
@@ -52,6 +54,7 @@ export const NAV_ITEMS: NavEntry[] = [
 export function navVisivelPara(item: NavEntry, role: string | undefined, tenantId?: string, userId?: string): boolean {
   if (item.href === '/financeiro') return canAccessFinance(tenantId,userId);
   if (item.href === '/partners') return canAccessPartners(tenantId);
+  if (item.href === '/consorcio-pl') return canAccessPlSales(tenantId ?? '', role ?? '');
   // VISUALIZADOR nao tem acesso a Conversas.
   if (item.href === '/chat' && role === 'VISUALIZADOR') return false;
   // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).

@@ -50,7 +50,7 @@ export function PlSalesDashboard({ month, tenant, userId, role }: { month: strin
   const canCreate = data?.members.some(member => data.manager || member.id === userId) ?? false;
 
   return <section aria-label="Vendas da PL" className="space-y-6">
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4 text-sm"><p>Distribua os leads pelo funil <strong>Consórcio PL</strong> no Kanban. Quando um contrato for fechado, registre a venda aqui.</p><Link href="/kanban" className="font-medium text-primary underline underline-offset-4">Abrir Kanban</Link></div>
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4 text-sm"><p>A gestão distribui os leads do consórcio manualmente. Quando um contrato for fechado, registre a venda aqui.</p><Link href="/consorcio-pl" className="font-medium text-primary underline underline-offset-4">Abrir leads do consórcio</Link></div>
     {query.isLoading && <p role="status" className="py-16 text-center text-muted-foreground">Carregando as vendas da PL…</p>}
     {query.isError && <div role="alert" className="space-y-3 rounded-xl border border-destructive/30 p-5"><p>Não foi possível carregar as vendas da PL.</p><p className="text-sm text-muted-foreground">{plError(query.error)}</p><Button variant="outline" onClick={() => void query.refetch()}>Tentar novamente</Button></div>}
     {data && !query.isError && <>

@@ -187,13 +187,13 @@ export function CommandPalette(): JSX.Element {
    * caminho de dentro é o evento, e ele espera a palette sair de cena.
    */
   const novoLead = () => {
-    if (pathname === '/kanban') {
+    if (pathname === '/kanban' || pathname === '/consorcio-pl') {
       aposFechar.current = () => window.dispatchEvent(new CustomEvent('crm:novo-lead'));
       setOpen(false);
       return;
     }
     setOpen(false);
-    router.push('/kanban?novo=1');
+    router.push(pathname.startsWith('/consorcio-pl/') ? '/consorcio-pl?novo=1' : '/kanban?novo=1');
   };
 
   const filtro = busca.trim().toLowerCase();

@@ -3,7 +3,7 @@
 > **For agentic workers:** executar inline com superpowers:executing-plans; revisão independente ao final.
 
 **Goal:** tenant a44772ed-1382-4400-84fc-3fa350e23e42 com funil Consórcio PL, distribuição humana e Vendas da PL/metas sem regressão nos parceiros.
-**Architecture:** funil fixo exclusivo, identificação de mensagem no worker existente, vendas individuais e metas em tabelas aditivas. Aba dentro de Parceiros com caches/API próprios. Não tocar no site nem integrar com financeiro.
+**Architecture:** funil fixo exclusivo, identificação de mensagem no worker existente, vendas individuais e metas em tabelas aditivas. Área Consórcio PL no sidebar, com funil dedicado e Vendas da PL/metas; Parceiros permanece separado. Caches/API próprios. Não tocar no site nem integrar com financeiro.
 **Tech Stack:** NestJS/Prisma/PostgreSQL, Next.js/React Query, testes Jest em série.
 **Spec:** acordo nesta conversa em 16/10/2026: Paloma dona/GERENTE, Taynara SUPER_ADMIN operacional, Lívia administrativa, Rúbia parceiros, novas vendedoras recebem leads manualmente.
 
@@ -44,3 +44,6 @@
 - Revisão independente: cinco achados corrigidos (syncChat, etapas por funil, retry de origem, timestamps de histórico, gestão exclusiva); segunda revisão sem bloqueios. Histórico ambíguo não é importado em um funil sem evidência.
 - 201 testes API + 12 web passaram; typecheck API/web sem erros. Lint sem erros (aviso preexistente no chat).
 - SQL e provisionamento aplicados atomicamente. Padrão continua com205 leads/8etapas; parceiros40/produções36/total36420000/metas2 inalterados. Novo funil tem6 etapas/0leads. RLS nas3tabelas.
+
+- Ajuste solicitado durante publicação: área exclusiva `/consorcio-pl`, com navegação Leads do consórcio e Vendas da PL e metas. Funil fixo sem seletor para parceiros; filtros locais independentes. Parceiros restaurado à interface anterior.
+- Backend publicado e health OK; teste de banco real criar/corrigir/cancelar e auditoria aprovado dentro de transação revertida, sem dados comerciais fictícios persistidos.
