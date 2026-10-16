@@ -1,4 +1,5 @@
 import { isPlPipeline, PL_TENANT, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { BadGatewayException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -167,6 +168,9 @@ export class MessagesService {
       where: { id: leadId, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (isPlSalesOnly(user) && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Você só pode acessar seus próprios leads');
+    }
 
     // Visualizador: nunca envia mensagens.
     if (user.role === UserRole.VISUALIZADOR) {
@@ -870,6 +874,10 @@ export class MessagesService {
       where: { id: messageId, tenant_id: user.tenantId },
     });
     if (!message) throw new NotFoundException('Mensagem nao encontrada');
+    if (isPlSalesOnly(user) && !await this.prisma.lead.findFirst({
+      where: { id: message.lead_id, tenant_id: user.tenantId, responsavel_id: user.id },
+      select: { id: true },
+    })) throw new ForbiddenException('Você só pode acessar arquivos dos seus leads');
     if (!message.media_url && !message.media_filename) {
       throw new NotFoundException('Midia nao disponivel');
     }
@@ -933,6 +941,9 @@ export class MessagesService {
       select: { id: true, responsavel_id: true, instancia_whatsapp: true, is_private: true, pipeline_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (isPlSalesOnly(user) && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Você só pode acessar seus próprios leads');
+    }
 
     // Visualizador: nao acessa historico.
     if (user.role === UserRole.VISUALIZADOR) {
@@ -1064,10 +1075,13 @@ export class MessagesService {
   async syncChat(leadId: string, user: AuthUser): Promise<{ added: number; mediaFixed: number }> {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, telefone: true, instancia_whatsapp: true, pipeline_id: true },
+      select: { id: true, telefone: true, instancia_whatsapp: true, pipeline_id: true, responsavel_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     // O histórico remoto de um telefone não distingue parceria de consórcio.
+    if (isPlSalesOnly(user) && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Você só pode acessar seus próprios leads');
+    }
     // Quando há finalidade PL, só reparar mídia já vinculada; mensagens novas
     // passam pelo worker de histórico/webhook, que aplica o roteamento.
     const scopedHistory = user.tenantId === PL_TENANT && (isPlPipeline(user.tenantId,lead.pipeline_id) || !!await this.prisma.lead.findFirst({where:{tenant_id:user.tenantId,telefone:lead.telefone,pipeline_id:PL_PIPELINE},select:{id:true}}));

@@ -20,6 +20,8 @@ import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/cn';
+import { canAccessSalesRoute } from '@/lib/pl-sales-access';
+import { useIsPlSalesOnly } from '@/stores/auth.store';
 
 import type { LucideIcon } from 'lucide-react';
 
@@ -450,11 +452,11 @@ interface AreaFiltrada {
  * (quem digita "radar" quer a secao toda, nao um pedaco); caso contrario,
  * entra so com os topicos que casam.
  */
-function filtrar(termo: string): AreaFiltrada[] {
-  if (termo === '') return AREAS.map((area) => ({ area, topicos: area.topicos }));
+function filtrar(termo: string, areas: Area[]): AreaFiltrada[] {
+  if (termo === '') return areas.map((area) => ({ area, topicos: area.topicos }));
 
   const saida: AreaFiltrada[] = [];
-  for (const area of AREAS) {
+  for (const area of areas) {
     const cabecalho = achatar(`${area.titulo} ${area.resumo} ${area.onde}`);
     if (cabecalho.includes(termo)) {
       saida.push({ area, topicos: area.topicos });
@@ -542,13 +544,21 @@ function ItemAccordion({
 // ---------------------------------------------------------------------------
 
 export default function AjudaPage() {
+  const restricted = useIsPlSalesOnly();
   const [busca, setBusca] = useState('');
   /** So o que o usuario abriu. Com busca ativa, o resultado ja abre sozinho. */
   const [abertos, setAbertos] = useState<Record<string, boolean>>({});
 
   const termo = achatar(busca.trim());
   const buscando = termo !== '';
-  const areas = useMemo(() => filtrar(termo), [termo]);
+  const accessibleAreas = useMemo(() => {
+    if (!restricted) return AREAS;
+    return AREAS.filter(area => ['ficha', 'kanban', 'leads'].includes(area.id)).map(area => ({
+      ...area,
+      topicos: area.topicos.filter(topic => !topic.link || canAccessSalesRoute({ pl_sales_only: true }, topic.link.href)),
+    }));
+  }, [restricted]);
+  const areas = useMemo(() => filtrar(termo, accessibleAreas), [termo, accessibleAreas]);
 
   const alternar = (chave: string) => {
     setAbertos((atual) => ({ ...atual, [chave]: !(atual[chave] ?? buscando) }));
@@ -592,7 +602,7 @@ export default function AjudaPage() {
       {/* Atalhos para as areas — o indice do manual. */}
       {!buscando && (
         <nav aria-label="Áreas do guia" className="flex flex-wrap gap-2">
-          {AREAS.map((area) => {
+          {accessibleAreas.map((area) => {
             const Icone = area.icone;
             return (
               <Button key={area.id} variant="outline" size="sm" asChild>

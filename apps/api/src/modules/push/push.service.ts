@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as webpush from 'web-push';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { isPlSalesOnly, PL_SALES_TENANT_ID } from '../../common/access/pl-sales-access';
 
 export interface PushPayload {
   title: string;
@@ -73,9 +74,18 @@ export class PushService implements OnModuleInit {
 
   async sendToUsers(userIds: string[], payload: PushPayload) {
     if (!this.vapidConfigured || userIds.length === 0) return;
-    const subs = await this.prisma.pushSubscription.findMany({
+    let subs = await this.prisma.pushSubscription.findMany({
       where: { user_id: { in: userIds } },
+      include: { user: { select: { tenant_id: true, role: true, pl_sales_only: true } } },
     });
+    const restricted = (s: (typeof subs)[number]) => isPlSalesOnly({ tenantId: s.user.tenant_id, role: s.user.role, plSalesOnly: s.user.pl_sales_only });
+    if (subs.some(restricted)) {
+      const match = /^\/chat\/([0-9a-f-]{36})$/i.exec(payload.url ?? '');
+      const lead = match ? await this.prisma.lead.findFirst({
+        where: { id: match[1], tenant_id: PL_SALES_TENANT_ID }, select: { responsavel_id: true },
+      }) : null;
+      subs = subs.filter(s => !restricted(s) || s.user_id === lead?.responsavel_id);
+    }
     await Promise.all(
       subs.map((s) =>
         webpush

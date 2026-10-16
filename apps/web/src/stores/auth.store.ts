@@ -1,19 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-
-interface User {
-  id: string;
-  nome: string;
-  email: string;
-  role: string;
-  tenantId: string;
-  avatar_url?: string;
-  is_platform_admin?: boolean;
-  /** ["*"] = admin master; senão as áreas liberadas do painel. */
-  platform_scopes?: string[];
-  /** Modo foco (gerente+): enxerga o board como operador. */
-  focus_mode?: boolean;
-}
+import type { SessionUser as User } from '@/lib/auth-user';
+import { isPlSalesOnly } from '@/lib/pl-sales-access';
 
 export interface Tenant {
   id: string;
@@ -73,7 +61,7 @@ export const useAuthStore = create<AuthState>()(
       setAuth: (user, accessToken) => {
         // Keep legacy key in sync for any code still reading it directly.
         localStorage.setItem('accessToken', accessToken);
-        set({ user, accessToken, isAuthenticated: true });
+        set({ user: { ...user, pl_sales_only: user.pl_sales_only === true }, accessToken, isAuthenticated: true });
       },
       // Recupera sessão "zumbi": o token legado sobreviveu no localStorage mas o
       // estado persistido (crm-auth) perdeu o user — sem isso a UI cai no
@@ -136,7 +124,9 @@ export const useAuthStore = create<AuthState>()(
   ),
 );
 
-export const useIsPoolEnabled = () => useAuthStore((s) => s.tenant?.pool_enabled ?? false);
+export const useIsPlSalesOnly = () => useAuthStore((s) => isPlSalesOnly(s.user));
+
+export const useIsPoolEnabled = () => useAuthStore((s) => !isPlSalesOnly(s.user) && (s.tenant?.pool_enabled ?? false));
 
 /** Kanban individual ligado no workspace (flag vem do `/api/auth/me`). */
 export const useIsKanbanIndividual = () =>

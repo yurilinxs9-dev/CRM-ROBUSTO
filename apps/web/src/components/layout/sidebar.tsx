@@ -1,12 +1,12 @@
 'use client';
-import { canAccessFinance, isFinanceOwner } from '@/lib/finance';
+import { isFinanceOwner } from '@/lib/finance';
 
 import { LayoutDashboard, Kanban, List, MessageSquare, Smartphone, Settings, CalendarDays, BarChart3, PanelLeftClose, PanelLeftOpen, Shield, Megaphone, Radar, HelpCircle, Users, Wallet, Handshake } from 'lucide-react';
-import { canAccessPartners } from '@/lib/partners';
-import { canAccessPlSales } from '@/lib/pl-sales';
+import { navVisivelPara } from '@/lib/navigation-access';
+export { navVisivelPara } from '@/lib/navigation-access';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import { NavItem } from './nav-item';
 import { UserMenu } from './user-menu';
 
@@ -43,25 +43,6 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: '/ajuda', label: 'Como funciona', icon: HelpCircle },
 ];
 
-/**
- * Quem enxerga cada item do menu.
- *
- * Mora aqui, ao lado do `NAV_ITEMS`, porque o sidebar NÃO é o único consumidor:
- * a palette (Ctrl+K) monta a seção "Navegação" da mesma lista. Duplicar o
- * predicado faria a palette virar porta dos fundos para tela que o menu esconde
- * do mesmo usuário — e a divergência só apareceria em produção, no papel errado.
- */
-export function navVisivelPara(item: NavEntry, role: string | undefined, tenantId?: string, userId?: string): boolean {
-  if (item.href === '/financeiro') return canAccessFinance(tenantId,userId);
-  if (item.href === '/partners') return canAccessPartners(tenantId);
-  if (item.href === '/consorcio-pl') return canAccessPlSales(tenantId ?? '', role ?? '');
-  // VISUALIZADOR nao tem acesso a Conversas.
-  if (item.href === '/chat' && role === 'VISUALIZADOR') return false;
-  // Follow-up IA é GERENTE+ (operador/visualizador não disparam broadcast).
-  if (item.href === '/followup' && role !== 'SUPER_ADMIN' && role !== 'GERENTE') return false;
-  return true;
-}
-
 interface SidebarProps {
   collapsed?: boolean;
   onNavigate?: () => void;
@@ -76,7 +57,8 @@ export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, class
   const role = useAuthStore((s) => s.user?.role);
   const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
-  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId));
+  const restricted = useIsPlSalesOnly();
+  const visibleNav = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId, restricted));
 
   return (
     <aside
@@ -121,14 +103,14 @@ export function Sidebar({ collapsed = false, onNavigate, onToggleCollapse, class
           <NavItem
             key={item.href}
             href={item.href}
-            label={item.label}
+            label={restricted && item.href === '/settings' ? 'Meu perfil' : item.label}
             icon={item.icon}
             exact={item.exact}
             collapsed={collapsed}
             onNavigate={onNavigate}
           />
         ))}
-        {isPlatformAdmin && (
+        {isPlatformAdmin && !restricted && (
           <NavItem
             href="/admin"
             label="Admin"

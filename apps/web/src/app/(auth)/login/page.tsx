@@ -15,7 +15,9 @@ import {
   Switch,
 } from '@/components/ui';
 import { AuthBranding, AuthLogo } from '@/components/layout/auth-branding';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, type Tenant } from '@/stores/auth.store';
+import { userFromAuthMe, type AuthMeProfile } from '@/lib/auth-user';
+import { salesHome } from '@/lib/pl-sales-access';
 import { api } from '@/lib/api';
 
 export default function LoginPage() {
@@ -62,19 +64,16 @@ export default function LoginPage() {
         token,
       );
       try {
-        const me = await api.get<{
-          user: { focus_mode?: boolean };
-          tenant: { id: string; nome: string; pool_enabled: boolean };
-        }>('/api/auth/me', {
+        const me = await api.get<AuthMeProfile & { tenant: Tenant }>('/api/auth/me', {
           headers: { Authorization: `Bearer ${token}` },
         });
         setTenant(me.data.tenant);
         // O JWT não carrega focus_mode — sem hidratar aqui, quem ligou o foco em
         // outro device loga com o store em false, vê o board já filtrado pelo
         // servidor e não consegue desligar (o menu só ofereceria "entrar").
-        updateUser({ focus_mode: me.data.user?.focus_mode ?? false });
-      } catch { /* não-crítico — pool_enabled fica false por default */ }
-      router.push('/dashboard');
+        updateUser(userFromAuthMe(me.data));
+      } catch { /* O layout confirma /me antes de montar qualquer página. */ }
+      router.push(salesHome(useAuthStore.getState().user));
     } catch (err) {
       // 429 = lockout progressivo — mostra a mensagem do backend com o tempo.
       const resp = (err as { response?: { status?: number; data?: { message?: string } } }).response;

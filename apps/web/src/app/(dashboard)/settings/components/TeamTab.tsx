@@ -5,6 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Shield, UserCheck, UserX, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { canConfigurePlSalesOnly } from '@/lib/pl-sales-access';
+import { useAuthStore } from '@/stores/auth.store';
 import { useSectors } from '@/hooks/use-sectors';
 import { CopyId } from '@/components/ui/copy-id';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -33,6 +35,7 @@ interface TeamMember {
   email: string;
   role: string;
   ativo: boolean;
+  pl_sales_only?: boolean;
   avatar_url?: string | null;
   titulo?: string | null;
   especialidade?: string | null;
@@ -63,8 +66,21 @@ type AddMode = 'create' | 'link';
 // Sentinela para "sem setor" (Radix Select não aceita value="").
 const NO_SECTOR = 'none';
 
+function SalesOnlyCheckbox({ checked, onChange, disabled = false }: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
+  return (
+    <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+      <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-primary" checked={checked} onChange={event => onChange(event.target.checked)} disabled={disabled} />
+      <span>
+        <span className="block font-medium">Vendedora de consórcio — acesso restrito</span>
+        <span className="block text-xs text-muted-foreground">Somente carteira, vendas e meta próprias. Sem parceiros, dados da equipe ou configurações gerais.</span>
+      </span>
+    </label>
+  );
+}
+
 export function TeamTab() {
   const queryClient = useQueryClient();
+  const actor = useAuthStore(state => state.user);
   const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<AddMode>('create');
   const [newNome, setNewNome] = useState('');
@@ -72,9 +88,13 @@ export function TeamTab() {
   const [newSenha, setNewSenha] = useState('');
   const [newRole, setNewRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
   const [newSectorId, setNewSectorId] = useState('');
+  const [newSalesOnly, setNewSalesOnly] = useState(false);
   const [linkEmail, setLinkEmail] = useState('');
   const [linkRole, setLinkRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
   const [linkSectorId, setLinkSectorId] = useState('');
+  const [linkSalesOnly, setLinkSalesOnly] = useState(false);
+  const canConfigureNew = canConfigurePlSalesOnly(actor, newRole);
+  const canConfigureLink = canConfigurePlSalesOnly(actor, linkRole, linkEmail.trim().toLowerCase() === actor?.email.toLowerCase() ? actor.id : undefined);
 
   const { data: sectors = [] } = useSectors();
 
@@ -88,7 +108,7 @@ export function TeamTab() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole, sector_id: newSectorId || null });
+      await api.post('/api/users/team', { nome: newNome, email: newEmail, senha: newSenha, role: newRole, sector_id: newSectorId || null, ...(canConfigureNew ? { pl_sales_only: newSalesOnly } : {}) });
     },
     onSuccess: () => {
       toast.success('Membro adicionado!');
@@ -96,6 +116,7 @@ export function TeamTab() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
       setNewNome(''); setNewEmail(''); setNewSenha(''); setNewRole('OPERADOR'); setNewSectorId('');
+      setNewSalesOnly(false); setLinkSalesOnly(false);
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -105,7 +126,7 @@ export function TeamTab() {
 
   const linkMutation = useMutation({
     mutationFn: async () => {
-      await api.post('/api/users/team/link', { email: linkEmail, role: linkRole, sector_id: linkSectorId || null });
+      await api.post('/api/users/team/link', { email: linkEmail, role: linkRole, sector_id: linkSectorId || null, ...(canConfigureLink ? { pl_sales_only: linkSalesOnly } : {}) });
     },
     onSuccess: () => {
       toast.success('Usuário vinculado!');
@@ -113,6 +134,7 @@ export function TeamTab() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       setAddOpen(false);
       setLinkEmail(''); setLinkRole('OPERADOR'); setLinkSectorId('');
+      setNewSalesOnly(false); setLinkSalesOnly(false);
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -137,7 +159,7 @@ export function TeamTab() {
   };
 
   const changeRole = (m: TeamMember, role: string) => {
-    updateMutation.mutate({ id: m.id, data: { role } });
+    updateMutation.mutate({ id: m.id, data: { role, ...(m.pl_sales_only && role !== 'OPERADOR' && canConfigurePlSalesOnly(actor, m.role, m.id) ? { pl_sales_only: false } : {}) } });
   };
 
   const changeSector = (m: TeamMember, sector_id: string | null) => {
@@ -148,7 +170,7 @@ export function TeamTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{members.length} membro{members.length !== 1 ? 's' : ''}</p>
-        <Button size="sm" onClick={() => setAddOpen(true)}>
+        <Button size="sm" onClick={() => { setNewSalesOnly(false); setLinkSalesOnly(false); setAddOpen(true); }}>
           <Plus className="h-4 w-4 mr-1" />
           Adicionar Membro
         </Button>
@@ -184,6 +206,11 @@ export function TeamTab() {
                     <p className="text-xs text-muted-foreground truncate">Setor: {m.sector.name}</p>
                   )}
                   <CopyId value={m.id} label="ID:" />
+                  {canConfigurePlSalesOnly(actor, m.role, m.id) && (
+                    <div className="mt-2">
+                      <SalesOnlyCheckbox checked={m.pl_sales_only === true} disabled={updateMutation.isPending} onChange={pl_sales_only => updateMutation.mutate({ id: m.id, data: { pl_sales_only } })} />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -247,6 +274,7 @@ export function TeamTab() {
       {/* Add member dialog */}
       <Dialog open={addOpen} onOpenChange={(open) => {
         setAddOpen(open);
+        if (!open) { setNewSalesOnly(false); setLinkSalesOnly(false); }
         if (!open) { setAddMode('create'); setLinkEmail(''); setLinkRole('OPERADOR'); setLinkSectorId(''); }
       }}>
         <DialogContent className="sm:max-w-md">
@@ -258,7 +286,7 @@ export function TeamTab() {
           <div className="flex gap-1 rounded-lg bg-muted p-1">
             <button
               type="button"
-              onClick={() => setAddMode('create')}
+              onClick={() => { setAddMode('create'); setNewSalesOnly(false); setLinkSalesOnly(false); }}
               className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${addMode === 'create' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -266,7 +294,7 @@ export function TeamTab() {
             </button>
             <button
               type="button"
-              onClick={() => setAddMode('link')}
+              onClick={() => { setAddMode('link'); setNewSalesOnly(false); setLinkSalesOnly(false); }}
               className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${addMode === 'link' ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
             >
               <Link2 className="h-3.5 w-3.5" />
@@ -290,7 +318,7 @@ export function TeamTab() {
               </div>
               <div className="space-y-1.5">
                 <Label>Função</Label>
-                <Select value={newRole} onValueChange={(v) => setNewRole(v as typeof newRole)}>
+                <Select value={newRole} onValueChange={(v) => { setNewRole(v as typeof newRole); setNewSalesOnly(false); }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -301,6 +329,7 @@ export function TeamTab() {
                   </SelectContent>
                 </Select>
               </div>
+              {canConfigureNew && <SalesOnlyCheckbox checked={newSalesOnly} onChange={setNewSalesOnly} />}
               <div className="space-y-1.5">
                 <Label>Setor <span className="text-muted-foreground font-normal">(opcional)</span></Label>
                 <Select
@@ -328,7 +357,7 @@ export function TeamTab() {
               </div>
               <div className="space-y-1.5">
                 <Label>Função</Label>
-                <Select value={linkRole} onValueChange={(v) => setLinkRole(v as typeof linkRole)}>
+                <Select value={linkRole} onValueChange={(v) => { setLinkRole(v as typeof linkRole); setLinkSalesOnly(false); }}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -356,6 +385,7 @@ export function TeamTab() {
                   </SelectContent>
                 </Select>
               </div>
+              {canConfigureLink && <SalesOnlyCheckbox checked={linkSalesOnly} onChange={setLinkSalesOnly} />}
             </div>
           )}
 

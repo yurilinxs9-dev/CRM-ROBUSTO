@@ -178,6 +178,22 @@ export function buildPayload(
   return { native, custom };
 }
 
+/** Mesmo payload usado pelo formulário; nulos opcionais não são válidos na criação. */
+export function buildNewLeadPayload(
+  defs: FieldDef[],
+  values: Record<string, unknown>,
+  stageId: string,
+): Record<string, unknown> & { nome: string; telefone: string; estagio_id: string } {
+  const { native, custom } = buildPayload(defs, values);
+  return {
+    ...semNulos(native),
+    nome: String(native.nome),
+    telefone: String(native.telefone),
+    estagio_id: stageId,
+    ...(Object.keys(custom).length > 0 ? { dados_custom: custom } : {}),
+  };
+}
+
 /** Valor inicial de um campo no formulário, já no formato que o input espera. */
 export function initialValue(def: FieldDef, record: FieldRecord | null | undefined): unknown {
   const bruto = readValue(def, record);

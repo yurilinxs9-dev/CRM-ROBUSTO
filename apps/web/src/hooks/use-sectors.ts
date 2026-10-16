@@ -15,9 +15,10 @@ export interface Sector {
  * F-01 — Setores do tenant. Por padrão só ativos (para dropdowns). `all=true`
  * inclui inativos (tela de gerenciamento).
  */
-export function useSectors(all = false) {
+export function useSectors(all = false, enabled = true) {
   return useQuery<Sector[]>({
     queryKey: ['sectors', all],
+    enabled,
     queryFn: async () => {
       const res = await api.get('/api/sectors', { params: all ? { all: 'true' } : {} });
       return res.data as Sector[];

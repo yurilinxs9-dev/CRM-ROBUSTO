@@ -10,13 +10,15 @@ import { HeaderSearch } from './header-search';
 import { NotificationBell } from './notification-bell';
 import { UserMenu } from './user-menu';
 import { useSocketStatus } from '@/hooks/use-socket-status';
+import { useIsPlSalesOnly } from '@/stores/auth.store';
 
 function usePageTitle() {
   const pathname = usePathname();
+  const restricted = useIsPlSalesOnly();
   const match = NAV_ITEMS.find((n) =>
     n.exact ? pathname === n.href : pathname === n.href || pathname.startsWith(`${n.href}/`),
   );
-  return match?.label ?? 'CRM Pro';
+  return restricted && pathname === '/settings' ? 'Meu perfil' : match?.label ?? 'CRM Pro';
 }
 
 export function Header() {

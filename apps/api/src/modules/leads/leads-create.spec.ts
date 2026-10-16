@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { LeadsService } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -93,6 +93,37 @@ const operador: AuthUser = {
 const ESTAGIO_ID = '22222222-2222-2222-2222-222222222222';
 const DEFAULT_PIPELINE_ID = '99999999-9999-9999-9999-999999999999';
 const OWN_INSTANCE_NAME = 'inst-alex-personal-007';
+
+describe('criação restrita PL', () => {
+  const seller = { ...operador, tenantId: 'a44772ed-1382-4400-84fc-3fa350e23e42', plSalesOnly: true };
+  const input = { nome: 'Teste', telefone: '+5531955554444', estagio_id: ESTAGIO_ID };
+  function restrictedSetup() {
+    const m = makeService();
+    m.prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: true });
+    m.prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: '6f749216-8d83-44ed-8fd0-1c57720c9f11' });
+    return m;
+  }
+  it.each([false, true])('não devolve dados do contato existente de outra carteira (corrida=%s)', async race => {
+    const m = restrictedSetup();
+    const foreign = { id: 'foreign', responsavel_id: 'other', dados_custom: { secret: 'hidden' } };
+    if (race) {
+      m.prisma.lead.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(foreign);
+      m.prisma.lead.create.mockRejectedValue(Object.assign(new Error('duplicate'), { code: 'P2002' }));
+    } else m.prisma.lead.findFirst.mockResolvedValueOnce(foreign);
+    await expect(m.service.create(input, seller)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it('rejeita número indicado pelo cliente sem propriedade da vendedora', async () => {
+    const m = restrictedSetup();
+    m.prisma.whatsappInstance.findFirst.mockResolvedValue(null);
+    await expect(m.service.create({ ...input, instancia_whatsapp: 'other-number' }, seller)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(m.prisma.lead.create).not.toHaveBeenCalled();
+  });
+  it('mesmo com pool, consulta somente número próprio ao criar lead manual', async () => {
+    const m = restrictedSetup();
+    await m.service.create(input, seller);
+    expect(m.prisma.whatsappInstance.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ owner_user_id: seller.id }) }));
+  });
+});
 
 // Multi-pipeline fixtures — valores distintos e reconhecíveis, nunca
 // reaproveitados como "o valor certo por coincidência".

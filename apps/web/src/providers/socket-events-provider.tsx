@@ -6,6 +6,7 @@ import { getSocket } from '@/lib/socket';
 import { leadUpdateFields } from '@/lib/lead-events';
 import { api } from '@/lib/api';
 import { useAuthStore, type Tenant } from '@/stores/auth.store';
+import { userFromAuthMe, type AuthMeProfile } from '@/lib/auth-user';
 
 /**
  * Provider global de eventos WS pro dashboard.
@@ -216,10 +217,16 @@ export function SocketEventsProvider({ children }: { children: React.ReactNode }
       // O `/me` é a fonte da verdade da sessão; o payload só evita a tela ficar
       // no modo antigo durante o round-trip. Falha de rede aqui não é crítica —
       // o próximo carregamento do dashboard re-sincroniza.
+      const token = useAuthStore.getState().accessToken;
       api
-        .get<{ tenant: Tenant | null }>('/api/auth/me')
+        .get<AuthMeProfile & { tenant: Tenant }>('/api/auth/me')
         .then(({ data }) => {
-          if (data?.tenant) useAuthStore.getState().setTenant(data.tenant);
+          const state = useAuthStore.getState();
+          if (state.accessToken !== token || !data?.user || !data?.tenant) return;
+          const nextUser = userFromAuthMe(data);
+          if (state.user?.pl_sales_only !== nextUser.pl_sales_only) queryClient.clear();
+          state.updateUser(nextUser);
+          state.setTenant(data.tenant);
         })
         .catch(() => { /* noop */ });
       queryClient.invalidateQueries({ queryKey: ['pipelines'] });

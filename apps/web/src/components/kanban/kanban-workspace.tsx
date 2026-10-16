@@ -27,9 +27,10 @@ import { Search, Plus, Download, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
+import { PL_PIPELINE_ID } from '@/lib/pl-sales';
 import { formError } from '@/lib/form-error';
 import { getSocket } from '@/lib/socket';
-import { useAuthStore, useIsPoolEnabled, useIsKanbanIndividual } from '@/stores/auth.store';
+import { useAuthStore, useIsPoolEnabled, useIsKanbanIndividual, useIsPlSalesOnly } from '@/stores/auth.store';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -115,6 +116,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   const filters = fixedPipelineId ? localFilters : view.filters;
   const cardFields = fixedPipelineId ? [] : view.config.card_fields;
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const restricted = useIsPlSalesOnly();
   const userRole = useAuthStore((s) => s.user?.role);
   const isOperador = userRole === 'OPERADOR';
   const focusMode = useAuthStore((s) => s.user?.focus_mode ?? false);
@@ -129,7 +131,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // board de ninguém. Sem este gate o select existiria como controle morto:
   // trocar o valor não mudaria um card na tela.
   const isManager = userRole === 'GERENTE' || userRole === 'SUPER_ADMIN';
-  const showViewAs = isManager && !focusMode;
+  const showViewAs = !restricted && isManager && !focusMode;
   const [activeTab, setActiveTab] = useState<'escritorio' | 'meus'>(() => {
     try { return (localStorage.getItem('kanban-tab') as 'escritorio' | 'meus') ?? 'meus'; }
     catch { return 'meus'; }
@@ -150,7 +152,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   }, []);
 
   const [selectedPipelineId, setActivePipelineId] = useState<string | null>(null);
-  const activePipelineId = fixedPipelineId ?? selectedPipelineId;
+  const activePipelineId = restricted ? PL_PIPELINE_ID : fixedPipelineId ?? selectedPipelineId;
   const [searchTerm, setSearchTerm] = useState('');
   const [tempFilter, setTempFilter] = useState<Temperatura | 'ALL'>('ALL');
   // 'ALL' é o sentinela de "todos": o Select do Radix não aceita item com valor
@@ -226,6 +228,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
    */
   const boardDeOutroMembro =
     kanbanIndividual && viewAsApplied !== 'ALL' && viewAsApplied !== currentUserId;
+  const stagesReadOnly = restricted || boardDeOutroMembro;
 
   // --- Pipelines ---
   // Com o toggle ligado, as ETAPAS vêm do board de quem o gestor está vendo.
@@ -243,6 +246,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       const res = await api.get('/api/pipelines', { params: pipelineParams });
       return res.data;
     },
+    select: data => restricted ? data.filter(pipeline => pipeline.id === PL_PIPELINE_ID) : data,
   });
 
   useEffect(() => {
@@ -369,12 +373,14 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       // O dropdown sobrepõe as abas — gestor olhando o kanban de um operador vê
       // os leads dele inteiros, sem recorte de "meus"/"escritório".
       p.responsavel_id = viewAsApplied;
+    } else if (restricted) {
+      p.owner = 'me';
     } else if (isPoolEnabled) {
       // Operador não tem aba "Escritório" — sempre vê só os próprios.
       p.owner = isOperador || activeTab === 'meus' ? 'me' : 'others';
     }
     return p;
-  }, [searchAplicado, tempFilter, viewAsApplied, isPoolEnabled, isOperador, activeTab]);
+  }, [searchAplicado, tempFilter, viewAsApplied, isPoolEnabled, isOperador, activeTab, restricted]);
 
   // A ordenação da view vale no board como RECORTE: o backend a aplica DENTRO
   // da janela de cada coluna, então o top-50 que chega é o começo da ordem
@@ -478,6 +484,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // --- Tenant users (for bulk assign) ---
   const { data: tenantUsers = [] } = useQuery<TenantUser[]>({
     queryKey: ['users'],
+    enabled: !restricted,
     queryFn: async () => {
       const res = await api.get('/api/users/list');
       return res.data as TenantUser[];
@@ -768,7 +775,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         // Board de outro membro: reordenar tomaria 403 e ainda deixaria a ordem
         // otimista na tela. O grip nem é renderizado nesse modo — isto é a
         // trava de trás (teclado, drag iniciado antes da troca do "Ver como").
-        if (boardDeOutroMembro) return;
+        if (stagesReadOnly) return;
         const ids = orderedStages.map((s) => s.id);
         const fromId = activeId.replace('stage-', '');
         const toId = overId.replace('stage-', '');
@@ -886,7 +893,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       stageMutation,
       orderedStages,
       reorderStagesMutation,
-      boardDeOutroMembro,
+      stagesReadOnly,
     ],
   );
 
@@ -1089,6 +1096,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         {fixedPipelineId ? <h2 className="flex-1 text-lg font-semibold">Leads do consórcio</h2> : <><h1 className="text-lg font-semibold shrink-0">Pipeline</h1>
         <div className="flex-1 min-w-0">
           <PipelineSwitcher
+            readOnly={restricted}
             pipelines={pipelineSummaries}
             activeId={activePipelineId}
             onSelect={setActivePipelineId}
@@ -1263,19 +1271,19 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
                     onQuickTaskLead={(leadId) => setQuickTaskLeadId(leadId)}
                     onArchiveLead={(leadId) => setArchiveLeadId(leadId)}
                     onOpenDetail={(leadId) => setDetailLeadId(leadId)}
-                    onClaimLead={handleClaimLead}
+                    onClaimLead={restricted ? undefined : handleClaimLead}
                     isPoolEnabled={isPoolEnabled}
                     selectedLeadIds={selectedLeadIds}
                     onToggleSelect={toggleLead}
                     onSelectAllInStage={selectAllInStage}
                     cardFields={cardFields}
-                    stagesReadOnly={boardDeOutroMembro}
+                    stagesReadOnly={stagesReadOnly}
                   />
                 ))}
                 {/* Etapa nova nasce no board de QUEM cria: no board de um colega
                     o botão criaria uma coluna invisível aqui e visível só para o
                     gestor. Fora do modo individual nada muda. */}
-                {!boardDeOutroMembro && (
+                {!stagesReadOnly && (
                 <button
                   type="button"
                   onClick={() => {
@@ -1311,14 +1319,14 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         onSubmit={(data) => createLeadMutation.mutate(data)}
       />
 
-      <NewPipelineDialog
+      {!restricted && <NewPipelineDialog
         open={newPipelineOpen}
         onOpenChange={setNewPipelineOpen}
         isLoading={createPipelineMutation.isPending}
         onSubmit={(data) => createPipelineMutation.mutate(data)}
-      />
+      />}
 
-      <DeleteWithMoveDialog
+      {!restricted && <DeleteWithMoveDialog
         open={!!deletePipelineId}
         onOpenChange={(o) => !o && setDeletePipelineId(null)}
         sourceId={deletePipelineId}
@@ -1328,9 +1336,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
           deletePipelineId &&
           deleteWithMoveMutation.mutate({ id: deletePipelineId, targetPipelineId })
         }
-      />
+      />}
 
-      <StageConfigDialog
+      {!stagesReadOnly && <StageConfigDialog
         open={!!stageConfigId}
         onOpenChange={(o) => !o && setStageConfigId(null)}
         stage={stageBeingConfigured}
@@ -1339,7 +1347,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
           .map((s) => ({ id: s.id, nome: s.nome }))}
         isLoading={updateStageMutation.isPending}
         onSubmit={handleSubmitStageConfig}
-      />
+      />}
 
       <QuickTaskDialog
         open={!!quickTaskLeadId}

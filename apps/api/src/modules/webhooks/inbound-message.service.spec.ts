@@ -1198,6 +1198,14 @@ describe('Consórcio PL — manual inbound assignment', () => {
     m.conversations.resolveForInbound.mockResolvedValue({id:'conv-pl',responsavel_id:null});
     return {...m,resolve};
   }
+  it('lead novo do número pessoal da vendedora restrita nasce na carteira dela', async () => {
+    const m = manual();
+    m.prisma.user.findUnique.mockResolvedValue({ role: 'OPERADOR', pl_sales_only: true });
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA, pipeline_id: PL_PIPELINE, responsavel_id: instanceB.owner_user_id });
+    await m.service.saveIncomingMessage(baseInput({ tenantId: PL_TENANT, instance: instanceB }));
+    expect(m.prisma.lead.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ responsavel_id: instanceB.owner_user_id }) }));
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
   it('creates unassigned lead despite admin number and round robin; repeated event has no effects', async () => {
     const m=manual();m.prisma.lead.upsert.mockResolvedValue({...leadOwnedByA,pipeline_id:PL_PIPELINE,responsavel_id:null});
     const input=baseInput({tenantId:PL_TENANT,instance:{...instanceB,sector_id:'commercial'}});

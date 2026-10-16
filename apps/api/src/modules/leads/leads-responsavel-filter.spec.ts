@@ -92,6 +92,28 @@ function makeUser(id: string, role: UserRole): AuthUser {
 const operador = makeUser(OPERADOR_ID, UserRole.OPERADOR);
 const gerente = makeUser(GERENTE_ID, UserRole.GERENTE);
 
+describe('carteira restrita PL', () => {
+  const seller: AuthUser = { ...operador, tenantId: 'a44772ed-1382-4400-84fc-3fa350e23e42', plSalesOnly: true };
+  it.each([false, true])('lista somente os próprios, mesmo com pool=%s e filtro forjado', async (pool) => {
+    const { service, prisma } = makeService();
+    prisma.tenant.findUnique.mockResolvedValue({ pool_enabled: pool });
+    await service.findAll(seller, { responsavel_id: COLEGA_ID, search: 'ana' });
+    expect(whereDoFindMany(prisma).responsavel_id).toBe(seller.id);
+  });
+  it('não reutiliza cache anterior à ativação do perfil', async () => {
+    const { service, cache } = makeService();
+    await service.findAll({ ...seller, plSalesOnly: false }, {});
+    await service.findAll(seller, {});
+    expect(cache.set.mock.calls[0][0]).not.toEqual(cache.set.mock.calls[1][0]);
+  });
+  it('exporta somente os próprios', async () => {
+    const { service, prisma } = makeService();
+    const res = { setHeader: jest.fn(), send: jest.fn() } as unknown as Response;
+    await service.exportCsv(seller, { responsavel_id: COLEGA_ID }, res);
+    expect(whereDoFindMany(prisma).responsavel_id).toBe(seller.id);
+  });
+});
+
 /** Visibilidade do operador no modo individual: as próprias + a nuvem. */
 const OR_OPERADOR = (userId: string) => [
   { responsavel_id: userId },

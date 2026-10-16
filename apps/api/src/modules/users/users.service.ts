@@ -1,4 +1,7 @@
-import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException, Logger, Optional } from '@nestjs/common';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SectorsService } from '../sectors/sectors.service';
@@ -23,6 +26,7 @@ const TEAM_SELECT = {
   especialidade: true,
   created_at: true,
   sector_id: true,
+  pl_sales_only: true,
   sector: { select: { id: true, name: true } },
 } as const;
 
@@ -35,7 +39,21 @@ export class UsersService {
     private media: MediaService,
     private sectors: SectorsService,
     private kanbanIndividual: KanbanIndividualService,
+    @Optional() private cache?: RedisCacheService,
+    @Optional() private gateway?: CrmGateway,
   ) {}
+
+  private validatePlProfile(caller: AuthUser, role: string, enabled: boolean | undefined) {
+    if (enabled === undefined) return;
+    if (!['GERENTE', 'SUPER_ADMIN'].includes(caller.role)) throw new ForbiddenException('Somente a gestão pode definir o perfil de acesso.');
+    if (enabled && caller.tenantId !== 'a44772ed-1382-4400-84fc-3fa350e23e42') throw new ForbiddenException('Perfil disponível somente no workspace PL.');
+    if (enabled && role !== 'OPERADOR') throw new BadRequestException('O perfil de vendedora de consórcio exige o papel Operador.');
+  }
+
+  private async refreshAccess(userId: string) {
+    await this.cache?.del(`auth:user:${userId}`);
+    this.gateway?.disconnectUser(userId);
+  }
 
   /**
    * Kanban individual: membro que entra na equipe DEPOIS do toggle ligado
@@ -81,8 +99,9 @@ export class UsersService {
 
   async createTeamMember(
     caller: AuthUser,
-    dto: { nome: string; email: string; senha: string; role: string; sector_id?: string | null },
+    dto: { nome: string; email: string; senha: string; role: string; sector_id?: string | null; pl_sales_only?: boolean },
   ) {
+    this.validatePlProfile(caller, dto.role, dto.pl_sales_only);
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível criar SUPER_ADMIN');
     }
@@ -100,14 +119,15 @@ export class UsersService {
     const senha_hash = await bcrypt.hash(dto.senha, 12);
     const userId = randomUUID();
     await this.prisma.$executeRaw`
-      INSERT INTO "User" (id, nome, email, senha_hash, role, ativo, tenant_id, sector_id, created_at, updated_at)
-      VALUES (${userId}, ${dto.nome}, ${dto.email}, ${senha_hash}, ${dto.role}::"UserRole", true, ${caller.tenantId}, ${sectorId}, NOW(), NOW())
+      INSERT INTO "User" (id, nome, email, senha_hash, role, ativo, tenant_id, sector_id, pl_sales_only, created_at, updated_at)
+      VALUES (${userId}, ${dto.nome}, ${dto.email}, ${senha_hash}, ${dto.role}::"UserRole", true, ${caller.tenantId}, ${sectorId}, ${dto.pl_sales_only ?? false}, NOW(), NOW())
     `;
     await this.garantirBoardDoMembro(caller.tenantId, userId, dto.role);
     return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: TEAM_SELECT });
   }
 
-  async linkTeamMember(caller: AuthUser, dto: { email: string; role: string; sector_id?: string | null }) {
+  async linkTeamMember(caller: AuthUser, dto: { email: string; role: string; sector_id?: string | null; pl_sales_only?: boolean }) {
+    this.validatePlProfile(caller, dto.role, dto.pl_sales_only);
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível vincular como SUPER_ADMIN');
     }
@@ -124,25 +144,28 @@ export class UsersService {
       : null;
     const vinculado = await this.prisma.user.update({
       where: { id: target.id },
-      data: { tenant_id: caller.tenantId, role: dto.role as UserRole, sector_id: sectorId },
+      data: { tenant_id: caller.tenantId, role: dto.role as UserRole, sector_id: sectorId, pl_sales_only: dto.pl_sales_only ?? false },
       select: TEAM_SELECT,
     });
     // Vincular e a outra porta de entrada da equipe: o efeito no board e o
     // mesmo de criar do zero.
     await this.garantirBoardDoMembro(caller.tenantId, target.id, dto.role);
+    await this.refreshAccess(target.id);
     return vinculado;
   }
 
   async updateTeamMember(
     caller: AuthUser,
     targetId: string,
-    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string | null },
+    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string | null; pl_sales_only?: boolean },
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
-      select: { id: true, role: true, tenant_id: true },
+      select: { id: true, role: true, tenant_id: true, pl_sales_only: true },
     });
     if (!target || target.tenant_id !== caller.tenantId) throw new NotFoundException();
+    this.validatePlProfile(caller, dto.role ?? target.role, dto.pl_sales_only);
+    if (target.pl_sales_only && dto.role && dto.role !== 'OPERADOR' && dto.pl_sales_only !== false) throw new BadRequestException('Desative o perfil restrito antes de mudar o papel deste membro.');
     if (target.role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Não é possível editar SUPER_ADMIN');
     }
@@ -151,6 +174,7 @@ export class UsersService {
     }
 
     const data: Record<string, unknown> = {};
+    if (dto.pl_sales_only !== undefined) data.pl_sales_only = dto.pl_sales_only;
     if (dto.role !== undefined) data.role = dto.role;
     if (dto.titulo !== undefined) data.titulo = dto.titulo;
     if (dto.especialidade !== undefined) data.especialidade = dto.especialidade;
@@ -172,6 +196,7 @@ export class UsersService {
     // estava ATIVO) deixam o membro com papel de board e sem coluna nenhuma,
     // pelo mesmo motivo. Sem `dto.role`, o papel que vale e o atual.
     await this.garantirBoardDoMembro(caller.tenantId, targetId, dto.role ?? target.role);
+    if (dto.pl_sales_only !== undefined || dto.role !== undefined || dto.ativo !== undefined) await this.refreshAccess(targetId);
     return atualizado;
   }
 
@@ -221,7 +246,7 @@ export class UsersService {
 
   findAllForTenant(user: AuthUser) {
     return this.prisma.user.findMany({
-      where: { tenant_id: user.tenantId, ativo: true },
+      where: { tenant_id: user.tenantId, ativo: true, ...(isPlSalesOnly(user) ? {id:user.id} : {}) },
       select: { id: true, nome: true, email: true, role: true },
       orderBy: { nome: 'asc' },
     });

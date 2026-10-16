@@ -6,6 +6,7 @@ import { X, ChevronDown, Tag, UserCheck, MoveRight, Archive } from 'lucide-react
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
+import { useIsPlSalesOnly } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -43,6 +44,7 @@ export function BulkActionBar({
   activePipelineId,
   queryClient,
 }: BulkActionBarProps) {
+  const restricted = useIsPlSalesOnly();
   const [tagInput, setTagInput] = useState('');
   const [tagOpen, setTagOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -141,7 +143,7 @@ export function BulkActionBar({
       </DropdownMenu>
 
       {/* Assign user */}
-      <DropdownMenu>
+      {!restricted && <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" disabled={isPending} className="h-7 gap-1 text-xs">
             <UserCheck className="h-3.5 w-3.5" />
@@ -156,7 +158,7 @@ export function BulkActionBar({
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
-      </DropdownMenu>
+      </DropdownMenu>}
 
       {/* Add tag */}
       <DropdownMenu open={tagOpen} onOpenChange={setTagOpen}>

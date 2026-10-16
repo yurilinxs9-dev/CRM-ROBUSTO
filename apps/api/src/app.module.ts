@@ -40,6 +40,7 @@ import { BroadcastsModule } from './modules/broadcasts/broadcasts.module';
 import { LeadInsightsModule } from './modules/lead-insights/lead-insights.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { PrismaModule } from './common/prisma/prisma.module';
+import { AccessModule } from './common/access/access.module';
 import { CacheModule } from './common/cache/cache.module';
 import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 
@@ -104,6 +105,7 @@ import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storag
       }),
     }),
     PrismaModule,
+    AccessModule,
     CacheModule,
     TasksModule,
     AuthModule,

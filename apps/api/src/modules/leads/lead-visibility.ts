@@ -28,6 +28,7 @@ export interface VisibilityInput {
   scope?: string;
   /** Gerente+ com modo foco: enxerga como operador, mais os sem-dono p/ distribuir. */
   focusMode?: boolean;
+  ownOnly?: boolean;
 }
 
 export type LeadWhere = Record<string, unknown>;
@@ -38,6 +39,7 @@ export function isManagerRole(role: UserRole): boolean {
 
 /** Condições de visibilidade a mesclar no `where` da listagem de leads. */
 export function buildVisibilityWhere(input: VisibilityInput): LeadWhere {
+  if (input.ownOnly) return { responsavel_id: input.userId };
   const { userId, role, poolEnabled, scope, focusMode } = input;
   const where: LeadWhere = {};
   const supervising = isManagerRole(role) && !focusMode;

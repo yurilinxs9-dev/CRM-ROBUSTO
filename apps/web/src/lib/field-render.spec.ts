@@ -2,6 +2,7 @@ import {
   groupFields,
   readValue,
   buildPayload,
+  buildNewLeadPayload,
   initialValue,
   initialValues,
   flattenFields,
@@ -53,6 +54,39 @@ const schema: FieldSchema = {
     def({ id: 'f', key: 'cargo', escopo: 'CONTATO', group_id: 'g3', native_key: 'cargo' }),
   ],
 };
+
+describe('payload de criação manual de lead', () => {
+  it('envia os campos nativos aceitos pela política PL e mantém origem customizada dentro de dados_custom', () => {
+    const defs = [
+      ...['nome', 'telefone', 'email', 'valor_estimado', 'temperatura', 'empresa', 'cargo'].map(key =>
+        def({ key, native_key: key })),
+      def({ key: 'origem', native_key: null }),
+      def({ key: 'proximo_followup', native_key: 'proximo_followup', api_only: true }),
+    ];
+    const payload = buildNewLeadPayload(defs, {
+      nome: 'Cliente', telefone: '+5531999999999', email: '', valor_estimado: '120.000,00',
+      temperatura: 'FRIO', empresa: 'Empresa', cargo: 'Analista', origem: 'Indicação',
+      proximo_followup: '2026-10-20',
+    }, 'etapa-pl');
+    expect(payload).toEqual({
+      nome: 'Cliente', telefone: '+5531999999999', valor_estimado: '120000.00',
+      temperatura: 'FRIO', empresa: 'Empresa', cargo: 'Analista', estagio_id: 'etapa-pl',
+      dados_custom: { origem: 'Indicação' },
+    });
+    expect(payload).not.toHaveProperty('origem');
+    expect(payload).not.toHaveProperty('responsavel_id');
+  });
+
+  it('também aceita o schema legado sem enviar opcionais nulos', () => {
+    const defs = flattenFields(groupFields(schemaFromLegacy([]), 'LEAD'));
+    const payload = buildNewLeadPayload(defs, { ...initialValues(defs, null), nome: 'Cliente', telefone: '+5531999999999' }, 'etapa-pl');
+    expect(payload.nome).toBe('Cliente');
+    expect(payload.estagio_id).toBe('etapa-pl');
+    expect(payload).not.toHaveProperty('email');
+    expect(payload).not.toHaveProperty('dados_custom');
+    expect(payload).not.toHaveProperty('origem');
+  });
+});
 
 describe('groupFields', () => {
   it('separa por escopo e monta as abas na ordem', () => {

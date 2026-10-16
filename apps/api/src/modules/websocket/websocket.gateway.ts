@@ -9,6 +9,12 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../common/prisma/prisma.service';
+import { isPlSalesOnly, PL_SALES_TENANT_ID } from '../../common/access/pl-sales-access';
+
+// Global legacy broadcasts must not include restricted or pending-auth sockets.
+const UNRESTRICTED_ROOM = 'access:unrestricted';
+const LEAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const rawFrontendUrl = process.env['FRONTEND_URL'] ?? '';
 const wsOrigins = rawFrontendUrl
@@ -24,13 +30,22 @@ const wsOrigins = rawFrontendUrl
 export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
   private readonly logger = new Logger(CrmGateway.name);
+  private readonly authenticating = new WeakMap<Socket, Promise<void>>();
 
   constructor(
     private jwtService: JwtService,
     private config: ConfigService,
+    private prisma: PrismaService,
   ) {}
 
-  async handleConnection(client: Socket) {
+  handleConnection(client: Socket): Promise<void> {
+    client.data.disconnected = false;
+    const pending = this.authenticate(client);
+    this.authenticating.set(client, pending);
+    return pending.finally(() => this.authenticating.delete(client));
+  }
+
+  private async authenticate(client: Socket) {
     try {
       const token = client.handshake.auth?.token ||
                     client.handshake.headers.authorization?.split(' ')[1];
@@ -43,10 +58,26 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
         secret: this.config.get('JWT_SECRET'),
       });
       const tenantId = payload.tenantId ?? payload.tenant_id;
-      client.data.userId = payload.sub;
+      if (typeof payload.sub !== 'string' || !payload.sub || typeof tenantId !== 'string' || !tenantId) {
+        client.disconnect();
+        return;
+      }
+      const user = await this.socketUser(payload.sub, tenantId);
+      if (client.data.disconnected) return;
+      if (!user) {
+        client.disconnect();
+        return;
+      }
+      const restricted = isPlSalesOnly({ tenantId: user.tenant_id, role: user.role, plSalesOnly: user.pl_sales_only });
+      client.data.userId = user.id;
       client.data.tenantId = tenantId;
-      client.join(`user:${payload.sub}`);
-      if (tenantId) client.join(`tenant:${tenantId}`);
+      client.data.plSalesOnly = restricted;
+      await client.join(`user:${user.id}`);
+      if (!restricted) {
+        await client.join(UNRESTRICTED_ROOM);
+        await client.join(`tenant:${tenantId}`);
+      }
+      client.data.authenticated = true;
       this.logger.log(`Client connected: ${client.id} (user: ${payload.sub} tenant: ${tenantId})`);
     } catch (err) {
       // Surface handshake errors — sem isso falhas como JWT expirado, secret
@@ -60,25 +91,83 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   handleDisconnect(client: Socket) {
+    client.data.authenticated = false;
+    client.data.disconnected = true;
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
   @SubscribeMessage('join:lead')
-  handleJoinLead(client: Socket, leadId: string) {
-    client.join(`lead:${leadId}`);
+  async handleJoinLead(client: Socket, leadId: string) {
+    // Nest subscribes to events before its async connection hook completes.
+    await this.authenticating.get(client);
+    if (!client.data.authenticated || typeof leadId !== 'string' || !LEAD_ID.test(leadId)) return { ok: false };
+    try {
+      // Re-read PL identity in case a profile update raced with the handshake.
+      if (client.data.tenantId === PL_SALES_TENANT_ID) {
+        const user = await this.socketUser(client.data.userId, client.data.tenantId);
+        if (!user) { client.disconnect(); return { ok: false }; }
+        const restricted = isPlSalesOnly({ tenantId: user.tenant_id, role: user.role, plSalesOnly: user.pl_sales_only });
+        if (restricted !== client.data.plSalesOnly) { client.disconnect(); return { ok: false }; }
+        if (restricted) {
+          const lead = await this.prisma.lead.findFirst({
+            where: { id: leadId, tenant_id: user.tenant_id, responsavel_id: user.id },
+            select: { id: true },
+          });
+          // Ack only: membership would retain access after the lead is reassigned.
+          return { ok: !!lead };
+        }
+      }
+      await client.join(`lead:${leadId}`);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
   }
 
   @SubscribeMessage('leave:lead')
   handleLeaveLead(client: Socket, leadId: string) {
+    if (typeof leadId !== 'string' || !LEAD_ID.test(leadId)) return;
     client.leave(`lead:${leadId}`);
   }
 
   private toTenant(tenantId: string | undefined) {
-    return tenantId ? this.server.to(`tenant:${tenantId}`) : this.server;
+    return this.server.to(tenantId ? `tenant:${tenantId}` : UNRESTRICTED_ROOM);
+  }
+
+  private async socketUser(id: string, tenantId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id, tenant_id: tenantId, ativo: true },
+      select: { id: true, tenant_id: true, role: true, ativo: true, pl_sales_only: true },
+    });
+    return user && user.ativo && user.tenant_id === tenantId && user.id === id ? user : null;
+  }
+
+  /** Socket.IO adapter propagates this to every replica/session of the user. */
+  disconnectUser(userId: string): void {
+    this.server?.in(`user:${userId}`).disconnectSockets(true);
+  }
+
+  private async emitToRestrictedOwner(leadId: string, events: Array<[string, unknown]>, tenantId?: string): Promise<void> {
+    if (tenantId && tenantId !== PL_SALES_TENANT_ID) return;
+    try {
+      // Never cache ownership: reassignment immediately changes the recipient.
+      const lead = await this.prisma.lead.findFirst({
+        where: { id: leadId, tenant_id: PL_SALES_TENANT_ID },
+        select: { responsavel_id: true, responsavel: { select: { id: true, tenant_id: true, role: true, ativo: true, pl_sales_only: true } } },
+      });
+      const owner = lead?.responsavel;
+      if (!owner?.ativo || owner.id !== lead?.responsavel_id || !isPlSalesOnly({ tenantId: owner.tenant_id, role: owner.role, plSalesOnly: owner.pl_sales_only })) return;
+      for (const [event, payload] of events) this.server.to(`user:${owner.id}`).emit(event, payload);
+    } catch {
+      // Existing callers fire-and-forget. Do not turn a DB outage into a global
+      // fallback or an unhandled rejection, and do not log private payloads.
+      this.logger.warn('Restricted websocket delivery skipped: ownership lookup failed');
+    }
   }
 
   emitLeadStageChanged(leadId: string, data: unknown, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:stage-changed', { leadId, ...(data as object) });
+    return this.emitToRestrictedOwner(leadId, [['lead:stage-changed', { leadId, ...(data as object) }]], tenantId);
   }
 
   /**
@@ -100,6 +189,7 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     tenantId?: string,
   ) {
     this.toTenant(tenantId).emit('lead:created', { leadId, ...data });
+    return this.emitToRestrictedOwner(leadId, [['lead:created', { leadId, ...data }]], tenantId);
   }
 
   emitNewMessage(leadId: string, message: unknown, tenantId?: string) {
@@ -108,10 +198,12 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
     this.server.to(`lead:${leadId}`).emit('message:new', message);
     this.toTenant(tenantId).emit('lead:new-message', { leadId, message });
+    return this.emitToRestrictedOwner(leadId, [['message:new', message], ['lead:new-message', { leadId, message }]], tenantId);
   }
 
-  emitMessageStatusUpdate(leadId: string, messageId: string, status: string) {
+  emitMessageStatusUpdate(leadId: string, messageId: string, status: string, tenantId?: string) {
     this.server.to(`lead:${leadId}`).emit('message:status-updated', { messageId, status });
+    return this.emitToRestrictedOwner(leadId, [['message:status-updated', { messageId, status }]], tenantId);
   }
 
   /**
@@ -121,8 +213,10 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitMessageMediaReady(
     leadId: string,
     payload: { messageId: string; media_url: string; media_mimetype?: string | null },
+    tenantId?: string,
   ) {
     this.server.to(`lead:${leadId}`).emit('message:media-ready', payload);
+    return this.emitToRestrictedOwner(leadId, [['message:media-ready', payload]], tenantId);
   }
 
   emitInstanceStatusChanged(instanceName: string, status: string, tenantId?: string) {
@@ -134,19 +228,20 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   emitTaskCreated(responsavelId: string, task: unknown) {
-    this.server.to(`user:${responsavelId}`).emit('task:created', task);
+    return this.emitOwnedUserEvent(responsavelId, 'task:created', task, 'task');
   }
 
   emitTaskUpdated(responsavelId: string, task: unknown) {
-    this.server.to(`user:${responsavelId}`).emit('task:updated', task);
+    return this.emitOwnedUserEvent(responsavelId, 'task:updated', task, 'task');
   }
 
   emitTaskOverdue(responsavelId: string, payload: { taskId: string; titulo: string; responsavel_id: string }) {
-    this.server.to(`user:${responsavelId}`).emit('task:overdue', payload);
+    return this.emitOwnedUserEvent(responsavelId, 'task:overdue', payload, 'task');
   }
 
   emitLeadUnreadReset(leadId: string, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:unread-reset', { leadId, mensagens_nao_lidas: 0 });
+    return this.emitToRestrictedOwner(leadId, [['lead:unread-reset', { leadId, mensagens_nao_lidas: 0 }]], tenantId);
   }
 
   /**
@@ -163,10 +258,54 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   emitLeadUpdated(leadId: string, data: unknown, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:updated', { leadId, ...(data as object) });
+    return this.emitToRestrictedOwner(leadId, [['lead:updated', { leadId, ...(data as object) }]], tenantId);
   }
 
   /** Notificação in-app para um usuário específico (alimenta o sino do Header). */
   emitNotification(userId: string, notification: unknown) {
-    this.server.to(`user:${userId}`).emit('notification:new', notification);
+    return this.emitOwnedUserEvent(userId, 'notification:new', notification, 'notification');
+  }
+
+  private async emitOwnedUserEvent(userId: string, event: string, payload: unknown, kind: 'task' | 'notification'): Promise<void> {
+    const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    // Callers supply database records. A known other tenant keeps its old path.
+    const tenantId = typeof data.tenant_id === 'string' ? data.tenant_id : undefined;
+    if (tenantId && tenantId !== PL_SALES_TENANT_ID) {
+      this.server.to(`user:${userId}`).emit(event, payload);
+      return;
+    }
+    try {
+      const user = await this.prisma.user.findFirst({
+        where: { id: userId, ...(tenantId ? { tenant_id: tenantId } : {}), ativo: true },
+        select: { id: true, tenant_id: true, role: true, ativo: true, pl_sales_only: true },
+      });
+      if (!user?.ativo || user.id !== userId || (tenantId && tenantId !== user.tenant_id)) return;
+      if (isPlSalesOnly({ tenantId: user.tenant_id, role: user.role, plSalesOnly: user.pl_sales_only })) {
+        if (kind === 'task') {
+          const id = data.id ?? data.taskId;
+          if (typeof id !== 'string' || !id) return;
+          const task = await this.prisma.task.findFirst({
+            where: { id, tenant_id: user.tenant_id, responsavel_id: user.id,
+              OR: [{ lead_id: null }, { lead: { tenant_id: user.tenant_id, responsavel_id: user.id } }],
+            },
+            select: { lead_id: true },
+          });
+          if (!task || (data.lead_id !== undefined && data.lead_id !== task.lead_id)) return;
+        } else {
+          // Covers fresh inbound notifications and old rows replayed after a
+          // profile flip. Unknown/global destinations are not part of this role.
+          const match = typeof data.link === 'string' ? /^\/chat\/([^/]+)$/.exec(data.link) : null;
+          if (!match || !LEAD_ID.test(match[1])) return;
+          const lead = await this.prisma.lead.findFirst({
+            where: { id: match[1], tenant_id: user.tenant_id, responsavel_id: user.id },
+            select: { id: true },
+          });
+          if (!lead) return;
+        }
+      }
+      this.server.to(`user:${userId}`).emit(event, payload);
+    } catch {
+      this.logger.warn('Restricted user event skipped: ownership lookup failed');
+    }
   }
 }

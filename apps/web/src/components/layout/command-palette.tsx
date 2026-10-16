@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/command';
 import { NAV_ITEMS, navVisivelPara, type NavEntry } from '@/components/layout/sidebar';
 import { api } from '@/lib/api';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 
 /**
  * O que `GET /api/leads` devolve nesta chamada. Sem `per_stage`+`pipeline_id` o
@@ -67,6 +67,7 @@ export function CommandPalette(): JSX.Element {
   const role = useAuthStore((s) => s.user?.role);
   const tenantId = useAuthStore((s) => s.user?.tenantId);
   const isPlatformAdmin = useAuthStore((s) => s.user?.is_platform_admin);
+  const restricted = useIsPlSalesOnly();
   const [open, setOpen] = useState(false);
   const [busca, setBusca] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -198,10 +199,11 @@ export function CommandPalette(): JSX.Element {
 
   const filtro = busca.trim().toLowerCase();
   const navegacaoVisivel = useMemo(() => {
-    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId));
-    if (isPlatformAdmin) itens.push(ITEM_ADMIN);
+    const itens = NAV_ITEMS.filter((item) => navVisivelPara(item, role, tenantId, impersonating && !financeOwner ? undefined : userId, restricted))
+      .map(item => restricted && item.href === '/settings' ? { ...item, label: 'Meu perfil' } : item);
+    if (isPlatformAdmin && !restricted) itens.push(ITEM_ADMIN);
     return itens.filter((item) => contem(item.label, filtro));
-  }, [role, tenantId, userId, impersonating, financeOwner, isPlatformAdmin, filtro]);
+  }, [role, tenantId, userId, impersonating, financeOwner, isPlatformAdmin, filtro, restricted]);
   const viewsVisiveis = useMemo(
     () => views.filter((v) => contem(v.nome, filtro)),
     [views, filtro],

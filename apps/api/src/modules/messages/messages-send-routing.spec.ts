@@ -111,6 +111,30 @@ const alex: AuthUser = {
   tenantId: 't1',
 };
 
+describe('perfil restrito PL', () => {
+  const seller: AuthUser = { ...alex, tenantId: 'a44772ed-1382-4400-84fc-3fa350e23e42', plSalesOnly: true };
+  it('conversa antiga não permite enviar para lead transferido', async () => {
+    const { service, prisma, sendQueue } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({ ...baseLead, responsavel_id: 'outra' });
+    prisma.conversation.findFirst.mockResolvedValue({ id: 'antiga', instancia_whatsapp: 'inst-A' });
+    await expect(service.sendText({ lead_id: LEAD_ID, content: 'oi' }, seller)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(sendQueue.add).not.toHaveBeenCalled();
+    expect(prisma.conversation.findFirst).not.toHaveBeenCalled();
+  });
+  it.each(['getHistory', 'syncChat'] as const)('%s rejeita lead transferido antes de consultar histórico', async (method) => {
+    const { service, prisma } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({ ...baseLead, responsavel_id: 'outra' });
+    await expect(service[method](LEAD_ID, seller)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.whatsappInstance.findFirst).not.toHaveBeenCalled();
+  });
+  it('não disponibiliza arquivo de outro lead', async () => {
+    const { service, prisma } = makeService();
+    prisma.message.findFirst = jest.fn().mockResolvedValue({ lead_id: LEAD_ID, media_url: 'arquivo' });
+    prisma.lead.findFirst.mockResolvedValue(null);
+    await expect(service.streamMedia('msg-1', seller)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
 describe('MessagesService.sendText — instância sai da conversa do atendente, não do Lead', () => {
   it('DISCRIMINANTE: lead.instancia_whatsapp aponta pra A (outro vendedor); Alex tem conversa própria em B — envia por B', async () => {
     const { service, prisma, sendQueue } = makeService();

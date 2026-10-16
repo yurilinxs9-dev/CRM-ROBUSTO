@@ -169,6 +169,8 @@ model User {
   /// Modo foco: gerente/admin enxerga como operador (só os próprios leads +
   /// sem-dono para distribuir). Só afeta SELECT; permissões de escrita intactas.
   focus_mode        Boolean            @default(false)
+  /// Opt-in do tenant PL: carteira, vendas e metas próprias; sem área de parceiros.
+  pl_sales_only     Boolean            @default(false)
   tenant_id         String
   tenant            Tenant             @relation("TenantMembers", fields: [tenant_id], references: [id])
   // F-01: setor do colaborador. Nullable na migration p/ backfill; depois NOT NULL.

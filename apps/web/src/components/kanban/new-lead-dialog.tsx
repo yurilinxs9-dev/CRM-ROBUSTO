@@ -26,8 +26,7 @@ import {
   groupFields,
   flattenFields,
   initialValues,
-  buildPayload,
-  semNulos,
+  buildNewLeadPayload,
   faltandoObrigatorios,
 } from '@/lib/field-render';
 import type { Stage } from './stage-column';
@@ -100,17 +99,7 @@ export function NewLeadDialog({
       return;
     }
 
-    const { native, custom } = buildPayload(defs, values);
-    const body: NewLeadFormData = {
-      // `semNulos` é obrigatório aqui: em criação, campo vazio significa "não
-      // informado", e createLeadSchema recusa null nos opcionais.
-      ...semNulos(native),
-      nome: String(native.nome),
-      telefone: String(native.telefone),
-      estagio_id: stageId,
-    };
-    if (Object.keys(custom).length > 0) body.dados_custom = custom;
-    onSubmit(body);
+    onSubmit(buildNewLeadPayload(defs, values, stageId));
   };
 
   return (

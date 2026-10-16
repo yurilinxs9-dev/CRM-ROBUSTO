@@ -24,6 +24,7 @@ import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
 import { buildVisibilityWhere, isManagerRole, mergeSearchCondition } from './lead-visibility';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import {
   applyPanelFilters,
   ownerCondition,
@@ -302,9 +303,10 @@ export class LeadsService {
     role: string,
     userId: string,
     focusMode: boolean,
+    ownOnly: boolean,
   ): string {
     const hash = createHash('sha1')
-      .update(JSON.stringify({ filters, role, userId, focusMode }))
+      .update(JSON.stringify({ filters, role, userId, focusMode, ownOnly }))
       .digest('hex')
       .slice(0, 16);
     return `leads:list:${tenantId}:${hash}`;
@@ -473,6 +475,7 @@ export class LeadsService {
         poolEnabled,
         scope: filters.scope,
         focusMode,
+        ownOnly: isPlSalesOnly(user),
       }),
     );
 
@@ -536,6 +539,7 @@ export class LeadsService {
       user.role,
       user.id,
       focusMode,
+      isPlSalesOnly(user),
     );
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
@@ -778,6 +782,9 @@ export class LeadsService {
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
     // Lead privado só é acessível pelo responsável atual — vale pra todos
+    if (isPlSalesOnly(user) && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Você só pode acessar seus próprios leads');
+    }
     // os papéis. Bloqueia gerente/super-admin de abrir conversa que outro
     // gestor já assumiu.
     if (lead.is_private && lead.responsavel_id !== user.id) {
@@ -874,7 +881,7 @@ export class LeadsService {
    * fallback e mensagem clara.
    */
   private async resolveDefaultInstance(user: AuthUser, poolEnabled: boolean): Promise<string> {
-    if (!poolEnabled) {
+    if (!poolEnabled || isPlSalesOnly(user)) {
       const owned = await this.findOwnedInstance(user.id, user.tenantId);
       return owned?.nome ?? '';
     }
@@ -984,6 +991,14 @@ export class LeadsService {
 
   async create(data: unknown, user: AuthUser) {
     const parsed = createLeadSchema.parse(data);
+    if (isPlSalesOnly(user)) {
+      if ((parsed.responsavel_id && parsed.responsavel_id !== user.id) ||
+          (parsed.pipeline_id && parsed.pipeline_id !== PL_PIPELINE)) {
+        throw new ForbiddenException('Crie leads para sua própria carteira de consórcio');
+      }
+      parsed.responsavel_id = user.id;
+      parsed.pipeline_id = PL_PIPELINE;
+    }
 
     // Sai do objeto antes do `...parsed` mais abaixo: o Json precisa passar
     // pela validação contra as definições do tenant, não ir cru pro banco.
@@ -1029,7 +1044,17 @@ export class LeadsService {
       user.tenantId,
     );
     if (existingLead) {
+      if (isPlSalesOnly(user) && existingLead.responsavel_id !== user.id) {
+        throw new ForbiddenException('Contato indisponível para sua carteira. Peça à gestão para verificar.');
+      }
       return { ...existingLead, already_existed: true };
+    }
+
+    if (isPlSalesOnly(user) && parsed.instancia_whatsapp) {
+      const owned = await this.prisma.whatsappInstance.findFirst({
+        where: { nome: parsed.instancia_whatsapp, tenant_id: user.tenantId, owner_user_id: user.id }, select: { id: true },
+      });
+      if (!owned) throw new ForbiddenException('Escolha um WhatsApp da sua conta');
     }
 
     const instanciaWhatsapp =
@@ -1072,6 +1097,9 @@ export class LeadsService {
           user.tenantId,
         );
         if (!conflicting) throw err;
+        if (isPlSalesOnly(user) && conflicting.responsavel_id !== user.id) {
+          throw new ForbiddenException('Contato indisponível para sua carteira. Peça à gestão para verificar.');
+        }
         return { ...conflicting, already_existed: true };
       }
       throw err;
@@ -2146,6 +2174,9 @@ export class LeadsService {
     lead: MessageScopeLead & { id: string },
     user: AuthUser,
   ): Promise<Prisma.MessageWhereInput | null> {
+    if (isPlSalesOnly(user) && lead.responsavel_id !== user.id) {
+      throw new ForbiddenException('Você só pode acessar seus próprios leads');
+    }
     const [tenantCfg, me] = await Promise.all([
       this.prisma.tenant.findFirst({
         where: { id: user.tenantId },
@@ -2285,6 +2316,7 @@ export class LeadsService {
         role: user.role as UserRole,
         poolEnabled,
         focusMode,
+        ownOnly: isPlSalesOnly(user),
       }),
     );
 

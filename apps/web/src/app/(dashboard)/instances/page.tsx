@@ -23,6 +23,7 @@ import { InstanceCard, type InstanceCardData } from '@/components/instances/inst
 import { QrDialog } from '@/components/instances/qr-dialog';
 import { NewInstanceDialog } from '@/components/instances/new-instance-dialog';
 import { useSectors } from '@/hooks/use-sectors';
+import { useIsPlSalesOnly } from '@/stores/auth.store';
 import {
   Select,
   SelectContent,
@@ -44,6 +45,7 @@ interface QrResponse {
 
 export default function InstancesPage() {
   const queryClient = useQueryClient();
+  const restricted = useIsPlSalesOnly();
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [qrTarget, setQrTarget] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export default function InstancesPage() {
     refetchInterval: 5_000,
   });
 
-  const { data: sectors = [] } = useSectors();
+  const { data: sectors = [] } = useSectors(false, !restricted);
 
   // F-02: define o setor que atende cada número (destino do round-robin).
   const setSectorMutation = useMutation({
@@ -250,9 +252,9 @@ export default function InstancesPage() {
     <div className="container mx-auto p-6 space-y-6">
       <PageHeader
         title="Instâncias WhatsApp"
-        subtitle="Gerencie as conexões do WhatsApp"
+        subtitle={restricted ? 'Consulte o status das suas conexões do WhatsApp' : 'Gerencie as conexões do WhatsApp'}
         actions={
-          <div className="flex flex-col items-end gap-1">
+          !restricted && <div className="flex flex-col items-end gap-1">
             <Button onClick={() => setCreateOpen(true)}>
               <Plus className="mr-1.5 h-4 w-4" />
               Nova Instância
@@ -283,13 +285,13 @@ export default function InstancesPage() {
             <div>
               <p className="font-semibold">Nenhuma instância criada</p>
               <p className="text-sm text-muted-foreground">
-                Crie sua primeira conexão WhatsApp para começar a receber mensagens.
+                {restricted ? 'Peça à gestão para vincular sua conexão WhatsApp.' : 'Crie sua primeira conexão WhatsApp para começar a receber mensagens.'}
               </p>
             </div>
-            <Button onClick={() => setCreateOpen(true)} className="mt-2">
+            {!restricted && <Button onClick={() => setCreateOpen(true)} className="mt-2">
               <Plus className="mr-1.5 h-4 w-4" />
               Criar primeira instância
-            </Button>
+            </Button>}
           </CardContent>
         </Card>
       ) : (
@@ -300,12 +302,13 @@ export default function InstancesPage() {
               <div key={inst.id} className="flex flex-col gap-2">
                 <InstanceCard
                   instance={inst}
+                  readOnly={restricted}
                   onConnect={handleConnect}
                   onReconnect={(nome) => reconnectMutation.mutate(nome)}
                   onDelete={(nome) => setDeleteTarget(nome)}
                   reconnecting={reconnectMutation.isPending && reconnectMutation.variables === inst.nome}
                 />
-                {sectors.length > 0 && (
+                {!restricted && sectors.length > 0 && (
                   <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
                     <span className="text-xs text-muted-foreground shrink-0">Setor:</span>
                     <Select
@@ -333,7 +336,7 @@ export default function InstancesPage() {
         </div>
       )}
 
-      <NewInstanceDialog
+      {!restricted && <><NewInstanceDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
         onSubmit={(nome) => createMutation.mutate(nome)}
@@ -425,7 +428,7 @@ export default function InstancesPage() {
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog></>}
     </div>
   );
 }

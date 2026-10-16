@@ -13,7 +13,8 @@ import { MessageSquareOff, Plus, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { useAuthStore } from '@/stores/auth.store';
+import { PL_PIPELINE_ID } from '@/lib/pl-sales';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -45,6 +46,7 @@ export default function ChatPage() {
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const restricted = useIsPlSalesOnly();
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -70,9 +72,9 @@ export default function ChatPage() {
     () => ({
       search: debouncedSearch.trim() || undefined,
       unread: tab === 'unread' ? '1' : undefined,
-      responsavel_id: tab === 'mine' ? currentUser?.id : undefined,
+      responsavel_id: restricted || tab === 'mine' ? currentUser?.id : undefined,
     }),
-    [debouncedSearch, tab, currentUser?.id],
+    [debouncedSearch, tab, currentUser?.id, restricted],
   );
 
   const {
@@ -130,6 +132,7 @@ export default function ChatPage() {
       return res.data;
     },
     staleTime: 5 * 60_000,
+    select: data => restricted ? data.filter(pipeline => pipeline.id === PL_PIPELINE_ID) : data,
   });
 
   // --- Mutations ---
@@ -252,7 +255,7 @@ export default function ChatPage() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <Button
+            {!restricted && <Button
               size="sm"
               variant="outline"
               onClick={() => syncProfilesMutation.mutate()}
@@ -268,7 +271,7 @@ export default function ChatPage() {
                 }
               />
               {syncProfilesMutation.isPending ? 'Sincronizando...' : 'Sincronizar'}
-            </Button>
+            </Button>}
             <Button size="sm" onClick={() => setDialogOpen(true)} className="gap-1.5">
               <Plus className="h-4 w-4" />
               Nova conversa

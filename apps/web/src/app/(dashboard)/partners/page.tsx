@@ -16,7 +16,7 @@ type Editor = { kind: 'delete'; partner: Partner } | { kind: 'partner'; partner?
 
 export default function PartnersPage() {
   const user = useAuthStore(s => s.user);
-  if (!canAccessPartners(user?.tenantId)) return <div className="p-8"><h1 className="text-xl font-semibold">Área indisponível</h1><p className="mt-2 text-muted-foreground">Este workspace não possui acesso à área de parceiros.</p></div>;
+  if (!canAccessPartners(user?.tenantId, user?.pl_sales_only)) return <div className="p-8"><h1 className="text-xl font-semibold">Área indisponível</h1><p className="mt-2 text-muted-foreground">Seu perfil não possui acesso à área de parceiros.</p></div>;
   return <PartnersWorkspace key={user!.tenantId} tenant={user!.tenantId} role={user!.role} userId={user!.id} />;
 }
 

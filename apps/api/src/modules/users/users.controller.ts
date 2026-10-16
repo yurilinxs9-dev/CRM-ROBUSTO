@@ -32,6 +32,7 @@ const changePasswordSchema = z.object({
 });
 
 const createMemberSchema = z.object({
+  pl_sales_only: z.boolean().optional(),
   nome: z.string().min(2).max(100),
   email: z.string().email(),
   senha: z.string().min(8).max(100),
@@ -41,12 +42,14 @@ const createMemberSchema = z.object({
 });
 
 const linkMemberSchema = z.object({
+  pl_sales_only: z.boolean().optional(),
   email: z.string().email(),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']),
   sector_id: z.string().uuid().nullable().optional(),
 });
 
 const updateMemberSchema = z.object({
+  pl_sales_only: z.boolean().optional(),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']).optional(),
   titulo: z.string().max(50).nullable().optional(),
   especialidade: z.string().max(100).nullable().optional(),

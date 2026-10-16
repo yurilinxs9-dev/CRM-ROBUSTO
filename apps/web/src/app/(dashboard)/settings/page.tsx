@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/layout/page-header';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import { ProfileTab } from './components/ProfileTab';
 import { TeamTab } from './components/TeamTab';
 import { SectorsTab } from './components/SectorsTab';
@@ -26,7 +26,15 @@ const MANAGE_ROLES = ['SUPER_ADMIN', 'GERENTE'];
 
 export default function SettingsPage() {
   const role = useAuthStore((s) => s.user?.role);
-  const canManageTeam = role && MANAGE_ROLES.includes(role);
+  const restricted = useIsPlSalesOnly();
+  const canManageTeam = !restricted && role && MANAGE_ROLES.includes(role);
+
+  if (restricted) return (
+    <div className="p-4 sm:p-6">
+      <div className="mb-6"><PageHeader title="Meu perfil" subtitle="Seus dados pessoais" /></div>
+      <ProfileTab />
+    </div>
+  );
 
   return (
     <div className="p-4 sm:p-6">

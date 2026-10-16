@@ -1,9 +1,9 @@
 import { isAxiosError } from 'axios';
 import { z } from 'zod';
-import { brl, canAccessPartners, parsePartnerAmount, saoPauloDate } from './partners';
+import { brl, PARTNERS_TENANT, parsePartnerAmount, saoPauloDate } from './partners';
 
 export const PL_PIPELINE_ID = '6f749216-8d83-44ed-8fd0-1c57720c9f11';
-export const canAccessPlSales = (tenant: string, role: string) => canAccessPartners(tenant) && ['OPERADOR', 'GERENTE', 'SUPER_ADMIN'].includes(role);
+export const canAccessPlSales = (tenant: string, role: string) => tenant === PARTNERS_TENANT && ['OPERADOR', 'GERENTE', 'SUPER_ADMIN'].includes(role);
 export const plSalesKey = (tenant: string, userId: string, role: string) => ['pl-sales', tenant, userId, role] as const;
 
 export interface PlSale {

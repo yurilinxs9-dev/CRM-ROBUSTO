@@ -1,8 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuthStore } from '@/stores/auth.store';
+import { usePathname, useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuthStore, type Tenant } from '@/stores/auth.store';
+import { sessionAccessKey, userFromAuthMe, type AuthMeProfile } from '@/lib/auth-user';
+import { canAccessSalesRoute, salesHome } from '@/lib/pl-sales-access';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Header } from '@/components/layout/header';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -31,8 +34,17 @@ function getTokenExp(token: string): number {
 const SIDEBAR_COLLAPSED_KEY = 'crm:sidebar-collapsed';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { accessToken, isAuthenticated, hydrated, updateToken, updateUser, restoreUser, setTenant, logout } = useAuthStore();
+  const { user, accessToken, isAuthenticated, hydrated, updateToken, restoreUser, setTenant, logout } = useAuthStore();
   const router = useRouter();
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const [verifiedProfile, setVerifiedProfile] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState(false);
+  const [profileRetry, setProfileRetry] = useState(0);
+  const verifiedScope = useRef<string | null>(null);
+  const profileScope = user ? sessionAccessKey(user) : null;
+  const profileReady = hydrated && isAuthenticated && !!user && !!accessToken && verifiedProfile === profileScope;
+  const routeAllowed = canAccessSalesRoute(user, pathname);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -67,49 +79,39 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // Reexecuta ao trocar o token (ex.: impersonação) pra refletir o usuário ativo.
   useEffect(() => {
     if (!hydrated || (!isAuthenticated && !accessToken)) return;
+    let cancelled = false;
+    setProfileError(false);
     api
-      .get('/api/auth/me')
+      .get<AuthMeProfile & { tenant: Tenant }>('/api/auth/me')
       .then(({ data }) => {
-        if (data?.user) {
-          const u = data.user;
-          if (!useAuthStore.getState().user) {
-            // Estado zumbi: token válido mas user perdido no store persistido.
-            // updateUser seria no-op (user null) — restaura o perfil completo.
-            restoreUser({
-              id: u.id,
-              nome: u.nome,
-              email: u.email,
-              role: u.role,
-              tenantId: data.tenant?.id ?? '',
-              avatar_url: u.avatar_url,
-              is_platform_admin: u.is_platform_admin,
-              platform_scopes: u.platform_scopes,
-              focus_mode: u.focus_mode ?? false,
-            });
-          } else {
-            updateUser({
-              is_platform_admin: u.is_platform_admin,
-              platform_scopes: u.platform_scopes,
-              nome: u.nome,
-              avatar_url: u.avatar_url,
-              // O servidor é a fonte da verdade do modo foco: sem isto, ligar o
-              // foco num device deixa os outros com o store em false e o board
-              // já filtrado — o menu ofereceria "entrar" e o toggle viraria no-op.
-              focus_mode: u.focus_mode ?? false,
-            });
-          }
+        if (cancelled || useAuthStore.getState().accessToken !== accessToken) return;
+        if (!data?.user || !data?.tenant) throw new Error('Perfil indisponível');
+        const nextUser = userFromAuthMe(data);
+        const scope = sessionAccessKey(nextUser);
+        // A sessão anterior pode ter consultado dados mais amplos. Limpa antes
+        // de montar filhos sob o perfil confirmado (inclusive impersonação).
+        if (verifiedScope.current !== scope) {
+          queryClient.clear();
+          verifiedScope.current = scope;
         }
-        if (data?.tenant) setTenant(data.tenant);
+        restoreUser(nextUser);
+        setTenant(data.tenant);
+        setVerifiedProfile(scope);
       })
       .catch((err) => {
-        // Sem user no store E /me rejeitado com 401: sessão irrecuperável —
-        // derruba pro login em vez de deixar a UI meio-logada.
-        if (!useAuthStore.getState().user && err?.response?.status === 401) {
+        if (cancelled || useAuthStore.getState().accessToken !== accessToken) return;
+        setProfileError(true);
+        if (err?.response?.status === 401) {
           logout();
-          router.push('/login');
+          router.replace('/login');
         }
       });
-  }, [hydrated, isAuthenticated, accessToken, updateUser, restoreUser, setTenant, logout, router]);
+    return () => { cancelled = true; };
+  }, [hydrated, isAuthenticated, accessToken, restoreUser, setTenant, logout, router, queryClient, profileRetry, profileScope]);
+
+  useEffect(() => {
+    if (profileReady && !routeAllowed) router.replace(salesHome(user));
+  }, [profileReady, routeAllowed, router, user]);
 
   /**
    * Proactively refresh the access token. Returns the new token or null on failure.
@@ -196,10 +198,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [refreshAccessToken, scheduleRefresh]);
 
-  if (!hydrated) {
+  // Never mount pages (or their data queries) using a stale persisted profile.
+  if (!profileReady || !routeAllowed) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background text-muted-foreground">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-background text-muted-foreground">
+        {profileError ? <>
+          <p role="alert">Não foi possível confirmar seu perfil de acesso.</p>
+          <button type="button" className="text-primary underline" onClick={() => setProfileRetry(value => value + 1)}>Tentar novamente</button>
+        </> : <div role="status" aria-label="Confirmando acesso" className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
       </div>
     );
   }

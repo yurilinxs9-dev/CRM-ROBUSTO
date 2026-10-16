@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { Crosshair, LogOut, User as UserIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   DropdownMenu,
@@ -26,12 +26,13 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const restricted = useIsPlSalesOnly();
 
   const name = user?.nome ?? 'Usuário';
   const role = user?.role ?? '';
   const initial = name.charAt(0).toUpperCase();
 
-  const isManager = role === 'GERENTE' || role === 'SUPER_ADMIN';
+  const isManager = !restricted && (role === 'GERENTE' || role === 'SUPER_ADMIN');
   const focusMode = user?.focus_mode ?? false;
 
   const handleLogout = () => {
@@ -72,7 +73,7 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
             </Avatar>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium leading-tight">{name}</p>
-              {role && <p className="truncate text-xs text-muted-foreground">{role}</p>}
+              {role && <p className="truncate text-xs text-muted-foreground">{restricted ? 'Vendedora de consórcio' : role}</p>}
             </div>
           </button>
         ) : (
@@ -102,7 +103,7 @@ export function UserMenu({ variant = 'card', className }: UserMenuProps) {
           )}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem disabled={!restricted} onClick={() => router.push('/settings')}>
           <UserIcon className="mr-2 h-4 w-4" />
           Perfil
         </DropdownMenuItem>

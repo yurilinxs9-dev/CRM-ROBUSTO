@@ -23,7 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import { contarFiltrosAtivos } from '@/lib/lead-filters';
 import {
   CONFIG_VAZIA,
@@ -56,7 +56,8 @@ interface ViewBarProps {
  */
 export function ViewBar({ view, mode, onOpenFilters }: ViewBarProps): JSX.Element {
   const meuRole = useAuthStore((s) => s.user?.role ?? '');
-  const souGestor = GESTORES.includes(meuRole);
+  const restricted = useIsPlSalesOnly();
+  const souGestor = !restricted && GESTORES.includes(meuRole);
 
   const [dialogAberto, setDialogAberto] = useState(false);
   const [nomeNovo, setNomeNovo] = useState('');
@@ -249,7 +250,7 @@ export function ViewBar({ view, mode, onOpenFilters }: ViewBarProps): JSX.Elemen
       )}
 
       {/* ============== Estado sujo ============== */}
-      {podeVirarView && (
+      {!restricted && podeVirarView && (
         <div className="ml-auto flex items-center gap-1.5">
           {view.dirty && (
             <span className="hidden text-xs sm:inline" style={{ color: 'var(--text-muted)' }}>

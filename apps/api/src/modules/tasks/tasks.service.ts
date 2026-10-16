@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { fetchAllByCursor } from '../../common/prisma/fetch-all-by-cursor';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '@/common/types/roles';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
 import { Prisma, TaskStatus, TaskType, Prioridade } from '@prisma/client';
@@ -68,6 +69,12 @@ export class TasksService {
     const scoped: Prisma.TaskWhereInput = { ...where, tenant_id: user.tenantId };
     if (user.role === UserRole.OPERADOR) {
       scoped.responsavel_id = user.id;
+    }
+    if (isPlSalesOnly(user)) {
+      scoped.AND = [
+        ...(scoped.AND ? (Array.isArray(scoped.AND) ? scoped.AND : [scoped.AND]) : []),
+        { OR: [{ lead_id: null }, { lead: { responsavel_id: user.id } }] },
+      ];
     }
     return scoped;
   }
@@ -133,7 +140,7 @@ export class TasksService {
 
   async findOne(id: string, user: AuthUser) {
     const task = await this.prisma.task.findFirst({
-      where: { id, tenant_id: user.tenantId },
+      where: isPlSalesOnly(user) ? this.scopeWhere(user, { id }) : { id, tenant_id: user.tenantId },
       include: taskInclude,
     });
     if (!task) throw new NotFoundException('Tarefa nao encontrada');
@@ -145,6 +152,7 @@ export class TasksService {
 
   async create(data: unknown, user: AuthUser) {
     const parsed = createTaskSchema.parse(data);
+    await this.assertOwnLead(parsed.lead_id, user);
     const task = await this.prisma.task.create({
       data: {
         titulo: parsed.titulo,
@@ -166,6 +174,7 @@ export class TasksService {
   async update(id: string, data: unknown, user: AuthUser) {
     const existing = await this.findOne(id, user);
     const parsed = updateTaskSchema.parse(data);
+    await this.assertOwnLead(parsed.lead_id, user);
     const updateData: Prisma.TaskUpdateInput = {};
     if (parsed.titulo !== undefined) updateData.titulo = parsed.titulo;
     if (parsed.descricao !== undefined) updateData.descricao = parsed.descricao;
@@ -192,6 +201,14 @@ export class TasksService {
     await this.findOne(id, user);
     await this.prisma.task.delete({ where: { id } });
     return { ok: true };
+  }
+
+  private async assertOwnLead(leadId: string | null | undefined, user: AuthUser) {
+    if (!leadId || !isPlSalesOnly(user)) return;
+    const own = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenant_id: user.tenantId, responsavel_id: user.id }, select: { id: true },
+    });
+    if (!own) throw new ForbiddenException('Vincule apenas leads da sua carteira');
   }
 
   async complete(id: string, user: AuthUser) {

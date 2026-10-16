@@ -16,7 +16,10 @@ export class PlSalesService {
   private authorize(user:AuthUser, management=false) {
     if(user.tenantId!==PL_TENANT || !['OPERADOR','GERENTE','SUPER_ADMIN'].includes(user.role) || (management&&!manager(user))) throw new ForbiddenException('Área restrita à equipe autorizada da PL');
   }
-  private notify() { this.gateway.server?.to(`tenant:${PL_TENANT}`).emit('pl-sales:updated',{}); }
+  private notify(sellerId?: string) {
+    this.gateway.server?.to(`tenant:${PL_TENANT}`).emit('pl-sales:updated', {});
+    if (sellerId && sellerId !== 'team') this.gateway.server?.to(`user:${sellerId}`).emit('pl-sales:updated', {});
+  }
   private async transaction<T>(work:(tx:Prisma.TransactionClient)=>Promise<T>):Promise<T> {
     try { return await this.prisma.$transaction(work,{isolationLevel:Prisma.TransactionIsolationLevel.Serializable,timeout:15000}); }
     catch(e) { if(e instanceof Prisma.PrismaClientKnownRequestError && ['P2002','P2034'].includes(e.code)) throw new ConflictException('Contrato já registrado ou dados alterados por outra pessoa. Atualize antes de tentar novamente.'); throw e; }
@@ -58,11 +61,11 @@ export class PlSalesService {
   }
   async create(user:AuthUser,input:unknown) {
     this.authorize(user);const data=saleSchema.parse(input);
-    const result=await this.transaction(async tx=>{const refs=await this.references(tx,user,data);const sale=await tx.pLSale.create({data:{...data,...refs,contract_number:data.contract_number.toUpperCase(),sold_on:date(data.sold_on),tenant_id:user.tenantId,created_by:user.id,updated_by:user.id}});await this.audit(tx,user,sale.id,'sale.created',null,sale);return {id:sale.id};});this.notify();return result;
+    const result=await this.transaction(async tx=>{const refs=await this.references(tx,user,data);const sale=await tx.pLSale.create({data:{...data,...refs,contract_number:data.contract_number.toUpperCase(),sold_on:date(data.sold_on),tenant_id:user.tenantId,created_by:user.id,updated_by:user.id}});await this.audit(tx,user,sale.id,'sale.created',null,sale);return {id:sale.id};});this.notify(data.seller_id);return result;
   }
   async update(user:AuthUser,id:string,input:unknown) {
     this.authorize(user,true);z.string().uuid().parse(id);const {expectedVersion,...data}=updateSaleSchema.parse(input);
-    const result=await this.transaction(async tx=>{const before=await tx.pLSale.findFirst({where:{id,tenant_id:user.tenantId}});if(!before)throw new NotFoundException('Venda não encontrada');if(before.status!=='ACTIVE')throw new BadRequestException('Venda cancelada não pode ser editada');const refs=await this.references(tx,user,data,before);const result=await tx.pLSale.updateMany({where:{id,tenant_id:user.tenantId,version:expectedVersion,status:'ACTIVE'},data:{...data,...refs,contract_number:data.contract_number.toUpperCase(),sold_on:date(data.sold_on),updated_by:user.id,version:{increment:1}}});if(result.count!==1)throw new ConflictException('Venda alterada. Atualize a página antes de salvar');const after=await tx.pLSale.findUniqueOrThrow({where:{id}});await this.audit(tx,user,id,'sale.updated',before,after);return {id};});this.notify();return result;
+    const result=await this.transaction(async tx=>{const before=await tx.pLSale.findFirst({where:{id,tenant_id:user.tenantId}});if(!before)throw new NotFoundException('Venda não encontrada');if(before.status!=='ACTIVE')throw new BadRequestException('Venda cancelada não pode ser editada');const refs=await this.references(tx,user,data,before);const result=await tx.pLSale.updateMany({where:{id,tenant_id:user.tenantId,version:expectedVersion,status:'ACTIVE'},data:{...data,...refs,contract_number:data.contract_number.toUpperCase(),sold_on:date(data.sold_on),updated_by:user.id,version:{increment:1}}});if(result.count!==1)throw new ConflictException('Venda alterada. Atualize a página antes de salvar');const after=await tx.pLSale.findUniqueOrThrow({where:{id}});await this.audit(tx,user,id,'sale.updated',before,after);return {id};});this.notify(data.seller_id);return result;
   }
   async cancel(user:AuthUser,id:string,input:unknown) {
     this.authorize(user,true);z.string().uuid().parse(id);const data=cancelSchema.parse(input);
@@ -70,7 +73,7 @@ export class PlSalesService {
   }
   async goal(user:AuthUser,month:string,owner:string,input:unknown) {
     this.authorize(user,true);monthSchema.parse(month);if(owner!=='team')z.string().uuid().parse(owner);const data=plGoalSchema.parse(input);
-    const result=await this.transaction(async tx=>{let name='Equipe PL';if(owner!=='team'){const seller=await tx.user.findFirst({where:{tenant_id:user.tenantId,id:owner,...sellerWhere},select:{nome:true}});if(!seller)throw new BadRequestException('Vendedora inválida');name=seller.nome;}const key={tenant_id:user.tenantId,month,owner_key:owner};const before=await tx.pLMonthlyGoal.findUnique({where:{tenant_id_month_owner_key:key}});if((before?.version??0)!==data.expectedVersion)throw new ConflictException('Meta alterada. Atualize a página');const after=before?await tx.pLMonthlyGoal.update({where:{id:before.id},data:{amount:data.amount,owner_name:name,updated_by:user.id,version:{increment:1}}}):await tx.pLMonthlyGoal.create({data:{...key,owner_name:name,amount:data.amount,updated_by:user.id}});await this.audit(tx,user,after.id,'goal.saved',before,after);return {id:after.id};});this.notify();return result;
+    const result=await this.transaction(async tx=>{let name='Equipe PL';if(owner!=='team'){const seller=await tx.user.findFirst({where:{tenant_id:user.tenantId,id:owner,...sellerWhere},select:{nome:true}});if(!seller)throw new BadRequestException('Vendedora inválida');name=seller.nome;}const key={tenant_id:user.tenantId,month,owner_key:owner};const before=await tx.pLMonthlyGoal.findUnique({where:{tenant_id_month_owner_key:key}});if((before?.version??0)!==data.expectedVersion)throw new ConflictException('Meta alterada. Atualize a página');const after=before?await tx.pLMonthlyGoal.update({where:{id:before.id},data:{amount:data.amount,owner_name:name,updated_by:user.id,version:{increment:1}}}):await tx.pLMonthlyGoal.create({data:{...key,owner_name:name,amount:data.amount,updated_by:user.id}});await this.audit(tx,user,after.id,'goal.saved',before,after);return {id:after.id};});this.notify(owner);return result;
   }
   async history(user:AuthUser) {this.authorize(user,true);return this.prisma.pLSalesAudit.findMany({where:{tenant_id:user.tenantId},orderBy:{created_at:'desc'},take:100});}
 }

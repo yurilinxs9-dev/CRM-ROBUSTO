@@ -10,7 +10,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
-import { useAuthStore, useIsKanbanIndividual, useIsPoolEnabled } from '@/stores/auth.store';
+import { useAuthStore, useIsKanbanIndividual, useIsPoolEnabled, useIsPlSalesOnly } from '@/stores/auth.store';
 import { formatPhone } from '@/components/kanban/lead-card';
 import { TagPicker } from '@/components/kanban/tag-picker';
 import { InlineField } from './inline-field';
@@ -78,7 +78,8 @@ export function LeadHeader({
   onReturnToPool,
 }: LeadHeaderProps) {
   const me = useAuthStore((s) => s.user);
-  const gestor = !!me?.role && GESTORES.includes(me.role);
+  const restricted = useIsPlSalesOnly();
+  const gestor = !restricted && !!me?.role && GESTORES.includes(me.role);
   const kanbanIndividual = useIsKanbanIndividual();
   const pool = useIsPoolEnabled();
   // No kanban individual as etapas sao as do DONO do lead; gestor pede o board
@@ -194,7 +195,7 @@ export function LeadHeader({
 
       {/* Lead na nuvem qualquer um assume; lead sem dono so quando o tenant tem
           o pool ligado — sem pool, "sem responsavel" nao e um lead disponivel. */}
-      {editavel && (naNuvem || (semDono && pool)) && (
+      {editavel && !restricted && (naNuvem || (semDono && pool)) && (
         <Button size="sm" className="w-full" onClick={() => void onClaim()}>
           ✋ Assumir lead
         </Button>

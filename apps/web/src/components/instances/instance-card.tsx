@@ -11,6 +11,7 @@ export interface InstanceCardData {
   id: string;
   nome: string;
   telefone?: string | null;
+  numero?: string | null;
   status: string;
   ultimo_check?: string | null;
 }
@@ -29,10 +30,12 @@ interface Props {
   onReconnect: (nome: string) => void;
   onDelete: (nome: string) => void;
   reconnecting?: boolean;
+  readOnly?: boolean;
 }
 
-export function InstanceCard({ instance, onConnect, onReconnect, onDelete, reconnecting }: Props) {
+export function InstanceCard({ instance, onConnect, onReconnect, onDelete, reconnecting, readOnly = false }: Props) {
   const status = resolveStatus(instance.status);
+  const telefone = instance.telefone ?? instance.numero;
 
   const badge =
     status.kind === 'connected' ? (
@@ -56,8 +59,8 @@ export function InstanceCard({ instance, onConnect, onReconnect, onDelete, recon
             </div>
             <div className="min-w-0">
               <p className="font-semibold text-sm truncate">{instance.nome}</p>
-              {instance.telefone && status.kind === 'connected' ? (
-                <p className="text-xs text-muted-foreground truncate">{instance.telefone}</p>
+              {telefone && status.kind === 'connected' ? (
+                <p className="text-xs text-muted-foreground truncate">{telefone}</p>
               ) : (
                 <p className="text-xs text-muted-foreground">Sem telefone vinculado</p>
               )}
@@ -72,7 +75,7 @@ export function InstanceCard({ instance, onConnect, onReconnect, onDelete, recon
             : 'Sem verificação recente'}
         </p>
 
-        <div className="flex items-center gap-2 pt-1">
+        {!readOnly && <div className="flex items-center gap-2 pt-1">
           {status.kind === 'disconnected' && (
             <Button size="sm" className="flex-1" onClick={() => onConnect(instance.nome)}>
               <QrCode className="mr-1.5 h-3.5 w-3.5" />
@@ -110,7 +113,7 @@ export function InstanceCard({ instance, onConnect, onReconnect, onDelete, recon
           >
             <Trash2 className="h-4 w-4" />
           </Button>
-        </div>
+        </div>}
       </CardContent>
     </Card>
   );

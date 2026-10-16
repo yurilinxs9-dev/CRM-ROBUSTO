@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { firstValueFrom } from 'rxjs';
 import type { AuthUser } from '../../common/types/auth-user';
 import { UserRole } from '../../common/types/roles';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { hashTruncated } from '../../common/utils/hash-truncated';
 import { HistorySyncService } from '../webhooks/history-sync.service';
 
@@ -338,7 +339,7 @@ export class InstancesService implements OnModuleInit {
 
     // Modo Compartilhado: todos veem o mesmo número (a instância é da equipe,
     // não pessoal). Modo Individual: cada user vê apenas as próprias.
-    const ownerFilter = tenant?.pool_enabled ? {} : { owner_user_id: user.id };
+    const ownerFilter = tenant?.pool_enabled && !isPlSalesOnly(user) ? {} : { owner_user_id: user.id };
 
     return this.prisma.whatsappInstance.findMany({
       where: {
@@ -347,6 +348,7 @@ export class InstancesService implements OnModuleInit {
         ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
       },
       orderBy: { created_at: 'asc' },
+      ...(isPlSalesOnly(user) ? { select: { id: true, nome: true, telefone: true, status: true, ultimo_check: true } } : {}),
     });
   }
 

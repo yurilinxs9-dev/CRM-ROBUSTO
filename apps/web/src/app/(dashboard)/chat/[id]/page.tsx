@@ -19,7 +19,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { extractMentionIds } from '@/lib/mentions';
 import { getSocket, joinLead, leaveLead } from '@/lib/socket';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -92,6 +92,7 @@ export default function ChatDetailPage() {
   const [followupComposerText, setFollowupComposerText] = useState<string | null>(null);
 
   const currentUser = useAuthStore((s) => s.user);
+  const restricted = useIsPlSalesOnly();
 
   /**
    * "Usar" do card Inteligência: joga a sugestão no composer e fecha o drawer
@@ -1014,21 +1015,21 @@ export default function ChatDetailPage() {
       {(() => {
         const isOperator = currentUser?.role === 'OPERADOR';
         const isPoolLead = !currentLead?.responsavel;
-        const blocked = isOperator && isPoolLead;
+        const blocked = restricted ? currentLead?.responsavel?.id !== currentUser?.id : isOperator && isPoolLead;
         if (blocked) {
           return (
             <div className="border-t border-border bg-background p-4">
               <div className="mx-auto flex max-w-md flex-col items-center gap-3 text-center">
                 <p className="text-sm text-muted-foreground">
-                  Lead disponivel no escritorio. Assuma para ver o historico e responder.
+                  {restricted ? 'Esta conversa não está disponível na sua carteira.' : 'Lead disponivel no escritorio. Assuma para ver o historico e responder.'}
                 </p>
-                <Button
+                {!restricted && <Button
                   size="sm"
                   disabled={claimMutation.isPending}
                   onClick={() => claimMutation.mutate()}
                 >
                   {claimMutation.isPending ? 'Assumindo...' : 'Assumir lead'}
-                </Button>
+                </Button>}
               </div>
             </div>
           );

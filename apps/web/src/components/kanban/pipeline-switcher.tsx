@@ -29,6 +29,7 @@ interface PipelineSwitcherProps {
   onDuplicate: (id: string) => void;
   onArchive: (id: string) => void;
   onDeleteWithMove: (id: string) => void;
+  readOnly?: boolean;
 }
 
 function PipelineSwitcherImpl({
@@ -40,6 +41,7 @@ function PipelineSwitcherImpl({
   onDuplicate,
   onArchive,
   onDeleteWithMove,
+  readOnly = false,
 }: PipelineSwitcherProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -66,7 +68,7 @@ function PipelineSwitcherImpl({
     <div className="flex items-center gap-1 overflow-x-auto">
       {pipelines.map((p) => {
         const isActive = p.id === activeId;
-        const isEditing = editingId === p.id;
+        const isEditing = !readOnly && editingId === p.id;
         return (
           <div
             key={p.id}
@@ -120,7 +122,7 @@ function PipelineSwitcherImpl({
                 >
                   {p.nome}
                 </button>
-                <DropdownMenu>
+                {!readOnly && <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -152,13 +154,13 @@ function PipelineSwitcherImpl({
                       Excluir e mover leads
                     </DropdownMenuItem>
                   </DropdownMenuContent>
-                </DropdownMenu>
+                </DropdownMenu>}
               </>
             )}
           </div>
         );
       })}
-      <Button
+      {!readOnly && <Button
         variant="ghost"
         size="sm"
         className="h-8 px-2 text-xs"
@@ -166,7 +168,7 @@ function PipelineSwitcherImpl({
       >
         <Plus className="mr-1 h-3.5 w-3.5" />
         Novo Funil
-      </Button>
+      </Button>}
     </div>
   );
 }

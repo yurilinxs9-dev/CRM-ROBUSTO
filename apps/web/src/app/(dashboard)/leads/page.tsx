@@ -70,11 +70,12 @@ export default function LeadsPage(): JSX.Element {
     () => ({
       ...entryReportParams(toQueryParams(filters)),
       include_total: 'true',
+      ...(user?.pl_sales_only ? { owner: 'me' } : {}),
       ...(config.sort ? { sort: config.sort.campo, dir: config.sort.dir } : {}),
       limit: String(POR_PAGINA),
       offset: String(pagina * POR_PAGINA),
     }),
-    [filters, config.sort, pagina],
+    [filters, config.sort, pagina, user?.pl_sales_only],
   );
 
   /**

@@ -39,7 +39,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { api } from '@/lib/api';
-import { useAuthStore, useIsPoolEnabled } from '@/stores/auth.store';
+import { useAuthStore, useIsPoolEnabled, useIsPlSalesOnly } from '@/stores/auth.store';
 import { TEMP_LABELS, formatPhone, type Temperatura } from './lead-card';
 import { ActivityTimeline } from './activity-timeline';
 import { FieldGroupList } from '@/components/fields/field-group-list';
@@ -138,8 +138,9 @@ export function LeadDetailDrawer({
 }: LeadDetailDrawerProps) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const restricted = useIsPlSalesOnly();
   const isPoolEnabled = useIsPoolEnabled();
-  const podeConfigurar = !!currentUser?.role && GESTORES.includes(currentUser.role);
+  const podeConfigurar = !restricted && !!currentUser?.role && GESTORES.includes(currentUser.role);
 
   // Invalidações comuns a toda mutação da ficha. Aberta pelo chat não há
   // pipeline ativo, e ['leads', undefined] não casaria nenhuma listagem — o
@@ -169,7 +170,7 @@ export function LeadDetailDrawer({
       const res = await api.get('/api/users/list');
       return res.data as TenantUser[];
     },
-    enabled: open,
+    enabled: open && !restricted,
     // Always refetch on mount so a member added in TeamTab shows up immediately
     // when the drawer is reopened, instead of being stuck behind a stale cache.
     staleTime: 0,
@@ -183,7 +184,7 @@ export function LeadDetailDrawer({
       const res = await api.get('/api/sectors');
       return res.data as Sector[];
     },
-    enabled: open,
+    enabled: open && !restricted,
   });
 
   // Estrutura de campos do tenant: grupos + definições dos três escopos. É ela
@@ -283,7 +284,7 @@ export function LeadDetailDrawer({
         // Só vai quando há responsável escolhido: o campo não tem opção
         // "ninguém" (isso é o botão "Devolver ao Escritório"), então vazio
         // aqui significa "não mexe", não "remove o dono".
-        ...(responsavelId ? { responsavel_id: responsavelId } : {}),
+        ...(!restricted && responsavelId ? { responsavel_id: responsavelId } : {}),
         tags,
       };
       if (Object.keys(custom).length > 0) body.dados_custom = custom;
@@ -468,7 +469,12 @@ export function LeadDetailDrawer({
                   <User className="h-3.5 w-3.5" />
                   Atribuicao
                 </p>
-                {isPoolEnabled ? (
+                {restricted ? (
+                  <div className="space-y-1.5">
+                    <Label>Responsável</Label>
+                    <p className="text-sm">{lead?.responsavel?.nome ?? currentUser?.nome}</p>
+                  </div>
+                ) : isPoolEnabled ? (
                   !lead?.responsavel ? (
                     <div className="space-y-2">
                       {botaoAssumir}

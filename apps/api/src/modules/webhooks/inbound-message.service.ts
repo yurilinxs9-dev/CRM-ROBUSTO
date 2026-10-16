@@ -1,4 +1,5 @@
 import { Optional } from '@nestjs/common';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { PlRoutingService } from '../pl-sales/pl-routing.service';
 import { Injectable, Logger } from '@nestjs/common';
 import type { MessageType, Prisma, WhatsappInstance } from '@prisma/client';
@@ -466,11 +467,14 @@ export class InboundMessageService {
     const ownerUser = instance.owner_user_id
       ? await this.prisma.user.findUnique({
           where: { id: instance.owner_user_id },
-          select: { role: true },
+          select: { role: true, pl_sales_only: true },
         })
       : null;
     const ownerIsManager =
       ownerUser?.role === 'SUPER_ADMIN' || ownerUser?.role === 'GERENTE';
+    const restrictedOwner = !!ownerUser && isPlSalesOnly({
+      tenantId, role: ownerUser.role, plSalesOnly: ownerUser.pl_sales_only,
+    });
     // Rodízio no MODO COMPARTILHADO com número "da empresa": instância cujo dono
     // é gestor nunca jogava lead no pool, então o tenant que atende por um número
     // único de admin ficava sem distribuição automática e o gerente repassava na
@@ -496,12 +500,12 @@ export class InboundMessageService {
       instance.sector_id != null &&
       !isFromMe;
     const responsavelId =
-      plRoute || inPool || soloDistribute ? null : instance.owner_user_id;
+      restrictedOwner ? instance.owner_user_id : (plRoute || inPool || soloDistribute ? null : instance.owner_user_id);
     // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E o
     // lead ficou sem dono — pool do Compartilhado (inclusive a instância de
     // gestor inscrita via `poolDistribute`) ou instância com setor no Individual.
     const wantRoundRobin =
-      !plRoute && (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
+      !restrictedOwner && !plRoute && (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
 
     // Escopo de identidade do lead: SEMPRE tenant_id → 1 lead por telefone+pipeline,
     // tanto no Compartilhado quanto no Individual. Antes o Individual escopava por

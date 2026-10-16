@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { api } from '@/lib/api';
+import { useIsPlSalesOnly } from '@/stores/auth.store';
 import {
   FILTROS_VAZIOS,
   ORIGENS,
@@ -82,6 +83,7 @@ type Props = {
  */
 export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) {
   const queryClient = useQueryClient();
+  const restricted = useIsPlSalesOnly();
   const [abertoLocal, setAbertoLocal] = useState(false);
   const controlado = open !== undefined;
   const aberto = controlado ? open : abertoLocal;
@@ -203,7 +205,7 @@ export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) 
                         <span className="ml-1 text-[10px] text-muted-foreground">(equipe)</span>
                       )}
                     </button>
-                    <button
+                    {!restricted && <button
                       type="button"
                       onClick={() => excluirView.mutate(v.id)}
                       disabled={excluirView.isPending}
@@ -211,12 +213,12 @@ export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) 
                       aria-label={`Excluir filtro ${v.nome}`}
                     >
                       <Trash2 className="h-3 w-3" />
-                    </button>
+                    </button>}
                   </div>
                 ))}
               </div>
 
-              {salvando ? (
+              {!restricted && (salvando ? (
                 <div className="space-y-1.5">
                   <Input
                     autoFocus
@@ -269,7 +271,7 @@ export function LeadFilterPanel({ value, onChange, open, onOpenChange }: Props) 
                 >
                   Salvar filtro atual
                 </Button>
-              )}
+              ))}
             </div>
           </div>
 

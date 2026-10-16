@@ -1,5 +1,5 @@
 export const PARTNERS_TENANT = 'a44772ed-1382-4400-84fc-3fa350e23e42';
-export const canAccessPartners = (tenant?: string) => tenant === PARTNERS_TENANT;
+export const canAccessPartners = (tenant?: string, plSalesOnly = false) => tenant === PARTNERS_TENANT && !plSalesOnly;
 export const brl = (value: string | number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value));
 export function parsePartnerAmount(value: string): string {
   const clean = value.trim().replace(/^R\$\s*/, '');
