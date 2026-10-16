@@ -7,7 +7,7 @@ COPY prisma ./prisma/
 RUN npm install
 COPY . .
 RUN npx prisma generate
-RUN npm run build
+RUN NODE_OPTIONS=--max-old-space-size=1152 npm run build
 
 FROM node:20-alpine AS runner
 # CRITICO: FFmpeg para conversao de audio OGG/Opus + openssl para Prisma
