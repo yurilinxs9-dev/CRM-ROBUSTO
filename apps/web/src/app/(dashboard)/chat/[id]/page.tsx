@@ -128,8 +128,8 @@ export default function ChatDetailPage() {
   });
 
   const stages = useMemo(
-    () => [...(pipelines[0]?.stages ?? [])].sort((a, b) => a.ordem - b.ordem),
-    [pipelines],
+    () => [...(pipelines.find(p => p.id === currentLead?.pipeline_id)?.stages ?? [])].sort((a, b) => a.ordem - b.ordem),
+    [pipelines, currentLead?.pipeline_id],
   );
 
   const {

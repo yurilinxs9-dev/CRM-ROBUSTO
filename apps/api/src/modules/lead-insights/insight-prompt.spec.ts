@@ -467,3 +467,11 @@ it('preserves the pilot sales policy for Taynara', () => {
   ctx.lead.cadastro = [{ rotulo: 'Empresa', valor: 'MEI' }];
   expect(montarPromptInsight(ctx)[1].content).toContain('a empresa só cadastra parceiros ME/LTDA');
 });
+
+it('Consórcio PL não aplica critérios de cadastro de parceiros ao cliente final', () => {
+  const ctx=ctxMinimo();ctx.tenantId='a44772ed-1382-4400-84fc-3fa350e23e42';ctx.pipelineId='6f749216-8d83-44ed-8fd0-1c57720c9f11';
+  ctx.mensagens=[];ctx.lead.cadastro=[{rotulo:'Objetivo',valor:'Comprar casa'}];
+  const prompt=montarPromptInsight(ctx);
+  expect(prompt[1].content).not.toContain('a empresa só cadastra parceiros ME/LTDA');
+  expect(prompt[0].content).toContain('cliente final interessado em consórcio');
+});

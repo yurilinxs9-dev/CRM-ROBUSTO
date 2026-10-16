@@ -1,4 +1,5 @@
 import type { AiChatMessage } from '../ai/ai.types';
+import { isPlPipeline } from '../pl-sales/pl-sales.domain';
 
 /** Fato memorizado sobre o lead (dito pelo proprio cliente). */
 export interface MemoriaFato {
@@ -10,6 +11,7 @@ export interface MemoriaFato {
 export interface InsightContexto {
   /** Business policy applies only to this pilot tenant. */
   tenantId?: string;
+  pipelineId?: string;
   lead: {
     nome: string | null;
     telefone: string | null;
@@ -489,7 +491,7 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
     ? [
         `AINDA NAO HOUVE CONVERSA com este lead. Origem do lead: ${lead.origem} (${origemLegivel}).`,
         'Monte a ficha SOMENTE a partir do cadastro e formulário acima:',
-        ctx.tenantId === 'a44772ed-1382-4400-84fc-3fa350e23e42'
+        ctx.tenantId === 'a44772ed-1382-4400-84fc-3fa350e23e42' && !isPlPipeline(ctx.tenantId, ctx.pipelineId)
           ? '- "resumo": perfil do lead (quem é, tempo de atuação, estrutura, produção) e ADERÊNCIA ao perfil que a empresa atende — a empresa só cadastra parceiros ME/LTDA para cima; MEI e pessoa física estão fora do perfil e isso deve ser dito com clareza no resumo.'
           : '- resumo: descreva o perfil com base no cadastro, sem presumir criterios comerciais de elegibilidade.',
         '- "memoria_novos_fatos": fatos objetivos do formulário (tipo de empresa, cidade, produção, vendedores), com "quando_dito" = data do formulário se houver.',
@@ -524,7 +526,9 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
   ].join('\n');
 
   return [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: SYSTEM_PROMPT + (isPlPipeline(ctx.tenantId ?? '', ctx.pipelineId)
+      ? '\nCONTEXTO CONSÓRCIO PL: este lead é cliente final interessado em consórcio. Resuma objetivo, crédito e parcela informados e dúvidas do cliente. Não aplique critérios de cadastro de parceiros ME/LTDA, nem exclua pessoa física ou MEI. Não prometa contemplação nem aprovação de crédito. A distribuição para uma vendedora é sempre manual pela gestão; você apenas auxilia o atendimento.'
+      : '') },
     { role: 'user', content: user },
   ];
 }

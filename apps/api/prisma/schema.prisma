@@ -1643,3 +1643,50 @@ model PartnerConsultantGoal {
   @@unique([tenant_id,consultant_id,month])
   @@index([tenant_id,month])
 }
+// Vendas diretas da PL. Separadas da produção agregada dos parceiros.
+model PLSale {
+  id String @id @default(uuid())
+  tenant_id String
+  lead_id String
+  customer_name String
+  customer_phone String
+  seller_id String
+  seller_name String
+  contract_number String
+  amount Decimal @db.Decimal(16,2)
+  sold_on DateTime @db.Date
+  status String @default("ACTIVE")
+  note String @default("")
+  version Int @default(1)
+  created_by String
+  updated_by String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  @@unique([tenant_id, contract_number])
+  @@index([tenant_id, sold_on, seller_id])
+  @@index([tenant_id, lead_id])
+}
+model PLMonthlyGoal {
+  id String @id @default(uuid())
+  tenant_id String
+  month String
+  owner_key String // team ou ID da vendedora
+  owner_name String
+  amount Decimal @db.Decimal(16,2)
+  version Int @default(1)
+  updated_by String
+  updated_at DateTime @updatedAt
+  @@unique([tenant_id, month, owner_key])
+}
+model PLSalesAudit {
+  id String @id @default(uuid())
+  tenant_id String
+  entity_id String
+  actor_id String
+  actor_name String
+  action String
+  before Json?
+  after Json
+  created_at DateTime @default(now())
+  @@index([tenant_id, created_at])
+}

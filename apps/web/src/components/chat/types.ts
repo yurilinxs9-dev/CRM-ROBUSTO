@@ -28,6 +28,7 @@ export interface AdReferral {
 
 export interface ChatLead {
   id: string;
+  pipeline_id?: string;
   nome: string;
   telefone: string;
   temperatura: Temperatura;

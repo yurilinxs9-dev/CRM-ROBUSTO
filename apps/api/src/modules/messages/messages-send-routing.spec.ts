@@ -241,3 +241,32 @@ describe('MessagesService.sendText — auto-swap continua funcionando (rede de s
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
+
+it('Consórcio PL usa o WhatsApp de origem após distribuição manual, mesmo sem número próprio', async () => {
+  const m=makeService();
+  const tenant='a44772ed-1382-4400-84fc-3fa350e23e42';
+  m.prisma.lead.findFirst.mockResolvedValue({...baseLead,tenant_id:tenant,pipeline_id:'6f749216-8d83-44ed-8fd0-1c57720c9f11',responsavel_id:alex.id});
+  m.prisma.whatsappInstance.findFirst.mockResolvedValue(liveInstance('inst-A','gestora'));
+  await m.service.sendText({lead_id:LEAD_ID,content:'Olá'}, {...alex,tenantId:tenant});
+  expect(m.sendQueue.add).toHaveBeenCalledWith('send-text',expect.objectContaining({instanceName:'inst-A'}));
+});
+
+it('Consórcio PL rejeita reenvio automático por outro número quando origem está offline', async()=>{
+ const m=makeService();const tenant='a44772ed-1382-4400-84fc-3fa350e23e42';
+ m.prisma.message.findUnique=jest.fn().mockResolvedValue({id:'m',lead_id:LEAD_ID,tenant_id:tenant,direction:'OUTGOING',status:'FAILED',instance_name:'origin',type:'TEXT'});
+ m.prisma.lead.findFirst.mockResolvedValue({...baseLead,pipeline_id:'6f749216-8d83-44ed-8fd0-1c57720c9f11',instancia_whatsapp:'origin'});
+ m.prisma.whatsappInstance.findFirst.mockResolvedValueOnce({...liveInstance('origin'),status:'disconnected'}).mockResolvedValue(liveInstance('other'));
+ await expect(m.service.resend('m')).rejects.toThrow('Nenhuma instancia');
+ expect(m.prisma.whatsappInstance.findFirst).toHaveBeenCalledTimes(1);
+ expect(m.sendQueue.add).not.toHaveBeenCalled();
+});
+
+it('Consórcio PL não importa histórico genérico do telefone ao abrir chat', async()=>{
+ const m=makeService();const tenant='a44772ed-1382-4400-84fc-3fa350e23e42';
+ m.prisma.lead.findFirst.mockResolvedValue({...baseLead,pipeline_id:'6f749216-8d83-44ed-8fd0-1c57720c9f11'});
+ m.prisma.whatsappInstance.findFirst.mockResolvedValue(liveInstance('origin'));
+ m.prisma.message.findMany=jest.fn().mockResolvedValue([]);
+ const remote=jest.spyOn(globalThis,'fetch').mockResolvedValue({ok:true,json:async()=>({messages:[{messageid:'partner-message',content:'Histórico de parceria',messageType:'Conversation'}]})} as Response);
+ try {expect(await m.service.syncChat(LEAD_ID,{...alex,tenantId:tenant})).toEqual({added:0,mediaFixed:0});expect(m.prisma.message.create).not.toHaveBeenCalled();}
+ finally {remote.mockRestore();}
+});

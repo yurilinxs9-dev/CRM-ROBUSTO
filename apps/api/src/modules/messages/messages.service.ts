@@ -1,3 +1,4 @@
+import { isPlPipeline, PL_TENANT, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
 import { BadGatewayException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -213,14 +214,18 @@ export class MessagesService {
       where: { lead_id: lead.id, responsavel_id: user.id },
       select: { instancia_whatsapp: true },
     });
-    const preferredInstanceName =
+    const plManual = isPlPipeline(user.tenantId, lead.pipeline_id);
+    const preferredInstanceName = plManual ? lead.instancia_whatsapp :
       myConversation?.instancia_whatsapp ?? lead.instancia_whatsapp;
-    const instanceOfLead = await this.prisma.whatsappInstance.findFirst({
+    const instanceOfLead = preferredInstanceName ? await this.prisma.whatsappInstance.findFirst({
       where: { nome: preferredInstanceName, tenant_id: user.tenantId },
-    });
+    }) : null;
 
     let instance: typeof instanceOfLead = null;
-    if (tenant?.pool_enabled) {
+    if (isPlPipeline(user.tenantId, lead.pipeline_id) && (lead.responsavel_id === user.id || ['SUPER_ADMIN','GERENTE'].includes(user.role))) {
+      // Atendimento manual PL usa o número da conversa transferida, sem trocar para outro WhatsApp.
+      instance = instanceOfLead && liveStatuses.includes(instanceOfLead.status) ? instanceOfLead : null;
+    } else if (tenant?.pool_enabled) {
       // Modo Compartilhado: prefere a instância do lead, mas se ela não
       // existe (lead criado manualmente sem instance ou instance removida),
       // cai pra qualquer instância ativa do tenant — o número é único da
@@ -274,6 +279,7 @@ export class MessagesService {
     }
 
     if (!instance) {
+      if (plManual) throw new ForbiddenException('O WhatsApp de origem deste lead precisa estar conectado. Peça à gestão para conferir a conexão.');
       throw new ForbiddenException(
         tenant?.pool_enabled
           ? 'Lead não tem instância vinculada — peça pro super-admin conectar o número compartilhado.'
@@ -773,10 +779,11 @@ export class MessagesService {
     } else {
       const lead = await this.prisma.lead.findFirst({
         where: { id: msg.lead_id, tenant_id: msg.tenant_id },
-        select: { telefone: true, instancia_whatsapp: true },
+        select: { telefone: true, instancia_whatsapp: true, pipeline_id: true },
       });
       if (!lead) throw new NotFoundException('Lead nao encontrado');
-      transport = await this.resolveSystemSendContext(msg.tenant_id, lead.instancia_whatsapp);
+      const plManual = isPlPipeline(msg.tenant_id, lead.pipeline_id);
+      transport = await this.resolveSystemSendContext(msg.tenant_id, plManual ? msg.instance_name ?? lead.instancia_whatsapp : lead.instancia_whatsapp, !plManual);
       telefone = lead.telefone;
     }
     const instanceName = transport.instanceName;
@@ -836,12 +843,13 @@ export class MessagesService {
   private async resolveSystemSendContext(
     tenantId: string,
     leadInstanceName: string | null,
+    allowFallback = true,
   ): Promise<Transport> {
     const liveStatuses = ['open', 'connected', 'connecting'];
     let instance = leadInstanceName
       ? await this.prisma.whatsappInstance.findFirst({ where: { nome: leadInstanceName, tenant_id: tenantId } })
       : null;
-    if (!instance || !liveStatuses.includes(instance.status)) {
+    if (allowFallback && (!instance || !liveStatuses.includes(instance.status))) {
       instance = await this.prisma.whatsappInstance.findFirst({
         where: { tenant_id: tenantId, status: { in: liveStatuses } },
         orderBy: [{ ultimo_check: 'desc' }, { created_at: 'desc' }],
@@ -922,7 +930,7 @@ export class MessagesService {
   async getHistory(leadId: string, user: AuthUser, cursor?: string, limit = 50) {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, responsavel_id: true, instancia_whatsapp: true, is_private: true },
+      select: { id: true, responsavel_id: true, instancia_whatsapp: true, is_private: true, pipeline_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
 
@@ -949,7 +957,7 @@ export class MessagesService {
         select: { focus_mode: true },
       }),
     ]);
-    const poolEnabled = Boolean(tenantCfg?.pool_enabled);
+    const poolEnabled = Boolean(tenantCfg?.pool_enabled) || isPlPipeline(user.tenantId, lead.pipeline_id);
     // Gerente focado abre mão da visão total — MENOS em lead sem dono, onde
     // ler a conversa é o insumo da distribuição.
     const supervising =
@@ -1056,9 +1064,13 @@ export class MessagesService {
   async syncChat(leadId: string, user: AuthUser): Promise<{ added: number; mediaFixed: number }> {
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, telefone: true, instancia_whatsapp: true },
+      select: { id: true, telefone: true, instancia_whatsapp: true, pipeline_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    // O histórico remoto de um telefone não distingue parceria de consórcio.
+    // Quando há finalidade PL, só reparar mídia já vinculada; mensagens novas
+    // passam pelo worker de histórico/webhook, que aplica o roteamento.
+    const scopedHistory = user.tenantId === PL_TENANT && (isPlPipeline(user.tenantId,lead.pipeline_id) || !!await this.prisma.lead.findFirst({where:{tenant_id:user.tenantId,telefone:lead.telefone,pipeline_id:PL_PIPELINE},select:{id:true}}));
 
     const instance = await this.prisma.whatsappInstance.findFirst({
       where: lead.instancia_whatsapp
@@ -1083,7 +1095,7 @@ export class MessagesService {
     const remote = findJson.messages ?? [];
 
     const existing = await this.prisma.message.findMany({
-      where: { lead_id: lead.id },
+      where: { lead_id: lead.id, ...(scopedHistory ? {whatsapp_message_id:{in:remote.map(m=>String(m.messageid ?? ''))}} : {}) },
       select: { id: true, whatsapp_message_id: true, media_url: true, type: true },
     });
     const known = new Map(existing.map((m) => [m.whatsapp_message_id ?? '', m]));
@@ -1113,6 +1125,7 @@ export class MessagesService {
       const ts = m.messageTimestamp ? new Date(Number(m.messageTimestamp)) : new Date();
 
       const existingRow = known.get(wid);
+      if (scopedHistory && !existingRow) continue;
       let messageId = existingRow?.id;
 
       if (!existingRow) {

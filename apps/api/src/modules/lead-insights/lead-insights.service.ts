@@ -1585,6 +1585,7 @@ export class LeadInsightsService {
 
     const contexto: InsightContexto = {
       tenantId,
+      pipelineId: lead.pipeline_id,
       lead: {
         nome: achatar(lead.nome),
         telefone: achatar(lead.telefone),

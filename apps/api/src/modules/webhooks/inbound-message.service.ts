@@ -1,3 +1,5 @@
+import { Optional } from '@nestjs/common';
+import { PlRoutingService } from '../pl-sales/pl-routing.service';
 import { Injectable, Logger } from '@nestjs/common';
 import type { MessageType, Prisma, WhatsappInstance } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -95,6 +97,7 @@ export class InboundMessageService {
     // round-robin) tem que ir para a coluna DELE — nascer na base e ficar lá
     // deixaria o card invisível no board de quem vai atender.
     private readonly kanbanIndividual: KanbanIndividualService,
+    @Optional() private readonly plRouting?: PlRoutingService,
   ) {}
   /**
    * Grava de onde o lead veio. Duas fontes, nesta ordem de confiança:
@@ -396,12 +399,6 @@ export class InboundMessageService {
       return;
     }
 
-    const ctx = await this.ensurePipelineAndStage(tenantId);
-    if (!ctx) {
-      this.logger.error(`Sem pipeline/stage para tenant ${tenantId} — mensagem perdida`);
-      return;
-    }
-
     // DEDUPE ANTES DE QUALQUER EFEITO. O provider re-emite webhooks de
     // mensagens antigas (ex.: abrir a conversa no WhatsApp Web faz o aparelho
     // re-sincronizar o chat) — e o incremento de não-lidas morava no upsert
@@ -434,6 +431,18 @@ export class InboundMessageService {
         select: { id: true },
       });
       if (dup) return;
+    }
+
+    const route = await this.plRouting?.resolve(tenantId, phone, lidJid, instance.nome, extracted.content ?? '', isFromMe, !!backfill, backfill?.timestamp);
+    if (route && 'skip' in route) {
+      this.logger.debug('Histórico PL sem evidência de finalidade: importação ignorada');
+      return;
+    }
+    const plRoute = route;
+    const ctx = plRoute ?? await this.ensurePipelineAndStage(tenantId);
+    if (!ctx) {
+      this.logger.error(`Sem pipeline/stage para tenant ${tenantId} — mensagem perdida`);
+      return;
     }
 
     // CRITICAL: never use `pushName` when isFromMe=true. The Evolution webhook
@@ -487,12 +496,12 @@ export class InboundMessageService {
       instance.sector_id != null &&
       !isFromMe;
     const responsavelId =
-      inPool || soloDistribute ? null : instance.owner_user_id;
+      plRoute || inPool || soloDistribute ? null : instance.owner_user_id;
     // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E o
     // lead ficou sem dono — pool do Compartilhado (inclusive a instância de
     // gestor inscrita via `poolDistribute`) ou instância com setor no Individual.
     const wantRoundRobin =
-      (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
+      !plRoute && (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
 
     // Escopo de identidade do lead: SEMPRE tenant_id → 1 lead por telefone+pipeline,
     // tanto no Compartilhado quanto no Individual. Antes o Individual escopava por
@@ -505,14 +514,15 @@ export class InboundMessageService {
     const leadUpsertArgs: Prisma.LeadUpsertArgs = {
       where: {
         telefone_pipeline_scope: {
-          telefone: phone,
+          telefone: plRoute?.phone ?? phone,
           pipeline_id: ctx.pipeline.id,
           lead_scope: leadScope,
         },
       },
       create: {
-        nome: incomingPushName || phone,
-        telefone: phone,
+        nome: plRoute?.simulation.nome || incomingPushName || phone,
+        telefone: plRoute?.phone ?? phone,
+        ...(plRoute && Object.keys(plRoute.simulation).length ? { dados_custom: { simulacao_pl: plRoute.simulation } } : {}),
         whatsapp_lid: lidJid,
         // Lead novo entra no TOPO da coluna, como os criados pela UI e pela
         // API. `position` cresce para baixo, então o relógio negativo resolve
@@ -932,7 +942,7 @@ export class InboundMessageService {
     const leadJaReflete =
       lead.responsavel_id === conversation.responsavel_id &&
       lead.instancia_whatsapp === instance.nome;
-    if (!isFromMe && !leadJaReflete && !backfill) {
+    if (!plRoute && !isFromMe && !leadJaReflete && !backfill) {
       // Emite o patch REALMENTE aplicado por syncLeadFromActive, não os
       // valores computados antes dela rodar: ela deriva a conversa ativa de
       // novo dentro da transação, então pode divergir do `conversation`

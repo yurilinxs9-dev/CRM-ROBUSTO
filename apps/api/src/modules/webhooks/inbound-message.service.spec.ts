@@ -1,4 +1,6 @@
 import { InboundMessageService, type SaveMessageInput } from './inbound-message.service';
+import { PlRoutingService } from '../pl-sales/pl-routing.service';
+import { PL_TENANT, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -142,7 +144,7 @@ function fakeMessageStore(rows: FakeRow[]) {
   };
 }
 
-function makeService() {
+function makeService(plRouting?: PlRoutingService) {
   const m = makeMocks();
   const service = new InboundMessageService(
     m.prisma,
@@ -158,6 +160,7 @@ function makeService() {
     m.leadInsights,
     m.attribution,
     m.kanbanIndividual,
+    plRouting,
   ) as InboundMessageService;
   return { service, ...m };
 }
@@ -1182,5 +1185,37 @@ describe('InboundMessageService.saveIncomingMessage — rodizio no pool com inst
 
     expect(criado(m.prisma).responsavel_id).toBe('B');
     expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+});
+
+describe('Consórcio PL — manual inbound assignment', () => {
+  function manual() {
+    const resolve=jest.fn().mockResolvedValue({pipeline:{id:PL_PIPELINE},firstStage:{id:'pl-new'},phone:'5511900000000',simulation:{nome:'Ana'}});
+    const m=makeService({resolve} as unknown as PlRoutingService);
+    m.prisma.user.findUnique.mockResolvedValue({role:'SUPER_ADMIN'});
+    m.prisma.tenant.findFirst.mockResolvedValue({pool_enabled:true,round_robin_enabled:true});
+    m.prisma.message.upsert.mockResolvedValue({id:'msg-pl'});
+    m.conversations.resolveForInbound.mockResolvedValue({id:'conv-pl',responsavel_id:null});
+    return {...m,resolve};
+  }
+  it('creates unassigned lead despite admin number and round robin; repeated event has no effects', async () => {
+    const m=manual();m.prisma.lead.upsert.mockResolvedValue({...leadOwnedByA,pipeline_id:PL_PIPELINE,responsavel_id:null});
+    const input=baseInput({tenantId:PL_TENANT,instance:{...instanceB,sector_id:'commercial'}});
+    await m.service.saveIncomingMessage(input);
+    expect(m.prisma.lead.upsert).toHaveBeenCalledWith(expect.objectContaining({create:expect.objectContaining({pipeline_id:PL_PIPELINE,responsavel_id:null,nome:'Ana'})}));
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+    expect(m.conversations.syncLeadFromActive).not.toHaveBeenCalled();
+    m.prisma.message.findFirst.mockResolvedValue({id:'msg-pl'});
+    await m.service.saveIncomingMessage(input);
+    expect(m.resolve).toHaveBeenCalledTimes(1);
+    expect(m.prisma.lead.upsert).toHaveBeenCalledTimes(1);
+  });
+  it('does not replace manually selected seller on subsequent inbound', async () => {
+    const m=manual();m.prisma.lead.upsert.mockResolvedValue({...leadOwnedByA,pipeline_id:PL_PIPELINE});
+    await m.service.saveIncomingMessage(baseInput({tenantId:PL_TENANT}));
+    expect(m.conversations.resolveForInbound).toHaveBeenCalledWith(expect.objectContaining({defaultResponsavelId:'A'}));
+    expect(m.conversations.syncLeadFromActive).not.toHaveBeenCalled();
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
   });
 });

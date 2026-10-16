@@ -327,3 +327,24 @@ describe('LeadsService.claim/reassign — lead e conversa escrevem na MESMA tran
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 });
+
+it('Consórcio PL preserva histórico e número de origem no reassign', async () => {
+  const m=makeService();const tenant='a44772ed-1382-4400-84fc-3fa350e23e42';
+  const destination='27fe9a03-ce4f-4021-a04c-7af503341218';
+  m.prisma.lead.findFirst.mockResolvedValue({id:'lead-1',pipeline_id:'6f749216-8d83-44ed-8fd0-1c57720c9f11',responsavel_id:null,instancia_whatsapp:'leads'});
+  m.prisma.user.findFirst.mockResolvedValue({id:destination,role:'OPERADOR',nome:'Vendedora'});
+  m.txClient.conversation.findMany.mockResolvedValue([conv('origin','leads',null,'2026-10-16T12:00:00Z')]);
+  await m.service.reassign('lead-1',{novoResponsavelId:destination},{...alex,tenantId:tenant,role:'SUPER_ADMIN'});
+  expect(m.prisma.whatsappInstance.findFirst).not.toHaveBeenCalled();
+  expect(m.txClient.lead.update).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({responsavel_id:destination,assumed_at:null,is_private:false})}));
+  expect(m.txClient.conversation.update).toHaveBeenCalledWith(expect.objectContaining({where:{id:'origin'},data:expect.objectContaining({responsavel_id:destination})}));
+});
+
+it('Consórcio PL impede operador de redistribuir lead e mover para etapa de parceiro',async()=>{
+ const m=makeService();const tenant='a44772ed-1382-4400-84fc-3fa350e23e42';
+ m.prisma.lead.findFirst.mockResolvedValue({id:'lead-1',pipeline_id:'6f749216-8d83-44ed-8fd0-1c57720c9f11',responsavel_id:alex.id});
+ await expect(m.service.reassign('lead-1',{novoResponsavelId:'27fe9a03-ce4f-4021-a04c-7af503341218'},{...alex,tenantId:tenant})).rejects.toThrow('gestão');
+ m.prisma.stage={findFirst:jest.fn().mockResolvedValue(null)};
+ await expect(m.service.updateStage('lead-1',{estagio_id:'27fe9a03-ce4f-4021-a04c-7af503341218'},{...alex,tenantId:tenant})).rejects.toThrow('mesmo funil');
+ expect(m.txClient.lead.update).not.toHaveBeenCalled();
+});

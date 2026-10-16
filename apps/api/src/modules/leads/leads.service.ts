@@ -1,3 +1,4 @@
+import { PL_TENANT, PL_PIPELINE, isPlPipeline } from '../pl-sales/pl-sales.domain';
 import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException } from '@nestjs/common';
 import type { Response } from 'express';
 import { toCsv } from '../../common/csv/csv.util';
@@ -1128,6 +1129,7 @@ export class LeadsService {
         cargo: true,
         tags: true,
         dados_custom: true,
+        pipeline_id: true,
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
@@ -1181,6 +1183,14 @@ export class LeadsService {
     // sem significar nada pra quem lê.
     if (parsed.responsavel_id !== undefined) {
       Object.assign(updateData, patchDaNuvem(parsed.responsavel_id));
+      if (isPlPipeline(user.tenantId, lead.pipeline_id)) {
+        if (!['SUPER_ADMIN','GERENTE'].includes(user.role)) throw new ForbiddenException('A distribuição de Consórcio PL é feita pela gestão');
+        if (parsed.responsavel_id) {
+          const seller = await this.prisma.user.findFirst({where:{id:parsed.responsavel_id,tenant_id:user.tenantId,ativo:true,role:{in:['OPERADOR','GERENTE','SUPER_ADMIN']},OR:[{sector_id:null},{sector:{name:{not:'Administrativo',mode:'insensitive'}}}]},select:{id:true}});
+          if (!seller) throw new BadRequestException('Selecione uma responsável ativa da equipe comercial');
+        }
+        updateData.assumed_at = null;
+      }
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1194,6 +1204,10 @@ export class LeadsService {
           lead_tags: { include: { tag: true } },
         },
       });
+
+      if (parsed.responsavel_id !== undefined && isPlPipeline(user.tenantId, lead.pipeline_id)) {
+        await this.transferActiveConversation(tx, id, parsed.responsavel_id, user.tenantId);
+      }
 
       if (changedFields.length > 0) {
         const FIELD_LABELS: Record<string, string> = {
@@ -1267,6 +1281,10 @@ export class LeadsService {
       where: { id, tenant_id: user.tenantId },
     });
     if (!lead) throw new NotFoundException();
+    if (user.tenantId === PL_TENANT) {
+      const target = await this.prisma.stage.findFirst({where:{id:estagioPedido,tenant_id:user.tenantId,pipeline_id:lead.pipeline_id},select:{id:true}});
+      if (!target) throw new BadRequestException('Selecione uma etapa do mesmo funil do lead');
+    }
 
     /**
      * Kanban individual: a coluna PEDIDA e a do board de quem moveu, que nem
@@ -1407,6 +1425,10 @@ export class LeadsService {
     if (user.role === UserRole.OPERADOR) {
       where.responsavel_id = user.id;
     }
+    if (user.tenantId === PL_TENANT) {
+      const stage = await this.prisma.stage.findFirst({where:{id:estagio_id,tenant_id:user.tenantId},select:{pipeline_id:true}});
+      if (!stage || await this.prisma.lead.count({where:{...where,pipeline_id:{not:stage.pipeline_id}}})) throw new BadRequestException('Selecione leads e etapa do mesmo funil');
+    }
     // TODO: enqueue auto-actions for bulk move (skipped to avoid N queue jobs)
     // TODO: skip logging individual LeadActivity records for bulk (expensive)
     // Bulk move é sempre ação humana — zera o badge junto (mesma regra do
@@ -1465,7 +1487,16 @@ export class LeadsService {
       throw new ForbiddenException('Operadores nao podem reatribuir leads em massa');
     }
     const { ids, responsavel_id } = bulkAssignSchema.parse(data);
-    const where = { id: { in: ids }, tenant_id: user.tenantId };
+    let remainingIds = ids;
+    let plUpdated = 0;
+    if (user.tenantId === PL_TENANT) {
+      const plLeads = await this.prisma.lead.findMany({where:{id:{in:ids},tenant_id:user.tenantId,pipeline_id:PL_PIPELINE},select:{id:true}});
+      for (const lead of plLeads) { await this.reassign(lead.id,{novoResponsavelId:responsavel_id},user); plUpdated++; }
+      const handled = new Set(plLeads.map(l=>l.id));
+      remainingIds = ids.filter(id=>!handled.has(id));
+      if (!remainingIds.length) return {updated:plUpdated};
+    }
+    const where = { id: { in: remainingIds }, tenant_id: user.tenantId };
     // Atribuir dono sempre tira o lead da nuvem de devolvidos.
     const novoDono = { responsavel_id, returned_at: null };
 
@@ -1511,13 +1542,13 @@ export class LeadsService {
 
       await this.registrarReatribuicoes(alvos, responsavel_id, user);
       await this.invalidateLeadsCache(user.tenantId);
-      return { updated };
+      return { updated: updated + plUpdated };
     }
 
     const result = await this.prisma.lead.updateMany({ where, data: novoDono });
     await this.registrarReatribuicoes(alvos, responsavel_id, user);
     await this.invalidateLeadsCache(user.tenantId);
-    return { updated: result.count };
+    return { updated: result.count + plUpdated };
   }
 
   /**
@@ -1715,8 +1746,10 @@ export class LeadsService {
     // sem ela não dá pra traduzir a etapa para o board de quem assumiu.
     const leadAtual = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { estagio_id: true },
+      select: { estagio_id: true, pipeline_id: true },
     });
+    const plManual = isPlPipeline(user.tenantId, leadAtual?.pipeline_id);
+    if (plManual && !isManagerClaim) throw new ForbiddenException('Os leads de Consórcio PL são distribuídos manualmente pela gestão');
     // Lead update (guard incluído) e transferência da conversa ativa na MESMA
     // transação: se o processo cair entre as duas escritas, Lead e
     // Conversation divergem e a próxima msg do cliente desfaz o claim sozinha
@@ -1735,8 +1768,8 @@ export class LeadsService {
         },
         data: {
           responsavel_id: user.id,
-          assumed_at: new Date(),
-          is_private: isManagerClaim,
+          assumed_at: plManual ? null : new Date(),
+          is_private: plManual ? false : isManagerClaim,
           // Saiu da nuvem: quem assume deixa de estar "devolvido".
           returned_at: null,
         },
@@ -1755,7 +1788,7 @@ export class LeadsService {
       await this.transferActiveConversation(tx, leadId, user.id, user.tenantId);
       return etapa;
     });
-    const ownedInstance = await this.findOwnedInstance(user.id, user.tenantId);
+    const ownedInstance = plManual ? null : await this.findOwnedInstance(user.id, user.tenantId);
     if (ownedInstance) {
       await this.prisma.lead.update({
         where: { id: leadId },
@@ -1797,6 +1830,7 @@ export class LeadsService {
         responsavel: { select: { nome: true } },
         instancia_whatsapp: true,
         estagio_id: true,
+        pipeline_id: true,
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
@@ -1809,8 +1843,11 @@ export class LeadsService {
       throw new ForbiddenException('Apenas o responsavel atual ou gerentes podem reatribuir');
     }
 
+    const plManual = isPlPipeline(user.tenantId, lead.pipeline_id);
+    if (plManual && !isManager) throw new ForbiddenException('A distribuição de Consórcio PL é feita pela gestão');
     const newUser = await this.prisma.user.findFirst({
-      where: { id: novoResponsavelId, tenant_id: user.tenantId, ativo: true },
+      where: { id: novoResponsavelId, tenant_id: user.tenantId, ativo: true,
+        ...(plManual ? {OR:[{sector_id:null},{sector:{name:{not:'Administrativo',mode:'insensitive' as const}}}]} : {}) },
       select: { id: true, role: true, nome: true },
     });
     if (!newUser) {
@@ -1820,7 +1857,7 @@ export class LeadsService {
       throw new BadRequestException('Nao e possivel atribuir lead a um VISUALIZADOR');
     }
 
-    const ownedInstance = await this.findOwnedInstance(novoResponsavelId, user.tenantId);
+    const ownedInstance = plManual ? null : await this.findOwnedInstance(novoResponsavelId, user.tenantId);
     // Kanban individual: a coluna vai junto com o dono. Aqui cabe no MESMO
     // update (ao contrário do claim, que precisa preservar o updateMany-guard).
     const etapaNova = await this.remapearEtapa(
@@ -1854,7 +1891,7 @@ export class LeadsService {
           // Reseta assumed_at — novo responsável começa do zero, sem histórico
           // do anterior. Msgs antigas continuam no DB com visible_to_user_id
           // do dono anterior, então só ele ainda enxerga (privacidade).
-          assumed_at: new Date(),
+          assumed_at: plManual ? null : new Date(),
           // Lead com dono novo não é mais lead devolvido — sai da nuvem.
           returned_at: null,
           // Desfaz a privacidade que o claim de GERENTE pôs (lá é
@@ -1930,9 +1967,10 @@ export class LeadsService {
 
     const lead = await this.prisma.lead.findFirst({
       where: { id: leadId, tenant_id: user.tenantId },
-      select: { id: true, nome: true, responsavel_id: true },
+      select: { id: true, nome: true, responsavel_id: true, pipeline_id: true },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
+    if (isPlPipeline(user.tenantId, lead.pipeline_id)) throw new BadRequestException('No Consórcio PL, escolha a responsável na distribuição manual');
 
     // Auth: responsável atual OU gerente+ (espelha reassign/returnToPool).
     const isOwner = lead.responsavel_id === user.id;
@@ -2130,11 +2168,12 @@ export class LeadsService {
         })
       ).map((c) => c.id);
     }
+    const plLead = user.tenantId === PL_TENANT ? await this.prisma.lead.findFirst({where:{id:lead.id,tenant_id:user.tenantId},select:{pipeline_id:true}}) : null;
     return buildMessageScope(lead, {
       userId: user.id,
       role: user.role,
       focusMode,
-      shareHistoryEnabled: Boolean(tenantCfg?.share_history_enabled),
+      shareHistoryEnabled: Boolean(tenantCfg?.share_history_enabled) || isPlPipeline(user.tenantId, plLead?.pipeline_id),
       poolEnabled: Boolean(tenantCfg?.pool_enabled),
       ownConversationIds,
       ownedInstances,

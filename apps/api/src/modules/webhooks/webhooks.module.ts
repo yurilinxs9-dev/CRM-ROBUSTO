@@ -1,3 +1,5 @@
+import { PlRoutingService } from '../pl-sales/pl-routing.service';
+import { AiModule } from '../ai/ai.module';
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
@@ -20,7 +22,7 @@ import { InstancesModule } from '../instances/instances.module';
 import { KanbanIndividualModule } from '../pipelines/kanban-individual.module';
 
 @Module({
-  imports: [
+  imports: [AiModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -55,7 +57,7 @@ import { KanbanIndividualModule } from '../pipelines/kanban-individual.module';
     KanbanIndividualModule,
   ],
   controllers: [WebhooksController],
-  providers: [
+  providers: [PlRoutingService,
     WebhookProcessor,
     InboundMessageService,
     ConversationService,
