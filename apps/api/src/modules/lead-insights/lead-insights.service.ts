@@ -11,6 +11,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 // `Prisma` entra como VALOR (nao `type`): `Prisma.DbNull` e usado em tempo de execucao.
 import { AiFeature, LeadTemperatura, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { isDeepStrictEqual } from 'node:util';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiProviderService } from '../ai/ai-provider.service';
 import { LeadsService } from '../leads/leads.service';
@@ -21,6 +22,8 @@ import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import type { AiChatMessage } from '../ai/ai.types';
 import { LEAD_INSIGHTS_QUEUE, type GerarInsightJobData } from './lead-insights.queue';
+import { isPlPipeline, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
+import { confirmedPlInterest } from '../pl-sales/pl-interest';
 import {
   extrairInsight,
   mesclarMemoria,
@@ -1530,6 +1533,7 @@ export class LeadInsightsService {
         empresa: true,
         origem: true,
         dados_custom: true,
+        updated_at: true,
         attribution: { select: { utm_campaign: true, campaign_name: true } },
         tenant: {
           select: {
@@ -1563,7 +1567,7 @@ export class LeadInsightsService {
     });
     // Sem conversa E sem cadastro nao ha o que analisar. Com cadastro, a ficha
     // pre-contato (perfil + abordagem) e justamente o que a importacao pede.
-    if (recentes.length === 0 && cadastro.length === 0) return;
+    if (recentes.length === 0 && cadastro.length === 0 && !isPlPipeline(tenantId, lead.pipeline_id)) return;
     const preContato = recentes.length === 0;
     const mensagens = [...recentes].reverse();
 
@@ -1611,13 +1615,14 @@ export class LeadInsightsService {
     };
 
     const prompt = montarPromptInsight(contexto);
-    let insight = await this.pedirInsight(prompt, tenantId, leadId);
+    const maxTokens = isPlPipeline(tenantId, lead.pipeline_id) ? 1400 : 1100;
+    let insight = await this.pedirInsight(prompt, tenantId, leadId, maxTokens);
     if (!utilizavel(insight)) {
       const reforco: AiChatMessage[] = [
         ...prompt,
         { role: 'user', content: 'Responda SOMENTE o objeto JSON.' },
       ];
-      insight = await this.pedirInsight(reforco, tenantId, leadId);
+      insight = await this.pedirInsight(reforco, tenantId, leadId, maxTokens);
     }
     if (!utilizavel(insight)) {
       this.logger.warn(
@@ -1703,6 +1708,11 @@ export class LeadInsightsService {
     // que o cliente deu vale muito, mas nao mais do que a ficha ja gravada.
     await this.criarLembretesExtraidos(leadId, tenantId, insight.lembretes);
 
+    if (isPlPipeline(tenantId, lead.pipeline_id)) {
+      const interest = confirmedPlInterest(insight.bem_de_interesse, contexto.mensagens, cadastro);
+      if (interest) await this.preencherBemDeInteresse(leadId, tenantId, interest, lead.dados_custom, lead.updated_at);
+    }
+
     // Pre-contato tem a MESMA corrida: `enfileirarImportado` usa o jobId
     // `lead-<id>`, entao a resposta que chega durante a geracao e descartada pelo
     // inbound. Sem watermark, a epoca e o corte certo — em pre-contato QUALQUER
@@ -1716,6 +1726,51 @@ export class LeadInsightsService {
    * o rotulo do tenant (CustomFieldDef.nome) em vez da chave; nativos (native_key)
    * ficam de fora porque ja aparecem em "Dados do lead". Valor vazio nao entra.
    */
+  private async preencherBemDeInteresse(leadId: string, tenantId: string, interest: Record<string, string>, originalData: Prisma.JsonValue, originalUpdatedAt: Date): Promise<void> {
+    try {
+      const changed = await this.prisma.$transaction(async tx => {
+        const current = await tx.lead.findFirst({
+          where: { id: leadId, tenant_id: tenantId, pipeline_id: PL_PIPELINE },
+          select: { dados_custom: true, updated_at: true },
+        });
+        if (!current) return false;
+        const data = current.dados_custom;
+        if (data !== null && (typeof data !== 'object' || Array.isArray(data))) return false;
+        const fields = data ?? {};
+        // Manual input wins, including a value changed while the AI was running.
+        if ([fields.bem_de_interesse, fields.outro_bem_de_interesse].some(v => v != null && String(v).trim() !== '')) return false;
+        if (!isDeepStrictEqual(data, originalData) || current.updated_at.getTime() !== originalUpdatedAt.getTime()) return 'stale' as const;
+        const defs = await tx.customFieldDef.findMany({
+          where: { tenant_id: tenantId, escopo: 'LEAD', native_key: null, active: true, key: { in: Object.keys(interest) } },
+          select: { key: true, tipo: true, options: true },
+        });
+        const category = defs.find(d => d.key === 'bem_de_interesse');
+        if (category?.tipo !== 'select' || !Array.isArray(category.options) || !category.options.includes(interest.bem_de_interesse)) return false;
+        if (interest.outro_bem_de_interesse && !defs.some(d => d.key === 'outro_bem_de_interesse' && d.tipo === 'text')) return false;
+        const result = await tx.lead.updateMany({
+          where: { id: leadId, tenant_id: tenantId, pipeline_id: PL_PIPELINE, updated_at: originalUpdatedAt, dados_custom: { equals: originalData === null ? Prisma.AnyNull : originalData } },
+          data: { dados_custom: { ...fields, ...interest } },
+        });
+        if (result.count !== 1) return 'stale' as const;
+        await tx.leadActivity.create({ data: {
+          tenant_id: tenantId, lead_id: leadId, user_id: null, tipo: 'ia_bem_de_interesse',
+          descricao: `IA preencheu bem de interesse: ${interest.bem_de_interesse}${interest.outro_bem_de_interesse ? ` — ${interest.outro_bem_de_interesse}` : ''}`,
+          dados_antes: { bem_de_interesse: fields.bem_de_interesse ?? null, outro_bem_de_interesse: fields.outro_bem_de_interesse ?? null },
+          dados_depois: interest,
+        } });
+        return true;
+      }, { timeout: 10000 });
+      if (changed === 'stale') {
+        await this.enfileirar(leadId, tenantId, `interest-${leadId}`, ATRASO_GATILHO_MS);
+      } else if (changed) {
+        await this.leads.invalidateLeadsCache(tenantId);
+        this.gateway.emitLeadUpdated(leadId, { leadId }, tenantId);
+      }
+    } catch {
+      this.logger.warn(`Bem de interesse do lead ${leadId} não foi preenchido; ficha preservada`);
+    }
+  }
+
   private async montarCadastro(
     tenantId: string,
     lead: { email: string | null; empresa: string | null; dados_custom: unknown; campanha: string | null },
@@ -1973,6 +2028,7 @@ export class LeadInsightsService {
     messages: AiChatMessage[],
     tenantId: string,
     leadId: string,
+    maxTokens = 1100,
   ): Promise<InsightGerado | null> {
     const resposta = await this.ai.chat({
       feature: AiFeature.insights,
@@ -1982,7 +2038,7 @@ export class LeadInsightsService {
       // 1100 (era 900, antes 700): o contrato chegou a 13 chaves. A justificativa
       // da temperatura e o motivo da etapa somam ate ~400 chars de texto livre,
       // e JSON truncado nao e JSON — a geracao inteira cai em `extrairInsight`.
-      opts: { temperature: 0.4, maxTokens: 1100 },
+      opts: { temperature: 0.4, maxTokens },
     });
     return extrairInsight(resposta.text);
   }

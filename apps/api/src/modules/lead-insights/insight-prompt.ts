@@ -1,5 +1,6 @@
 import type { AiChatMessage } from '../ai/ai.types';
 import { isPlPipeline } from '../pl-sales/pl-sales.domain';
+import { PL_INTEREST_PROMPT } from '../pl-sales/pl-interest';
 
 /** Fato memorizado sobre o lead (dito pelo proprio cliente). */
 export interface MemoriaFato {
@@ -62,6 +63,8 @@ export type TemperaturaSugerida = (typeof TEMPERATURAS)[number];
 
 /** Insight ja saneado, pronto para persistir. */
 export interface InsightGerado {
+  /** Validated against customer evidence before applying to a PL lead. */
+  bem_de_interesse?: unknown;
   resumo: string;
   memoria_novos_fatos: MemoriaFato[];
   /** Sempre entre 1 e 30. */
@@ -394,6 +397,7 @@ export function extrairInsight(textoModelo: string): InsightGerado | null {
 
   return {
     resumo: comoTexto(alvo.resumo, LIMITE_RESUMO),
+    ...(alvo.bem_de_interesse ? { bem_de_interesse: alvo.bem_de_interesse } : {}),
     memoria_novos_fatos: comoMemoria(alvo.memoria_novos_fatos),
     proxima_acao_em_dias: comoDias(alvo.proxima_acao_em_dias),
     proxima_acao_motivo: comoTexto(alvo.proxima_acao_motivo, LIMITE_MOTIVO),
@@ -484,13 +488,13 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
         ].join('\n')
       : '';
 
-  const preContato = mensagens.length === 0 && lead.cadastro.length > 0;
+  const preContato = mensagens.length === 0 && (lead.cadastro.length > 0 || isPlPipeline(ctx.tenantId ?? '', ctx.pipelineId));
   const origemLegivel = lead.origem === 'IMPORT' ? 'planilha de leads do Meta Lead Ads (tráfego pago)' : lead.origem;
 
   const instrucaoFinal = preContato
     ? [
         `AINDA NAO HOUVE CONVERSA com este lead. Origem do lead: ${lead.origem} (${origemLegivel}).`,
-        'Monte a ficha SOMENTE a partir do cadastro e formulário acima:',
+        'Monte a ficha SOMENTE a partir dos dados do lead, cadastro e formulário acima. Se os dados forem limitados, diga o que ainda falta confirmar; não invente objetivo, histórico ou atendimento:',
         ctx.tenantId === 'a44772ed-1382-4400-84fc-3fa350e23e42' && !isPlPipeline(ctx.tenantId, ctx.pipelineId)
           ? '- "resumo": perfil do lead (quem é, tempo de atuação, estrutura, produção) e ADERÊNCIA ao perfil que a empresa atende — a empresa só cadastra parceiros ME/LTDA para cima; MEI e pessoa física estão fora do perfil e isso deve ser dito com clareza no resumo.'
           : '- resumo: descreva o perfil com base no cadastro, sem presumir criterios comerciais de elegibilidade.',
@@ -528,6 +532,7 @@ export function montarPromptInsight(ctx: InsightContexto): AiChatMessage[] {
   return [
     { role: 'system', content: SYSTEM_PROMPT + (isPlPipeline(ctx.tenantId ?? '', ctx.pipelineId)
       ? '\nCONTEXTO CONSÓRCIO PL: este lead é cliente final interessado em consórcio. Resuma objetivo, crédito e parcela informados e dúvidas do cliente. Não aplique critérios de cadastro de parceiros ME/LTDA, nem exclua pessoa física ou MEI. Não prometa contemplação nem aprovação de crédito. A distribuição para uma vendedora é sempre manual pela gestão; você apenas auxilia o atendimento.'
+        + PL_INTEREST_PROMPT
       : '') },
     { role: 'user', content: user },
   ];

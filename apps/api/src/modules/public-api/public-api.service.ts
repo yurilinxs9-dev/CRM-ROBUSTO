@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConversationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -12,7 +13,8 @@ import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { AttributionService } from '../attribution/attribution.service';
 import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
-import { PL_TENANT } from '../pl-sales/pl-sales.domain';
+import { PL_TENANT, isPlPipeline } from '../pl-sales/pl-sales.domain';
+import { LeadInsightsService } from '../lead-insights/lead-insights.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
@@ -64,6 +66,7 @@ export class PublicApiService {
     private readonly customFields: CustomFieldsService,
     private readonly attribution: AttributionService,
     private readonly kanbanIndividual: KanbanIndividualService,
+    @Optional() private readonly insights?: LeadInsightsService,
   ) {}
 
   /**
@@ -263,7 +266,7 @@ export class PublicApiService {
     const soBase = tenantId === PL_TENANT || await this.kanbanIndividual.isOn(tenantId)
       ? { where: { user_id: null } } : {};
     const pipeline = await this.prisma.pipeline.findFirst({
-      where: { tenant_id: tenantId },
+      where: { tenant_id: tenantId, ...(d.pipeline_id ? { id: d.pipeline_id, ativo: true } : {}) },
       orderBy: { ordem: 'asc' },
       select: {
         id: true,
@@ -346,7 +349,19 @@ export class PublicApiService {
       // Sem logger neste serviço — o lead está salvo, a tela atualiza no poll.
     }
 
+    await this.analisarInteresseFormulario(lead.id, tenantId, pipeline.id, dadosCustom);
     return toContactDto(lead);
+  }
+
+  private async analisarInteresseFormulario(id: string, tenantId: string, pipelineId: string, fields: unknown): Promise<void> {
+    if (!isPlPipeline(tenantId, pipelineId) || !fields || typeof fields !== 'object' || Array.isArray(fields)) return;
+    const data = fields as Record<string, unknown>;
+    if (Object.keys(data).length === 0 || data.bem_de_interesse || data.outro_bem_de_interesse) return;
+    try {
+      await this.insights?.enfileirarImportado(id, tenantId);
+    } catch {
+      this.logger.warn(`Análise do formulário PL ${id} não foi enfileirada; cadastro preservado`);
+    }
   }
 
   /** Atualiza um contato (nome, email e/ou tags). */
@@ -354,7 +369,7 @@ export class PublicApiService {
     const d = updateContactSchema.parse(body);
     const lead = await this.prisma.lead.findFirst({
       where: { id, tenant_id: tenantId },
-      select: { id: true },
+      select: { id: true, pipeline_id: true },
     });
     if (!lead) throw new NotFoundException('Usuário não encontrado.');
 
@@ -383,6 +398,7 @@ export class PublicApiService {
 
     const updated = await this.prisma.lead.update({ where: { id }, data, select: CONTACT_SELECT });
     this.gateway.emitLeadUpdated(id, data, tenantId);
+    await this.analisarInteresseFormulario(id, tenantId, lead.pipeline_id, data.dados_custom);
     return toContactDto(updated);
   }
 

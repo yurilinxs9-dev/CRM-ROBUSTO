@@ -31,6 +31,13 @@ function setup() {
 }
 
 describe('PL API deny-by-default policy', () => {
+  it('allows insight generation only on an owned PL lead', async () => {
+    const m = setup();
+    await expect(m.check('POST', `/api/leads/${own}/insight/refresh`)).resolves.toBeUndefined();
+    await expect(m.check('POST', `/api/leads/${foreign}/insight/refresh`)).rejects.toBeInstanceOf(ForbiddenException);
+    m.prisma.lead.findFirst.mockResolvedValue({ id: own, pipeline_id: 'partners' });
+    await expect(m.check('POST', `/api/leads/${own}/insight/refresh`)).rejects.toBeInstanceOf(ForbiddenException);
+  });
   it('permits only personal PL stage creation, cosmetic edits and complete own reorders', async () => {
     const m = setup();
     await expect(m.check('POST', `/pipelines/${pipeline}/stages`, { nome: 'Proposta', cor: '#123456' })).resolves.toBeUndefined();

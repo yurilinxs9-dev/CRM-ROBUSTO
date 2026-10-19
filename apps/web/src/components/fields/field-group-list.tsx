@@ -1,6 +1,8 @@
 'use client';
 
 import { FieldRow } from './field-input';
+import { useAuthStore } from '@/stores/auth.store';
+import { PARTNERS_TENANT } from '@/lib/partners';
 import {
   groupFields,
   readValue,
@@ -30,7 +32,10 @@ export function FieldGroupList({
   onChange,
   ocultarTituloUnico = true,
 }: FieldGroupListProps) {
-  const grupos = groupFields(schema, escopo).filter((g) => g.fields.length > 0);
+  const tenantId = useAuthStore(s => s.user?.tenantId);
+  const grupos = groupFields(schema, escopo).map(g => ({ ...g, fields: g.fields.filter(def =>
+    tenantId !== PARTNERS_TENANT || escopo !== 'LEAD' || def.key !== 'outro_bem_de_interesse' || values.bem_de_interesse === 'Outros',
+  ) })).filter((g) => g.fields.length > 0);
   if (grupos.length === 0) return null;
 
   const semTitulo = ocultarTituloUnico && grupos.length === 1 && grupos[0].is_system;

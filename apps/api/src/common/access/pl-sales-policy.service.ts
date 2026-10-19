@@ -170,9 +170,10 @@ export class PlSalesPolicyService {
       const child = leadRoute[2] ?? '';
       const allowed = (read && LEAD_READS.has(child)) ||
         (method === 'PATCH' && ['', 'stage', 'mark-read', 'ai-block'].includes(child)) ||
-        (method === 'POST' && child === 'sync-profile');
+        (method === 'POST' && ['sync-profile', 'insight/refresh'].includes(child));
       if (!allowed) this.deny();
       const lead = await this.ownedLead(leadRoute[1], user);
+      if (child === 'insight/refresh' && lead.pipeline_id !== PL_PIPELINE) this.deny();
       if (method === 'PATCH' && child === '') await this.leadFields(body, user, lead.pipeline_id);
       if (method === 'PATCH' && child === 'stage') await this.stage(body.estagio_id, lead.pipeline_id, user);
       return;

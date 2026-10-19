@@ -14,6 +14,7 @@ import {
   criarLembreteSchema,
 } from './lead-insights.controller';
 import type { GerarInsightJobData } from './lead-insights.queue';
+import { PL_TENANT, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
 
 /**
  * Mocks montados na borda (Prisma, fila, IA, LeadsService), no mesmo espirito
@@ -24,7 +25,7 @@ import type { GerarInsightJobData } from './lead-insights.queue';
 function montar() {
   const leadInsight = { findUnique: jest.fn(), upsert: jest.fn(), update: jest.fn() };
   const message = { count: jest.fn(), findMany: jest.fn() };
-  const lead = { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() };
+  const lead = { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) };
   const stage = { findMany: jest.fn().mockResolvedValue([]) };
   const leadActivity = { create: jest.fn() };
   // Fase 3: lembretes temporais. `findMany` ja devolve lista vazia porque a
@@ -40,7 +41,8 @@ function montar() {
   // Rotulos dos campos custom do tenant (ficha pre-contato). Vazio por default:
   // a maioria dos testes nao tem cadastro nenhum.
   const customFieldDef = { findMany: jest.fn().mockResolvedValue([]) };
-  const prisma = { leadInsight, message, lead, stage, leadActivity, leadLembrete, customFieldDef };
+  const transactionClient = { leadInsight, message, lead, stage, leadActivity, leadLembrete, customFieldDef };
+  const prisma = { ...transactionClient, $transaction: jest.fn(async (fn: (tx: typeof transactionClient) => Promise<unknown>) => fn(transactionClient)) };
   const queue = { add: jest.fn() };
   const ai = { chat: jest.fn() };
   const leads = { findOne: jest.fn(), updateStage: jest.fn(), invalidateLeadsCache: jest.fn() };
@@ -107,6 +109,7 @@ function leadCompleto(overrides: Record<string, unknown> = {}) {
     empresa: null,
     origem: 'WHATSAPP_INCOMING',
     dados_custom: {},
+    updated_at: new Date('2026-10-19T10:00:00Z'),
     attribution: null,
     ...overrides,
   };
@@ -2150,5 +2153,87 @@ describe('LeadInsightsService.enfileirarImportado', () => {
       { leadId: 'lead-9', tenantId: 't1' },
       expect.objectContaining({ jobId: 'lead-lead-9', delay: 2 * 60 * 1000 }),
     );
+  });
+});
+
+describe('PL interest autofill', () => {
+  function setup(pipeline = PL_PIPELINE, dados: Record<string, unknown> = { cidade: 'BH' }) {
+    const m = montar();
+    m.lead.findFirst.mockResolvedValue(leadCompleto({ pipeline_id: pipeline, dados_custom: dados }));
+    m.message.findMany.mockResolvedValue([{ direction: 'INCOMING', type: 'TEXT', content: 'Quero comprar um apartamento.', created_at: new Date() }]);
+    m.message.count.mockResolvedValue(0);
+    m.leadInsight.findUnique.mockResolvedValue(null);
+    m.customFieldDef.findMany.mockResolvedValue([
+      { key: 'bem_de_interesse', nome: 'Bem de interesse', tipo: 'select', options: ['Apartamento', 'Outros'] },
+      { key: 'outro_bem_de_interesse', nome: 'Outro bem de interesse', tipo: 'text' },
+      { key: 'objetivo', nome: 'Objetivo' },
+    ]);
+    m.ai.chat.mockResolvedValue({ text: resposta360({ ultima_compra: null, bem_de_interesse: { categoria: 'Apartamento', detalhe: '', evidencia: 'Quero comprar um apartamento.', confianca: 0.99 } }) });
+    return m;
+  }
+
+  it('fills only the missing interest, preserves other fields and records/announces the change', async () => {
+    const m = setup();
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).toHaveBeenCalledWith({ where: expect.objectContaining({ id: 'lead-1', tenant_id: PL_TENANT, pipeline_id: PL_PIPELINE, dados_custom: { equals: { cidade: 'BH' } } }), data: { dados_custom: { cidade: 'BH', bem_de_interesse: 'Apartamento' } } });
+    expect(m.leadActivity.create).toHaveBeenCalledWith({ data: expect.objectContaining({ tipo: 'ia_bem_de_interesse', tenant_id: PL_TENANT, dados_depois: { bem_de_interesse: 'Apartamento' } }) });
+    expect(m.leads.invalidateLeadsCache).toHaveBeenCalledWith(PL_TENANT);
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith('lead-1', expect.any(Object), PL_TENANT);
+  });
+
+  it.each([{ bem_de_interesse: 'Carro' }, { outro_bem_de_interesse: 'moto' }])('preserves a manual value %j', async (dados) => {
+    const m = setup(PL_PIPELINE, dados);
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rechecks values after the model returns', async () => {
+    const m = setup();
+    m.lead.findFirst.mockResolvedValueOnce(leadCompleto({ pipeline_id: PL_PIPELINE })).mockResolvedValue(leadCompleto({ pipeline_id: PL_PIPELINE, dados_custom: { bem_de_interesse: 'Casa' } }));
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not apply an old form answer when the objective changes during generation', async () => {
+    const m = setup(PL_PIPELINE, { objetivo: 'Quero comprar um apartamento.' });
+    m.lead.findFirst.mockResolvedValueOnce(leadCompleto({ pipeline_id: PL_PIPELINE, dados_custom: { objetivo: 'Quero comprar um apartamento.' } }))
+      .mockResolvedValue(leadCompleto({ pipeline_id: PL_PIPELINE, dados_custom: { objetivo: 'Quero um carro.' } }));
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
+    expect(m.queue.add).toHaveBeenCalledWith('gerar', { leadId: 'lead-1', tenantId: PL_TENANT }, expect.objectContaining({ jobId: 'interest-lead-1' }));
+  });
+
+  it('does not audit or notify a concurrent edit that won the conditional update', async () => {
+    const m = setup(); m.lead.updateMany.mockResolvedValue({ count: 0 });
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.leadActivity.create).not.toHaveBeenCalled();
+    expect(m.gateway.emitLeadUpdated).not.toHaveBeenCalled();
+  });
+
+  it.each([[PL_TENANT, 'partners'], ['another-tenant', PL_PIPELINE]])('leaves other scopes unchanged: %s %s', async (tenant, pipeline) => {
+    const m = setup(pipeline);
+    await m.service.gerarInsight('lead-1', tenant);
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('can classify the form description before any WhatsApp message', async () => {
+    const m = setup(PL_PIPELINE, { objetivo: 'Quero comprar um apartamento.' });
+    m.message.findMany.mockResolvedValue([]);
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { dados_custom: { objetivo: 'Quero comprar um apartamento.', bem_de_interesse: 'Apartamento' } } }));
+  });
+
+  it('generates an initial PL card from the actual lead registration even without messages or custom fields', async () => {
+    const m = setup(PL_PIPELINE, {}); m.message.findMany.mockResolvedValue([]);
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.leadInsight.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ tenant_id: PL_TENANT, lead_id: 'lead-1', ultima_msg_processada_at: null }) }));
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a campaign name as a customer objective', async () => {
+    const m = setup(); m.message.findMany.mockResolvedValue([]);
+    m.lead.findFirst.mockResolvedValue(leadCompleto({ pipeline_id: PL_PIPELINE, attribution: { campaign_name: 'Quero comprar um apartamento.' } }));
+    await m.service.gerarInsight('lead-1', PL_TENANT);
+    expect(m.lead.updateMany).not.toHaveBeenCalled();
   });
 });

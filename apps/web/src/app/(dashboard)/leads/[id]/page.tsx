@@ -147,6 +147,7 @@ export default function LeadDetailPage() {
           <Ficha360
             leadId={lead.id}
             lead={{
+              pipeline_id: lead.pipeline_id,
               nome: lead.nome,
               telefone: lead.telefone,
               etapa: lead.estagio?.nome ?? '',

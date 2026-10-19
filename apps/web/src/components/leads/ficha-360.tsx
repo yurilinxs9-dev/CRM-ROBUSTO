@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight,
@@ -26,6 +26,8 @@ import { TEMP_BADGE, TEMP_LABELS, formatPhone } from '@/components/kanban/lead-c
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/auth.store';
+import { PARTNERS_TENANT } from '@/lib/partners';
+import { PL_PIPELINE_ID } from '@/lib/pl-sales';
 
 // ---------------------------------------------------------------------------
 // Contrato da API
@@ -671,6 +673,7 @@ function BlocoLembretes({ leadId, enabled }: { leadId: string; enabled: boolean 
 
 /** O que a tela que abre a ficha JA tem em maos — evita um fetch extra. */
 export interface Ficha360Lead {
+  pipeline_id?: string;
   nome: string;
   telefone: string | null;
   etapa: string;
@@ -742,6 +745,8 @@ export function Ficha360({
 }: Ficha360Props) {
   const queryClient = useQueryClient();
   const papel = useAuthStore((s) => s.user?.role);
+  const tenantId = useAuthStore((s) => s.user?.tenantId);
+  const autoGerado = useRef<string | null>(null);
   const podeRegerar = !!papel && PAPEIS_QUE_REGERAM.includes(papel);
   /** So tem efeito com `colapsavel`. A query segue viva de qualquer jeito. */
   const [aberto, setAberto] = useState(abertoInicial);
@@ -774,6 +779,7 @@ export function Ficha360({
   // recolher a ficha de um lead deixaria a do PROXIMO recolhida tambem.
   useEffect(() => {
     setAberto(true);
+    setBloqueadoAte(0);
   }, [leadId]);
 
   // Libera o botao sozinho quando o bloqueio vence — sem isto o usuario
@@ -790,15 +796,16 @@ export function Ficha360({
   }, [bloqueadoAte]);
 
   const regerar = useMutation({
-    mutationFn: async () => {
-      await api.post(`/api/leads/${leadId}/insight/refresh`);
+    mutationFn: async (id: string) => {
+      await api.post(`/api/leads/${id}/insight/refresh`);
     },
-    onSuccess: () => {
-      setBloqueadoAte(Date.now() + BLOQUEIO_REGERAR_MS);
+    onSuccess: (_result, id) => {
+      if (id === leadId) setBloqueadoAte(Date.now() + BLOQUEIO_REGERAR_MS);
       toast.success('Na fila — a ficha fica pronta em alguns minutos.');
-      void queryClient.invalidateQueries({ queryKey: ['lead-insight', leadId] });
+      void queryClient.invalidateQueries({ queryKey: ['lead-insight', id] });
     },
-    onError: (err: unknown) => {
+    onError: (err: unknown, id) => {
+      if (id !== leadId) return;
       const status = statusDoErro(err);
       if (status === 429) {
         // O backend tambem guarda o relogio; espelha a trava aqui para o
@@ -816,6 +823,15 @@ export function Ficha360({
       toast.error('Não foi possível pedir a regeração da ficha.');
     },
   });
+
+  const gerarFicha = regerar.mutate;
+  const gerandoFicha = regerar.isPending;
+  useEffect(() => {
+    if (!enabled || !leadId || tenantId !== PARTNERS_TENANT || lead.pipeline_id !== PL_PIPELINE_ID || !podeRegerar || isLoading || isError ||
+      insight === undefined || insight?.resumo.trim() || gerandoFicha || autoGerado.current === leadId || bloqueadoAte > Date.now()) return;
+    autoGerado.current = leadId;
+    gerarFicha(leadId);
+  }, [enabled, leadId, tenantId, lead.pipeline_id, podeRegerar, isLoading, isError, insight, gerandoFicha, bloqueadoAte, gerarFicha]);
 
   /**
    * Aceitar a sugestao MOVE o lead de etapa. As invalidacoes sao as mesmas que
@@ -1005,7 +1021,7 @@ export function Ficha360({
       title={
         bloqueado ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.' : undefined
       }
-      onClick={() => regerar.mutate()}
+      onClick={() => regerar.mutate(leadId)}
     >
       {pedindo ? (
         <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1180,13 +1196,14 @@ export function Ficha360({
                     falhar nao e motivo para esconder a outra. */}
                 {blocoLembretes}
               </>
-            ) : !insight ? (
+            ) : !insight || !insight.resumo.trim() ? (
               <>
                 <div className="mt-4 rounded-xl border border-dashed border-border px-4 py-6 text-center">
                   <Sparkles aria-hidden className="mx-auto h-5 w-5 text-muted-foreground/70" />
                   <p className="mt-2 text-sm text-muted-foreground">
-                    A IA ainda não leu esta conversa. A ficha é montada sozinha conforme o cliente
-                    responde.
+                    {pedindo || bloqueado
+                      ? 'A ficha está sendo preparada com os dados disponíveis do cadastro, formulário e conversa.'
+                      : 'A ficha reúne os dados do cadastro, formulário e conversa. Gere a análise inicial mesmo antes da primeira mensagem.'}
                   </p>
                   {podeRegerar && (
                     <Button
@@ -1199,7 +1216,7 @@ export function Ficha360({
                           ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
                           : undefined
                       }
-                      onClick={() => regerar.mutate()}
+                      onClick={() => regerar.mutate(leadId)}
                     >
                       {pedindo ? (
                         <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1401,7 +1418,7 @@ export function Ficha360({
                             ? 'Ficha atualizada há pouco — disponível de novo em alguns minutos.'
                             : undefined
                         }
-                        onClick={() => regerar.mutate()}
+                        onClick={() => regerar.mutate(leadId)}
                       >
                         {pedindo ? (
                           <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

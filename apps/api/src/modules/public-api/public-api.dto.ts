@@ -28,6 +28,7 @@ export const addTagsSchema = z.object({
 });
 
 export const createContactSchema = z.object({
+  pipeline_id: z.string().uuid().optional(),
   name: z.string().min(1).max(200),
   phone: z.string().min(8).max(30),
   email: z.string().email().optional(),

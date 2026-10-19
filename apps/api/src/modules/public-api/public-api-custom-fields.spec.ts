@@ -1,4 +1,5 @@
 import { PublicApiService } from './public-api.service';
+import { PL_TENANT, PL_PIPELINE } from '../pl-sales/pl-sales.domain';
 
 /**
  * `dados_custom` na API pública é o que permite a um fluxo de integração (n8n,
@@ -51,6 +52,7 @@ function makeService(over: Record<string, unknown> = {}) {
     emitLeadCreated: jest.fn(),
   } as unknown as ConstructorParameters<typeof PublicApiService>[3];
 
+  const insights = { enfileirarImportado: jest.fn().mockResolvedValue(undefined) };
   const svc = new PublicApiService(
     prisma,
     {} as ConstructorParameters<typeof PublicApiService>[1],
@@ -65,9 +67,46 @@ function makeService(over: Record<string, unknown> = {}) {
       stageForOwner: jest.fn(),
       stageForBase: jest.fn(),
     } as unknown as ConstructorParameters<typeof PublicApiService>[6],
+    insights as unknown as ConstructorParameters<typeof PublicApiService>[7],
   );
-  return { svc, prisma: prisma as never, customFields: customFields as never };
+  return { svc, prisma: prisma as never, customFields: customFields as never, insights };
 }
+
+describe('PL form interest analysis', () => {
+  it('honors an explicit pipeline but scopes the lookup to the authenticated tenant', async () => {
+    const pipeline = { findFirst: jest.fn().mockResolvedValue({ id: PL_PIPELINE, stages: [{ id: 'base' }] }) };
+    const m = makeService({ pipeline });
+    await m.svc.createContact(PL_TENANT, { name: 'Cliente', phone: '5531999999999', pipeline_id: PL_PIPELINE });
+    expect(pipeline.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { tenant_id: PL_TENANT, id: PL_PIPELINE, ativo: true } }));
+    pipeline.findFirst.mockResolvedValue(null);
+    await expect(m.svc.createContact(PL_TENANT, { name: 'Cliente', phone: '5531999999999', pipeline_id: PL_PIPELINE })).rejects.toThrow();
+  });
+  it('queues the existing AI analysis for a PL form with descriptive answers', async () => {
+    const m = makeService({ pipeline: { findFirst: jest.fn().mockResolvedValue({ id: PL_PIPELINE, stages: [{ id: 'base' }] }) } });
+    await m.svc.createContact(PL_TENANT, { name: 'Cliente', phone: '5531999999999', dados_custom: { objetivo: 'Quero reformar minha casa' } });
+    expect(m.insights.enfileirarImportado).toHaveBeenCalledWith('lead-1', PL_TENANT);
+  });
+  it.each(['other', PL_TENANT])('does not analyze the partner/default pipeline for %s', async tenant => {
+    const m = makeService();
+    await m.svc.createContact(tenant, { name: 'Cliente', phone: '5531999999999', dados_custom: { objetivo: 'Reforma' } });
+    expect(m.insights.enfileirarImportado).not.toHaveBeenCalled();
+  });
+  it('keeps contact creation successful when the AI queue is unavailable', async () => {
+    const m = makeService({ pipeline: { findFirst: jest.fn().mockResolvedValue({ id: PL_PIPELINE, stages: [{ id: 'base' }] }) } });
+    m.insights.enfileirarImportado.mockRejectedValue(new Error('queue offline'));
+    await expect(m.svc.createContact(PL_TENANT, { name: 'Cliente', phone: '5531999999999', dados_custom: { objetivo: 'Reforma' } })).resolves.toMatchObject({ id: 'lead-1' });
+  });
+  it('does not spend an AI call when the form already provided the category', async () => {
+    const m = makeService({ pipeline: { findFirst: jest.fn().mockResolvedValue({ id: PL_PIPELINE, stages: [{ id: 'base' }] }) } });
+    await m.svc.createContact(PL_TENANT, { name: 'Cliente', phone: '5531999999999', dados_custom: { bem_de_interesse: 'Reforma' } });
+    expect(m.insights.enfileirarImportado).not.toHaveBeenCalled();
+  });
+  it('analyzes new form details added to an existing PL lead', async () => {
+    const m = makeService({ lead: { findFirst: jest.fn().mockResolvedValue({ id: 'lead-1', pipeline_id: PL_PIPELINE, dados_custom: {} }), update: jest.fn().mockResolvedValue(LEAD_DTO) } });
+    await m.svc.updateContact(PL_TENANT, 'lead-1', { dados_custom: { objetivo: 'Quero um carro novo' } });
+    expect(m.insights.enfileirarImportado).toHaveBeenCalledWith('lead-1', PL_TENANT);
+  });
+});
 
 describe('PublicApiService — dados_custom', () => {
   it('createContact valida antes de gravar, com fromPublicApi ligado', async () => {

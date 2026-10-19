@@ -215,9 +215,13 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     // individual) — é o selo que diz ao vendedor que dá para assumir.
     const naNuvem = !lead.responsavel && !!lead.returned_at;
     const tagsVisiveis = mostrar('tags') ? lead.tags ?? [] : [];
-    const bemDeInteresse = lead.pipeline_id === PL_PIPELINE_ID && typeof lead.dados_custom?.bem_de_interesse === 'string'
+    const categoriaInteresse = lead.pipeline_id === PL_PIPELINE_ID && typeof lead.dados_custom?.bem_de_interesse === 'string'
       ? lead.dados_custom.bem_de_interesse.trim()
       : '';
+    const outroInteresse = typeof lead.dados_custom?.outro_bem_de_interesse === 'string'
+      ? lead.dados_custom.outro_bem_de_interesse.trim() : '';
+    const bemDeInteresse = categoriaInteresse === 'Outros' && outroInteresse
+      ? `Outros: ${outroInteresse}` : categoriaInteresse;
 
     const stop = (e: MouseEvent) => e.stopPropagation();
 
