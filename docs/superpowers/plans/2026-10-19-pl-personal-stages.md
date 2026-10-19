@@ -43,9 +43,9 @@
 
 ### Task 4: Review and production verification
 - [x] Independent review of ownership boundaries and handoffs; resolve findings.
-- [ ] Commit/push and deploy backend/frontend with bounded RAM and rollback, no database migration.
-- [ ] Initialize the real seller board; confirm shared stage IDs/names and partner settings unchanged, restricted CRUD is scoped, forbidden operations still blocked, Dashboard/Analytics/board agree.
-- [ ] Verify real UI and memory/health; report implementation and limitations plainly.
+- [x] Commit/push and deploy backend/frontend with bounded RAM and rollback, no database migration.
+- [x] Initialize the real seller board; confirm shared stage IDs/names and partner settings unchanged, restricted CRUD is scoped, forbidden operations still blocked, Dashboard/Analytics/board agree.
+- [x] Verify real UI and memory/health; report implementation and limitations plainly.
 
 ## Verification before publishing
 - API: 106 suites / 1,758 tests passed serially with a 768 MB heap; web: 22 suites / 252 tests passed.
@@ -53,3 +53,11 @@
 - Independent review findings reproduced and fixed: cross-owner delete-with-move, shared partner reorder permissions, PL template duplication and pipeline destination translation. Second review found no remaining P1/P2 in these fixes.
 - Added projected-column pagination for management and board-specific conversion adjacency. Pipeline metadata counts are restricted to the seller's own leads.
 - No schema migration or tenant-wide toggle change. VPS preflight: 5.4 GB available, backend approximately 203 MiB; nginx local configuration fingerprint preserved.
+
+## Production result — 2026-10-19
+- Published application commit d870c2b. Vercel reported success; backend image sha256:68c0b6f7e8a6ef9b396a2a33cdad1c38ca99aac25f9d07d48fd215342c188e2c is running and healthy, OOMKilled=false.
+- Rollback image: crm-whatsapp-crm-backend:pre-pl-personal-stages-20261019. Build capped at 1,536 MB, Node heap 1,152 MB. Final backend approximately 103 MiB; approximately 5.5 GB RAM available. Nginx fingerprint unchanged.
+- Concurrent real pipeline reads produced one set of seven personal stages for Comercial PL. Existing own lead retained in the correct personal board. Shared stages, other profiles and global individual flag unchanged.
+- Live cosmetic PATCH/reorder accepted; base/foreign stage reorder, structural writes and deletion denied. Manager view and private Analytics return the same personal stage IDs. Metadata aggregate counts remain stripped by the existing privacy interceptor.
+- Live browser verified only Consórcio PL Kanban navigation, personal stage menu, create prompt, hidden structural/delete controls and no page errors. Separate API regression checked nine personal reports, one own lead, blocked partner/team/finance endpoints and preserved manager partner access.
+- Final API and web TypeScript checks passed. Lint had zero errors; existing warnings remain. Production UI/API checks used short-lived credentials and did not create fake leads or sales.
