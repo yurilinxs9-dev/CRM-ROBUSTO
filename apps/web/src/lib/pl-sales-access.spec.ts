@@ -28,13 +28,15 @@ describe('opt-in PL access', () => {
     expect(canAccess(PARTNERS_TENANT, true)).toBe(false);
     expect(canAccess(PARTNERS_TENANT, false)).toBe(true);
     expect(canAccessPlSales(PARTNERS_TENANT, 'OPERADOR')).toBe(true);
-    for (const href of ['/partners', '/financeiro', '/radar', '/followup', '/admin']) {
+    for (const href of ['/kanban', '/partners', '/financeiro', '/radar', '/followup', '/admin']) {
       expect(navVisivelPara({ href }, seller.role, seller.tenantId, seller.id, true)).toBe(false);
     }
     for (const href of ['/dashboard', '/analytics']) {
       expect(navVisivelPara({ href }, seller.role, seller.tenantId, seller.id, true)).toBe(true);
     }
     expect(navVisivelPara({ href: '/consorcio-pl' }, seller.role, seller.tenantId, seller.id, true)).toBe(true);
+    expect(navVisivelPara({ href: '/kanban' }, seller.role, seller.tenantId, seller.id, false)).toBe(true);
+    expect(navVisivelPara({ href: '/kanban' }, manager.role, manager.tenantId, manager.id, false)).toBe(true);
     expect(navVisivelPara({ href: '/partners' }, seller.role, seller.tenantId, seller.id)).toBe(true);
     expect(navVisivelPara({ href: '/chat' }, 'VISUALIZADOR')).toBe(false);
     expect(navVisivelPara({ href: '/followup' }, 'OPERADOR')).toBe(false);
