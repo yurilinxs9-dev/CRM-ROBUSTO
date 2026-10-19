@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
+import { PL_PIPELINE_ID } from '@/lib/pl-sales';
 
 export type Temperatura = 'FRIO' | 'MORNO' | 'QUENTE' | 'MUITO_QUENTE';
 
@@ -38,6 +39,8 @@ export interface Lead {
    * SEM `returned_at` é lead novo ainda sendo distribuído — nunca "Disponível".
    */
   returned_at?: string | null;
+  pipeline_id?: string;
+  dados_custom?: Record<string, unknown> | null;
 }
 
 export const TEMP_LABELS: Record<Temperatura, string> = {
@@ -212,6 +215,9 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
     // individual) — é o selo que diz ao vendedor que dá para assumir.
     const naNuvem = !lead.responsavel && !!lead.returned_at;
     const tagsVisiveis = mostrar('tags') ? lead.tags ?? [] : [];
+    const bemDeInteresse = lead.pipeline_id === PL_PIPELINE_ID && typeof lead.dados_custom?.bem_de_interesse === 'string'
+      ? lead.dados_custom.bem_de_interesse.trim()
+      : '';
 
     const stop = (e: MouseEvent) => e.stopPropagation();
 
@@ -345,6 +351,12 @@ const LeadCardImpl = forwardRef<HTMLDivElement, LeadCardProps>(
               </Badge>
             ))}
           </div>
+        )}
+
+        {bemDeInteresse && (
+          <p className="mb-1 truncate text-[11px] text-muted-foreground" title={`Bem de interesse: ${bemDeInteresse}`}>
+            Bem de interesse: <span className="font-medium text-foreground">{bemDeInteresse}</span>
+          </p>
         )}
 
         <div className="flex items-center justify-between gap-2 text-[11px]">
