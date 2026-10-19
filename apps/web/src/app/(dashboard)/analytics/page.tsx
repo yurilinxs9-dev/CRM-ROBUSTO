@@ -17,6 +17,10 @@ import {
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/stores/auth.store';
+import { isPlSalesOnly } from '@/lib/pl-sales-access';
+import { PL_PIPELINE_ID } from '@/lib/pl-sales';
+import { PlPersonalSummary } from '@/components/pl-sales/pl-personal-summary';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/layout/page-header';
 import { KpiCard } from '@/components/dashboard/kpi-card';
@@ -724,10 +728,26 @@ function ForecastSection({
 function FirstResponseSection({
   data,
   isLoading,
+  isError,
+  personalUserId,
 }: {
   data: FirstResponseData | undefined;
   isLoading: boolean;
+  isError?: boolean;
+  personalUserId?: string;
 }) {
+  if (personalUserId !== undefined) {
+    const own = data?.users.find(row => row.id === personalUserId && row.answered > 0);
+    return <SectionCard title="Minha 1ª resposta" icon={Clock}>
+      {isLoading ? <Skeleton className="h-28 w-full" /> : isError ? <p role="alert" className="text-sm text-muted-foreground">Não foi possível carregar seu tempo de resposta.</p> : <>
+        {own ? <div className="grid gap-4 sm:grid-cols-2">
+          <KpiCard icon={Clock} label="Mediana da minha 1ª resposta" value={Number.isFinite(own.median_seconds) ? formatDuration(own.median_seconds) : '—'} />
+          <KpiCard icon={Clock} label="Média da minha 1ª resposta" value={Number.isFinite(own.avg_seconds) ? formatDuration(own.avg_seconds) : '—'} />
+        </div> : <p className="text-sm text-muted-foreground">Sem respostas suas no período. Tempo de resposta: —</p>}
+        <p className="mt-4 text-xs text-muted-foreground">Da primeira mensagem recebida de cada lead no período até sua primeira resposta registrada no CRM: {numberFmt.format(own?.answered ?? 0)} respondidas por você · {numberFmt.format(data?.total_conversations ?? 0)} conversas avaliadas · {numberFmt.format(data?.unanswered ?? 0)} sem resposta sua.</p>
+      </>}
+    </SectionCard>;
+  }
   if (isLoading) {
     return (
       <SectionCard title="Tempo de 1ª Resposta por Atendente" icon={Clock}>
@@ -933,6 +953,17 @@ function AnalyticsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
+  const user = useAuthStore(state => state.user);
+  const restricted = isPlSalesOnly(user);
+  const scope = [user?.tenantId, user?.id, restricted, user?.role, user?.focus_mode ?? false];
+  // Personal assignment can change while this page is closed. The app-wide
+  // defaults disable refetch on return, focus and reconnection.
+  const personalRefresh = restricted ? {
+    refetchOnMount: 'always' as const,
+    refetchOnWindowFocus: 'always' as const,
+    refetchOnReconnect: 'always' as const,
+    refetchInterval: 30_000,
+  } : {};
 
   // Eventos podem chegar em rajada — debounce evita 5 refetches por mensagem.
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -995,11 +1026,12 @@ function AnalyticsPageInner() {
 
   // Pipelines
   const { data: pipelines = [] } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
+    queryKey: ['pipelines', ...scope],
     queryFn: async () => {
       const res = await api.get('/api/pipelines');
       return res.data as Pipeline[];
     },
+    enabled: !!user && !restricted,
   });
 
   const activePipelines = useMemo(
@@ -1009,96 +1041,106 @@ function AnalyticsPageInner() {
 
   // Resolve active pipeline id: URL param → first active pipeline
   const pipelineId = useMemo(() => {
+    if (restricted) return PL_PIPELINE_ID;
     if (pipelineIdParam && activePipelines.some((p) => p.id === pipelineIdParam)) {
       return pipelineIdParam;
     }
     return activePipelines[0]?.id ?? '';
-  }, [pipelineIdParam, activePipelines]);
+  }, [restricted, pipelineIdParam, activePipelines]);
 
   // Set pipeline in URL once resolved (on first load)
   const { data: overview, isLoading: overviewLoading, isError: overviewError } = useQuery<OverviewData>({
-    queryKey: ['analytics-overview', from, to],
+    ...personalRefresh,
+    queryKey: ['analytics-overview', ...scope, from, to],
     queryFn: async () => {
       const res = await api.get('/api/analytics/overview', { params: { from, to } });
       return res.data as OverviewData;
     },
-    enabled: true,
+    enabled: !!user,
   });
 
   const { data: timeseries, isLoading: timeseriesLoading } = useQuery<TimeseriesData>({
-    queryKey: ['analytics-timeseries', from, to],
+    ...personalRefresh,
+    queryKey: ['analytics-timeseries', ...scope, from, to],
     queryFn: async () => {
       const res = await api.get('/api/analytics/timeseries', { params: { from, to } });
       return res.data as TimeseriesData;
     },
+    enabled: !!user,
   });
 
   const { data: funnel, isLoading: funnelLoading } = useQuery<FunnelData>({
-    queryKey: ['analytics-funnel', pipelineId],
+    ...personalRefresh,
+    queryKey: ['analytics-funnel', ...scope, pipelineId],
     queryFn: async () => {
       const res = await api.get('/api/analytics/funnel', { params: { pipeline_id: pipelineId } });
       return res.data as FunnelData;
     },
-    enabled: !!pipelineId,
+    enabled: !!user && !!pipelineId,
   });
 
   const { data: conversion, isLoading: conversionLoading } = useQuery<ConversionData>({
-    queryKey: ['analytics-conversion', pipelineId, from, to],
+    ...personalRefresh,
+    queryKey: ['analytics-conversion', ...scope, pipelineId, from, to],
     queryFn: async () => {
       const res = await api.get('/api/analytics/conversion', {
         params: { pipeline_id: pipelineId, from, to },
       });
       return res.data as ConversionData;
     },
-    enabled: !!pipelineId,
+    enabled: !!user && !!pipelineId,
   });
 
   const { data: timeInStage, isLoading: timeLoading } = useQuery<TimeInStageResponse>({
-    queryKey: ['analytics-time-in-stage', pipelineId],
+    ...personalRefresh,
+    queryKey: ['analytics-time-in-stage', ...scope, pipelineId],
     queryFn: async () => {
       const res = await api.get('/api/analytics/time-in-stage', {
         params: { pipeline_id: pipelineId },
       });
       return res.data as TimeInStageResponse;
     },
-    enabled: !!pipelineId,
+    enabled: !!user && !!pipelineId,
   });
 
   const { data: forecast, isLoading: forecastLoading } = useQuery<ForecastData>({
-    queryKey: ['analytics-forecast', pipelineId, from, to],
+    queryKey: ['analytics-forecast', ...scope, pipelineId, from, to],
     queryFn: async () => {
       const res = await api.get('/api/analytics/forecast', {
         params: { pipeline_id: pipelineId, from, to },
       });
       return res.data as ForecastData;
     },
-    enabled: !!pipelineId,
+    enabled: !!user && !!pipelineId && !restricted,
   });
 
-  const { data: firstResponse, isLoading: firstResponseLoading } = useQuery<FirstResponseData>({
-    queryKey: ['analytics-first-response', from, to],
+  const { data: firstResponse, isLoading: firstResponseLoading, isError: firstResponseError } = useQuery<FirstResponseData>({
+    ...personalRefresh,
+    queryKey: ['analytics-first-response', ...scope, from, to],
     queryFn: async () => {
       const res = await api.get('/api/analytics/first-response', { params: { from, to } });
       return res.data as FirstResponseData;
     },
+    enabled: !!user,
   });
 
   const { data: performance, isLoading: performanceLoading } = useQuery<PerformanceData>({
-    queryKey: ['analytics-performance', from, to, pipelineId],
+    queryKey: ['analytics-performance', ...scope, from, to, pipelineId],
     queryFn: async () => {
       const params: Record<string, string> = { from, to };
       if (pipelineId) params.pipeline_id = pipelineId;
       const res = await api.get('/api/analytics/performance', { params });
       return res.data as PerformanceData;
     },
+    enabled: !!user && !restricted,
   });
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
       {/* Header */}
       <PageHeader
-        title="Analytics"
-        subtitle="Métricas de funil, conversão e performance da equipe"
+        title={restricted ? 'Meu Analytics' : 'Analytics'}
+        subtitle={restricted ? 'Meus leads e atendimento no Consórcio PL' : 'Métricas de funil, conversão e performance da equipe'}
         actions={
           <div className="flex flex-wrap items-center gap-2">
           {/* Quick presets */}
@@ -1181,7 +1223,7 @@ function AnalyticsPageInner() {
           </div>
 
           {/* Pipeline selector */}
-          {activePipelines.length > 0 && (
+          {!restricted && activePipelines.length > 0 && (
             <div className="flex flex-col gap-0.5">
               <label
                 className="text-[10px] font-medium uppercase tracking-wide"
@@ -1209,6 +1251,7 @@ function AnalyticsPageInner() {
         </div>
         }
       />
+      {restricted && <p className="text-sm text-muted-foreground">Carteira Consórcio PL: leads atualmente atribuídos a você. As entradas são contadas pela data de criação do lead, não pela data de atribuição. Ganhos e conversão referem-se às etapas dos leads; valores do funil são estimativas. As vendas confirmadas e a meta individual aparecem no resumo mensal.</p>}
 
       {/* Error banner */}
       {overviewError && (
@@ -1226,7 +1269,7 @@ function AnalyticsPageInner() {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 ${restricted ? 'xl:grid-cols-5' : 'xl:grid-cols-6'} gap-4`}>
         {overviewLoading ? (
           <>
             {[Users, TrendingUp, Trophy, Target, DollarSign, BarChart3].map((Icon, i) => (
@@ -1237,7 +1280,7 @@ function AnalyticsPageInner() {
           <>
             <KpiCard
               icon={Users}
-              label="Total de leads"
+              label={restricted ? 'Meus leads' : 'Total de leads'}
               value={numberFmt.format(overview?.total_leads ?? 0)}
               sub={`${numberFmt.format(overview?.open_leads ?? 0)} em aberto`}
             />
@@ -1249,9 +1292,9 @@ function AnalyticsPageInner() {
             />
             <KpiCard
               icon={Trophy}
-              label="Ganhos no período"
+              label={restricted ? 'Leads ganhos no período' : 'Ganhos no período'}
               value={numberFmt.format(overview?.won_leads ?? 0)}
-              sub={formatBRL(overview?.won_value ?? 0)}
+              sub={restricted ? 'Etapa ganha do funil' : formatBRL(overview?.won_value ?? 0)}
               trend={trendPct(overview?.won_leads, overview?.previous?.won_leads)}
             />
             <KpiCard
@@ -1263,19 +1306,21 @@ function AnalyticsPageInner() {
             />
             <KpiCard
               icon={BarChart3}
-              label="Taxa de conversão"
+              label={restricted ? 'Conversão no período' : 'Taxa de conversão'}
               value={formatPct(overview?.conversion_rate ?? 0)}
               trend={trendPct(overview?.conversion_rate, overview?.previous?.conversion_rate)}
+              sub={restricted ? 'Leads ganhos / (ganhos + perdidos)' : undefined}
             />
-            <KpiCard
+            {!restricted && <KpiCard
               icon={DollarSign}
               label="Ticket médio"
               value={formatBRL(overview?.avg_ticket ?? 0)}
               trend={trendPct(overview?.avg_ticket, overview?.previous?.avg_ticket)}
-            />
+            />}
           </>
         )}
       </div>
+      {restricted && <PlPersonalSummary />}
 
       {/* Evolução diária */}
       <DailyEvolutionSection data={timeseries} isLoading={timeseriesLoading} />
@@ -1287,21 +1332,21 @@ function AnalyticsPageInner() {
       </div>
 
       {/* Origem dos leads — canais, campanhas e palavras-chave */}
-      <AttributionSection from={from} to={to} />
+      {!restricted && <AttributionSection from={from} to={to} />}
 
       {/* Forecast de receita */}
-      <ForecastSection data={forecast} isLoading={forecastLoading} />
+      {!restricted && <ForecastSection data={forecast} isLoading={forecastLoading} />}
 
       {/* First response por atendente */}
-      <FirstResponseSection data={firstResponse} isLoading={firstResponseLoading} />
+      <FirstResponseSection data={firstResponse} isLoading={firstResponseLoading} isError={firstResponseError} personalUserId={restricted ? user?.id ?? '' : undefined} />
 
       {/* Time in stage */}
       <TimeInStageSection data={timeInStage} isLoading={timeLoading} />
 
       {/* Performance table */}
-      <div className="grid grid-cols-1 gap-4">
+      {!restricted && <div className="grid grid-cols-1 gap-4">
         <PerformanceTable data={performance} isLoading={performanceLoading} />
-      </div>
+      </div>}
     </div>
   );
 }

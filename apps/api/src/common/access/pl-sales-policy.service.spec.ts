@@ -28,8 +28,14 @@ function setup() {
 }
 
 describe('PL API deny-by-default policy', () => {
-  it.each(['/partners', '/partners/team', '/financeiro/dashboard', '/dashboard/stats', '/analytics', '/attribution/summary', '/admin', '/tenants/me', '/companies', '/contacts', '/users/team', '/leads/duplicates', '/leads/new-feature', '/pl-sales/audit'])('denies %s', async path => {
+  it.each(['/partners', '/partners/team', '/financeiro/dashboard', '/dashboard/financeira', '/dashboard/performance', '/dashboard/volume', '/dashboard/funnel', '/analytics', '/analytics/new-report', '/attribution/summary', '/admin', '/tenants/me', '/companies', '/contacts', '/users/team', '/leads/duplicates', '/leads/new-feature', '/pl-sales/audit'])('denies %s', async path => {
     await expect(setup().check('GET', `/api${path}`)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it.each(['/dashboard/stats', ...['overview', 'timeseries', 'first-response', 'funnel', 'conversion', 'time-in-stage', 'performance', 'forecast'].map(path => `/analytics/${path}`)])('allows the individual report %s but never writes', async path => {
+    const m = setup();
+    await expect(m.check('GET', path)).resolves.toBeUndefined();
+    await expect(m.check('HEAD', path)).resolves.toBeUndefined();
+    await expect(m.check('POST', path)).rejects.toBeInstanceOf(ForbiddenException);
   });
   it.each(['claim', 'reassign', 'return-to-pool', 'move-to-sector', 'merge'])('denies %s even on own lead', async action => {
     await expect(setup().check('POST', `/api/leads/${own}/${action}`)).rejects.toBeInstanceOf(ForbiddenException);

@@ -15,11 +15,11 @@ export const salesHome = (user?: SalesAccessUser | null): string =>
 
 const SALES_ROUTES = ['/consorcio-pl', '/leads', '/kanban', '/chat', '/agenda', '/instances', '/ajuda'];
 
-/** Settings is exact: no pipeline/team configuration below it is allowed. */
+/** Reports and settings are exact: no management subroutes are allowed. */
 export function canAccessSalesRoute(user: SalesAccessUser | null | undefined, pathname: string): boolean {
   if (!isPlSalesOnly(user)) return true;
   const path = pathname.replace(/\/+$/, '') || '/';
-  return path === '/settings' || SALES_ROUTES.some(root => path === root || path.startsWith(`${root}/`));
+  return ['/settings', '/dashboard', '/analytics'].includes(path) || SALES_ROUTES.some(root => path === root || path.startsWith(`${root}/`));
 }
 
 export function canConfigurePlSalesOnly(actor: SalesAccessUser | null | undefined, targetRole: string, targetId?: string): boolean {

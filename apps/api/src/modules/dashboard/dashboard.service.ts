@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
-import { inicioDoDiaLocal } from '../lead-insights/lead-insights.service';
+import { inicioDoDiaLocal, diaLocalDeslocado } from '../lead-insights/lead-insights.service';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
+import { PL_PIPELINE } from '../pl-sales/pl-sales.domain';
+import { readPlFirstResponse } from '../analytics/pl-first-response';
 import { buildVisibilityWhere, isManagerRole } from '../leads/lead-visibility';
 import { UserRole } from '@/common/types/roles';
 import type { Prisma } from '@prisma/client';
@@ -411,11 +414,15 @@ export class DashboardService {
    * velho depois de ligar/desligar o foco.
    */
   async getStats(user: AuthUser) {
+    // Ownership can change while a report is open. Never serve a previous
+    // owner's activity/figures from a cache to the restricted profile.
+    if (isPlSalesOnly(user)) return this.computeStats(user);
     return this.cached(`dash:stats:${user.tenantId}:${user.id}`, () => this.computeStats(user));
   }
 
   private async computeStats(user: AuthUser) {
     const now = new Date();
+    const restricted = isPlSalesOnly(user);
 
     // Mesma leitura de contexto do board (leads.service.findAll): o dashboard
     // nao pode ter uma regra de visibilidade PROPRIA — seria uma porta lateral
@@ -443,10 +450,14 @@ export class DashboardService {
       role,
       poolEnabled: Boolean(tenant?.pool_enabled),
       focusMode,
+      ownOnly: restricted,
     }) as Prisma.LeadWhereInput;
     // `tenant_id` primeiro e a visibilidade por cima: ela so escreve `OR` /
     // `responsavel_id`, entao nunca come o recorte de tenant.
-    const leadWhere: Prisma.LeadWhereInput = { tenant_id: user.tenantId, ...visibilidade };
+    const leadWhere: Prisma.LeadWhereInput = {
+      tenant_id: user.tenantId, ...visibilidade,
+      ...(restricted ? { pipeline_id: PL_PIPELINE } : {}),
+    };
 
     const startOfThisWeek = new Date(now);
     startOfThisWeek.setDate(now.getDate() - 7);
@@ -487,7 +498,11 @@ export class DashboardService {
         this.prisma.leadActivity.findMany({
           // A atividade recente carrega NOME de lead: sem o recorte pela
           // relacao, o operador lia o movimento da carteira dos colegas.
-          where: { tenant_id: user.tenantId, lead: visibilidade },
+          where: {
+            tenant_id: user.tenantId,
+            lead: restricted ? leadWhere : visibilidade,
+            ...(restricted ? { user_id: user.id } : {}),
+          },
           orderBy: { created_at: 'desc' },
           take: 10,
           include: {
@@ -495,7 +510,7 @@ export class DashboardService {
             user: { select: { nome: true } },
           },
         }),
-        this.prisma.lead.groupBy({
+        restricted ? Promise.resolve([]) : this.prisma.lead.groupBy({
           by: ['responsavel_id'],
           where: leadWhere,
           _count: { id: true },
@@ -518,7 +533,10 @@ export class DashboardService {
       .filter((id): id is string => !!id);
     const usedStages = usedStageIds.length
       ? ((await this.prisma.stage.findMany({
-          where: { id: { in: usedStageIds }, tenant_id: user.tenantId },
+          where: {
+            id: { in: usedStageIds }, tenant_id: user.tenantId,
+            ...(restricted ? { pipeline_id: PL_PIPELINE, OR: [{ user_id: null }, { user_id: user.id }] } : {}),
+          },
           // Desempate pelo id: com kanban individual varios clones dividem a
           // mesma `ordem`, e sem criterio estavel a lista muda de ordem sozinha.
           orderBy: [{ ordem: 'asc' }, { id: 'asc' }],
@@ -615,7 +633,7 @@ export class DashboardService {
 
     const [respLeads, openConversations, pendingTasks, wonValueAgg, trendRows] =
       (await Promise.all([
-        this.prisma.lead.findMany({
+        restricted ? Promise.resolve([]) : this.prisma.lead.findMany({
           where: {
             ...leadWhere,
             last_customer_message_at: { not: null },
@@ -635,9 +653,13 @@ export class DashboardService {
             tenant_id: user.tenantId,
             status: 'PENDENTE',
             ...(supervisionando ? {} : { responsavel_id: user.id }),
+            ...(restricted ? { OR: [{ lead_id: null }, { lead: leadWhere }] } : {}),
           },
         }),
-        this.prisma.lead.aggregate({
+        restricted ? this.prisma.pLSale.aggregate({
+          where: { tenant_id: user.tenantId, seller_id: user.id, status: 'ACTIVE' },
+          _sum: { amount: true },
+        }).then(result => ({ _sum: { valor_estimado: result._sum.amount } })) : this.prisma.lead.aggregate({
           where: { ...leadWhere, estagio: { is_won: true } },
           _sum: { valor_estimado: true },
         }),
@@ -646,7 +668,7 @@ export class DashboardService {
         // a `buildVisibilityWhere`), entao a serie passa a ser lida pelo Prisma
         // com o MESMO `where` e agrupada aqui — sao 14 dias de `created_at`, uma
         // coluna por linha.
-        this.prisma.lead.findMany({
+        restricted ? Promise.resolve([]) : this.prisma.lead.findMany({
           where: { ...leadWhere, created_at: { gte: since14 } },
           select: { created_at: true },
         }),
@@ -667,7 +689,7 @@ export class DashboardService {
           (l.last_agent_message_at!.getTime() - l.last_customer_message_at!.getTime()) / 60000,
       )
       .filter((d) => d > 0 && d < 60 * 24);
-    const avgResponseMinutes = deltas.length
+    let avgResponseMinutes = deltas.length
       ? Math.round(deltas.reduce((a, b) => a + b, 0) / deltas.length)
       : 0;
 
@@ -682,11 +704,34 @@ export class DashboardService {
       const chave = linha.created_at.toISOString().slice(0, 10);
       trendMap.set(chave, (trendMap.get(chave) ?? 0) + 1);
     }
+    let personalMetrics: { leadsThisMonth: number; responseSamples: number } | undefined;
+    if (restricted) {
+      const { ano, mes } = anoMesLocal(now, TIMEZONE);
+      const monthStart = inicioDoDiaLocal(ano, mes, 1, TIMEZONE);
+      const trendStart = diaLocalDeslocado(now, -13, TIMEZONE);
+      const [monthCount, response, trend] = await Promise.all([
+        this.prisma.lead.count({ where: { ...leadWhere, created_at: { gte: monthStart, lte: now } } }),
+        readPlFirstResponse(this.prisma, user, monthStart, now),
+        this.prisma.$queryRaw<Array<{ date: string; count: number }>>`
+          SELECT to_char(l.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS date,
+                 COUNT(*)::int AS count
+          FROM "Lead" l
+          WHERE l.tenant_id = ${user.tenantId} AND l.responsavel_id = ${user.id}
+            AND l.pipeline_id = ${PL_PIPELINE}
+            AND l.created_at >= ${trendStart} AND l.created_at <= ${now}
+          GROUP BY 1`,
+      ]);
+      avgResponseMinutes = response.average_seconds === null ? 0 : response.average_seconds / 60;
+      personalMetrics = { leadsThisMonth: monthCount, responseSamples: response.samples };
+      for (const row of trend) trendMap.set(row.date, Number(row.count));
+    }
     const leadsTrend: { date: string; count: number }[] = [];
     for (let i = 13; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(now.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+      const key = restricted
+        ? new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE }).format(d)
+        : d.toISOString().slice(0, 10);
       leadsTrend.push({ date: key, count: trendMap.get(key) ?? 0 });
     }
 
@@ -704,6 +749,7 @@ export class DashboardService {
       leadsByTemp,
       recentActivity,
       topOperators,
+      ...personalMetrics,
     };
   }
 

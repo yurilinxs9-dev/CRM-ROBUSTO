@@ -32,6 +32,7 @@ function usuario(role: UserRole, id = EU): AuthUser {
 
 const OPERADOR = usuario(UserRole.OPERADOR);
 const GERENTE = usuario(UserRole.GERENTE);
+const PL_SELLER: AuthUser = { ...OPERADOR, tenantId: 'a44772ed-1382-4400-84fc-3fa350e23e42', plSalesOnly: true };
 
 interface StageStub {
   id: string;
@@ -128,6 +129,7 @@ function montarStats(opts: MontarStatsOpts = {}) {
     stage: { findMany: jest.fn().mockResolvedValue(stages) },
     task: { count: jest.fn().mockResolvedValue(opts.tarefasPendentes ?? 0) },
     message: { groupBy: jest.fn().mockResolvedValue([]) },
+    pLSale: { aggregate: jest.fn().mockResolvedValue({ _sum: { amount: null } }) },
     $queryRaw: jest.fn().mockResolvedValue([]),
   };
 
@@ -163,6 +165,48 @@ const NUVEM_DEVOLVIDOS = {
 };
 
 describe('DashboardService.getStats — escopo do usuario', () => {
+  it('PL restrito nunca inclui leads sem dono, parceiros ou carteira de colega, mesmo com pool ligado', async () => {
+    const { service, prisma } = montarStats({ poolEnabled: true });
+    await service.getStats(PL_SELLER);
+    for (const method of [prisma.lead.count, prisma.lead.groupBy, prisma.lead.findMany]) {
+      for (const [args] of method.mock.calls) {
+        expect(args.where).toMatchObject({ tenant_id: PL_SELLER.tenantId, responsavel_id: EU, pipeline_id: '6f749216-8d83-44ed-8fd0-1c57720c9f11' });
+        expect(args.where.OR).toBeUndefined();
+      }
+    }
+  });
+
+  it('PL restrito ignora cache antigo e nao revela ranking ou autoria de colegas', async () => {
+    const { service, cache } = montarStats();
+    cache.get.mockResolvedValue({ totalLeads: 999, recentActivity: [{ operatorNome: 'Colega' }] });
+    const result = await service.getStats(PL_SELLER);
+    expect(result.totalLeads).toBe(10);
+    expect(result.topOperators).toEqual([]);
+    expect(cache.get).not.toHaveBeenCalled();
+    expect(cache.set).not.toHaveBeenCalled();
+  });
+
+  it('PL restrito usa o mes brasileiro e vendas confirmadas da propria vendedora', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-11-01T02:30:00Z'));
+    try {
+      const { service, prisma } = montarStats();
+      prisma.pLSale.aggregate.mockResolvedValue({ _sum: { amount: 25000 } });
+      const result = await service.getStats(PL_SELLER);
+      expect(result).toMatchObject({ leadsThisMonth: 5, wonValue: 25000, responseSamples: 0 });
+      expect(prisma.lead.count).toHaveBeenCalledWith({ where: {
+        tenant_id: PL_SELLER.tenantId, pipeline_id: '6f749216-8d83-44ed-8fd0-1c57720c9f11', responsavel_id: EU,
+        created_at: { gte: new Date('2026-10-01T03:00:00Z'), lte: new Date('2026-11-01T02:30:00Z') },
+      } });
+      expect(prisma.pLSale.aggregate).toHaveBeenCalledWith(expect.objectContaining({ where: {
+        tenant_id: PL_SELLER.tenantId, seller_id: EU, status: 'ACTIVE',
+      } }));
+      expect(prisma.leadActivity.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+        tenant_id: PL_SELLER.tenantId, user_id: EU,
+        lead: { tenant_id: PL_SELLER.tenantId, pipeline_id: '6f749216-8d83-44ed-8fd0-1c57720c9f11', responsavel_id: EU },
+      } }));
+    } finally { jest.useRealTimers(); }
+  });
+
   it('operador conta so a propria carteira mais a nuvem de devolvidos', async () => {
     const { service, prisma } = montarStats();
 

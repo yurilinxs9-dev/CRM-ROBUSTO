@@ -22,6 +22,10 @@ const READS = new Set([
   // These services enforce own-row scopes; never extend this to a prefix match.
   '/leads', '/leads/export', '/tasks', '/tasks/today', '/tasks/upcoming', '/tasks/overdue', '/tasks/export',
   '/pl-sales', '/pl-sales/candidates',
+  '/dashboard/stats',
+  '/analytics/overview', '/analytics/timeseries', '/analytics/first-response',
+  '/analytics/funnel', '/analytics/conversion', '/analytics/time-in-stage',
+  '/analytics/performance', '/analytics/forecast',
 ]);
 const LEAD_READS = new Set(['', 'messages', 'activities', 'timeline', 'media', 'contacts', 'insight', 'lembretes']);
 const LEAD_FIELDS = new Set([

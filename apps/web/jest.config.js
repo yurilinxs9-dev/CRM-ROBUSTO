@@ -1,12 +1,11 @@
-/**
- * Só as funções puras de `src/lib` — não há runner de componente aqui, e o que
- * quebrou de verdade na tela de follow-up foi conta (previsão, limites), não
- * renderização.
- */
+/** Pure helpers and server-rendered component/query regressions. */
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   rootDir: 'src',
-  testRegex: 'lib/.*\\.spec\\.ts$',
+  testRegex: 'lib/.*\\.spec\\.tsx?$',
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { jsx: 'react-jsx' } }],
+  },
   moduleNameMapper: { '^@/(.*)$': '<rootDir>/$1' },
 };

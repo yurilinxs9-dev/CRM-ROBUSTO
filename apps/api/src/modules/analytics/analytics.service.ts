@@ -6,6 +6,9 @@ import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 import { Prisma } from '@prisma/client';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
+import { PL_PIPELINE } from '../pl-sales/pl-sales.domain';
+import { readPlFirstResponse } from './pl-first-response';
 
 // ---------------------------------------------------------------------------
 // Query param schemas
@@ -72,6 +75,45 @@ function calcMedian(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+function leadScope(user: AuthUser): Prisma.LeadWhereInput {
+  return {
+    ...(user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {}),
+    ...(isPlSalesOnly(user) ? { pipeline_id: PL_PIPELINE } : {}),
+  };
+}
+
+function scopedQuery(user: AuthUser, query: unknown): unknown {
+  return isPlSalesOnly(user) && typeof query === 'object' && query !== null
+    ? { ...query, pipeline_id: PL_PIPELINE }
+    : query;
+}
+
+async function stageScope(prisma: PrismaService, user: AuthUser): Promise<Prisma.StageFindManyArgs> {
+  if (!isPlSalesOnly(user)) return { orderBy: { ordem: 'asc' } };
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: user.tenantId }, select: { kanban_individual: true },
+  });
+  const ownStage = tenant?.kanban_individual
+    ? await prisma.stage.findFirst({
+        where: { tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, user_id: user.id },
+        select: { id: true },
+      })
+    : null;
+
+  // A report follows one board; mixing template and personal stages breaks
+  // conversion adjacency when their positions overlap.
+  return {
+    orderBy: { ordem: 'asc' },
+    where: { tenant_id: user.tenantId, user_id: ownStage ? user.id : null },
+  };
+}
+
+// These existing fields describe lead estimates, not recorded PL contracts.
+function valueBasis(user: AuthUser) {
+  return isPlSalesOnly(user) ? { value_basis: 'lead_estimate' as const } : {};
+}
+
 // ---------------------------------------------------------------------------
 
 @Injectable()
@@ -91,12 +133,11 @@ export class AnalyticsService {
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:overview:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     // OPERADOR scope
-    const operadorFilter: Prisma.LeadWhereInput =
-      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const operadorFilter = leadScope(user);
 
     const baseWhere: Prisma.LeadWhereInput = { tenant_id: tenantId, ...operadorFilter };
 
@@ -117,9 +158,10 @@ export class AnalyticsService {
       ...snapshot,
       ...current,
       previous,
+      ...valueBasis(user),
     };
 
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -183,13 +225,15 @@ export class AnalyticsService {
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:timeseries:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     const isOperador = user.role === UserRole.OPERADOR;
     const respFilter = isOperador
       ? Prisma.sql`AND l.responsavel_id = ${user.id}`
       : Prisma.empty;
+    const pipelineFilter = isPlSalesOnly(user)
+      ? Prisma.sql`AND l.pipeline_id = ${PL_PIPELINE}` : Prisma.empty;
 
     // Bucket por dia BRASILEIRO: timestamps são UTC-naive no banco; converte
     // pra America/Sao_Paulo antes do date_trunc senão leads da noite caem no
@@ -202,6 +246,7 @@ export class AnalyticsService {
         WHERE l.tenant_id = ${tenantId}
           AND l.created_at >= ${from} AND l.created_at <= ${to}
           ${respFilter}
+          ${pipelineFilter}
         GROUP BY 1
       `,
       this.prisma.$queryRaw<{ day: string; n: number }[]>`
@@ -213,6 +258,7 @@ export class AnalyticsService {
           AND s.is_won = true
           AND l.estagio_entered_at >= ${from} AND l.estagio_entered_at <= ${to}
           ${respFilter}
+          ${pipelineFilter}
         GROUP BY 1
       `,
     ]);
@@ -240,7 +286,7 @@ export class AnalyticsService {
     }
 
     const result = { period: { from: from.toISOString(), to: to.toISOString() }, days };
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -262,8 +308,10 @@ export class AnalyticsService {
     const { from, to } = defaultRange(rawFrom, rawTo);
     const tenantId = user.tenantId;
 
+    if (isPlSalesOnly(user)) return readPlFirstResponse(this.prisma, user, from, to);
+
     const cacheKey = `analytics:first-response:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     const rows = await this.prisma.$queryRaw<
@@ -344,7 +392,7 @@ export class AnalyticsService {
       users: usersData,
     };
 
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -353,24 +401,23 @@ export class AnalyticsService {
   // -------------------------------------------------------------------------
 
   async getFunnel(user: AuthUser, query: unknown) {
-    const { pipeline_id } = pipelineSchema.parse(query);
+    const { pipeline_id } = pipelineSchema.parse(scopedQuery(user, query));
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:funnel:${tenantId}:${user.role}:${user.id}:${hashFilters({ pipeline_id })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     // Validate pipeline belongs to tenant
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id: pipeline_id, tenant_id: tenantId },
-      include: { stages: { orderBy: { ordem: 'asc' } } },
+      include: { stages: await stageScope(this.prisma, user) },
     });
     if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
 
     const stageIds = pipeline.stages.map((s) => s.id);
 
-    const operadorFilter: Prisma.LeadWhereInput =
-      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const operadorFilter = leadScope(user);
 
     const grouped = await this.prisma.lead.groupBy({
       by: ['estagio_id'],
@@ -398,8 +445,8 @@ export class AnalyticsService {
       };
     });
 
-    const result = { pipeline_id, stages };
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    const result = { pipeline_id, stages, ...valueBasis(user) };
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -408,22 +455,21 @@ export class AnalyticsService {
   // -------------------------------------------------------------------------
 
   async getConversion(user: AuthUser, query: unknown) {
-    const { pipeline_id, from: rawFrom, to: rawTo } = pipelineDateSchema.parse(query);
+    const { pipeline_id, from: rawFrom, to: rawTo } = pipelineDateSchema.parse(scopedQuery(user, query));
     const { from, to } = defaultRange(rawFrom, rawTo);
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:conversion:${tenantId}:${user.role}:${user.id}:${hashFilters({ pipeline_id, from, to })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id: pipeline_id, tenant_id: tenantId },
-      include: { stages: { orderBy: { ordem: 'asc' } } },
+      include: { stages: await stageScope(this.prisma, user) },
     });
     if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
 
-    const operadorLeadFilter: Prisma.LeadWhereInput =
-      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const operadorLeadFilter = leadScope(user);
 
     // For each stage, count:
     // - entered: LeadActivity with tipo='stage_change', dados_depois.estagio_id = stage.id, in period
@@ -466,6 +512,8 @@ export class AnalyticsService {
                       SELECT 1 FROM "Lead" l
                       WHERE l.id = la.lead_id
                         AND l.responsavel_id = ${user.id}
+                        AND l.tenant_id = ${tenantId}
+                        ${isPlSalesOnly(user) ? Prisma.sql`AND l.pipeline_id = ${PL_PIPELINE}` : Prisma.empty}
                     )`
                   : Prisma.empty
               }
@@ -479,6 +527,7 @@ export class AnalyticsService {
               FROM "LeadActivity" la
               JOIN "LeadActivity" la2
                 ON la2.lead_id = la.lead_id
+               AND la2.tenant_id = la.tenant_id
                AND la2.tipo = 'stage_change'
                AND la2.dados_depois->>'estagio_id' = ${nextStage.id}
                AND la2.created_at > la.created_at
@@ -493,6 +542,8 @@ export class AnalyticsService {
                         SELECT 1 FROM "Lead" l
                         WHERE l.id = la.lead_id
                           AND l.responsavel_id = ${user.id}
+                          AND l.tenant_id = ${tenantId}
+                          ${isPlSalesOnly(user) ? Prisma.sql`AND l.pipeline_id = ${PL_PIPELINE}` : Prisma.empty}
                       )`
                     : Prisma.empty
                 }
@@ -524,7 +575,7 @@ export class AnalyticsService {
       stages: stagesWithData,
     };
 
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -533,23 +584,49 @@ export class AnalyticsService {
   // -------------------------------------------------------------------------
 
   async getTimeInStage(user: AuthUser, query: unknown) {
-    const { pipeline_id } = pipelineDateSchema.parse(query);
+    const { pipeline_id } = pipelineDateSchema.parse(scopedQuery(user, query));
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:time-in-stage:${tenantId}:${user.role}:${user.id}:${hashFilters({ pipeline_id })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id: pipeline_id, tenant_id: tenantId },
-      include: { stages: { orderBy: { ordem: 'asc' } } },
+      include: { stages: await stageScope(this.prisma, user) },
     });
     if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
 
-    const operadorFilter: Prisma.LeadWhereInput =
-      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const operadorFilter = leadScope(user);
 
     const now = new Date();
+
+    if (isPlSalesOnly(user)) {
+      const rows = await this.prisma.$queryRaw<Array<{
+        estagio_id: string; avg_days: number; median_days: number; samples: number;
+      }>>`
+        SELECT l.estagio_id,
+               AVG(EXTRACT(EPOCH FROM (${now} - l.estagio_entered_at)) / 86400)::float8 AS avg_days,
+               percentile_cont(0.5) WITHIN GROUP (
+                 ORDER BY EXTRACT(EPOCH FROM (${now} - l.estagio_entered_at)) / 86400
+               )::float8 AS median_days,
+               COUNT(*)::int AS samples
+        FROM "Lead" l
+        WHERE l.tenant_id = ${tenantId} AND l.pipeline_id = ${PL_PIPELINE}
+          AND l.responsavel_id = ${user.id} AND l.estagio_entered_at IS NOT NULL
+        GROUP BY l.estagio_id
+      `;
+      const byStage = new Map(rows.map((row) => [row.estagio_id, row]));
+      return { pipeline_id, stages: pipeline.stages.map((stage) => {
+        const row = byStage.get(stage.id);
+        return {
+          id: stage.id, nome: stage.nome,
+          avg_days: Number(Number(row?.avg_days ?? 0).toFixed(2)),
+          median_days: Number(Number(row?.median_days ?? 0).toFixed(2)),
+          samples: Number(row?.samples ?? 0),
+        };
+      }) };
+    }
 
     // v1: currently-present leads only. avg of (now - estagio_entered_at) in days.
     // TODO: include historical via LeadActivity (enter/exit deltas) for more accuracy.
@@ -596,7 +673,7 @@ export class AnalyticsService {
     );
 
     const result = { pipeline_id, stages };
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -605,17 +682,20 @@ export class AnalyticsService {
   // -------------------------------------------------------------------------
 
   async getPerformance(user: AuthUser, query: unknown) {
-    const { from: rawFrom, to: rawTo, pipeline_id } = performanceSchema.parse(query);
+    const { from: rawFrom, to: rawTo, pipeline_id } = performanceSchema.parse(scopedQuery(user, query));
     const { from, to } = defaultRange(rawFrom, rawTo);
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:performance:${tenantId}:${user.role}:${user.id}:${hashFilters({ from, to, pipeline_id })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     // Fetch all active non-visualizador users in tenant
     const users = await this.prisma.user.findMany({
-      where: { tenant_id: tenantId, ativo: true, role: { not: 'VISUALIZADOR' } },
+      where: {
+        tenant_id: tenantId, ativo: true, role: { not: 'VISUALIZADOR' },
+        ...(isPlSalesOnly(user) ? { id: user.id } : {}),
+      },
       select: { id: true, nome: true },
     });
 
@@ -626,11 +706,14 @@ export class AnalyticsService {
     const userIds = scopedUsers.map((u) => u.id);
     if (userIds.length === 0) {
       const result = { period: { from: from.toISOString(), to: to.toISOString() }, users: [] };
-      await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+      if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
       return result;
     }
 
-    const pipelineFilter: Prisma.LeadWhereInput = pipeline_id ? { pipeline_id } : {};
+    const pipelineFilter: Prisma.LeadWhereInput = {
+      ...(pipeline_id ? { pipeline_id } : {}),
+      ...(isPlSalesOnly(user) ? leadScope(user) : {}),
+    };
 
     // Use Promise.all (not $transaction) — groupBy types are incompatible inside $transaction array
     const [totalGroup, newGroup, wonGroup, lostGroup, wonValueGroup, taskGroup] =
@@ -711,6 +794,7 @@ export class AnalyticsService {
             responsavel_id: { in: userIds },
             tenant_id: tenantId,
             status: 'PENDENTE',
+            ...(isPlSalesOnly(user) ? { lead: { tenant_id: tenantId, ...leadScope(user) } } : {}),
           },
           _count: { id: true },
         }),
@@ -757,9 +841,10 @@ export class AnalyticsService {
     const result = {
       period: { from: from.toISOString(), to: to.toISOString() },
       users: usersData,
+      ...valueBasis(user),
     };
 
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 
@@ -771,22 +856,21 @@ export class AnalyticsService {
    * taxa global do pipeline.
    */
   async getForecast(user: AuthUser, query: unknown) {
-    const { pipeline_id, from: rawFrom, to: rawTo } = pipelineDateSchema.parse(query);
+    const { pipeline_id, from: rawFrom, to: rawTo } = pipelineDateSchema.parse(scopedQuery(user, query));
     const { from, to } = defaultRange(rawFrom, rawTo);
     const tenantId = user.tenantId;
 
     const cacheKey = `analytics:forecast:${tenantId}:${user.role}:${user.id}:${hashFilters({ pipeline_id, from, to })}`;
-    const cached = await this.cache.get<unknown>(cacheKey);
+    const cached = isPlSalesOnly(user) ? null : await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id: pipeline_id, tenant_id: tenantId },
-      include: { stages: { orderBy: { ordem: 'asc' } } },
+      include: { stages: await stageScope(this.prisma, user) },
     });
     if (!pipeline) throw new NotFoundException('Pipeline nao encontrado');
 
-    const operadorLeadFilter: Prisma.LeadWhereInput =
-      user.role === UserRole.OPERADOR ? { responsavel_id: user.id } : {};
+    const operadorLeadFilter = leadScope(user);
     const openStages = pipeline.stages.filter((s) => !s.is_won && !s.is_lost);
 
     // Pipeline aberto: contagem + soma de valor por etapa.
@@ -816,6 +900,7 @@ export class AnalyticsService {
           JOIN "Stage" s ON s.id = l.estagio_id
           WHERE l.tenant_id = ${tenantId}
             AND l.pipeline_id = ${pipeline_id}
+            ${isPlSalesOnly(user) ? Prisma.sql`AND l.responsavel_id = ${user.id}` : Prisma.empty}
             AND (s.is_won OR s.is_lost)
             AND l.updated_at >= ${from}
             AND l.updated_at <= ${to}
@@ -824,10 +909,12 @@ export class AnalyticsService {
           SELECT c.id AS lead_id, c.is_won, la.dados_depois->>'estagio_id' AS estagio_id
           FROM closed c
           JOIN "LeadActivity" la ON la.lead_id = c.id AND la.tipo = 'stage_change'
+            AND la.tenant_id = ${tenantId}
           UNION
           SELECT c.id, c.is_won, la.dados_antes->>'estagio_id'
           FROM closed c
           JOIN "LeadActivity" la ON la.lead_id = c.id AND la.tipo = 'stage_change'
+            AND la.tenant_id = ${tenantId}
         )
         SELECT estagio_id,
                COUNT(DISTINCT lead_id) AS total,
@@ -851,6 +938,7 @@ export class AnalyticsService {
           pipeline_id,
           estagio: { is_won: true },
           updated_at: { gte: from, lte: to },
+          ...(isPlSalesOnly(user) ? leadScope(user) : {}),
         },
       }),
       this.prisma.lead.count({
@@ -859,6 +947,7 @@ export class AnalyticsService {
           pipeline_id,
           OR: [{ estagio: { is_won: true } }, { estagio: { is_lost: true } }],
           updated_at: { gte: from, lte: to },
+          ...(isPlSalesOnly(user) ? leadScope(user) : {}),
         },
       }),
     ]);
@@ -888,9 +977,10 @@ export class AnalyticsService {
       stages,
       total_open_value: Number(stages.reduce((a, s) => a + s.open_value, 0).toFixed(2)),
       total_forecast_value: Number(stages.reduce((a, s) => a + s.forecast_value, 0).toFixed(2)),
+      ...valueBasis(user),
     };
 
-    await this.cache.set(cacheKey, result, ANALYTICS_TTL);
+    if (!isPlSalesOnly(user)) await this.cache.set(cacheKey, result, ANALYTICS_TTL);
     return result;
   }
 }

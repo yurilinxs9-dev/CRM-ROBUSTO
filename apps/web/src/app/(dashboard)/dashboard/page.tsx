@@ -28,6 +28,8 @@ import {
 import { api } from '@/lib/api';
 import { deveMostrarOnboarding } from '@/lib/dashboard-onboarding';
 import { useAuthStore } from '@/stores/auth.store';
+import { isPlSalesOnly } from '@/lib/pl-sales-access';
+import { PlPersonalSummary } from '@/components/pl-sales/pl-personal-summary';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PageHeader } from '@/components/layout/page-header';
@@ -49,6 +51,8 @@ interface DashboardStats {
   leadsLastWeek: number;
   conversionRate: number;
   avgResponseMinutes: number;
+  responseSamples?: number;
+  leadsThisMonth?: number;
   wonValue: number;
   openConversations: number;
   pendingTasks: number;
@@ -450,16 +454,25 @@ function FinanceiroSecao({ dados }: { dados: Financeira }) {
 export default function DashboardPage() {
   const queryClient = useQueryClient();
   // Quem supervisiona — mesma regra do backend, ver `dashboard-onboarding`.
-  const userRole = useAuthStore((s) => s.user?.role);
-  const focusMode = useAuthStore((s) => s.user?.focus_mode ?? false);
+  const user = useAuthStore((s) => s.user);
+  const userRole = user?.role;
+  const focusMode = user?.focus_mode ?? false;
+  const restricted = isPlSalesOnly(user);
+  const scope = [user?.tenantId, user?.id, restricted, userRole, focusMode];
 
   const { data: stats, isLoading, isError } = useQuery<DashboardStats>({
-    queryKey: ['dashboard-stats'],
+    queryKey: ['dashboard-stats', ...scope],
     queryFn: async () => {
       const { data } = await api.get('/api/dashboard/stats');
       return data as DashboardStats;
     },
     refetchInterval: 30_000,
+    enabled: !!user,
+    ...(restricted ? {
+      refetchOnMount: 'always' as const,
+      refetchOnWindowFocus: 'always' as const,
+      refetchOnReconnect: 'always' as const,
+    } : {}),
   });
 
   // A dashboard ainda não tem seletor de pipeline (o funil vem do pipeline
@@ -467,7 +480,7 @@ export default function DashboardPage() {
   // o cache já nasce separado por pipeline e nada precisa ser reescrito aqui.
   const financeiraPipelineId: string | null = null;
   const { data: financeira } = useQuery<Financeira>({
-    queryKey: ['dashboard-financeira', financeiraPipelineId],
+    queryKey: ['dashboard-financeira', ...scope, financeiraPipelineId],
     queryFn: async () => {
       const { data } = await api.get('/api/dashboard/financeira');
       return lerFinanceira(data);
@@ -476,6 +489,7 @@ export default function DashboardPage() {
     // simplesmente não aparece. O poll também para depois do erro: sem isso, um
     // backend sem a rota levaria um 404 a cada minuto, para sempre.
     retry: false,
+    enabled: !!user && !restricted,
     refetchInterval: (query) => (query.state.error ? false : 60_000),
   });
 
@@ -504,6 +518,7 @@ export default function DashboardPage() {
   // Carteira vazia de operador NAO e workspace novo: ele fica com o dashboard
   // zerado normal, o convite so aparece para quem supervisiona.
   const mostrarOnboarding =
+    !restricted &&
     !isLoading &&
     !!stats &&
     deveMostrarOnboarding({ totalLeads: stats.totalLeads, role: userRole, focusMode });
@@ -543,7 +558,8 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
-      <PageHeader title="Dashboard" subtitle="Visão geral do funil em tempo real" live />
+      <PageHeader title={restricted ? 'Meu Dashboard' : 'Dashboard'} subtitle={restricted ? 'Meus leads do Consórcio PL, vendas e atendimento' : 'Visão geral do funil em tempo real'} live />
+      {restricted && <p className="text-sm text-muted-foreground">Carteira Consórcio PL: leads atualmente atribuídos a você. As entradas são contadas pela data de criação do lead, não pela data de atribuição. Atendimento: somente suas primeiras respostas registradas no CRM, no mês atual em Brasília.</p>}
 
       {isError && (
         <div
@@ -560,48 +576,50 @@ export default function DashboardPage() {
       )}
 
       {/* KPIs primários */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <div className={`grid grid-cols-2 ${restricted ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-3 sm:gap-4`}>
         {isLoading ? (
           <>
             <KpiCard icon={Users} label="" value="" loading />
             <KpiCard icon={TrendingUp} label="" value="" loading />
             <KpiCard icon={Target} label="" value="" loading />
             <KpiCard icon={Clock} label="" value="" loading />
+            {restricted && <KpiCard icon={Target} label="" value="" loading />}
           </>
         ) : (
           <>
             <KpiCard
               icon={Users}
-              label="Total de Leads"
+              label={restricted ? 'Meus leads' : 'Total de Leads'}
               value={numberFmt.format(stats?.totalLeads ?? 0)}
-              trend={trend}
-              sub="vs. semana passada"
+              trend={restricted ? undefined : trend}
+              sub={restricted ? 'Carteira atual do Consórcio PL' : 'vs. semana passada'}
             />
             <KpiCard
               icon={TrendingUp}
-              label="Leads esta semana"
+              label={restricted ? 'Últimos 7 dias' : 'Leads esta semana'}
               value={numberFmt.format(stats?.leadsThisWeek ?? 0)}
-              sub={`Anterior: ${numberFmt.format(stats?.leadsLastWeek ?? 0)}`}
+              sub={`${restricted ? '7 dias anteriores' : 'Anterior'}: ${numberFmt.format(stats?.leadsLastWeek ?? 0)}`}
             />
             <KpiCard
               icon={Target}
-              label="Taxa de conversão"
-              value={percentFmt.format((stats?.conversionRate ?? 0) / 100)}
-              sub="Meta: 15%"
+              label={restricted ? 'Leads neste mês' : 'Taxa de conversão'}
+              value={restricted ? (stats?.leadsThisMonth === undefined ? '—' : numberFmt.format(stats.leadsThisMonth)) : percentFmt.format((stats?.conversionRate ?? 0) / 100)}
+              sub={restricted ? 'Entradas no mês atual · Brasília' : 'Meta: 15%'}
             />
             <KpiCard
               icon={Clock}
-              label="Tempo médio resposta"
-              value={formatMinutes(stats?.avgResponseMinutes ?? 0)}
-              sub="SLA: 30min"
+              label={restricted ? 'Média da minha 1ª resposta' : 'Tempo médio resposta'}
+              value={restricted ? (stats && (stats.responseSamples ?? 0) > 0 && Number.isFinite(stats.avgResponseMinutes) ? (stats.avgResponseMinutes === 0 ? '0min' : formatMinutes(stats.avgResponseMinutes)) : '—') : formatMinutes(stats?.avgResponseMinutes ?? 0)}
+              sub={restricted ? ((stats?.responseSamples ?? 0) > 0 ? `${numberFmt.format(stats?.responseSamples ?? 0)} respostas suas no mês atual · Brasília` : 'Sem respostas suas no mês') : 'SLA: 30min'}
             />
+            {restricted && <KpiCard icon={Target} label="Conversão da minha carteira" value={percentFmt.format((stats?.conversionRate ?? 0) / 100)} sub="Leads ganhos / total da carteira atual" />}
           </>
         )}
       </div>
 
       {/* Tendência + stats secundários */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <SectionCard title="Leads (últimos 14 dias)" icon={LineChart} className="lg:col-span-2">
+        <SectionCard title={restricted ? 'Meus leads (últimos 14 dias)' : 'Leads (últimos 14 dias)'} icon={LineChart} className="lg:col-span-2">
           {isLoading ? (
             <Skeleton className="h-[180px] w-full" />
           ) : (
@@ -629,23 +647,24 @@ export default function DashboardPage() {
                 label="Tarefas pendentes"
                 value={numberFmt.format(stats?.pendingTasks ?? 0)}
               />
-              <MiniStat
+              {!restricted && <MiniStat
                 icon={DollarSign}
                 label="Valor ganho"
                 value={brlFmt.format(stats?.wonValue ?? 0)}
                 tone="success"
-              />
+              />}
             </>
           )}
         </div>
       </div>
 
       {/* Financeiro — some inteiro se a rota não existir no backend */}
-      {financeira && <FinanceiroSecao dados={financeira} />}
+      {!restricted && financeira && <FinanceiroSecao dados={financeira} />}
+      {restricted && <PlPersonalSummary />}
 
       {/* Funil + Temperatura + Origem */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <SectionCard title="Funil de Vendas" icon={BarChart3} className="lg:col-span-2">
+      <div className={`grid grid-cols-1 ${restricted ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-4`}>
+        <SectionCard title={restricted ? 'Meu funil do Consórcio PL' : 'Funil de Vendas'} icon={BarChart3} className="lg:col-span-2">
           {isLoading ? (
             <div className="space-y-3">
               {[0, 1, 2, 3, 4].map((i) => (
@@ -668,14 +687,14 @@ export default function DashboardPage() {
           )}
         </SectionCard>
 
-        <SectionCard title="Origem dos Leads" icon={Megaphone}>
+        {!restricted && <SectionCard title="Origem dos Leads" icon={Megaphone}>
           <AttributionDonut />
-        </SectionCard>
+        </SectionCard>}
       </div>
 
       {/* Atividade + Operadores */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <SectionCard title="Atividade Recente" icon={Activity}>
+      <div className={`grid grid-cols-1 ${restricted ? '' : 'lg:grid-cols-2'} gap-4`}>
+        <SectionCard title={restricted ? 'Minha atividade recente' : 'Atividade Recente'} icon={Activity}>
           {isLoading ? (
             <div className="space-y-3">
               {[0, 1, 2, 3, 4].map((i) => (
@@ -687,7 +706,7 @@ export default function DashboardPage() {
           )}
         </SectionCard>
 
-        <SectionCard title="Top Operadores" icon={Trophy}>
+        {!restricted && <SectionCard title="Top Operadores" icon={Trophy}>
           {isLoading ? (
             <div className="space-y-4">
               {[0, 1, 2, 3, 4].map((i) => (
@@ -697,7 +716,7 @@ export default function DashboardPage() {
           ) : (
             <OperatorsLeaderboard operators={stats?.topOperators ?? []} />
           )}
-        </SectionCard>
+        </SectionCard>}
       </div>
     </div>
   );
