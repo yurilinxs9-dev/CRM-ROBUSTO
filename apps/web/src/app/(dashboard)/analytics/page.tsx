@@ -744,7 +744,7 @@ function FirstResponseSection({
           <KpiCard icon={Clock} label="Mediana da minha 1ª resposta" value={Number.isFinite(own.median_seconds) ? formatDuration(own.median_seconds) : '—'} />
           <KpiCard icon={Clock} label="Média da minha 1ª resposta" value={Number.isFinite(own.avg_seconds) ? formatDuration(own.avg_seconds) : '—'} />
         </div> : <p className="text-sm text-muted-foreground">Sem respostas suas no período. Tempo de resposta: —</p>}
-        <p className="mt-4 text-xs text-muted-foreground">Da primeira mensagem recebida de cada lead no período até sua primeira resposta registrada no CRM: {numberFmt.format(own?.answered ?? 0)} respondidas por você · {numberFmt.format(data?.total_conversations ?? 0)} conversas avaliadas · {numberFmt.format(data?.unanswered ?? 0)} sem resposta sua.</p>
+        <p className="mt-4 text-xs text-muted-foreground">O tempo começa na mensagem do cliente ou na distribuição para você, o que ocorrer por último, e termina na sua primeira resposta registrada no CRM: {numberFmt.format(own?.answered ?? 0)} respondidas por você · {numberFmt.format(data?.total_conversations ?? 0)} conversas avaliadas · {numberFmt.format(data?.unanswered ?? 0)} sem resposta sua.</p>
       </>}
     </SectionCard>;
   }
