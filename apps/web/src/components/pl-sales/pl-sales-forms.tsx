@@ -6,6 +6,7 @@ import { amountInput, brl, saoPauloDate } from '@/lib/partners';
 import { plCancelSchema, plDate, plError, plGoalSchema, plMonth, plSaleSchema, plSalesKey, type PlCandidate, type PlDashboard, type PlSale } from '@/lib/pl-sales';
 import { Field, fieldClass } from '@/components/partners/partner-forms';
 import { PlSaveForm, type PlFormActions } from './pl-save-form';
+import { PlAmountInput } from './pl-amount-input';
 
 export function PlSaleForm({ sale, data, tenant, userId, role, saved, refresh, onBusy }: {
   sale?: PlSale; data: PlDashboard; tenant: string; userId: string; role: string;
@@ -17,7 +18,7 @@ export function PlSaleForm({ sale, data, tenant, userId, role, saved, refresh, o
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [contract, setContract] = useState(sale?.contract_number ?? '');
-  const [amount, setAmount] = useState(sale ? amountInput(sale.amount) : '');
+  const [amount, setAmount] = useState(sale ? brl(sale.amount) : '');
   const today = saoPauloDate();
   const [date, setDate] = useState(sale?.sold_on ?? (data.month === today.slice(0, 7) ? today : `${data.month}-01`));
   const [note, setNote] = useState(sale?.note ?? '');
@@ -60,7 +61,7 @@ export function PlSaleForm({ sale, data, tenant, userId, role, saved, refresh, o
 
     <Field label="Número do contrato"><input required maxLength={120} className={fieldClass} value={contract} onChange={event => setContract(event.target.value)} placeholder="Número único do contrato" /></Field>
     <div className="grid gap-3 sm:grid-cols-2">
-      <Field label="Crédito contratado (R$)"><input required inputMode="decimal" className={fieldClass} value={amount} onChange={event => setAmount(event.target.value)} placeholder="Ex.: 250.000,00" /></Field>
+      <Field label="Crédito contratado (R$)"><PlAmountInput value={amount} onChange={setAmount} /></Field>
       <Field label="Data de fechamento"><input required type="date" min="1900-01-01" max={today} className={fieldClass} value={date} onChange={event => setDate(event.target.value)} /></Field>
     </div>
     {date && date.slice(0, 7) !== data.month && <p className="text-sm text-muted-foreground">Esta venda será contabilizada em {plMonth(date.slice(0, 7))}. Selecione esse mês no relatório para consultá-la.</p>}
