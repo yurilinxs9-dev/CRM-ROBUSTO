@@ -1,6 +1,7 @@
 import { Optional } from '@nestjs/common';
 import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { PlRoutingService } from '../pl-sales/pl-routing.service';
+import { isPlPipeline } from '../pl-sales/pl-sales.domain';
 import { Injectable, Logger } from '@nestjs/common';
 import type { MessageType, Prisma, WhatsappInstance } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -631,9 +632,11 @@ export class InboundMessageService {
         );
       }
     } else if (
-      tenant?.kanban_individual === true &&
       lead.responsavel_id !== null &&
-      lead.estagio_id === ctx.firstStage.id
+      lead.estagio_id === ctx.firstStage.id &&
+      (tenant?.kanban_individual === true ||
+        (isPlPipeline(tenantId, ctx.pipeline.id) &&
+          await this.kanbanIndividual.usesPersonalBoard(tenantId, lead.responsavel_id, ctx.pipeline.id)))
     ) {
       /**
        * Lead que JÁ NASCE com dono — o caso normal do atendimento individual,
@@ -650,9 +653,8 @@ export class InboundMessageService {
        * coluna do dono, e o resto do caminho de backfill segue intacto.
        *
        * A condição só é verdadeira enquanto a coluna ainda é a base, então a
-       * mensagem seguinte do mesmo lead não paga nada. E o `kanban_individual`
-       * vem do tenant já carregado: tenant com a feature desligada não faz
-       * consulta alguma a mais.
+       * mensagem seguinte do mesmo lead não paga nada. Fora do funil PL o
+       * `kanban_individual` já carregado mantém o comportamento do tenant.
        */
       const estagioDono = await this.kanbanIndividual.stageForOwner(
         tenantId,

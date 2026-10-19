@@ -256,6 +256,12 @@ export class CrmGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.toTenant(tenantId).emit('kanban:individual-changed', { kanban_individual: enabled });
   }
 
+  emitPipelineStagesChanged(tenantId: string, pipelineId: string, ownerId: string | null) {
+    const payload = { pipelineId, ownerId };
+    this.toTenant(tenantId).emit('pipeline:stages-changed', payload);
+    if (ownerId) this.server.to(`user:${ownerId}`).emit('pipeline:stages-changed', payload);
+  }
+
   emitLeadUpdated(leadId: string, data: unknown, tenantId?: string) {
     this.toTenant(tenantId).emit('lead:updated', { leadId, ...(data as object) });
     return this.emitToRestrictedOwner(leadId, [['lead:updated', { leadId, ...(data as object) }]], tenantId);

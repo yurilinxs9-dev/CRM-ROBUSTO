@@ -105,6 +105,27 @@ export class PlSalesPolicyService {
 
     if (read && READS.has(path)) return;
     if (read && path === `/pipelines/${PL_PIPELINE}`) return;
+    if (method === 'POST' && path === `/pipelines/${PL_PIPELINE}/stages`) {
+      if (Object.keys(body).some(key => !['nome', 'cor', 'ordem', 'scope'].includes(key)) || (body.scope !== undefined && body.scope !== 'own')) this.deny();
+      return;
+    }
+    if (method === 'POST' && path === `/pipelines/${PL_PIPELINE}/stages/reorder`) {
+      if (Object.keys(body).some(key => key !== 'stageIds') || !Array.isArray(body.stageIds) || !body.stageIds.length || body.stageIds.length > 500) this.deny();
+      const ids = (body.stageIds as unknown[]).map(id => this.id(id));
+      if (new Set(ids).size !== ids.length) this.deny();
+      const count = await this.prisma.stage.count({ where: { id: { in: ids }, tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, user_id: user.id } });
+      if (count !== ids.length) this.deny();
+      return;
+    }
+    const stageEdit = /^\/stages\/([^/]+)$/.exec(path);
+    if (method === 'PATCH' && stageEdit) {
+      if (Object.keys(body).some(key => !['nome', 'cor'].includes(key))) this.deny();
+      const own = await this.prisma.stage.findFirst({
+        where: { id: this.id(stageEdit[1]), tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, user_id: user.id }, select: { id: true },
+      });
+      if (!own) this.deny();
+      return;
+    }
     if (method === 'PATCH' && ['/users/me', '/users/me/password', '/notifications/read-all'].includes(path)) return;
     if (method === 'POST' && path === '/users/me/avatar') return;
     if (method === 'PATCH' && /^\/notifications\/[^/]+\/read$/.test(path)) {

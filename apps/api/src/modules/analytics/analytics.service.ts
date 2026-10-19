@@ -91,15 +91,10 @@ function scopedQuery(user: AuthUser, query: unknown): unknown {
 async function stageScope(prisma: PrismaService, user: AuthUser): Promise<Prisma.StageFindManyArgs> {
   if (!isPlSalesOnly(user)) return { orderBy: { ordem: 'asc' } };
 
-  const tenant = await prisma.tenant.findUnique({
-    where: { id: user.tenantId }, select: { kanban_individual: true },
+  const ownStage = await prisma.stage.findFirst({
+    where: { tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, user_id: user.id },
+    select: { id: true },
   });
-  const ownStage = tenant?.kanban_individual
-    ? await prisma.stage.findFirst({
-        where: { tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, user_id: user.id },
-        select: { id: true },
-      })
-    : null;
 
   // A report follows one board; mixing template and personal stages breaks
   // conversion adjacency when their positions overlap.
@@ -482,7 +477,10 @@ export class AnalyticsService {
 
     const stagesWithData = await Promise.all(
       pipeline.stages.map(async (stage, idx) => {
-        const nextStage = pipeline.stages[idx + 1];
+        // Management sees several PL boards; adjacency stays inside each one.
+        const nextStage = pipeline_id === PL_PIPELINE
+          ? pipeline.stages.slice(idx + 1).find(candidate => candidate.user_id === stage.user_id)
+          : pipeline.stages[idx + 1];
 
         // Count current leads in this stage (tenant + operador scoped)
         const current = await this.prisma.lead.count({

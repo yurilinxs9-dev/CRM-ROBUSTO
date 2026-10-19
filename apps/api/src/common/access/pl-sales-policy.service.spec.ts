@@ -16,7 +16,10 @@ function setup() {
       findFirst: jest.fn(async ({ where }) => where.id === own && where.tenant_id === tenant && where.responsavel_id === user.id ? { id: own, pipeline_id: pipeline } : null),
       count: jest.fn(async ({ where }) => where.id.in.filter((id: string) => id === own).length),
     },
-    stage: { findFirst: jest.fn(async ({ where }) => where.id === stage && where.tenant_id === tenant && where.pipeline_id === pipeline ? { id: stage } : null) },
+    stage: {
+      findFirst: jest.fn(async ({ where }) => where.id === stage && where.tenant_id === tenant && where.pipeline_id === pipeline && (!where.user_id || where.user_id === user.id) ? { id: stage } : null),
+      count: jest.fn(async ({ where }) => where.user_id === user.id ? where.id.in.filter((id: string) => id === stage).length : 0),
+    },
     message: { findFirst: jest.fn().mockResolvedValue({ lead_id: own }) },
     task: { findFirst: jest.fn().mockResolvedValue({ lead_id: own }) },
     pushSubscription: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -28,6 +31,21 @@ function setup() {
 }
 
 describe('PL API deny-by-default policy', () => {
+  it('permits only personal PL stage creation, cosmetic edits and complete own reorders', async () => {
+    const m = setup();
+    await expect(m.check('POST', `/pipelines/${pipeline}/stages`, { nome: 'Proposta', cor: '#123456' })).resolves.toBeUndefined();
+    await expect(m.check('PATCH', `/stages/${stage}`, { nome: 'Retorno' })).resolves.toBeUndefined();
+    expect(m.prisma.stage.findFirst).toHaveBeenLastCalledWith({ where: { id: stage, tenant_id: tenant, pipeline_id: pipeline, user_id: user.id }, select: { id: true } });
+    await expect(m.check('POST', `/pipelines/${pipeline}/stages/reorder`, { stageIds: [stage] })).resolves.toBeUndefined();
+    await expect(m.check('POST', `/pipelines/${pipeline}/stages/reorder`, { stageIds: [stage, foreign] })).rejects.toBeInstanceOf(ForbiddenException);
+    for (const body of [{ scope: 'base' }, { user_id: foreign }, { cadence_config: [] }]) {
+      await expect(m.check('POST', `/pipelines/${pipeline}/stages`, { nome: 'A', ...body })).rejects.toBeInstanceOf(ForbiddenException);
+    }
+    await expect(m.check('POST', `/pipelines/${foreign}/stages`, { nome: 'A' })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(m.check('PATCH', `/stages/${foreign}`, { nome: 'A' })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(m.check('PATCH', `/stages/${stage}`, { is_won: true })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(m.check('DELETE', `/stages/${stage}`)).rejects.toBeInstanceOf(ForbiddenException);
+  });
   it.each(['/partners', '/partners/team', '/financeiro/dashboard', '/dashboard/financeira', '/dashboard/performance', '/dashboard/volume', '/dashboard/funnel', '/analytics', '/analytics/new-report', '/attribution/summary', '/admin', '/tenants/me', '/companies', '/contacts', '/users/team', '/leads/duplicates', '/leads/new-feature', '/pl-sales/audit'])('denies %s', async path => {
     await expect(setup().check('GET', `/api${path}`)).rejects.toBeInstanceOf(ForbiddenException);
   });

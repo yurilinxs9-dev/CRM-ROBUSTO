@@ -12,6 +12,7 @@ import { CustomFieldsService } from '../leads/custom-fields.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { AttributionService } from '../attribution/attribution.service';
 import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
+import { PL_TENANT } from '../pl-sales/pl-sales.domain';
 import type { AuthUser } from '../../common/types/auth-user';
 import {
   addTagsSchema,
@@ -77,7 +78,8 @@ export class PublicApiService {
     // colunas base). Com o toggle ligado existe uma cópia de cada coluna por
     // membro — devolvê-las aqui faria a integração guardar o id da coluna de um
     // membro sorteado e mandar todo mundo para o board dele.
-    const soBase = (await this.kanbanIndividual.isOn(tenantId)) ? { where: { user_id: null } } : {};
+    const soBase = tenantId === PL_TENANT || await this.kanbanIndividual.isOn(tenantId)
+      ? { where: { user_id: null } } : {};
     const pipelines = await this.prisma.pipeline.findMany({
       where: { tenant_id: tenantId },
       orderBy: { ordem: 'asc' },
@@ -129,7 +131,7 @@ export class PublicApiService {
     // integração manda o id que leu do catálogo (base); gravá-lo cru num lead
     // com dono tiraria o card do board de quem cuida dele. Lead sem dono vai
     // para a base — nunca para a coluna pessoal de um membro qualquer.
-    const alvo = (await this.kanbanIndividual.isOn(tenantId))
+    const alvo = (tenantId === PL_TENANT || await this.kanbanIndividual.isOn(tenantId))
       ? lead.responsavel_id
         ? await this.kanbanIndividual.stageForOwner(tenantId, lead.responsavel_id, stage_id)
         : await this.kanbanIndividual.stageForBase(tenantId, stage_id)
@@ -258,7 +260,8 @@ export class PublicApiService {
     // cópias pessoais têm o mesmo nome e a mesma `ordem` das base, e sem este
     // filtro o desempate poderia deixá-lo na coluna de um colega sorteado —
     // board de ninguém.
-    const soBase = (await this.kanbanIndividual.isOn(tenantId)) ? { where: { user_id: null } } : {};
+    const soBase = tenantId === PL_TENANT || await this.kanbanIndividual.isOn(tenantId)
+      ? { where: { user_id: null } } : {};
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { tenant_id: tenantId },
       orderBy: { ordem: 'asc' },

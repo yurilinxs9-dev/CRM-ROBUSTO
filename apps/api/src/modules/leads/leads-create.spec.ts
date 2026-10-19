@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { LeadsService } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -103,6 +104,34 @@ describe('criação restrita PL', () => {
     m.prisma.stage.findFirst.mockResolvedValue({ id: ESTAGIO_ID, pipeline_id: '6f749216-8d83-44ed-8fd0-1c57720c9f11' });
     return m;
   }
+  it('global toggle off: creates the assigned PL lead on the destination personal board', async () => {
+    const m = restrictedSetup();
+    m.kanbanIndividual.stageForOwner.mockResolvedValue('own-pl-new');
+    const created = await m.service.create(input, seller);
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith(PL_TENANT, seller.id, ESTAGIO_ID);
+    expect(created).toEqual(expect.objectContaining({ pipeline_id: PL_PIPELINE, estagio_id: 'own-pl-new', responsavel_id: seller.id }));
+    expect(m.prisma.lead.aggregate).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ estagio_id: 'own-pl-new' }) }));
+  });
+  it('global toggle off: default PL stage is selected from base before owner translation', async () => {
+    const m = restrictedSetup();
+    await m.service.create({ nome: 'Teste', telefone: '+5531955554444' }, seller);
+    expect(m.prisma.stage.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { tenant_id: PL_TENANT, pipeline_id: PL_PIPELINE, user_id: null } }));
+  });
+  it('global toggle off: manager creation for a seller translates using the assigned owner', async () => {
+    const m = restrictedSetup();
+    m.kanbanIndividual.stageForOwner.mockResolvedValue('own-pl-new');
+    const assignedOwner = '66666666-6666-4666-8666-666666666666';
+    const manager = { ...seller, id: 'manager', role: 'GERENTE' as const, plSalesOnly: false };
+    await m.service.create({ ...input, pipeline_id: PL_PIPELINE, responsavel_id: assignedOwner }, manager);
+    expect(m.prisma.lead.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ pipeline_id: PL_PIPELINE, estagio_id: 'own-pl-new', responsavel_id: assignedOwner }) }));
+  });
+  it('global toggle off: unassigned PL creation cannot retain an explicit personal stage', async () => {
+    const m = restrictedSetup();
+    m.kanbanIndividual.stageForBase.mockResolvedValue('base-pl-new');
+    const manager = { ...seller, id: 'manager', role: 'GERENTE' as const, plSalesOnly: false };
+    await m.service.create({ ...input, pipeline_id: PL_PIPELINE }, manager);
+    expect(m.prisma.lead.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ pipeline_id: PL_PIPELINE, estagio_id: 'base-pl-new', responsavel_id: null }) }));
+  });
   it.each([false, true])('não devolve dados do contato existente de outra carteira (corrida=%s)', async race => {
     const m = restrictedSetup();
     const foreign = { id: 'foreign', responsavel_id: 'other', dados_custom: { secret: 'hidden' } };

@@ -1,9 +1,11 @@
-import { ConflictException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
 
 /**
  * Kanban individual: com o toggle ligado cada membro operacional enxerga uma
@@ -67,6 +69,7 @@ export class KanbanIndividualService {
   constructor(
     private prisma: PrismaService,
     private gateway: CrmGateway,
+    @Optional() private cache?: RedisCacheService,
   ) {}
 
   async isOn(tenantId: string): Promise<boolean> {
@@ -75,6 +78,54 @@ export class KanbanIndividualService {
       select: { kanban_individual: true },
     });
     return t?.kanban_individual === true;
+  }
+
+  /** PL private boards coexist with the shared workspace without changing its toggle. */
+  async hasPersonalBoards(tenantId: string): Promise<boolean> {
+    return tenantId === PL_TENANT || this.isOn(tenantId);
+  }
+
+  async usesPersonalBoard(tenantId: string, ownerId: string | null, pipelineId?: string): Promise<boolean> {
+    if (!ownerId) return false;
+    if (await this.isOn(tenantId)) return true;
+    if (tenantId !== PL_TENANT || (pipelineId !== undefined && pipelineId !== PL_PIPELINE)) return false;
+    return this.isPlOwner(tenantId, ownerId);
+  }
+
+  private async isPlOwner(tenantId: string, ownerId: string): Promise<boolean> {
+    if (tenantId !== PL_TENANT) return false;
+    return !!(await this.prisma.user.findFirst({
+      where: { id: ownerId, tenant_id: tenantId, role: 'OPERADOR', ativo: true, pl_sales_only: true },
+      select: { id: true },
+    }));
+  }
+
+  /** One transactional initialization, including any existing own PL portfolio. */
+  async ensurePlPersonalBoard(tenantId: string, ownerId: string): Promise<void> {
+    if (!(await this.isPlOwner(tenantId, ownerId))) return;
+    const scope = { tenant_id: tenantId, pipeline_id: PL_PIPELINE, user_id: ownerId };
+    if (await this.prisma.stage.findFirst({ where: scope, select: { id: true } })) return;
+    await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`pl-board:${tenantId}:${ownerId}`}))`;
+      if (await tx.stage.findFirst({ where: scope, select: { id: true } })) return;
+      const base = await tx.stage.findMany({
+        where: { tenant_id: tenantId, pipeline_id: PL_PIPELINE, user_id: null },
+        orderBy: { ordem: 'asc' },
+      });
+      if (!base.length) throw new ConflictException('O modelo do Consórcio PL ainda não tem etapas.');
+      await this.cloneBaseForUser(tx, tenantId, ownerId, PL_PIPELINE);
+      const own = await tx.stage.findMany({ where: scope });
+      for (const source of base) {
+        const target = own.find(s => s.nome === source.nome && s.ordem === source.ordem);
+        if (!target) throw new ConflictException('Não foi possível preparar as etapas individuais.');
+        await tx.lead.updateMany({
+          where: { tenant_id: tenantId, pipeline_id: PL_PIPELINE, responsavel_id: ownerId, estagio_id: source.id },
+          data: { estagio_id: target.id },
+        });
+      }
+    }, TX_OPTS);
+    await this.cache?.delPattern(`leads:list:${tenantId}:*`);
+    this.gateway.emitPipelineStagesChanged?.(tenantId, PL_PIPELINE, ownerId);
   }
 
   /**
@@ -93,7 +144,16 @@ export class KanbanIndividualService {
       orderBy: { ordem: 'asc' },
     });
 
+    // Enabling the workspace-wide mode must not duplicate or reset a PL board.
+    if (tenantId === PL_TENANT && base.some(s => s.pipeline_id === PL_PIPELINE)) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`pl-board:${tenantId}:${userId}`}))`;
+    }
+    const existingPl = tenantId === PL_TENANT && base.some(s => s.pipeline_id === PL_PIPELINE)
+      ? await tx.stage.findFirst({ where: { tenant_id: tenantId, pipeline_id: PL_PIPELINE, user_id: userId }, select: { id: true } })
+      : null;
+
     for (const s of base) {
+      if (existingPl && s.pipeline_id === PL_PIPELINE) continue;
       await tx.stage.create({
         data: {
           nome: s.nome,
@@ -194,8 +254,15 @@ export class KanbanIndividualService {
         where: { tenant_id: tenantId, user_id: null },
         orderBy: { ordem: 'asc' },
       });
+      const plOwners = tenantId === PL_TENANT ? await tx.user.findMany({
+        where: { tenant_id: tenantId, role: 'OPERADOR', pl_sales_only: true }, select: { id: true },
+      }) : [];
+      const removable: Prisma.StageWhereInput = {
+        tenant_id: tenantId, user_id: { not: null },
+        ...(plOwners.length ? { NOT: { pipeline_id: PL_PIPELINE, user_id: { in: plOwners.map(u => u.id) } } } : {}),
+      };
       const pessoais = await tx.stage.findMany({
-        where: { tenant_id: tenantId, user_id: { not: null } },
+        where: removable,
         orderBy: { ordem: 'asc' },
       });
 
@@ -228,7 +295,7 @@ export class KanbanIndividualService {
         });
       }
 
-      await tx.stage.deleteMany({ where: { tenant_id: tenantId, user_id: { not: null } } });
+      await tx.stage.deleteMany({ where: removable });
       await tx.tenant.update({ where: { id: tenantId }, data: { kanban_individual: false } });
 
       this.logger.log(`kanban individual OFF tenant=${tenantId} pessoais_removidas=${pessoais.length}`);
@@ -246,8 +313,13 @@ export class KanbanIndividualService {
    * Com o toggle desligado nao existe coluna pessoal: devolve o id recebido.
    */
   async stageForOwner(tenantId: string, ownerId: string, fromStageId: string): Promise<string> {
-    if (!(await this.isOn(tenantId))) return fromStageId;
-    return this.traduzir(tenantId, fromStageId, ownerId);
+    const global = await this.isOn(tenantId);
+    if (tenantId !== PL_TENANT) return global ? this.traduzir(tenantId, fromStageId, ownerId) : fromStageId;
+    const source = await this.prisma.stage.findFirst({ where: { id: fromStageId, tenant_id: tenantId }, select: { pipeline_id: true } });
+    if (source?.pipeline_id !== PL_PIPELINE) return global ? this.traduzir(tenantId, fromStageId, ownerId) : fromStageId;
+    const personal = await this.isPlOwner(tenantId, ownerId);
+    if (personal) await this.ensurePlPersonalBoard(tenantId, ownerId);
+    return this.traduzir(tenantId, fromStageId, global || personal ? ownerId : null);
   }
 
   /** Traduz uma coluna qualquer para a equivalente do conjunto base do tenant. */
@@ -266,7 +338,11 @@ export class KanbanIndividualService {
     if (!from) return fromStageId;
     if (from.user_id === destinoUserId) return fromStageId;
 
-    const alvo = { tenant_id: tenantId, user_id: destinoUserId, pipeline_id: from.pipeline_id };
+    const isPl = tenantId === PL_TENANT && from.pipeline_id === PL_PIPELINE;
+    const alvo = {
+      tenant_id: tenantId, user_id: destinoUserId, pipeline_id: from.pipeline_id,
+      ...(isPl ? { is_won: from.is_won, is_lost: from.is_lost } : {}),
+    };
 
     const mesmoNome = await this.prisma.stage.findFirst({
       where: { ...alvo, nome: { equals: from.nome, mode: 'insensitive' } },
@@ -277,6 +353,7 @@ export class KanbanIndividualService {
       where: alvo,
       orderBy: { ordem: 'asc' },
     });
+    if (!primeira && isPl) throw new ConflictException('O destino não tem uma etapa compatível com a situação deste lead.');
     return primeira?.id ?? fromStageId;
   }
 

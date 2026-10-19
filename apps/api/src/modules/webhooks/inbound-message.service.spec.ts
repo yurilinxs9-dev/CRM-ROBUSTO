@@ -79,6 +79,7 @@ function makeMocks() {
   // comportamento real do service quando o tenant não ligou a feature.
   const kanbanIndividual: any = {
     isOn: jest.fn().mockResolvedValue(false),
+    usesPersonalBoard: jest.fn().mockResolvedValue(false),
     stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
     stageForBase: jest.fn(async (_t: string, from: string) => from),
   };
@@ -1198,6 +1199,36 @@ describe('Consórcio PL — manual inbound assignment', () => {
     m.conversations.resolveForInbound.mockResolvedValue({id:'conv-pl',responsavel_id:null});
     return {...m,resolve};
   }
+  it.each([false, true])('global toggle off: already assigned personal-phone lead enters its owner board (backfill=%s)', async (backfill) => {
+    const m = manual();
+    m.prisma.user.findUnique.mockResolvedValue({ role: 'OPERADOR', pl_sales_only: true });
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(true);
+    m.kanbanIndividual.stageForOwner.mockResolvedValue('seller-pl-new');
+    const lead = { ...leadOwnedByA, pipeline_id: PL_PIPELINE, estagio_id: 'pl-new', responsavel_id: instanceB.owner_user_id };
+    m.prisma.lead.upsert.mockResolvedValue(lead);
+    m.prisma.lead.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ ...lead, ...data }));
+    await m.service.saveIncomingMessage(baseInput({ tenantId: PL_TENANT, instance: instanceB, ...(backfill ? { backfill: { timestamp: new Date('2026-10-01T12:00:00Z') } } : {}) }));
+    expect(m.kanbanIndividual.usesPersonalBoard).toHaveBeenCalledWith(PL_TENANT, instanceB.owner_user_id, PL_PIPELINE);
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith(PL_TENANT, instanceB.owner_user_id, 'pl-new');
+    expect(m.prisma.lead.update).toHaveBeenCalledWith({ where: { id: lead.id }, data: { estagio_id: 'seller-pl-new', estagio_entered_at: expect.any(Date) } });
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith(lead.id, { estagio_id: 'seller-pl-new' }, PL_TENANT);
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+  it('global toggle off: an ordinary PL seller keeps the base board', async () => {
+    const m = manual();
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA, pipeline_id: PL_PIPELINE, estagio_id: 'pl-new' });
+    await m.service.saveIncomingMessage(baseInput({ tenantId: PL_TENANT }));
+    expect(m.kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+  });
+  it('global toggle off: a lead already on a custom PL stage keeps its stage and SLA age', async () => {
+    const m = manual();
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(true);
+    m.prisma.lead.upsert.mockResolvedValue({ ...leadOwnedByA, pipeline_id: PL_PIPELINE, estagio_id: 'custom-personal' });
+    await m.service.saveIncomingMessage(baseInput({ tenantId: PL_TENANT }));
+    expect(m.kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+  });
   it('lead novo do número pessoal da vendedora restrita nasce na carteira dela', async () => {
     const m = manual();
     m.prisma.user.findUnique.mockResolvedValue({ role: 'OPERADOR', pl_sales_only: true });

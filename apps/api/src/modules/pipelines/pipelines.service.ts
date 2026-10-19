@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
@@ -11,6 +11,9 @@ import {
 } from './kanban-individual.service';
 import type { AuthUser } from '../../common/types/auth-user';
 import { z } from 'zod';
+import { isPlSalesOnly } from '../../common/access/pl-sales-access';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
+import { CrmGateway } from '../websocket/websocket.gateway';
 
 const createPipelineSchema = z.object({
   nome: z.string().min(1).max(100),
@@ -102,23 +105,45 @@ export class PipelinesService {
     private cache: RedisCacheService,
     private messages: MessagesService,
     private kanbanIndividual: KanbanIndividualService,
+    @Optional() private gateway?: CrmGateway,
   ) {}
+
+  private assertPlPipeline(pipelineId: string, user: AuthUser): void {
+    if (isPlSalesOnly(user) && pipelineId !== PL_PIPELINE) throw new ForbiddenException('Apenas seu funil de Consórcio PL.');
+  }
+
+  private async stagesChanged(tenantId: string, pipelineId: string, ownerId: string | null): Promise<void> {
+    await this.invalidateLeadsCache(tenantId);
+    await this.cache.delPattern(`analytics:*:${tenantId}:*`);
+    this.gateway?.emitPipelineStagesChanged(tenantId, pipelineId, ownerId);
+  }
 
   private async invalidateLeadsCache(tenantId: string): Promise<void> {
     await this.cache.delPattern(`leads:list:${tenantId}:*`);
   }
 
   /**
-   * Traduz quem pede + o que pediu no filtro de `Stage.user_id`. Com o toggle
-   * desligado nao existe coluna pessoal: todo mundo continua lendo a base, que
-   * e exatamente o comportamento anterior a esta feature.
+   * Traduz o usuário e a supervisão para Stage.user_id. O perfil restrito PL
+   * tem etapas próprias mesmo com o modo individual geral desligado.
    */
   private async stageScopeWhere(
     user: AuthUser,
     opts?: StageScopeOpts,
   ): Promise<Prisma.StageWhereInput> {
+    if (isPlSalesOnly(user)) {
+      if (opts?.stageScope === 'base' || (opts?.viewAsUserId && opts.viewAsUserId !== user.id)) throw new ForbiddenException('Apenas suas etapas individuais.');
+      await this.kanbanIndividual.ensurePlPersonalBoard(user.tenantId, user.id);
+      return { user_id: user.id, pipeline_id: PL_PIPELINE };
+    }
     const on = await this.kanbanIndividual.isOn(user.tenantId);
-    if (!on) return { user_id: null };
+    if (!on) {
+      if (user.tenantId === PL_TENANT && this.ehGestor(user) && opts?.viewAsUserId && opts.stageScope !== 'base' &&
+          await this.kanbanIndividual.usesPersonalBoard(user.tenantId, opts.viewAsUserId, PL_PIPELINE)) {
+        await this.kanbanIndividual.ensurePlPersonalBoard(user.tenantId, opts.viewAsUserId);
+        return { OR: [{ pipeline_id: PL_PIPELINE, user_id: opts.viewAsUserId }, { pipeline_id: { not: PL_PIPELINE }, user_id: null }] };
+      }
+      return { user_id: null };
+    }
     if (opts?.stageScope === 'base') {
       if (!this.ehGestor(user)) throw new ForbiddenException('Apenas gestores editam o modelo base.');
       return { user_id: null };
@@ -143,8 +168,7 @@ export class PipelinesService {
    * Porteiro unico das escritas de etapa com o kanban individual ligado:
    * a base (user_id null) e do gestor; o board pessoal e so do dono — nem o
    * gestor edita a coluna de um membro, senao "pessoal" nao quer dizer nada.
-   * So faz sentido chamar com o toggle ON (com ele OFF nao existe coluna
-   * pessoal e a regra antiga, por papel na rota, e a que vale).
+   * Também protege etapas pessoais PL quando o modo geral está desligado.
    */
   private assertStageEditavel(stage: { user_id: string | null }, user: AuthUser): void {
     if (stage.user_id === null) {
@@ -159,10 +183,15 @@ export class PipelinesService {
   }
 
   /**
-   * Dono da etapa que esta nascendo. Com o toggle desligado nao existe coluna
-   * pessoal: tudo continua na base, exatamente como antes da feature.
+   * Dono da nova etapa: perfil restrito PL sempre próprio; demais perfis
+   * seguem o modo individual geral e a escolha explícita do modelo base.
    */
   private async donoDaEtapaNova(user: AuthUser, scope?: 'own' | 'base'): Promise<string | null> {
+    if (isPlSalesOnly(user)) {
+      if (scope === 'base') throw new ForbiddenException('Apenas suas etapas individuais.');
+      await this.kanbanIndividual.ensurePlPersonalBoard(user.tenantId, user.id);
+      return user.id;
+    }
     if (!(await this.kanbanIndividual.isOn(user.tenantId))) return null;
     if (scope === 'base') {
       if (!this.ehGestor(user)) {
@@ -201,17 +230,19 @@ export class PipelinesService {
       where: {
         ativo: true,
         tenant_id: user.tenantId,
+        ...(isPlSalesOnly(user) ? { id: PL_PIPELINE } : {}),
         ...(includeArchived ? {} : { arquivado: false }),
       },
       include: {
         stages: { where: stageWhere, orderBy: { ordem: 'asc' } },
-        _count: { select: { leads: true } },
+        _count: { select: { leads: isPlSalesOnly(user) ? { where: { tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, responsavel_id: user.id } } : true } },
       },
       orderBy: { ordem: 'asc' },
     });
   }
 
   async findOne(id: string, user: AuthUser, opts?: StageScopeOpts) {
+    this.assertPlPipeline(id, user);
     const stageWhere = await this.stageScopeWhere(user, opts);
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id, tenant_id: user.tenantId },
@@ -219,7 +250,7 @@ export class PipelinesService {
         stages: {
           where: stageWhere,
           orderBy: { ordem: 'asc' },
-          include: { _count: { select: { leads: true } } },
+          include: { _count: { select: { leads: isPlSalesOnly(user) ? { where: { tenant_id: user.tenantId, pipeline_id: PL_PIPELINE, responsavel_id: user.id } } : true } } },
         },
       },
     });
@@ -293,7 +324,7 @@ export class PipelinesService {
         // Com o toggle ligado o pipeline carrega tambem as colunas pessoais de
         // cada membro; copiar tudo faria a copia nascer com o board do time
         // inteiro achatado na base. So o modelo base e duplicado.
-        stages: { where: individual ? { user_id: null } : {}, orderBy: { ordem: 'asc' } },
+        stages: { where: individual || (user.tenantId === PL_TENANT && id === PL_PIPELINE) ? { user_id: null } : {}, orderBy: { ordem: 'asc' } },
       },
     });
     if (!src) throw new NotFoundException('Pipeline nao encontrado');
@@ -396,7 +427,7 @@ export class PipelinesService {
     }
 
     const targetFirstStageId = target.stages[0].id;
-    const individual = await this.kanbanIndividual.isOn(user.tenantId);
+    const individual = (user.tenantId === PL_TENANT && targetPipelineId === PL_PIPELINE) || await this.kanbanIndividual.isOn(user.tenantId);
 
     await this.prisma.$transaction(async (tx) => {
       /**
@@ -471,7 +502,9 @@ export class PipelinesService {
   }
 
   async createStage(pipelineId: string, body: unknown, user: AuthUser) {
+    this.assertPlPipeline(pipelineId, user);
     const data = createStageSchema.parse(body);
+    if (isPlSalesOnly(user) && Object.keys(data).some(key => !['nome', 'cor', 'ordem', 'scope'].includes(key))) throw new ForbiddenException('Apenas nome, cor e ordem da etapa.');
     const pipeline = await this.prisma.pipeline.findFirst({
       where: { id: pipelineId, tenant_id: user.tenantId },
     });
@@ -484,7 +517,7 @@ export class PipelinesService {
       orderBy: { ordem: 'desc' },
     });
     const ordem = data.ordem ?? (last ? last.ordem + 1 : 0);
-    return this.prisma.stage.create({
+    const created = await this.prisma.stage.create({
       data: {
         nome: data.nome,
         cor: data.cor,
@@ -494,6 +527,8 @@ export class PipelinesService {
         user_id: dono,
       },
     });
+    await this.stagesChanged(user.tenantId, pipelineId, dono);
+    return created;
   }
 
   async updateStage(id: string, body: unknown, user: AuthUser) {
@@ -515,7 +550,8 @@ export class PipelinesService {
       where: { id, tenant_id: user.tenantId },
     });
     if (!exists) throw new NotFoundException('Stage nao encontrada');
-    if (await this.kanbanIndividual.isOn(user.tenantId)) {
+    this.assertPlPipeline(exists.pipeline_id, user);
+    if (isPlSalesOnly(user) || exists.user_id !== null || await this.kanbanIndividual.isOn(user.tenantId)) {
       this.assertStageEditavel(exists, user);
     }
     const { auto_action, ...rest } = data;
@@ -526,15 +562,18 @@ export class PipelinesService {
           ? Prisma.JsonNull
           : (auto_action as Prisma.InputJsonValue);
     }
-    return this.prisma.stage.update({ where: { id }, data: updateData });
+    const updated = await this.prisma.stage.update({ where: { id }, data: updateData });
+    await this.stagesChanged(user.tenantId, exists.pipeline_id, exists.user_id);
+    return updated;
   }
 
   async removeStage(id: string, user: AuthUser) {
+    if (isPlSalesOnly(user)) throw new ForbiddenException('Exclusão de etapas não está disponível neste perfil.');
     const stage = await this.prisma.stage.findFirst({
       where: { id, tenant_id: user.tenantId },
     });
     if (!stage) throw new NotFoundException('Stage nao encontrada');
-    if (await this.kanbanIndividual.isOn(user.tenantId)) {
+    if (stage.user_id !== null || await this.kanbanIndividual.isOn(user.tenantId)) {
       this.assertStageEditavel(stage, user);
     }
     const leadsCount = await this.prisma.lead.count({
@@ -550,6 +589,7 @@ export class PipelinesService {
   }
 
   async removeStageWithMove(id: string, body: unknown, user: AuthUser) {
+    if (isPlSalesOnly(user)) throw new ForbiddenException('Exclusão de etapas não está disponível neste perfil.');
     const { targetStageId } = deleteStageWithMoveSchema.parse(body);
     if (targetStageId === id) {
       throw new BadRequestException('Etapa de destino deve ser diferente da etapa a excluir');
@@ -558,7 +598,7 @@ export class PipelinesService {
       where: { id, tenant_id: user.tenantId },
     });
     if (!stage) throw new NotFoundException('Stage nao encontrada');
-    const individual = await this.kanbanIndividual.isOn(user.tenantId);
+    const individual = stage.user_id !== null || await this.kanbanIndividual.isOn(user.tenantId);
     if (individual) this.assertStageEditavel(stage, user);
     const target = await this.prisma.stage.findFirst({
       where: { id: targetStageId, tenant_id: user.tenantId, pipeline_id: stage.pipeline_id },
@@ -569,7 +609,7 @@ export class PipelinesService {
     }
     // Mover leads para a coluna de outro board mudaria de dono a carteira
     // inteira sem ninguem pedir — a mudanca de dono e das rotas de lead.
-    if (individual && target.user_id !== stage.user_id) {
+    if (target.user_id !== stage.user_id) {
       throw new BadRequestException('Etapa de destino pertence a outro board');
     }
 
@@ -595,7 +635,9 @@ export class PipelinesService {
     stageIds: string[],
     user: AuthUser,
   ): Promise<Prisma.StageWhereInput> {
-    if (!(await this.kanbanIndividual.isOn(user.tenantId))) return {};
+    this.assertPlPipeline(pipelineId, user);
+    const individual = await this.kanbanIndividual.isOn(user.tenantId);
+    if (!individual && !isPlSalesOnly(user) && !(user.tenantId === PL_TENANT && pipelineId === PL_PIPELINE)) return {};
     const alvo = await this.prisma.stage.findMany({
       where: { id: { in: stageIds }, tenant_id: user.tenantId, pipeline_id: pipelineId },
       select: { id: true, user_id: true },
@@ -608,7 +650,7 @@ export class PipelinesService {
       throw new BadRequestException('stageIds misturam o modelo base e boards pessoais');
     }
     const dono = alvo[0].user_id;
-    this.assertStageEditavel({ user_id: dono }, user);
+    if (dono !== null || individual || isPlSalesOnly(user)) this.assertStageEditavel({ user_id: dono }, user);
     return { user_id: dono };
   }
 
@@ -628,6 +670,7 @@ export class PipelinesService {
         this.prisma.stage.update({ where: { id }, data: { ordem: idx } }),
       ),
     );
+    await this.stagesChanged(user.tenantId, pipelineId, typeof escopo.user_id === 'string' ? escopo.user_id : null);
     return { success: true };
   }
 

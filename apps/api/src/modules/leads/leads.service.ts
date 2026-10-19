@@ -65,6 +65,10 @@ const bulkIdsSchema = z.object({
 const bulkMoveStageSchema = bulkIdsSchema.extend({
   estagio_id: z.string().uuid(),
 });
+const boardStagePageSchema = z.object({
+  board_stage_id: z.string().min(1),
+  offset: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+});
 const bulkAssignSchema = bulkIdsSchema.extend({
   responsavel_id: z.string().uuid(),
 });
@@ -203,6 +207,8 @@ interface LeadFilters {
   scope?: string;
   unread?: string;
   per_stage?: string;
+  /** Paginação de uma coluna visível do board PL, incluindo etapas realocadas. */
+  board_stage_id?: string;
   /** Aba do board: 'me' = Meus Leads · 'others' = Escritório. Ver parseOwnerScope. */
   owner?: string;
   /** Nomes separados por vírgula. Casa lead que tenha QUALQUER uma (OR). */
@@ -533,6 +539,21 @@ export class LeadsService {
     const owner = parseOwnerScope(filters.owner);
     const whereFinal = owner ? withCondition(where, ownerCondition(owner, user.id)) : where;
 
+    // Inicializa antes de qualquer leitura/cache: GET pipelines pode chegar depois.
+    // O recorte autorizado acima também vale para a supervisão do board pessoal.
+    const plStageBoard = Boolean(filters.per_stage) && isPlPipeline(user.tenantId, filters.pipeline_id);
+    const boardPage = filters.board_stage_id !== undefined ? boardStagePageSchema.parse(filters) : null;
+    if (boardPage && !plStageBoard) {
+      throw new BadRequestException('Paginação por coluna disponível apenas no board PL');
+    }
+    let plBoardOwner: string | null = null;
+    if (plStageBoard && temBoardProprio(user.role)) {
+      const ownerId = responsavelRecortado ?? user.id;
+      if (await this.kanbanIndividual.usesPersonalBoard(user.tenantId, ownerId, filters.pipeline_id)) {
+        await this.kanbanIndividual.ensurePlPersonalBoard(user.tenantId, ownerId);
+        plBoardOwner = ownerId;
+      }
+    }
     const cacheKey = this.buildLeadsListKey(
       user.tenantId,
       filters,
@@ -540,7 +561,7 @@ export class LeadsService {
       user.id,
       focusMode,
       isPlSalesOnly(user),
-    );
+    ) + (plStageBoard ? `:pl-board-v1:${plBoardOwner ?? 'base'}` : '');
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
@@ -654,18 +675,23 @@ export class LeadsService {
       // Kanban individual: o board é o do VIEWER (ou o do membro que o gestor
       // está observando pelo recorte de responsável — o mesmo `responsavel_id`
       // que já foi autorizado acima; usar o param cru deixaria um operador
-      // pedir o conjunto de colunas de um colega). Toggle desligado = base do
-      // tenant, que é o único conjunto que existe nesse modo.
+      // pedir o conjunto de colunas de um colega). PL permite boards pessoais
+      // mesmo com o toggle global desligado.
       // VISUALIZADOR (papel sem board proprio) le a BASE: o enable() so clona
       // colunas para PAPEIS_COM_BOARD, entao pedir as colunas dele devolveria
       // conjunto vazio e o board abriria em branco.
-      const individual = await this.kanbanIndividual.isOn(user.tenantId);
-      const donoDasColunas =
-        individual && temBoardProprio(user.role) ? (responsavelRecortado ?? user.id) : null;
+      const individual = plStageBoard || await this.kanbanIndividual.isOn(user.tenantId);
+      const donoDasColunas = plStageBoard
+        ? plBoardOwner
+        : individual && temBoardProprio(user.role) ? (responsavelRecortado ?? user.id) : null;
       const stages = await this.prisma.stage.findMany({
         where: { pipeline_id: filters.pipeline_id, user_id: donoDasColunas },
         select: { id: true, ordem: true },
       });
+      const pageStages = boardPage ? stages.filter(s => s.id === boardPage.board_stage_id) : stages;
+      if (boardPage && !pageStages.length) {
+        throw new BadRequestException('Etapa não pertence ao board');
+      }
       // Primeira coluna do conjunto: é ela que hospeda a nuvem de devolvidos e
       // recebe a contagem dos leads parados em colunas de outro board.
       const primeiraColuna = stages.reduce<{ id: string; ordem: number } | null>(
@@ -700,7 +726,7 @@ export class LeadsService {
             }
           : { estagio_id: id };
       const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
-        Promise.all(stages.map((s) => runQuery(condicaoDaColuna(s.id), perStage, 0))),
+        Promise.all(pageStages.map((s) => runQuery(condicaoDaColuna(s.id), perStage, boardPage?.offset ?? 0))),
         this.prisma.lead.groupBy({
           by: ['estagio_id'],
           where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
@@ -926,7 +952,7 @@ export class LeadsService {
     // poderia nascer na coluna pessoal de um colega sorteado — board de
     // ninguem. Quem escolheu a etapa explicitamente NAO passa por aqui: a
     // escolha do usuario continua valendo, inclusive a coluna pessoal dele.
-    const soBase = individual ? { user_id: null } : {};
+    const soBase = individual || tenantId === PL_TENANT ? { user_id: null } : {};
     if (parsed.pipeline_id) {
       if (parsed.estagio_id) {
         const stage = await this.prisma.stage.findFirst({
@@ -1026,9 +1052,11 @@ export class LeadsService {
     // acompanha o dono, exatamente como em claim/reassign.
     const donoInicial: string | null = parsed.responsavel_id || (poolEnabled ? null : user.id);
     const stageId =
-      individual && donoInicial
+      (individual || isPlPipeline(user.tenantId, pipelineId)) && donoInicial
         ? await this.kanbanIndividual.stageForOwner(user.tenantId, donoInicial, etapaResolvida)
-        : etapaResolvida;
+        : isPlPipeline(user.tenantId, pipelineId)
+          ? await this.kanbanIndividual.stageForBase(user.tenantId, etapaResolvida)
+          : etapaResolvida;
 
     // Telefone duplicado no mesmo (pipeline_id, lead_scope) — exatamente a
     // tupla da unique constraint `telefone_pipeline_scope` — estourava
@@ -1158,6 +1186,7 @@ export class LeadsService {
         tags: true,
         dados_custom: true,
         pipeline_id: true,
+        estagio_id: true,
       },
     });
     if (!lead) throw new NotFoundException('Lead nao encontrado');
@@ -1218,6 +1247,9 @@ export class LeadsService {
           if (!seller) throw new BadRequestException('Selecione uma responsável ativa da equipe comercial');
         }
         updateData.assumed_at = null;
+        if (parsed.responsavel_id !== lead.responsavel_id) {
+          Object.assign(updateData, await this.remapearEtapa(user.tenantId, lead.estagio_id, parsed.responsavel_id));
+        }
       }
     }
 
@@ -1453,9 +1485,11 @@ export class LeadsService {
     if (user.role === UserRole.OPERADOR) {
       where.responsavel_id = user.id;
     }
+    let plStage = false;
     if (user.tenantId === PL_TENANT) {
       const stage = await this.prisma.stage.findFirst({where:{id:estagio_id,tenant_id:user.tenantId},select:{pipeline_id:true}});
       if (!stage || await this.prisma.lead.count({where:{...where,pipeline_id:{not:stage.pipeline_id}}})) throw new BadRequestException('Selecione leads e etapa do mesmo funil');
+      plStage = isPlPipeline(user.tenantId, stage.pipeline_id);
     }
     // TODO: enqueue auto-actions for bulk move (skipped to avoid N queue jobs)
     // TODO: skip logging individual LeadActivity records for bulk (expensive)
@@ -1474,7 +1508,9 @@ export class LeadsService {
      * traduções e 3 escritas, não 500. O `where` da leitura é o MESMO da escrita
      * antiga, então o recorte do operador continua valendo.
      */
-    if (await this.kanbanIndividual.isOn(user.tenantId)) {
+    if (plStage
+      ? await this.kanbanIndividual.hasPersonalBoards(user.tenantId)
+      : await this.kanbanIndividual.isOn(user.tenantId)) {
       const alvos = await this.prisma.lead.findMany({
         where,
         select: { id: true, responsavel_id: true },
@@ -1488,6 +1524,7 @@ export class LeadsService {
       }
 
       let updated = 0;
+      const movedPl: Array<{ leadIds: string[]; stageId: string }> = [];
       for (const [dono, leadIds] of porDono) {
         const remapeada = await this.remapearEtapa(user.tenantId, estagio_id, dono);
         const destino = remapeada?.estagio_id ?? estagio_id;
@@ -1496,9 +1533,15 @@ export class LeadsService {
           data: { estagio_id: destino, ...marcaDoMovimento },
         });
         updated += grupo.count;
+        if (plStage) movedPl.push({ leadIds, stageId: destino });
       }
 
       await this.invalidateLeadsCache(user.tenantId);
+      for (const { leadIds, stageId } of movedPl) {
+        for (const id of leadIds) {
+          this.gateway.emitLeadUpdated(id, { estagio_id: stageId, triggeredByUserId: user.id }, user.tenantId);
+        }
+      }
       return { updated };
     }
 

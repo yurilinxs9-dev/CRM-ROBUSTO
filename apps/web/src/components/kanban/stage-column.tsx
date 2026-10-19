@@ -39,6 +39,7 @@ import { cn } from '@/lib/cn';
 
 export interface Stage {
   id: string;
+  user_id?: string | null;
   nome: string;
   cor: string;
   ordem: number;
@@ -165,6 +166,8 @@ interface StageColumnProps {
    * seguem normais — supervisionar continua valendo, editar o board alheio não.
    */
   stagesReadOnly?: boolean;
+  /** PL sellers may change name/color/order, never structure or automation. */
+  limitedStageEditing?: boolean;
 }
 
 function StageColumnImpl({
@@ -194,6 +197,7 @@ function StageColumnImpl({
   loadingMore,
   cardFields,
   stagesReadOnly = false,
+  limitedStageEditing = false,
 }: StageColumnProps) {
   const bulkActive = selectedLeadIds !== undefined && selectedLeadIds.size > 0;
   const [isEditing, setIsEditing] = useState(false);
@@ -206,7 +210,7 @@ function StageColumnImpl({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: `stage-${stage.id}`, data: { type: 'stage', stageId: stage.id } });
+  } = useSortable({ id: `stage-${stage.id}`, data: { type: 'stage', stageId: stage.id }, disabled: stagesReadOnly });
 
   const { setNodeRef: setDropRef, isOver } = useDroppable({
     id: `column-${stage.id}`,
@@ -345,14 +349,14 @@ function StageColumnImpl({
                   Mudar cor
                 </button>
               </ColorPicker>
-              <DropdownMenuItem onClick={() => onConfigureStage(stage.id)}>
+              {!limitedStageEditing && <DropdownMenuItem onClick={() => onConfigureStage(stage.id)}>
                 <Settings className="mr-2 h-3.5 w-3.5" />
                 Configurar
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onDuplicateStage(stage.id)}>
+              </DropdownMenuItem>}
+              {!limitedStageEditing && <DropdownMenuItem onClick={() => onDuplicateStage(stage.id)}>
                 <Copy className="mr-2 h-3.5 w-3.5" />
                 Duplicar
-              </DropdownMenuItem>
+              </DropdownMenuItem>}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 disabled={!canMoveLeft}
@@ -368,14 +372,14 @@ function StageColumnImpl({
                 <ArrowRight className="mr-2 h-3.5 w-3.5" />
                 Mover para direita
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
+              {!limitedStageEditing && <DropdownMenuSeparator />}
+              {!limitedStageEditing && <DropdownMenuItem
                 onClick={() => onDeleteStage(stage.id)}
                 className="text-destructive focus:text-destructive"
               >
                 <Trash2 className="mr-2 h-3.5 w-3.5" />
                 Excluir
-              </DropdownMenuItem>
+              </DropdownMenuItem>}
             </DropdownMenuContent>
           </DropdownMenu>
           )}

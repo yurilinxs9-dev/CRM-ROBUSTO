@@ -2,6 +2,8 @@ import { ZodError } from 'zod';
 import { PipelinesService } from './pipelines.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
+import { ForbiddenException } from '@nestjs/common';
 
 /**
  * `probabilidade` da etapa alimenta a previsao ponderada do dashboard. O campo
@@ -71,6 +73,9 @@ function montar(
   const messages = {};
   const kanban = {
     isOn: jest.fn().mockResolvedValue(opts.kanbanOn ?? false),
+    hasPersonalBoards: jest.fn().mockResolvedValue(opts.kanbanOn ?? false),
+    usesPersonalBoard: jest.fn().mockResolvedValue(false),
+    ensurePlPersonalBoard: jest.fn().mockResolvedValue(undefined),
     cloneBaseForUser: jest.fn().mockResolvedValue(undefined),
     // Toggle desligado = traducao identidade, como o service real.
     stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
@@ -87,6 +92,90 @@ function montar(
     kanban,
   };
 }
+
+describe('private PL stage management without the global toggle', () => {
+  const seller: AuthUser = { ...gerente, id: 'seller', tenantId: PL_TENANT, role: UserRole.OPERADOR as never, plSalesOnly: true };
+  it('counts only owned PL leads in pipeline and stage metadata', async () => {
+    const { service, prisma } = montar();
+    const leads = { where: { tenant_id: PL_TENANT, pipeline_id: PL_PIPELINE, responsavel_id: seller.id } };
+    await service.findAll(seller);
+    expect(prisma.pipeline.findMany.mock.calls.at(-1)[0].include._count.select.leads).toEqual(leads);
+    await service.findOne(PL_PIPELINE, seller);
+    expect(prisma.pipeline.findFirst.mock.calls.at(-1)[0].include.stages.include._count.select.leads).toEqual(leads);
+  });
+  it('initializes and reads only the seller board, even when she requests metadata directly', async () => {
+    const { service, prisma, kanban } = montar();
+    await service.findAll(seller);
+    expect(kanban.ensurePlPersonalBoard).toHaveBeenCalledWith(PL_TENANT, seller.id);
+    expect(prisma.pipeline.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: PL_PIPELINE, tenant_id: PL_TENANT }),
+      include: expect.objectContaining({ stages: expect.objectContaining({ where: { user_id: seller.id, pipeline_id: PL_PIPELINE } }) }),
+    }));
+    await expect(service.findAll(seller, false, { stageScope: 'base' })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.findOne('another-pipeline', seller)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it('creates in her own PL board and prevents creating in the base or other pipelines', async () => {
+    const { service, prisma } = montar();
+    await service.createStage(PL_PIPELINE, { nome: 'Retorno' }, seller);
+    expect(prisma.stage.create).toHaveBeenCalledWith({ data: expect.objectContaining({ user_id: seller.id, pipeline_id: PL_PIPELINE }) });
+    await expect(service.createStage(PL_PIPELINE, { nome: 'Base', scope: 'base' }, seller)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.createStage('another', { nome: 'Outro' }, seller)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it('rejects base/other-owner edits and allows only her own cosmetic changes', async () => {
+    const own = montar({ stage: { user_id: seller.id, pipeline_id: PL_PIPELINE } });
+    await own.service.updateStage('s-1', { nome: 'Minha etapa', cor: '#ABCDEF' }, seller);
+    expect(own.prisma.stage.update).toHaveBeenCalled();
+    for (const user_id of [null, 'colleague']) {
+      const other = montar({ stage: { user_id, pipeline_id: PL_PIPELINE } });
+      await expect(other.service.updateStage('s-1', { nome: 'Indevido' }, seller)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(other.prisma.stage.update).not.toHaveBeenCalled();
+    }
+    await expect(own.service.removeStage('s-1', seller)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+  it('lets management view a PL seller board while other pipelines stay on the shared model', async () => {
+    const { service, kanban, prisma } = montar();
+    kanban.usesPersonalBoard.mockResolvedValue(true);
+    await service.findAll({ ...gerente, tenantId: PL_TENANT }, false, { viewAsUserId: seller.id });
+    expect(whereDasEtapasNoFindMany(prisma)).toEqual({ OR: [
+      { pipeline_id: PL_PIPELINE, user_id: seller.id },
+      { pipeline_id: { not: PL_PIPELINE }, user_id: null },
+    ] });
+  });
+
+  it('rejects moving a shared stage portfolio into another seller stage with global mode off', async () => {
+    const { service, prisma } = montar();
+    const target = '33333333-3333-4333-8333-333333333333';
+    prisma.stage.findFirst.mockResolvedValueOnce({ id: 'base', user_id: null, pipeline_id: PL_PIPELINE });
+    prisma.stage.findFirst.mockResolvedValueOnce({ id: target, user_id: seller.id });
+    await expect(service.removeStageWithMove('base', { targetStageId: target }, { ...gerente, tenantId: PL_TENANT })).rejects.toThrow('outro board');
+    expect(prisma.lead.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('preserves ordinary operator reorder permission on the shared partner board', async () => {
+    const { service, prisma, kanban } = montar();
+    kanban.hasPersonalBoards.mockResolvedValue(true);
+    const id = '33333333-3333-4333-8333-333333333333';
+    prisma.stage.findMany.mockResolvedValue([{ id, user_id: null }]);
+    await expect(service.reorderStages('partners', { stageIds: [id] }, { ...seller, plSalesOnly: false })).resolves.toEqual({ success: true });
+  });
+
+  it('duplicates only the PL base template while global mode is off', async () => {
+    const { service, prisma } = montar();
+    prisma.pipeline.findFirst.mockResolvedValueOnce({ id: PL_PIPELINE, nome: 'PL', stages: [] }).mockResolvedValueOnce(null);
+    await service.duplicate(PL_PIPELINE, { ...gerente, tenantId: PL_TENANT });
+    expect(prisma.pipeline.findFirst.mock.calls[0][0].include.stages.where).toEqual({ user_id: null });
+  });
+
+  it('translates each owner when moving another pipeline portfolio into PL with global mode off', async () => {
+    const { service, prisma, kanban } = montar();
+    prisma.pipeline.findFirst.mockResolvedValueOnce({ id: 'source' }).mockResolvedValueOnce({ id: PL_PIPELINE, stages: [{ id: 'base' }] });
+    prisma.lead.findMany.mockResolvedValue([{ id: 'lead', responsavel_id: seller.id }]);
+    kanban.stageForOwner.mockResolvedValue('personal');
+    await service.deleteWithMoveLeads('source', { targetPipelineId: PL_PIPELINE }, { ...gerente, tenantId: PL_TENANT });
+    expect(kanban.stageForOwner).toHaveBeenCalledWith(PL_TENANT, seller.id, 'base');
+    expect(prisma.lead.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ['lead'] }, tenant_id: PL_TENANT }, data: { pipeline_id: PL_PIPELINE, estagio_id: 'personal' } }));
+  });
+});
 
 /** where das etapas montado pelo findAll na ultima chamada. */
 function whereDasEtapasNoFindMany(prisma: {

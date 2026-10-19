@@ -23,6 +23,14 @@ function setup() {
 
 describe('PL websocket isolation', () => {
   beforeAll(() => Logger.overrideLogger(false));
+  it('notifies personal stage edits only to management tenant room and the owning seller room', () => {
+    const m = setup();
+    m.gateway.emitPipelineStagesChanged(tenant, 'pipeline', user.id);
+    expect(m.delivered).toEqual([
+      { room: `tenant:${tenant}`, event: 'pipeline:stages-changed', payload: { pipelineId: 'pipeline', ownerId: user.id } },
+      { room: `user:${user.id}`, event: 'pipeline:stages-changed', payload: { pipelineId: 'pipeline', ownerId: user.id } },
+    ]);
+  });
   it('waits for database authentication when join arrives immediately on connect', async () => {
     const m = setup();
     let finish!: (value: typeof user) => void;

@@ -104,17 +104,16 @@ describe('restricted PL analytics', () => {
     const { service, prisma } = setupBoard(true);
     const result = await service[endpoint](seller, query) as { stages: { id: string }[] };
     expect(result.stages.map((stage) => stage.id)).toEqual(['own-new', 'own-contact']);
-    expect(prisma.tenant.findUnique).toHaveBeenCalledWith({ where: { id: PL_TENANT }, select: { kanban_individual: true } });
     expect(prisma.stage.findFirst).toHaveBeenCalledWith({
       where: { tenant_id: PL_TENANT, pipeline_id: PL_PIPELINE, user_id: seller.id }, select: { id: true },
     });
   });
 
-  it.each(pipelineEndpoints)('%s uses the base board when the toggle is off even if personal stages remain', async (endpoint) => {
+  it.each(pipelineEndpoints)('%s uses the personal PL board even when the workspace toggle is off', async (endpoint) => {
     const { service, prisma } = setupBoard(false);
     const result = await service[endpoint](seller, query) as { stages: { id: string }[] };
-    expect(result.stages.map((stage) => stage.id)).toEqual(['base-new', 'base-contact']);
-    expect(prisma.stage.findFirst).not.toHaveBeenCalled();
+    expect(result.stages.map((stage) => stage.id)).toEqual(['own-new', 'own-contact']);
+    expect(prisma.stage.findFirst).toHaveBeenCalled();
   });
 
   it.each(pipelineEndpoints)('%s falls back to the base board when individual mode has no own stages yet', async (endpoint) => {
@@ -136,6 +135,19 @@ describe('restricted PL analytics', () => {
     expect(nextStageParameter).not.toBeNull();
     expect(fromNovo!.values[Number(nextStageParameter![1]) - 1]).toBe('own-contact');
     expect(transitions).toHaveLength(1);
+  });
+
+  it('management conversion never treats a different personal board as the next stage', async () => {
+    const { service, prisma } = setupBoard(false);
+    await service.getConversion({ ...seller, role: 'SUPER_ADMIN', plSalesOnly: false }, { ...query, pipeline_id: PL_PIPELINE });
+    const transitions = sqlCalls(prisma.$queryRaw).filter(sql => sql.text.includes('JOIN "LeadActivity" la2'));
+    const pairs = transitions.map(sql => {
+      const from = sql.text.match(/la\.dados_depois->>'estagio_id' = \$(\d+)/)!;
+      const to = sql.text.match(/la2\.dados_depois->>'estagio_id' = \$(\d+)/)!;
+      return [sql.values[Number(from[1]) - 1], sql.values[Number(to[1]) - 1]];
+    });
+    expect(pairs).toEqual(expect.arrayContaining([['base-new', 'base-contact'], ['own-new', 'own-contact']]));
+    expect(pairs).toHaveLength(2);
   });
 
   it('overview scopes all current/previous counts and explicitly identifies lead estimates', async () => {

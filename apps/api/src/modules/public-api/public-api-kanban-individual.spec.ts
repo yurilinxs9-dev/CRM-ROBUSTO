@@ -1,4 +1,5 @@
 import { PublicApiService } from './public-api.service';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -76,6 +77,27 @@ function montar(opts: { kanbanOn?: boolean; lead?: Record<string, unknown> } = {
   );
   return { svc, prisma, leads, kanbanIndividual };
 }
+
+describe('PL public API with personal boards and global toggle off', () => {
+  it('catalog never exposes seller-owned stage sets', async () => {
+    const m = montar();
+    await m.svc.listPipelines(PL_TENANT);
+    expect(m.prisma.pipeline.findMany.mock.calls[0][0].select.stages.where).toEqual({ user_id: null });
+  });
+  it('unassigned creation selects base stages and keeps stage/pipeline consistent', async () => {
+    const m = montar();
+    m.prisma.pipeline.findFirst.mockResolvedValue({ id: PL_PIPELINE, stages: [{ id: COLUNA_BASE }] });
+    await m.svc.createContact(PL_TENANT, { name: 'Fulano', phone: '5531999999999' });
+    expect(m.prisma.pipeline.findFirst.mock.calls[0][0].select.stages.where).toEqual({ user_id: null });
+    expect(m.prisma.lead.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ tenant_id: PL_TENANT, pipeline_id: PL_PIPELINE, estagio_id: COLUNA_BASE, responsavel_id: null }) }));
+  });
+  it('translates a requested stage for a personal seller before delegating the move', async () => {
+    const m = montar({ lead: { ...LEAD_DTO, responsavel_id: 'seller' } });
+    m.kanbanIndividual.stageForOwner.mockResolvedValue(COLUNA_DO_DONO);
+    await m.svc.moveStage(PL_TENANT, 'lead-1', { stage_id: '11111111-1111-4111-8111-111111111111' });
+    expect(m.leads.updateStage).toHaveBeenCalledWith('lead-1', { estagio_id: COLUNA_DO_DONO }, expect.objectContaining({ tenantId: PL_TENANT }));
+  });
+});
 
 describe('PublicApiService.listPipelines — catalogo de etapas', () => {
   it('toggle ON: devolve so as colunas BASE (o modelo do tenant)', async () => {

@@ -6,7 +6,6 @@ import {
   useQuery,
   useMutation,
   useQueryClient,
-  keepPreviousData,
 } from '@tanstack/react-query';
 import {
   DndContext,
@@ -28,6 +27,7 @@ import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { PL_PIPELINE_ID } from '@/lib/pl-sales';
+import { getKanbanBoardContext, invalidateStageBoardQueries, keepBoardDataInScope, personalStagePatchSchema, stagePageParams, stageColumnFor, stageCountsAfterMove, visibleStageTotals } from '@/lib/kanban-board-context';
 import { formError } from '@/lib/form-error';
 import { getSocket } from '@/lib/socket';
 import { useAuthStore, useIsPoolEnabled, useIsKanbanIndividual, useIsPlSalesOnly } from '@/stores/auth.store';
@@ -115,11 +115,12 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   const [localFilters, setLocalFilters] = useState<LeadPanelFilters>(() => ({ ...FILTROS_VAZIOS, tags: [], origem: [] }));
   const filters = fixedPipelineId ? localFilters : view.filters;
   const cardFields = fixedPipelineId ? [] : view.config.card_fields;
-  const currentUserId = useAuthStore((s) => s.user?.id);
+  const user = useAuthStore((s) => s.user);
+  const currentUserId = user?.id;
   const restricted = useIsPlSalesOnly();
-  const userRole = useAuthStore((s) => s.user?.role);
+  const userRole = user?.role;
   const isOperador = userRole === 'OPERADOR';
-  const focusMode = useAuthStore((s) => s.user?.focus_mode ?? false);
+  const focusMode = user?.focus_mode ?? false;
   const isPoolEnabled = useIsPoolEnabled();
   // Kanban individual: as colunas deixam de ser do workspace e passam a ser do
   // MEMBRO. Muda de onde vêm os estágios (`view_as_user_id`) e o que fazer com
@@ -178,7 +179,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
   const [detailLeadId, setDetailLeadId] = useState<string | null>(null);
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
-  const leadsSnapshotRef = useRef<BoardResponse | null>(null);
+  const leadsSnapshotRef = useRef<{ key: readonly unknown[]; board: BoardResponse } | null>(null);
 
   const toggleLead = useCallback((id: string) => {
     setSelectedLeadIds((prev) => {
@@ -202,7 +203,8 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // escolhido), o `responsavel_id` sai da query junto — em vez de ficar órfão,
   // ignorado pelo backend mas ainda sujando a chave de cache. String vazia
   // também vira 'ALL': param vazio no request é pior que param ausente.
-  const viewAsApplied = showViewAs && viewAsUserId ? viewAsUserId : 'ALL';
+  const boardRequest = getKanbanBoardContext({ user, tenantIndividual: kanbanIndividual, pipelineId: activePipelineId, selectedViewerId: viewAsUserId });
+  const { viewAsApplied, cacheScope } = boardRequest;
 
   // Rede da inicialização acima, para quando a flag chega DEPOIS da montagem
   // (sessão ainda hidratando, `/me` respondendo, ou o gestor ligando o toggle
@@ -216,37 +218,22 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // `responsavel_id` traria a carteira do time inteiro, empilhada na primeira
   // coluna e arrastável. Só vale para quem tem o seletor (gestor fora do modo
   // foco) — operador em 'ALL' já recebe o próprio board do backend.
-  const viewAsResolvido = !(kanbanIndividual && showViewAs && viewAsApplied === 'ALL');
-
-  /**
-   * Gestor olhando o board de OUTRO membro: as colunas são dele, não do gestor.
-   * Criar, renomear, recolorir, configurar, reordenar ou excluir aqui não faz o
-   * que a tela promete — cai no board do próprio gestor (criação) ou toma 403 do
-   * backend (o porteiro só deixa o dono editar a coluna pessoal). Some com os
-   * controles em vez de deixá-los enganando. 'ALL' não entra: é o próprio board
-   * de quem não tem seletor (operador, gestor em modo foco).
-   */
-  const boardDeOutroMembro =
-    kanbanIndividual && viewAsApplied !== 'ALL' && viewAsApplied !== currentUserId;
-  const stagesReadOnly = restricted || boardDeOutroMembro;
+  const viewAsResolvido = boardRequest.viewAsResolved;
 
   // --- Pipelines ---
-  // Com o toggle ligado, as ETAPAS vêm do board de quem o gestor está vendo.
+  // No modo individual ou no funil PL, pede as etapas do membro selecionado.
   // Anda sempre junto do `responsavel_id` dos leads (scopeParams abaixo): board
   // de um membro com as colunas de outro mostraria todo card na coluna errada.
-  const pipelineParams = useMemo(() => {
-    const p: Record<string, string> = {};
-    if (kanbanIndividual && viewAsApplied !== 'ALL') p.view_as_user_id = viewAsApplied;
-    return p;
-  }, [kanbanIndividual, viewAsApplied]);
+  const pipelineParams = boardRequest.pipelineParams;
 
   const { data: pipelines = [], isLoading: pipelinesLoading } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines', pipelineParams],
+    queryKey: ['pipelines', cacheScope],
     queryFn: async () => {
       const res = await api.get('/api/pipelines', { params: pipelineParams });
       return res.data;
     },
     select: data => restricted ? data.filter(pipeline => pipeline.id === PL_PIPELINE_ID) : data,
+    enabled: !!user && viewAsResolvido,
   });
 
   useEffect(() => {
@@ -264,6 +251,23 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
     () => [...(activePipeline?.stages ?? [])].sort((a, b) => a.ordem - b.ordem),
     [activePipeline],
   );
+  const { projectUnknownStages, stagesReadOnly, canConfigureStages } = getKanbanBoardContext({
+    user, tenantIndividual: kanbanIndividual, pipelineId: activePipelineId, selectedViewerId: viewAsUserId, stages,
+  });
+
+  // A selection or dialog from one member must not act on the next board.
+  useEffect(() => {
+    setSelectedLeadIds(new Set());
+    setStageConfigId(null);
+    setDeleteStageId(null);
+    setActiveDragLead(null);
+    setDialogOpen(false);
+    setDefaultStageId(null);
+    setQuickTaskLeadId(null);
+    setArchiveLeadId(null);
+    setDetailLeadId(null);
+    leadsSnapshotRef.current = null;
+  }, [cacheScope]);
 
   /**
    * "Novo lead" da palette (Ctrl+K) chega por dois caminhos, porque a palette é
@@ -399,8 +403,8 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
 
   // serverParams entra na chave: mudou filtro, é outra consulta ao servidor.
   const leadsQueryKey = useMemo(
-    () => ['leads', activePipelineId, serverParams] as const,
-    [activePipelineId, serverParams],
+    () => ['leads', cacheScope, serverParams] as const,
+    [cacheScope, serverParams],
   );
 
   // Janela por coluna: servidor manda top-50 de cada estágio + contagem/valor
@@ -416,16 +420,16 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       });
       return res.data;
     },
-    enabled: !!activePipelineId && (!fixedPipelineId || !!activePipeline) && viewAsResolvido,
-    placeholderData: keepPreviousData,
+    enabled: !!user && !!activePipelineId && !!activePipeline && viewAsResolvido,
+    placeholderData: (previous, previousQuery) => keepBoardDataInScope(previous, previousQuery?.queryKey, cacheScope),
     // Realtime via WebSocket com DELTA-PATCH direto na cache (sem refetch).
     // Poll é só rede de segurança se o WS cair — 60s.
     refetchInterval: 60000,
   });
 
   const leads = useMemo(() => board?.leads ?? [], [board]);
-  const stageCounts = useMemo(() => board?.stage_counts ?? {}, [board]);
-  const stageValues = useMemo(() => board?.stage_values ?? {}, [board]);
+  const stageCounts = useMemo(() => visibleStageTotals(board?.stage_counts ?? {}, stages, projectUnknownStages), [board, stages, projectUnknownStages]);
+  const stageValues = useMemo(() => visibleStageTotals(board?.stage_values ?? {}, stages, projectUnknownStages), [board, stages, projectUnknownStages]);
 
   // "Carregar mais": appenda a próxima página da coluna DIRETO na cache da
   // query — assim WS delta-patch e optimistic updates continuam operando num
@@ -438,23 +442,19 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       setLoadingMoreStage(stageId);
       try {
         const current = queryClient.getQueryData<BoardResponse>(leadsQueryKey);
-        // Offset conta pelo `estagio_id` REAL, não pela coluna em que o card
-        // aparece: o pedido abaixo é `estagio_id=<stageId>`, então o servidor
-        // pagina só os leads daquela etapa. Somar os cards realocados aqui
-        // pularia uma fatia da página seguinte.
-        const loaded = current?.leads.filter((l) => l.estagio_id === stageId).length ?? 0;
+        const pageParams = stagePageParams({
+          tenantId: user?.tenantId, pipelineId: activePipelineId, stageId,
+          stages, leads: current?.leads ?? [], pageSize: PER_STAGE,
+        });
         const res = await api.get('/api/leads', {
           params: {
-            pipeline_id: activePipelineId,
-            estagio_id: stageId,
-            limit: String(PER_STAGE),
-            offset: String(loaded),
             // Sem isto, "Carregar mais" traria a próxima página SEM filtro e
             // misturaria na coluna leads que o filtro tinha excluído.
             ...serverParams,
+            ...pageParams,
           },
         });
-        const page = res.data as Lead[];
+        const page = ('board_stage_id' in pageParams ? res.data.leads : res.data) as Lead[];
         queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
           if (!old) return old;
           const seen = new Set(old.leads.map((l) => l.id));
@@ -466,25 +466,25 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         setLoadingMoreStage(null);
       }
     },
-    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey, serverParams],
+    [activePipelineId, loadingMoreStage, queryClient, leadsQueryKey, serverParams, user?.tenantId, stages],
   );
 
   const selectAllInStage = useCallback(
     (stageId: string) => {
-      const stageLeadIds = leads.filter((l) => l.estagio_id === stageId).map((l) => l.id);
+      const stageLeadIds = leads.filter((l) => stageColumnFor(l.estagio_id, stages, projectUnknownStages) === stageId).map((l) => l.id);
       setSelectedLeadIds((prev) => {
         const next = new Set(prev);
         for (const id of stageLeadIds) next.add(id);
         return next;
       });
     },
-    [leads],
+    [leads, stages, projectUnknownStages],
   );
 
   // --- Tenant users (for bulk assign) ---
   const { data: tenantUsers = [] } = useQuery<TenantUser[]>({
-    queryKey: ['users'],
-    enabled: !restricted,
+    queryKey: ['users', user?.tenantId, currentUserId, userRole, restricted],
+    enabled: !!user && !restricted,
     queryFn: async () => {
       const res = await api.get('/api/users/list');
       return res.data as TenantUser[];
@@ -598,8 +598,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // --- Mutations: Stage ---
   const createStageMutation = useMutation({
     mutationFn: async (nome: string) => {
-      if (!activePipelineId) return;
-      await api.post(`/api/pipelines/${activePipelineId}/stages`, { nome, cor: '#3498DB' });
+      if (!activePipelineId || stagesReadOnly) throw new Error('Etapas somente para leitura.');
+      const data = { nome, cor: '#3498DB' };
+      await api.post(`/api/pipelines/${activePipelineId}/stages`, restricted ? personalStagePatchSchema.required({ nome: true }).parse(data) : data);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
     onError: () => toast.error('Erro ao criar etapa.'),
@@ -613,7 +614,8 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       id: string;
       patch: Record<string, unknown>;
     }) => {
-      await api.patch(`/api/stages/${id}`, patch);
+      if (stagesReadOnly || !stages.some(stage => stage.id === id && (!restricted || stage.user_id === currentUserId))) throw new Error('Etapa fora do seu board.');
+      await api.patch(`/api/stages/${id}`, restricted ? personalStagePatchSchema.parse(patch) : patch);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
     onError: () => toast.error('Erro ao atualizar etapa.'),
@@ -621,6 +623,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
 
   const deleteStageMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (!canConfigureStages) throw new Error('Exclusão de etapas não permitida.');
       await api.delete(`/api/stages/${id}`);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
@@ -629,7 +632,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
 
   const reorderStagesMutation = useMutation({
     mutationFn: async (stageIds: string[]) => {
-      if (!activePipelineId) return;
+      if (!activePipelineId || stagesReadOnly) throw new Error('Etapas somente para leitura.');
+      if (stageIds.length !== stages.length || new Set(stageIds).size !== stages.length ||
+        stageIds.some(id => !stages.some(stage => stage.id === id && (!restricted || stage.user_id === currentUserId)))) throw new Error('Etapas fora do seu board.');
       await api.post(`/api/pipelines/${activePipelineId}/stages/reorder`, { stageIds });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pipelines'] }),
@@ -657,7 +662,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
     },
     onError: () => {
       if (leadsSnapshotRef.current) {
-        queryClient.setQueryData(leadsQueryKey, leadsSnapshotRef.current);
+        queryClient.setQueryData(leadsSnapshotRef.current.key, leadsSnapshotRef.current.board);
         leadsSnapshotRef.current = null;
       }
       toast.error('Erro ao mover lead.');
@@ -721,6 +726,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   // --- Socket ---
   useEffect(() => {
     const socket = getSocket();
+    const handlePipelineStagesChanged = (payload: { pipelineId: string; ownerId: string | null }) => {
+      void invalidateStageBoardQueries(queryClient, payload, activePipelineId);
+    };
     const handleStageChanged = (payload: { triggeredByUserId?: string }) => {
       // Skip invalidation for own drag-drop — the optimistic update + stageMutation already handle it.
       if (payload?.triggeredByUserId && payload.triggeredByUserId === currentUserId) return;
@@ -743,9 +751,11 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
     // global (trata o shape { leads, stage_counts } do board).
     socket.on('lead:stage-changed', handleStageChanged);
     socket.on('lead:created', handleLeadCreated);
+    socket.on('pipeline:stages-changed', handlePipelineStagesChanged);
     return () => {
       socket.off('lead:stage-changed', handleStageChanged);
       socket.off('lead:created', handleLeadCreated);
+      socket.off('pipeline:stages-changed', handlePipelineStagesChanged);
     };
   }, [queryClient, leadsQueryKey, currentUserId, activePipelineId]);
 
@@ -803,12 +813,12 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         targetStageId = overId.replace('column-', '');
       } else {
         const overLead = leads.find((l) => l.id === overId);
-        if (overLead) targetStageId = overLead.estagio_id;
+        if (overLead) targetStageId = stageColumnFor(overLead.estagio_id, stages, projectUnknownStages) ?? null;
       }
       if (!targetStageId) return;
 
-      leadsSnapshotRef.current =
-        queryClient.getQueryData<BoardResponse>(leadsQueryKey) ?? null;
+      const snapshot = queryClient.getQueryData<BoardResponse>(leadsQueryKey);
+      leadsSnapshotRef.current = snapshot ? { key: leadsQueryKey, board: snapshot } : null;
 
       if (targetStageId === lead.estagio_id) {
         // Same-stage reorder: compute fractional position between neighbors.
@@ -867,11 +877,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
         if (!old) return old;
         const moved = old.leads.find((l) => l.id === activeId);
-        const counts = { ...old.stage_counts };
-        if (moved && moved.estagio_id !== finalTarget) {
-          counts[moved.estagio_id] = Math.max(0, (counts[moved.estagio_id] ?? 1) - 1);
-          counts[finalTarget] = (counts[finalTarget] ?? 0) + 1;
-        }
+        const counts = moved
+          ? stageCountsAfterMove(old.stage_counts, moved.estagio_id, finalTarget, stages, projectUnknownStages)
+          : old.stage_counts;
         return {
           ...old,
           stage_counts: counts,
@@ -894,6 +902,8 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       orderedStages,
       reorderStagesMutation,
       stagesReadOnly,
+      stages,
+      projectUnknownStages,
     ],
   );
 
@@ -904,13 +914,13 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
    * antiga). Descartar o card o faria sumir da tela sem explicação — e a
    * contagem do topo, que o backend já realoca na primeira coluna, ficaria
    * maior que os cards visíveis. Então o card segue a contagem: primeira
-   * coluna. Com o toggle desligado não existe coluna desconhecida e nada muda.
+   * coluna retornada pelo servidor, inclusive na PL e na visão base do gestor.
+   * A ordem otimista não muda esse destino até chegar a nova contagem da API.
    */
-  const fallbackStageId = kanbanIndividual ? orderedStages[0]?.id : undefined;
   const colunaDoLead = useCallback(
     (estagioId: string): string | undefined =>
-      orderedStages.some((s) => s.id === estagioId) ? estagioId : fallbackStageId,
-    [orderedStages, fallbackStageId],
+      stageColumnFor(estagioId, stages, projectUnknownStages),
+    [stages, projectUnknownStages],
   );
 
   // Quantos leads já estão carregados por estágio — base do "Carregar mais".
@@ -999,20 +1009,24 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   );
   const handleDuplicateStage = useCallback(
     (id: string) => {
+      if (!canConfigureStages) return;
       const s = stages.find((x) => x.id === id);
       if (!s) return;
       createStageMutation.mutate(`${s.nome} (copia)`);
     },
-    [stages, createStageMutation],
+    [stages, createStageMutation, canConfigureStages],
   );
   const handleDeleteStage = useCallback((id: string) => {
+    if (!canConfigureStages) return;
     setDeleteStageId(id);
-  }, []);
+  }, [canConfigureStages]);
   const handleConfigureStage = useCallback((id: string) => {
+    if (!canConfigureStages) return;
     setStageConfigId(id);
-  }, []);
+  }, [canConfigureStages]);
   const handleMoveStage = useCallback(
     (id: string, dir: -1 | 1) => {
+      if (stagesReadOnly) return;
       const ids = orderedStages.map((s) => s.id);
       const idx = ids.indexOf(id);
       if (idx < 0) return;
@@ -1022,7 +1036,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       setStageOrderOverride(next);
       reorderStagesMutation.mutate(next);
     },
-    [orderedStages, reorderStagesMutation],
+    [orderedStages, reorderStagesMutation, stagesReadOnly],
   );
 
   const stageBeingConfigured = useMemo<StageConfig | null>(() => {
@@ -1046,7 +1060,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   }, [stageConfigId, stages]);
 
   const handleSubmitStageConfig = (patch: any) => {
-    if (!stageConfigId) return;
+    if (!stageConfigId || !canConfigureStages) return;
     updateStageMutation.mutate(
       { id: stageConfigId, patch },
       { onSuccess: () => setStageConfigId(null) },
@@ -1278,6 +1292,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
                     onSelectAllInStage={selectAllInStage}
                     cardFields={cardFields}
                     stagesReadOnly={stagesReadOnly}
+                    limitedStageEditing={restricted}
                   />
                 ))}
                 {/* Etapa nova nasce no board de QUEM cria: no board de um colega
@@ -1338,7 +1353,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         }
       />}
 
-      {!stagesReadOnly && <StageConfigDialog
+      {canConfigureStages && <StageConfigDialog
         open={!!stageConfigId}
         onOpenChange={(o) => !o && setStageConfigId(null)}
         stage={stageBeingConfigured}
@@ -1369,7 +1384,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         onConfirm={() => archiveLeadId && archiveLeadMutation.mutate(archiveLeadId)}
       />
 
-      <ConfirmDialog
+      {canConfigureStages && <ConfirmDialog
         open={!!deleteStageId}
         onOpenChange={(o) => !o && setDeleteStageId(null)}
         title="Excluir etapa?"
@@ -1383,7 +1398,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
             onSuccess: () => setDeleteStageId(null),
           })
         }
-      />
+      />}
 
       <LeadDetailDrawer
         leadId={detailLeadId}

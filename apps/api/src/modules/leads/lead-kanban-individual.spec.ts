@@ -1,6 +1,7 @@
 import { LeadsService } from './leads.service';
 import { UserRole } from '@/common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
+import { PL_PIPELINE, PL_TENANT } from '../pl-sales/pl-sales.domain';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -61,6 +62,7 @@ function makeMocks() {
     },
     stage: {
       findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue({ id: 'base-new', pipeline_id: PL_PIPELINE }),
       // `updateStage` le a etapa duas vezes (nome para a atividade, is_won/
       // is_lost para o webhook). Um retorno so serve para as duas.
       findUnique: jest.fn().mockResolvedValue({ nome: 'Negociando', is_won: false, is_lost: false }),
@@ -104,6 +106,9 @@ function makeMocks() {
   // como o service real se comporta com `kanban_individual = false`.
   const kanbanIndividual: any = {
     isOn: jest.fn().mockResolvedValue(false),
+    hasPersonalBoards: jest.fn(async (tenantId: string) => tenantId === PL_TENANT || await kanbanIndividual.isOn(tenantId)),
+    usesPersonalBoard: jest.fn(async (tenantId: string) => kanbanIndividual.isOn(tenantId)),
+    ensurePlPersonalBoard: jest.fn().mockResolvedValue(undefined),
     stageForOwner: jest.fn(async (_t: string, _o: string, from: string) => from),
     stageForBase: jest.fn(async (_t: string, from: string) => from),
   };
@@ -162,6 +167,202 @@ const dataDaChamada = (mock: jest.Mock, i = 0) => mock.mock.calls[i][0].data;
 /** Payload do unico `emitLeadUpdated`. */
 const payloadEmitido = (gateway: { emitLeadUpdated: jest.Mock }) =>
   gateway.emitLeadUpdated.mock.calls[0][1];
+
+describe('PL personal stages with the tenant toggle off', () => {
+  const seller = { ...alex, id: '66666666-6666-4666-8666-666666666666', tenantId: PL_TENANT, plSalesOnly: true };
+  const manager = { ...gerente, tenantId: PL_TENANT };
+  const target = '11111111-1111-4111-8111-111111111111';
+  const requested = '22222222-2222-4222-8222-222222222222';
+  const leadId = '33333333-3333-4333-8333-333333333333';
+
+  function setup() {
+    const m = makeService();
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(true);
+    m.kanbanIndividual.stageForOwner.mockResolvedValue('personal-contact');
+    m.kanbanIndividual.stageForBase.mockResolvedValue('base-won');
+    m.prisma.stage.findMany.mockResolvedValue([{ id: 'personal-new', ordem: 0 }, { id: 'personal-contact', ordem: 1 }]);
+    m.prisma.lead.findFirst.mockResolvedValue({ id: leadId, responsavel_id: seller.id, pipeline_id: PL_PIPELINE, estagio_id: 'personal-new', mensagens_nao_lidas: 0 });
+    m.prisma.user.findFirst.mockResolvedValue({ id: target, role: 'OPERADOR', nome: 'Destino' });
+    return m;
+  }
+
+  it('loads personal columns and counts even when a seller spoofs another owner', async () => {
+    const m = setup();
+    m.prisma.lead.groupBy.mockResolvedValue([{ estagio_id: 'personal-contact', _count: { _all: 2 }, _sum: { valor_estimado: 10 } }]);
+    const result = await m.service.findAll(seller, { per_stage: '50', pipeline_id: PL_PIPELINE, responsavel_id: 'colleague' }) as { stage_counts: Record<string, number> };
+    expect(m.kanbanIndividual.usesPersonalBoard).toHaveBeenCalledWith(PL_TENANT, seller.id, PL_PIPELINE);
+    expect(m.kanbanIndividual.ensurePlPersonalBoard).toHaveBeenCalledWith(PL_TENANT, seller.id);
+    expect(m.prisma.stage.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ pipeline_id: PL_PIPELINE, user_id: seller.id }) }));
+    expect(result.stage_counts).toEqual({ 'personal-contact': 2 });
+  });
+
+  it('uses the viewed seller board only for permitted manager supervision', async () => {
+    const m = setup();
+    await m.service.findAll(manager, { per_stage: '50', pipeline_id: PL_PIPELINE, responsavel_id: target });
+    expect(m.kanbanIndividual.usesPersonalBoard).toHaveBeenCalledWith(PL_TENANT, target, PL_PIPELINE);
+    expect(m.prisma.stage.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ user_id: target }) }));
+  });
+
+  it('initializes before cached reads and does not reuse a previously shared board response', async () => {
+    const m = setup();
+    const cached = new Map<string, unknown>();
+    m.cache.get.mockImplementation(async (key: string) => cached.get(key));
+    m.cache.set.mockImplementation(async (key: string, value: unknown) => { cached.set(key, value); });
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValueOnce(false);
+    m.prisma.stage.findMany.mockResolvedValueOnce([{ id: 'base-new', ordem: 0 }]);
+    m.prisma.lead.groupBy.mockResolvedValueOnce([{ estagio_id: 'base-new', _count: { _all: 1 } }]);
+    await m.service.findAll(seller, { per_stage: '50', pipeline_id: PL_PIPELINE });
+
+    m.prisma.lead.groupBy.mockResolvedValue([{ estagio_id: 'personal-new', _count: { _all: 1 } }]);
+    const result = await m.service.findAll(seller, { per_stage: '50', pipeline_id: PL_PIPELINE });
+    expect(result).toEqual(expect.objectContaining({ stage_counts: { 'personal-new': 1 } }));
+    expect(m.kanbanIndividual.ensurePlPersonalBoard.mock.invocationCallOrder[0]).toBeLessThan(m.cache.get.mock.invocationCallOrder[1]);
+    expect(m.prisma.stage.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps partner board selection on the base without initializing personal PL stages', async () => {
+    const m = setup();
+    await m.service.findAll(manager, { per_stage: '50', pipeline_id: 'partners', responsavel_id: target });
+    expect(m.prisma.stage.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ user_id: null }) }));
+    expect(m.kanbanIndividual.ensurePlPersonalBoard).not.toHaveBeenCalled();
+  });
+
+  it('keeps personal-stage leads visible in the manager base board totals', async () => {
+    const m = setup();
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(false);
+    m.prisma.stage.findMany.mockResolvedValue([{ id: 'base-new', ordem: 0 }]);
+    m.prisma.lead.groupBy.mockResolvedValue([{ estagio_id: 'seller-custom', _count: { _all: 2 }, _sum: { valor_estimado: 10 } }]);
+    const result = await m.service.findAll(manager, { per_stage: '50', pipeline_id: PL_PIPELINE }) as { stage_counts: Record<string, number> };
+    expect(result.stage_counts).toEqual({ 'base-new': 2 });
+    expect(m.prisma.lead.findMany.mock.calls[0][0].where.AND).toEqual(expect.arrayContaining([expect.objectContaining({ OR: expect.arrayContaining([{ estagio_id: { notIn: ['base-new'] } }]) })]));
+  });
+
+  it.each(['base-new', 'base-contact'])('paginates only %s with the same board predicate and full totals', async (stageId) => {
+    const m = setup();
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(false);
+    m.prisma.stage.findMany.mockResolvedValue([{ id: 'base-new', ordem: 0 }, { id: 'base-contact', ordem: 1 }]);
+    m.prisma.lead.groupBy.mockResolvedValue([
+      { estagio_id: 'seller-private', _count: { _all: 70 }, _sum: { valor_estimado: 700 } },
+      { estagio_id: 'base-contact', _count: { _all: 65 }, _sum: { valor_estimado: 650 } },
+    ]);
+    const filters = { per_stage: '50', pipeline_id: PL_PIPELINE, search: 'Cliente' };
+    await m.service.findAll(manager, filters);
+    const firstPageQuery = m.prisma.lead.findMany.mock.calls[stageId === 'base-new' ? 0 : 1][0];
+    m.prisma.lead.findMany.mockClear();
+    const nextLead = { id: 'page-two', estagio_id: stageId === 'base-new' ? 'seller-private' : stageId, messages: [] };
+    m.prisma.lead.findMany.mockResolvedValue([nextLead]);
+
+    const result = await m.service.findAll(manager, { ...filters, board_stage_id: stageId, offset: '50' });
+
+    expect(m.prisma.lead.findMany).toHaveBeenCalledTimes(1);
+    expect(m.prisma.lead.findMany).toHaveBeenCalledWith({ ...firstPageQuery, skip: 50 });
+    expect(result).toEqual(expect.objectContaining({
+      leads: [expect.objectContaining({ id: 'page-two', estagio_id: nextLead.estagio_id })],
+      stage_counts: { 'base-new': 70, 'base-contact': 65 },
+      stage_values: { 'base-new': 700, 'base-contact': 650 },
+      owner_counts: { me: 0, others: 0 },
+    }));
+  });
+
+  it.each([seller, manager])('rejects a requested page outside the returned board for $role', async (viewer) => {
+    const m = setup();
+    await expect(m.service.findAll(viewer, {
+      pipeline_id: PL_PIPELINE, per_stage: '50', board_stage_id: 'colleague-stage', offset: '50',
+    })).rejects.toThrow('Etapa não pertence ao board');
+    expect(m.prisma.lead.findMany).not.toHaveBeenCalled();
+    expect(m.prisma.lead.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('keeps different requested board columns in separate cache entries', async () => {
+    const m = setup();
+    const stored = new Map<string, unknown>();
+    m.cache.get.mockImplementation(async (key: string) => stored.get(key));
+    m.cache.set.mockImplementation(async (key: string, value: unknown) => { stored.set(key, value); });
+    const filters = { pipeline_id: PL_PIPELINE, per_stage: '50', offset: '50' };
+    m.prisma.lead.findMany.mockResolvedValueOnce([{ id: 'new-page', estagio_id: 'personal-new', messages: [] }]);
+    await m.service.findAll(seller, { ...filters, board_stage_id: 'personal-new' });
+    m.prisma.lead.findMany.mockResolvedValueOnce([{ id: 'contact-page', estagio_id: 'personal-contact', messages: [] }]);
+    const result = await m.service.findAll(seller, { ...filters, board_stage_id: 'personal-contact' });
+    expect(result).toEqual(expect.objectContaining({ leads: [expect.objectContaining({ id: 'contact-page' })] }));
+    expect(stored.size).toBe(2);
+  });
+
+  it('single moves store and announce the destination owner stage', async () => {
+    const m = setup();
+    await m.service.updateStage(leadId, { estagio_id: requested }, manager);
+    expect(dataDaChamada(m.prisma.lead.update)).toEqual(expect.objectContaining({ estagio_id: 'personal-contact' }));
+    expect(m.gateway.emitLeadStageChanged).toHaveBeenCalledWith(leadId, expect.objectContaining({ newStageId: 'personal-contact' }), PL_TENANT);
+  });
+
+  it('bulk moves translate separately for personal sellers, ordinary sellers and unassigned leads', async () => {
+    const m = setup();
+    const ordinaryId = '44444444-4444-4444-8444-444444444444';
+    const unassignedId = '55555555-5555-4555-8555-555555555555';
+    m.prisma.lead.findMany.mockResolvedValue([{ id: leadId, responsavel_id: seller.id }, { id: ordinaryId, responsavel_id: 'ordinary' }, { id: unassignedId, responsavel_id: null }]);
+    m.kanbanIndividual.stageForOwner.mockImplementation(async (_tenant: string, owner: string) => owner === seller.id ? 'personal-contact' : 'base-contact');
+    await m.service.bulkMoveStage({ ids: [leadId, ordinaryId, unassignedId], estagio_id: requested }, manager);
+    expect(m.prisma.lead.updateMany.mock.calls.map(([args]: [{ data: { estagio_id: string } }]) => args.data.estagio_id)).toEqual(['personal-contact', 'base-contact', 'base-won']);
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledWith(leadId, expect.objectContaining({ estagio_id: 'personal-contact' }), PL_TENANT);
+    expect(m.gateway.emitLeadUpdated).toHaveBeenCalledTimes(3);
+  });
+
+  it('direct owner PATCH remaps the stage in the same write and transfers the conversation', async () => {
+    const m = setup();
+    m.txClient.conversation.findMany.mockResolvedValue([{ id: 'conv', last_customer_message_at: new Date(), instancia_whatsapp: 'phone' }]);
+    await m.service.update(leadId, { responsavel_id: target }, manager);
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith(PL_TENANT, target, 'personal-new');
+    expect(dataDaChamada(m.txClient.lead.update)).toEqual(expect.objectContaining({ responsavel_id: target, estagio_id: 'personal-contact', estagio_entered_at: expect.any(Date) }));
+    expect(m.txClient.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ responsavel_id: target }) }));
+  });
+
+  it('direct owner PATCH to the same seller preserves stage age', async () => {
+    const m = setup();
+    await m.service.update(leadId, { responsavel_id: seller.id }, manager);
+    expect(m.kanbanIndividual.stageForOwner).not.toHaveBeenCalled();
+    expect(dataDaChamada(m.txClient.lead.update)).not.toHaveProperty('estagio_entered_at');
+  });
+
+  it('owner PATCH ignores a submitted stage, as before, and translates the stored stage', async () => {
+    const m = setup();
+    await m.service.update(leadId, { responsavel_id: target, estagio_id: requested }, manager);
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledWith(PL_TENANT, target, 'personal-new');
+    expect(dataDaChamada(m.txClient.lead.update)).toEqual(expect.objectContaining({ estagio_id: 'personal-contact' }));
+  });
+
+  it.each(['reassign', 'bulkAssign'] as const)('%s follows the target owner board with global mode off', async (operation) => {
+    const m = setup();
+    if (operation === 'reassign') await m.service.reassign(leadId, { novoResponsavelId: target }, manager);
+    else {
+      m.prisma.lead.findMany.mockResolvedValue([{ id: leadId }]);
+      await m.service.bulkAssign({ ids: [leadId], responsavel_id: target }, manager);
+    }
+    expect(dataDaChamada(m.txClient.lead.update)).toEqual(expect.objectContaining({ responsavel_id: target, estagio_id: 'personal-contact' }));
+  });
+
+  it('mixed bulk assignment delegates PL leads and leaves partner stages on the existing generic path', async () => {
+    const m = setup();
+    const partnerId = '44444444-4444-4444-8444-444444444444';
+    m.prisma.lead.findMany
+      .mockResolvedValueOnce([{ id: leadId }])
+      .mockResolvedValueOnce([{ id: partnerId, estagio_id: 'partner-stage', responsavel_id: 'ordinary' }]);
+    const result = await m.service.bulkAssign({ ids: [leadId, partnerId], responsavel_id: target }, manager);
+    expect(result).toEqual({ updated: 2 });
+    expect(m.kanbanIndividual.stageForOwner).toHaveBeenCalledTimes(1);
+    expect(dataDaChamada(m.txClient.lead.update)).toEqual(expect.objectContaining({ estagio_id: 'personal-contact' }));
+    expect(m.prisma.lead.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [partnerId] }, tenant_id: PL_TENANT },
+      data: { responsavel_id: target, returned_at: null },
+    });
+  });
+
+  it('returning a renamed won stage to the pool stores the translated base stage', async () => {
+    const m = setup();
+    m.prisma.lead.findFirst.mockResolvedValue({ id: leadId, responsavel_id: seller.id, pipeline_id: PL_PIPELINE, estagio_id: 'renamed-personal-won' });
+    await m.service.returnToPool(leadId, manager);
+    expect(m.kanbanIndividual.stageForBase).toHaveBeenCalledWith(PL_TENANT, 'renamed-personal-won');
+    expect(dataDaChamada(m.txClient.lead.update)).toEqual(expect.objectContaining({ responsavel_id: null, estagio_id: 'base-won' }));
+  });
+});
 
 describe('claim — a coluna acompanha quem assumiu', () => {
   it('toggle ON: remapeia estagio_id para a coluna do claimer e carimba a entrada', async () => {
