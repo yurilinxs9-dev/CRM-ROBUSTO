@@ -51,22 +51,25 @@ export const personalStagePatchSchema = z.object({
   cor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 }).strict();
 
-export function stageColumnFor(stageId: string, stages: readonly BoardStage[], projectUnknownStages: boolean): string | undefined {
-  return stages.some(stage => stage.id === stageId) ? stageId : projectUnknownStages ? stages[0]?.id : undefined;
+export function stageColumnFor(stageId: string, stages: readonly BoardStage[], projectUnknownStages: boolean, stageColumns: Readonly<Record<string, string>> = {}): string | undefined {
+  if (stages.some(stage => stage.id === stageId)) return stageId;
+  const mapped = projectUnknownStages ? stageColumns[stageId] : undefined;
+  return mapped && stages.some(stage => stage.id === mapped) ? mapped : projectUnknownStages ? stages[0]?.id : undefined;
 }
 
 /** PL pages use the same displayed-column membership as the initial board. */
-export function stagePageParams({ tenantId, pipelineId, stageId, stages, leads, pageSize }: {
+export function stagePageParams({ tenantId, pipelineId, stageId, stages, leads, pageSize, stageColumns }: {
   tenantId?: string;
   pipelineId: string;
   stageId: string;
   stages: readonly BoardStage[];
   leads: readonly { estagio_id: string }[];
   pageSize: number;
+  stageColumns?: Readonly<Record<string, string>>;
 }) {
   const plBoard = tenantId === PARTNERS_TENANT && pipelineId === PL_PIPELINE_ID;
   const loaded = leads.filter(lead =>
-    (plBoard ? stageColumnFor(lead.estagio_id, stages, true) : lead.estagio_id) === stageId,
+    (plBoard ? stageColumnFor(lead.estagio_id, stages, true, stageColumns) : lead.estagio_id) === stageId,
   ).length;
   return {
     pipeline_id: pipelineId,
@@ -78,19 +81,19 @@ export function stagePageParams({ tenantId, pipelineId, stageId, stages, leads, 
 }
 
 /** Supports both raw totals and totals already projected by the API. */
-export function visibleStageTotals(totals: Record<string, number>, stages: readonly BoardStage[], projectUnknownStages: boolean): Record<string, number> {
+export function visibleStageTotals(totals: Record<string, number>, stages: readonly BoardStage[], projectUnknownStages: boolean, stageColumns?: Readonly<Record<string, string>>): Record<string, number> {
   if (!projectUnknownStages) return totals;
   const result: Record<string, number> = {};
   for (const [id, total] of Object.entries(totals)) {
-    const column = stageColumnFor(id, stages, projectUnknownStages);
+    const column = stageColumnFor(id, stages, projectUnknownStages, stageColumns);
     if (column) result[column] = (result[column] ?? 0) + total;
   }
   return result;
 }
 
-export function stageCountsAfterMove(totals: Record<string, number>, from: string, to: string, stages: readonly BoardStage[], projectUnknownStages: boolean): Record<string, number> {
-  const counts = { ...visibleStageTotals(totals, stages, projectUnknownStages) };
-  const source = stageColumnFor(from, stages, projectUnknownStages) ?? from;
+export function stageCountsAfterMove(totals: Record<string, number>, from: string, to: string, stages: readonly BoardStage[], projectUnknownStages: boolean, stageColumns?: Readonly<Record<string, string>>): Record<string, number> {
+  const counts = { ...visibleStageTotals(totals, stages, projectUnknownStages, stageColumns) };
+  const source = stageColumnFor(from, stages, projectUnknownStages, stageColumns) ?? from;
   if (source !== to) {
     counts[source] = Math.max(0, (counts[source] ?? 1) - 1);
     counts[to] = (counts[to] ?? 0) + 1;

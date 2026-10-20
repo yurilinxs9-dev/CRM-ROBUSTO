@@ -99,6 +99,7 @@ interface BoardResponse {
   leads: Lead[];
   stage_counts: Record<string, number>;
   stage_values: Record<string, number>;
+  stage_columns?: Record<string, string>;
   /** Total de cada aba (Meus Leads / Escritório) sob os demais filtros. */
   owner_counts?: { me: number; others: number };
 }
@@ -428,8 +429,9 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
   });
 
   const leads = useMemo(() => board?.leads ?? [], [board]);
-  const stageCounts = useMemo(() => visibleStageTotals(board?.stage_counts ?? {}, stages, projectUnknownStages), [board, stages, projectUnknownStages]);
-  const stageValues = useMemo(() => visibleStageTotals(board?.stage_values ?? {}, stages, projectUnknownStages), [board, stages, projectUnknownStages]);
+  const stageColumns = board?.stage_columns;
+  const stageCounts = useMemo(() => visibleStageTotals(board?.stage_counts ?? {}, stages, projectUnknownStages, stageColumns), [board, stages, projectUnknownStages, stageColumns]);
+  const stageValues = useMemo(() => visibleStageTotals(board?.stage_values ?? {}, stages, projectUnknownStages, stageColumns), [board, stages, projectUnknownStages, stageColumns]);
 
   // "Carregar mais": appenda a próxima página da coluna DIRETO na cache da
   // query — assim WS delta-patch e optimistic updates continuam operando num
@@ -444,7 +446,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         const current = queryClient.getQueryData<BoardResponse>(leadsQueryKey);
         const pageParams = stagePageParams({
           tenantId: user?.tenantId, pipelineId: activePipelineId, stageId,
-          stages, leads: current?.leads ?? [], pageSize: PER_STAGE,
+          stages, leads: current?.leads ?? [], pageSize: PER_STAGE, stageColumns: current?.stage_columns,
         });
         const res = await api.get('/api/leads', {
           params: {
@@ -458,7 +460,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
           if (!old) return old;
           const seen = new Set(old.leads.map((l) => l.id));
-          return { ...old, leads: [...old.leads, ...page.filter((l) => !seen.has(l.id))] };
+          return { ...old, stage_columns: res.data.stage_columns ?? old.stage_columns, leads: [...old.leads, ...page.filter((l) => !seen.has(l.id))] };
         });
       } catch {
         toast.error('Erro ao carregar mais leads');
@@ -471,14 +473,14 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
 
   const selectAllInStage = useCallback(
     (stageId: string) => {
-      const stageLeadIds = leads.filter((l) => stageColumnFor(l.estagio_id, stages, projectUnknownStages) === stageId).map((l) => l.id);
+      const stageLeadIds = leads.filter((l) => stageColumnFor(l.estagio_id, stages, projectUnknownStages, stageColumns) === stageId).map((l) => l.id);
       setSelectedLeadIds((prev) => {
         const next = new Set(prev);
         for (const id of stageLeadIds) next.add(id);
         return next;
       });
     },
-    [leads, stages, projectUnknownStages],
+    [leads, stages, projectUnknownStages, stageColumns],
   );
 
   // --- Tenant users (for bulk assign) ---
@@ -813,17 +815,17 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
         targetStageId = overId.replace('column-', '');
       } else {
         const overLead = leads.find((l) => l.id === overId);
-        if (overLead) targetStageId = stageColumnFor(overLead.estagio_id, stages, projectUnknownStages) ?? null;
+        if (overLead) targetStageId = stageColumnFor(overLead.estagio_id, stages, projectUnknownStages, stageColumns) ?? null;
       }
       if (!targetStageId) return;
 
       const snapshot = queryClient.getQueryData<BoardResponse>(leadsQueryKey);
       leadsSnapshotRef.current = snapshot ? { key: leadsQueryKey, board: snapshot } : null;
 
-      if (targetStageId === lead.estagio_id) {
+      if (targetStageId === stageColumnFor(lead.estagio_id, stages, projectUnknownStages, stageColumns)) {
         // Same-stage reorder: compute fractional position between neighbors.
         const stageLeads = leads
-          .filter((l) => l.estagio_id === targetStageId)
+          .filter((l) => stageColumnFor(l.estagio_id, stages, projectUnknownStages, stageColumns) === targetStageId)
           .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER));
 
         const fromIdx = stageLeads.findIndex((l) => l.id === activeId);
@@ -873,12 +875,12 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       // Card vindo de outra coluna entra no topo do destino, mesma regra do
       // lead novo. Vai explícito no pedido para o card não piscar na posição
       // antiga até a resposta chegar; sem posição, o backend decide igual.
-      const topPosition = topPositionFor(leads.filter((l) => l.estagio_id === finalTarget));
+      const topPosition = topPositionFor(leads.filter((l) => stageColumnFor(l.estagio_id, stages, projectUnknownStages, stageColumns) === finalTarget));
       queryClient.setQueryData<BoardResponse>(leadsQueryKey, (old) => {
         if (!old) return old;
         const moved = old.leads.find((l) => l.id === activeId);
         const counts = moved
-          ? stageCountsAfterMove(old.stage_counts, moved.estagio_id, finalTarget, stages, projectUnknownStages)
+          ? stageCountsAfterMove(old.stage_counts, moved.estagio_id, finalTarget, stages, projectUnknownStages, stageColumns)
           : old.stage_counts;
         return {
           ...old,
@@ -904,6 +906,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       stagesReadOnly,
       stages,
       projectUnknownStages,
+      stageColumns,
     ],
   );
 
@@ -914,13 +917,14 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
    * antiga). Descartar o card o faria sumir da tela sem explicação — e a
    * contagem do topo, que o backend já realoca na primeira coluna, ficaria
    * maior que os cards visíveis. Então o card segue a contagem: primeira
-   * coluna retornada pelo servidor, inclusive na PL e na visão base do gestor.
+   * coluna retornada pelo servidor. Na visão geral da PL, a API informa as
+   * equivalências das etapas pessoais para manter a etapa salva na tela.
    * A ordem otimista não muda esse destino até chegar a nova contagem da API.
    */
   const colunaDoLead = useCallback(
     (estagioId: string): string | undefined =>
-      stageColumnFor(estagioId, stages, projectUnknownStages),
-    [stages, projectUnknownStages],
+      stageColumnFor(estagioId, stages, projectUnknownStages, stageColumns),
+    [stages, projectUnknownStages, stageColumns],
   );
 
   // Quantos leads já estão carregados por estágio — base do "Carregar mais".

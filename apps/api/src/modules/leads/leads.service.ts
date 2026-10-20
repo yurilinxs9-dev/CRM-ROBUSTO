@@ -561,7 +561,7 @@ export class LeadsService {
       user.id,
       focusMode,
       isPlSalesOnly(user),
-    ) + (plStageBoard ? `:pl-board-v1:${plBoardOwner ?? 'base'}` : '');
+    ) + (plStageBoard ? `:pl-board-v2:${plBoardOwner ?? 'base'}` : '');
     const cached = await this.cache.get<unknown>(cacheKey);
     if (cached) return cached;
 
@@ -685,8 +685,9 @@ export class LeadsService {
         ? plBoardOwner
         : individual && temBoardProprio(user.role) ? (responsavelRecortado ?? user.id) : null;
       const stages = await this.prisma.stage.findMany({
-        where: { pipeline_id: filters.pipeline_id, user_id: donoDasColunas },
-        select: { id: true, ordem: true },
+        where: { tenant_id: user.tenantId, pipeline_id: filters.pipeline_id, user_id: donoDasColunas },
+        select: { id: true, ordem: true, nome: true, is_won: true, is_lost: true },
+        orderBy: [{ ordem: 'asc' }, { id: 'asc' }],
       });
       const pageStages = boardPage ? stages.filter(s => s.id === boardPage.board_stage_id) : stages;
       if (boardPage && !pageStages.length) {
@@ -713,26 +714,47 @@ export class LeadsService {
       // dele — repetir o termo aqui traria o MESMO card duas vezes, em duas
       // colunas diferentes do board.
       const idsConhecidos = stages.map((s) => s.id);
+      const counts = await this.prisma.lead.groupBy({
+        by: ['estagio_id'],
+        where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
+        _count: { _all: true },
+        _sum: { valor_estimado: true },
+      });
+      // The PL overview uses base columns, but assigned leads live in their
+      // seller's private columns. Match equivalents for display only; never
+      // rewrite the persisted stage or collapse every seller lead into Novo.
+      const stage_columns: Record<string, string> = {};
+      const unknownIds = counts.map(c => c.estagio_id).filter(id => !idsConhecidos.includes(id));
+      if (plStageBoard && donoDasColunas === null && unknownIds.length) {
+        const sources = await this.prisma.stage.findMany({
+          where: { tenant_id: user.tenantId, pipeline_id: filters.pipeline_id, id: { in: unknownIds } },
+          select: { id: true, nome: true, is_won: true, is_lost: true },
+        });
+        for (const source of sources) {
+          if (idsConhecidos.includes(source.id)) continue;
+          const compatible = stages.filter(stage => stage.is_won === source.is_won && stage.is_lost === source.is_lost);
+          const target = compatible.find(stage => stage.nome.trim().toLowerCase() === source.nome.trim().toLowerCase())
+            ?? (source.is_won || source.is_lost ? compatible[0] : undefined);
+          if (target) stage_columns[source.id] = target.id;
+        }
+      }
+      const projectedIds = Object.keys(stage_columns);
+      const columnIds = (id: string) => [id, ...projectedIds.filter(source => stage_columns[source] === id)];
       const condicaoDaColuna = (id: string): Record<string, unknown> =>
         individual && id === primeiraColuna?.id
           ? {
               OR: [
                 { estagio_id: id },
+                ...(columnIds(id).length > 1 ? [{ estagio_id: { in: columnIds(id).slice(1) } }] : []),
                 ...(donoDasColunas !== null
                   ? [{ responsavel_id: null, returned_at: { not: null } }]
                   : []),
-                { estagio_id: { notIn: idsConhecidos } },
+                { estagio_id: { notIn: [...idsConhecidos, ...projectedIds] } },
               ],
             }
-          : { estagio_id: id };
-      const [lists, counts, meuTotal, escritorioTotal] = await Promise.all([
+          : { estagio_id: columnIds(id).length > 1 ? { in: columnIds(id) } : id };
+      const [lists, meuTotal, escritorioTotal] = await Promise.all([
         Promise.all(pageStages.map((s) => runQuery(condicaoDaColuna(s.id), perStage, boardPage?.offset ?? 0))),
-        this.prisma.lead.groupBy({
-          by: ['estagio_id'],
-          where: whereFinal as Parameters<typeof this.prisma.lead.groupBy>[0]['where'],
-          _count: { _all: true },
-          _sum: { valor_estimado: true },
-        }),
         // Rótulo das abas: total de cada uma sob os demais filtros. Sai de
         // `where` (sem a aba), por isso as duas contagens continuam certas
         // esteja o usuário em qual aba estiver.
@@ -752,8 +774,8 @@ export class LeadsService {
       // OR acima. Sem isto o rótulo diria "0" com a coluna cheia de cards.
       const conhecidas = new Set(idsConhecidos);
       for (const c of counts) {
-        const alvo =
-          individual && !conhecidas.has(c.estagio_id) ? primeiraColuna?.id : c.estagio_id;
+        const alvo = stage_columns[c.estagio_id] ??
+          (individual && !conhecidas.has(c.estagio_id) ? primeiraColuna?.id : c.estagio_id);
         if (!alvo) continue;
         stage_counts[alvo] = (stage_counts[alvo] ?? 0) + c._count._all;
         stage_values[alvo] = (stage_values[alvo] ?? 0) + Number(c._sum?.valor_estimado ?? 0);
@@ -762,6 +784,7 @@ export class LeadsService {
         leads: lists.flat().map(mapRow),
         stage_counts,
         stage_values,
+        ...(plStageBoard ? { stage_columns } : {}),
         owner_counts: { me: meuTotal, others: escritorioTotal },
       };
     } else {

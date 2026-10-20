@@ -117,6 +117,24 @@ describe('PL personal board context', () => {
     expect(keepBoardDataInScope(previous, ['leads', PL_PIPELINE_ID, {}], scope)).toBeUndefined();
   });
 
+  it('preserves the seller stage in the manager board after refetch, including totals, drag and pagination', () => {
+    const stages = [{ id: 'new' }, { id: 'contact' }, { id: 'won' }];
+    const columns = { 'seller-contact': 'contact', 'seller-won': 'won' };
+    expect(stageColumnFor('seller-contact', stages, true, columns)).toBe('contact');
+    expect(stageColumnFor('seller-won', stages, true, columns)).toBe('won');
+    expect(visibleStageTotals({ 'seller-contact': 65, 'contact': 2, 'seller-won': 1 }, stages, true, columns))
+      .toEqual({ contact: 67, won: 1 });
+    expect(visibleStageTotals({ contact: 67, won: 1 }, stages, true, columns)).toEqual({ contact: 67, won: 1 });
+    expect(stageCountsAfterMove({ contact: 67, won: 1 }, 'seller-contact', 'won', stages, true, columns)).toEqual({ contact: 66, won: 2 });
+    expect(stageCountsAfterMove({ contact: 67 }, 'seller-contact', 'contact', stages, true, columns)).toEqual({ contact: 67 });
+    expect(stagePageParams({
+      tenantId: PARTNERS_TENANT, pipelineId: PL_PIPELINE_ID, stageId: 'contact', stages, stageColumns: columns,
+      leads: [{ estagio_id: 'seller-contact' }, { estagio_id: 'contact' }, { estagio_id: 'new' }], pageSize: 50,
+    })).toMatchObject({ board_stage_id: 'contact', offset: '2' });
+    expect(stageColumnFor('seller-contact', [{ id: 'seller-new' }], true, columns)).toBe('seller-new');
+    expect(stageColumnFor('seller-contact', stages, false, columns)).toBeUndefined();
+  });
+
   it('projects unknown stage cards and server totals to the same first personal column without double counting', () => {
     expect(stageColumnFor('old-owner-stage', ownStages, true)).toBe('personal-first');
     expect(stageColumnFor('personal-won', ownStages, true)).toBe('personal-won');

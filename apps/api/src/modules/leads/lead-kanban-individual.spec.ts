@@ -227,6 +227,38 @@ describe('PL personal stages with the tenant toggle off', () => {
     expect(m.kanbanIndividual.ensurePlPersonalBoard).not.toHaveBeenCalled();
   });
 
+  it('keeps a saved seller stage in the matching manager column after reload and pagination', async () => {
+    const m = setup();
+    m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(false);
+    const base = [
+      { id: 'base-new', nome: 'Novo', ordem: 0, is_won: false, is_lost: false },
+      { id: 'base-contact', nome: 'Em atendimento', ordem: 1, is_won: false, is_lost: false },
+    ];
+    m.prisma.stage.findMany.mockImplementation(async ({ where }: { where: { id?: unknown } }) => where.id
+      ? [{ id: 'seller-contact', nome: 'Em atendimento', is_won: false, is_lost: false }]
+      : base);
+    m.prisma.lead.groupBy.mockResolvedValue([{ estagio_id: 'seller-contact', _count: { _all: 65 }, _sum: { valor_estimado: 650 } }]);
+    m.prisma.lead.findMany.mockResolvedValue([{ id: leadId, estagio_id: 'seller-contact', messages: [] }]);
+    const filters = { per_stage: '50', pipeline_id: PL_PIPELINE, search: 'Cliente' };
+    const result = await m.service.findAll(manager, filters);
+    expect(result).toEqual(expect.objectContaining({
+      stage_counts: { 'base-contact': 65 }, stage_values: { 'base-contact': 650 },
+      stage_columns: { 'seller-contact': 'base-contact' },
+    }));
+    const newQuery = m.prisma.lead.findMany.mock.calls[0][0];
+    const contactQuery = m.prisma.lead.findMany.mock.calls[1][0];
+    expect(newQuery.where.AND).toEqual(expect.arrayContaining([expect.objectContaining({ OR: expect.arrayContaining([
+      { estagio_id: { notIn: ['base-new', 'base-contact', 'seller-contact'] } },
+    ]) })]));
+    expect(contactQuery.where.AND).toEqual(expect.arrayContaining([{ estagio_id: { in: ['base-contact', 'seller-contact'] } }]));
+    m.prisma.lead.findMany.mockClear();
+    const page = await m.service.findAll(manager, { ...filters, board_stage_id: 'base-contact', offset: '50' });
+    expect(m.prisma.lead.findMany).toHaveBeenCalledWith({ ...contactQuery, skip: 50 });
+    expect(page).toEqual(expect.objectContaining({ leads: [expect.objectContaining({ estagio_id: 'seller-contact' })] }));
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+    expect(m.prisma.lead.updateMany).not.toHaveBeenCalled();
+  });
+
   it('keeps personal-stage leads visible in the manager base board totals', async () => {
     const m = setup();
     m.kanbanIndividual.usesPersonalBoard.mockResolvedValue(false);
@@ -601,7 +633,7 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
 
     await service.findAll(alex, { per_stage: '50', pipeline_id: 'p-1' });
 
-    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: null });
+    expect(whereDoStageFindMany(prisma)).toEqual({ tenant_id: 't1', pipeline_id: 'p-1', user_id: null });
   });
 
   it('toggle ON: le as colunas de quem pediu', async () => {
@@ -611,7 +643,7 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
 
     await service.findAll(alex, { per_stage: '50', pipeline_id: 'p-1' });
 
-    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: 'u-alex' });
+    expect(whereDoStageFindMany(prisma)).toEqual({ tenant_id: 't1', pipeline_id: 'p-1', user_id: 'u-alex' });
   });
 
   it('toggle ON + gerente com recorte por responsavel: le as colunas do membro observado', async () => {
@@ -625,7 +657,7 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
       responsavel_id: 'u-alex',
     });
 
-    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: 'u-alex' });
+    expect(whereDoStageFindMany(prisma)).toEqual({ tenant_id: 't1', pipeline_id: 'p-1', user_id: 'u-alex' });
   });
 
   it('toggle ON + operador pedindo a carteira do colega: colunas seguem sendo as dele', async () => {
@@ -642,7 +674,7 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
       responsavel_id: 'u-colega',
     });
 
-    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: 'u-alex' });
+    expect(whereDoStageFindMany(prisma)).toEqual({ tenant_id: 't1', pipeline_id: 'p-1', user_id: 'u-alex' });
   });
 
   it('toggle ON: a nuvem de devolvidos entra na PRIMEIRA coluna', async () => {
@@ -707,7 +739,7 @@ describe('board per_stage — conjunto de colunas escopado por dono', () => {
 
     await service.findAll(visualizador, { per_stage: '50', pipeline_id: 'p-1' });
 
-    expect(whereDoStageFindMany(prisma)).toEqual({ pipeline_id: 'p-1', user_id: null });
+    expect(whereDoStageFindMany(prisma)).toEqual({ tenant_id: 't1', pipeline_id: 'p-1', user_id: null });
   });
 
   /**
