@@ -111,6 +111,9 @@ model Tenant {
   /// Kanban individual: cada membro tem conjunto próprio de colunas
   /// (Stage.user_id). Spec docs/superpowers/specs/2026-09-01-kanban-individual-design.md.
   kanban_individual         Boolean   @default(false)
+  /// Gestor (SUPER_ADMIN/GERENTE) supervisiona TODAS as conversas no chat, inclusive
+  /// privadas, e responde pelo número da conversa. Off por padrão (anti-leak Cajuru).
+  manager_full_access       Boolean   @default(false)
 
   sales_partners SalesPartner[]
   partner_productions PartnerDailyProduction[]

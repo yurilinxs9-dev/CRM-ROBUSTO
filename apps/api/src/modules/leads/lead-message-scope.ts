@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { hasManagerFullAccess } from './lead-visibility';
 
 /**
  * Recorte de visibilidade das mensagens de um lead para um usuário. Era o
@@ -21,6 +22,8 @@ export interface MessageScopeCtx {
   poolEnabled: boolean;
   ownConversationIds: string[];
   ownedInstances: string[];
+  /** Tenant.manager_full_access — ver `hasManagerFullAccess`. */
+  managerFullAccess?: boolean;
 }
 
 const MANAGER_ROLES = new Set(['GERENTE', 'SUPER_ADMIN']);
@@ -45,6 +48,8 @@ export function buildMessageScope(
   lead: MessageScopeLead,
   ctx: MessageScopeCtx,
 ): Prisma.MessageWhereInput | null {
+  // Acesso total do gestor: conversa inteira, de todos os números, privado incluso.
+  if (hasManagerFullAccess(ctx.role, ctx.managerFullAccess, ctx.focusMode)) return {};
   // Lead privado: só o responsável atual lê. Nem outros gerentes.
   if (lead.is_private && lead.responsavel_id !== ctx.userId) return null;
 

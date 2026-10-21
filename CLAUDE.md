@@ -58,3 +58,12 @@ as do CRM (zero tabelas Evolution).
 - SheetImportRow deduplicates rows; telephone/pipeline/scope deduplicates leads. New leads are unassigned in the base stage with form fields, tags and pre-contact AI insights.
 - Apply only the additive SheetImportRow migration before enabling. Never migrate deploy or db push.
 - Spec: docs/superpowers/specs/2026-09-08-importacao-planilha-meta-design.md.
+
+## Acesso total do gestor (Ferbraço — out/2026)
+- `Tenant.manager_full_access` (default false): SUPER_ADMIN/GERENTE fora do modo foco
+  veem e respondem TODAS as conversas (chat inclusive, privadas inclusive) e enviam
+  pelo número da conversa (o do vendedor). Regra em `hasManagerFullAccess`
+  (`leads/lead-visibility.ts`); desligado, vale o anti-leak do chat (Cajuru).
+- Liga em Configurações > Geral; só SUPER_ADMIN altera (`PATCH /tenants/settings`).
+- Migration aditiva `20261021120000_manager_full_access` (1 coluna): aplicar a SQL
+  e `migrate resolve --applied`. Nunca migrate deploy/db push.

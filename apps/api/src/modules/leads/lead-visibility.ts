@@ -16,6 +16,10 @@ import { UserRole } from '@/common/types/roles';
  * MODO FOCO (`User.focus_mode`): gerente/super admin abrem mão da supervisão e
  * enxergam como operador — as próprias, mais os sem-dono, porque distribuir
  * continua sendo papel deles mesmo atendendo a própria carteira.
+ *
+ * ACESSO TOTAL DO GESTOR (`Tenant.manager_full_access`, opt-in por tenant — ex.:
+ * Ferbraço): gerente/super admin sem foco veem TUDO, em qualquer scope (chat
+ * inclusive) e inclusive leads privados. Desligado, vale o anti-leak acima.
  */
 export interface VisibilityInput {
   userId: string;
@@ -29,6 +33,18 @@ export interface VisibilityInput {
   /** Gerente+ com modo foco: enxerga como operador, mais os sem-dono p/ distribuir. */
   focusMode?: boolean;
   ownOnly?: boolean;
+  /** Tenant.manager_full_access: gestor sem foco supervisiona tudo, privados e chat inclusive. */
+  managerFullAccess?: boolean;
+}
+
+/** Gestor com acesso total ativo no tenant (e fora do modo foco). */
+export function hasManagerFullAccess(
+  role: string,
+  managerFullAccess: boolean | undefined,
+  focusMode: boolean | undefined,
+): boolean {
+  return managerFullAccess === true && !focusMode
+    && (role === UserRole.GERENTE || role === UserRole.SUPER_ADMIN);
 }
 
 export type LeadWhere = Record<string, unknown>;
@@ -41,6 +57,7 @@ export function isManagerRole(role: UserRole): boolean {
 export function buildVisibilityWhere(input: VisibilityInput): LeadWhere {
   if (input.ownOnly) return { responsavel_id: input.userId };
   const { userId, role, poolEnabled, scope, focusMode } = input;
+  if (hasManagerFullAccess(role, input.managerFullAccess, focusMode)) return {};
   const where: LeadWhere = {};
   const supervising = isManagerRole(role) && !focusMode;
 

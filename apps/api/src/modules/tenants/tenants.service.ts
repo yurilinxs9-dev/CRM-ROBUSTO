@@ -1,6 +1,7 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { AuthUser } from '../../common/types/auth-user';
+import { UserRole } from '../../common/types/roles';
 
 @Injectable()
 export class TenantsService {
@@ -13,6 +14,7 @@ export class TenantsService {
       prefix_enabled?: boolean;
       round_robin_enabled?: boolean;
       share_history_enabled?: boolean;
+      manager_full_access?: boolean;
       ia_ajusta_temperatura?: boolean;
       broadcast_window_start?: number;
       broadcast_window_end?: number;
@@ -24,6 +26,14 @@ export class TenantsService {
     if (dto.prefix_enabled !== undefined) data.prefix_enabled = dto.prefix_enabled;
     if (dto.round_robin_enabled !== undefined) data.round_robin_enabled = dto.round_robin_enabled;
     if (dto.share_history_enabled !== undefined) data.share_history_enabled = dto.share_history_enabled;
+    if (dto.manager_full_access !== undefined) {
+      // Abre TODAS as conversas (privadas inclusive) a todo gestor do tenant:
+      // decisão do dono da conta, não de um gerente.
+      if (caller.role !== UserRole.SUPER_ADMIN) {
+        throw new ForbiddenException('Somente o administrador da conta altera o acesso total do gestor');
+      }
+      data.manager_full_access = dto.manager_full_access;
+    }
     // `!== undefined` e nao truthiness: desligar (false) e justamente a decisao
     // que o gerente vem tomar aqui.
     if (dto.ia_ajusta_temperatura !== undefined) data.ia_ajusta_temperatura = dto.ia_ajusta_temperatura;
@@ -66,6 +76,7 @@ export class TenantsService {
         prefix_enabled: true,
         round_robin_enabled: true,
         share_history_enabled: true,
+        manager_full_access: true,
         ia_ajusta_temperatura: true,
         broadcast_window_start: true,
         broadcast_window_end: true,

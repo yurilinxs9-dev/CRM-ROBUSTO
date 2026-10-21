@@ -21,7 +21,7 @@ import { MESSAGES_SEND_QUEUE, SendMessageJobData } from './messages.queue';
 import { OutboundWebhooksService } from '../outbound-webhooks/outbound-webhooks.service';
 import { PushService } from '../push/push.service';
 import { ConversationService } from '../webhooks/conversation.service';
-import { isManagerRole } from '../leads/lead-visibility';
+import { hasManagerFullAccess, isManagerRole } from '../leads/lead-visibility';
 import { extractAdReferral } from '../webhooks/ad-referral';
 
 /**
@@ -176,9 +176,21 @@ export class MessagesService {
     if (user.role === UserRole.VISUALIZADOR) {
       throw new ForbiddenException('Visualizador nao pode enviar mensagens');
     }
+    const [tenant, me] = await Promise.all([
+      this.prisma.tenant.findFirst({
+        where: { id: user.tenantId },
+        select: { pool_enabled: true, manager_full_access: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { focus_mode: true },
+      }),
+    ]);
+    const fullAccess = hasManagerFullAccess(user.role, tenant?.manager_full_access, me?.focus_mode);
     // is_private: somente o responsável pode enviar (gerente/super-admin
-    // tambem nao bisbilhotam lead privado de outro gestor).
-    if (lead.is_private && lead.responsavel_id !== user.id) {
+    // tambem nao bisbilhotam lead privado de outro gestor) — exceto com o
+    // acesso total do gestor ligado no tenant.
+    if (lead.is_private && lead.responsavel_id !== user.id && !fullAccess) {
       throw new ForbiddenException('Lead privado');
     }
     // Operador: precisa ser responsavel do card OU ter conversa própria
@@ -205,11 +217,8 @@ export class MessagesService {
     //    user com acesso ao lead pode enviar pela instância dele.
     //  - Individual (pool_enabled=false): só envia pela própria instância;
     //    se o lead aponta pra instância de outro user, faz auto-swap pra
-    //    a instância own ativa.
-    const tenant = await this.prisma.tenant.findFirst({
-      where: { id: user.tenantId },
-      select: { pool_enabled: true },
-    });
+    //    a instância own ativa. Gestor com acesso total responde pelo número
+    //    da conversa (o do vendedor), não pelo dele.
     const liveStatuses = ['open', 'connected', 'connecting'];
     // A instância de envio vem da conversa DESTE atendente com o lead, não do
     // Lead.instancia_whatsapp — que agora é derivado da conversa ativa e pode
@@ -247,7 +256,9 @@ export class MessagesService {
       }
     } else {
       // Modo Individual: prefere instância do lead se for do user E estiver viva.
-      const ofLead = instanceOfLead && instanceOfLead.owner_user_id === user.id
+      // Acesso total do gestor: a do lead serve mesmo sendo de outro vendedor —
+      // o cliente continua falando com o mesmo número.
+      const ofLead = instanceOfLead && (instanceOfLead.owner_user_id === user.id || fullAccess)
         ? instanceOfLead
         : null;
       instance = ofLead && liveStatuses.includes(ofLead.status) ? ofLead : null;
@@ -949,11 +960,6 @@ export class MessagesService {
     if (user.role === UserRole.VISUALIZADOR) {
       return { messages: [], nextCursor: undefined };
     }
-    // is_private blinda contra todos exceto responsavel.
-    if (lead.is_private && lead.responsavel_id !== user.id) {
-      return { messages: [], nextCursor: undefined };
-    }
-
     const isResponsavel = lead.responsavel_id === user.id;
     // Mesma regra do chat (`LeadsService.getMessages`): esta rota tinha o
     // vazamento original do modo INDIVIDUAL — o dono do card lia as conversas
@@ -961,13 +967,18 @@ export class MessagesService {
     const [tenantCfg, me] = await Promise.all([
       this.prisma.tenant.findFirst({
         where: { id: user.tenantId },
-        select: { pool_enabled: true },
+        select: { pool_enabled: true, manager_full_access: true },
       }),
       this.prisma.user.findUnique({
         where: { id: user.id },
         select: { focus_mode: true },
       }),
     ]);
+    const fullAccess = hasManagerFullAccess(user.role, tenantCfg?.manager_full_access, me?.focus_mode);
+    // is_private blinda contra todos exceto responsavel (e o gestor com acesso total).
+    if (lead.is_private && !isResponsavel && !fullAccess) {
+      return { messages: [], nextCursor: undefined };
+    }
     const poolEnabled = Boolean(tenantCfg?.pool_enabled) || isPlPipeline(user.tenantId, lead.pipeline_id);
     // Gerente focado abre mão da visão total — MENOS em lead sem dono, onde
     // ler a conversa é o insumo da distribuição.

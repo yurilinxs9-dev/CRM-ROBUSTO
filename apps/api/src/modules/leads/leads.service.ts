@@ -23,7 +23,7 @@ import { AssignmentService } from '../queue/assignment.service';
 import { resolveActiveConversation } from '../webhooks/conversation-routing';
 import { extractAdReferral } from '../webhooks/ad-referral';
 import { UserRole } from '@/common/types/roles';
-import { buildVisibilityWhere, isManagerRole, mergeSearchCondition } from './lead-visibility';
+import { buildVisibilityWhere, hasManagerFullAccess, isManagerRole, mergeSearchCondition } from './lead-visibility';
 import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import {
   applyPanelFilters,
@@ -464,7 +464,7 @@ export class LeadsService {
     const [tenant, me] = await Promise.all([
       this.prisma.tenant.findUnique({
         where: { id: user.tenantId },
-        select: { pool_enabled: true },
+        select: { pool_enabled: true, manager_full_access: true },
       }),
       this.prisma.user.findUnique({
         where: { id: user.id },
@@ -482,6 +482,7 @@ export class LeadsService {
         scope: filters.scope,
         focusMode,
         ownOnly: isPlSalesOnly(user),
+        managerFullAccess: Boolean(tenant?.manager_full_access),
       }),
     );
 
@@ -835,9 +836,21 @@ export class LeadsService {
       throw new ForbiddenException('Você só pode acessar seus próprios leads');
     }
     // os papéis. Bloqueia gerente/super-admin de abrir conversa que outro
-    // gestor já assumiu.
+    // gestor já assumiu — salvo com o acesso total do gestor no tenant.
     if (lead.is_private && lead.responsavel_id !== user.id) {
-      throw new ForbiddenException('Lead privado');
+      const [tenantCfg, me] = await Promise.all([
+        this.prisma.tenant.findUnique({
+          where: { id: user.tenantId },
+          select: { manager_full_access: true },
+        }),
+        this.prisma.user.findUnique({
+          where: { id: user.id },
+          select: { focus_mode: true },
+        }),
+      ]);
+      if (!hasManagerFullAccess(user.role, tenantCfg?.manager_full_access, me?.focus_mode)) {
+        throw new ForbiddenException('Lead privado');
+      }
     }
     if (
       user.role === UserRole.OPERADOR ||
@@ -2246,7 +2259,7 @@ export class LeadsService {
     const [tenantCfg, me] = await Promise.all([
       this.prisma.tenant.findFirst({
         where: { id: user.tenantId },
-        select: { share_history_enabled: true, pool_enabled: true },
+        select: { share_history_enabled: true, pool_enabled: true, manager_full_access: true },
       }),
       this.prisma.user.findUnique({
         where: { id: user.id },
@@ -2274,6 +2287,7 @@ export class LeadsService {
       poolEnabled: Boolean(tenantCfg?.pool_enabled),
       ownConversationIds,
       ownedInstances,
+      managerFullAccess: Boolean(tenantCfg?.manager_full_access),
     });
   }
 
@@ -2361,7 +2375,7 @@ export class LeadsService {
     const [tenant, me] = await Promise.all([
       this.prisma.tenant.findUnique({
         where: { id: user.tenantId },
-        select: { pool_enabled: true },
+        select: { pool_enabled: true, manager_full_access: true },
       }),
       this.prisma.user.findUnique({
         where: { id: user.id },
@@ -2383,6 +2397,7 @@ export class LeadsService {
         poolEnabled,
         focusMode,
         ownOnly: isPlSalesOnly(user),
+        managerFullAccess: Boolean(tenant?.manager_full_access),
       }),
     );
 

@@ -1223,7 +1223,7 @@ export class LeadInsightsService {
   async radar(user: AuthUser, pipelineId?: string): Promise<RadarResultado> {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: user.tenantId },
-      select: { pool_enabled: true },
+      select: { pool_enabled: true, manager_full_access: true },
     });
     // O que TODA fila compartilha: tenant, funil e visibilidade. A etapa fica
     // de fora daqui porque a fila `compraram` precisa do oposto das outras
@@ -1239,6 +1239,7 @@ export class LeadInsightsService {
         userId: user.id,
         role: user.role as UserRole,
         poolEnabled: Boolean(tenant?.pool_enabled),
+        managerFullAccess: Boolean(tenant?.manager_full_access),
         // Radar e supervisao, nao distribuicao: quem nao e manager ve so a
         // propria carteira (a nuvem de devolvidos fica fora — lead sem dono
         // nao e tarefa de ninguem) e o modo foco do gerente nao entra aqui.
