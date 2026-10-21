@@ -18,7 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; ia_ajusta_temperatura?: boolean; kanban_individual?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
+type TenantSettings = { id: string; nome: string; pool_enabled: boolean; prefix_enabled: boolean; round_robin_enabled?: boolean; share_history_enabled?: boolean; manager_full_access?: boolean; ia_ajusta_temperatura?: boolean; kanban_individual?: boolean; broadcast_window_start?: number; broadcast_window_end?: number; broadcast_window_days?: number[] };
 
 const DIAS = [
   { iso: 1, label: 'Seg' },
@@ -40,6 +40,8 @@ interface Instance {
 export function GeneralTab() {
   const tenant = useAuthStore((s) => s.tenant);
   const setTenant = useAuthStore((s) => s.setTenant);
+  // Acesso total do gestor é decisão do dono da conta: o backend só aceita do SUPER_ADMIN.
+  const isAccountOwner = useAuthStore((s) => s.user?.role === 'SUPER_ADMIN');
   const [isPending, setIsPending] = useState(false);
   // Trocar o modelo de atendimento muda a visibilidade de todo o workspace —
   // pede confirmação antes de chamar a API. `null` = nenhum diálogo aberto.
@@ -127,6 +129,26 @@ export function GeneralTab() {
         checked
           ? 'A ficha inteligente passa a ajustar a temperatura sozinha.'
           : 'A temperatura volta a ser só manual.',
+      );
+    } catch {
+      toast.error('Erro ao salvar configuração.');
+    } finally {
+      setIsPending(false);
+    }
+  };
+
+  const handleManagerFullAccessToggle = async (checked: boolean) => {
+    setIsPending(true);
+    try {
+      const { data } = await api.patch<TenantSettings>(
+        '/api/tenants/settings',
+        { manager_full_access: checked },
+      );
+      setTenant(data);
+      toast.success(
+        checked
+          ? 'Acesso total do gestor ativado.'
+          : 'Acesso total do gestor desativado.',
       );
     } catch {
       toast.error('Erro ao salvar configuração.');
@@ -337,6 +359,30 @@ export function GeneralTab() {
           aria-label="Compartilhar histórico na transferência"
         />
       </div>
+
+      {isAccountOwner && (
+        <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
+          <div className="space-y-1">
+            <Label className="text-sm font-medium">
+              Acesso total do gestor
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Administradores e gerentes veem e respondem{' '}
+              <strong>todas as conversas de todos os vendedores</strong> no
+              chat, inclusive as privadas. A resposta sai pelo número da
+              conversa, ou seja, o do vendedor. Desativado, cada um vê no chat
+              só as próprias conversas. Gestor em modo foco segue vendo só a
+              própria carteira.
+            </p>
+          </div>
+          <Switch
+            checked={tenant.manager_full_access === true}
+            onCheckedChange={handleManagerFullAccessToggle}
+            disabled={isPending}
+            aria-label="Acesso total do gestor"
+          />
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-4 rounded-lg border px-4 py-4">
         <div className="space-y-1">

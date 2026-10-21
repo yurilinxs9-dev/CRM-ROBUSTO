@@ -309,6 +309,7 @@ export class AuthService {
         select: {
           id: true, nome: true, pool_enabled: true, prefix_enabled: true, round_robin_enabled: true,
           share_history_enabled: true,
+          manager_full_access: true,
           // Sem este campo o switch de "IA ajusta a temperatura" hidrata como
           // undefined, cai no default ligado e volta sozinho ao recarregar.
           ia_ajusta_temperatura: true,

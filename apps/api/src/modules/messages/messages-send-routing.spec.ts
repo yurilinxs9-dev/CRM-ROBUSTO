@@ -294,3 +294,83 @@ it('Consórcio PL não importa histórico genérico do telefone ao abrir chat', 
  try {expect(await m.service.syncChat(LEAD_ID,{...alex,tenantId:tenant})).toEqual({added:0,mediaFixed:0});expect(m.prisma.message.create).not.toHaveBeenCalled();}
  finally {remote.mockRestore();}
 });
+
+describe('MessagesService.sendText — acesso total do gestor (Individual)', () => {
+  const dono: AuthUser = {
+    ...alex,
+    id: 'u-dono',
+    nome: 'Dono',
+    email: 'dono@x.com',
+    role: UserRole.SUPER_ADMIN as unknown as AuthUser['role'],
+  };
+  // Fábrica: o service reescreve `lead.instancia_whatsapp` em memória no objeto devolvido.
+  const leadDoVendedor = () => ({ ...baseLead, responsavel_id: 'u-vendedor', instancia_whatsapp: 'inst-vendedor' });
+  const instancias = ({ where }: any) => {
+    if (where.nome === 'inst-vendedor') return Promise.resolve(liveInstance('inst-vendedor', 'u-vendedor'));
+    if (where.owner_user_id === 'u-dono') return Promise.resolve(liveInstance('inst-dono', 'u-dono'));
+    return Promise.resolve(null);
+  };
+
+  it('responde pelo número do vendedor, não pelo do dono', async () => {
+    const { service, prisma, sendQueue } = makeService();
+    prisma.lead.findFirst.mockResolvedValue(leadDoVendedor());
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false, manager_full_access: true });
+    prisma.whatsappInstance.findFirst.mockImplementation(instancias);
+
+    await service.sendText({ lead_id: LEAD_ID, content: 'oi' }, dono);
+
+    expect(sendQueue.add).toHaveBeenCalledWith(
+      'send-text',
+      expect.objectContaining({ instanceName: 'inst-vendedor' }),
+    );
+  });
+
+  it('sem a flag mantém o comportamento antigo (troca pro número do gestor)', async () => {
+    const { service, prisma, sendQueue } = makeService();
+    prisma.lead.findFirst.mockResolvedValue(leadDoVendedor());
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false, manager_full_access: false });
+    prisma.whatsappInstance.findFirst.mockImplementation(instancias);
+
+    await service.sendText({ lead_id: LEAD_ID, content: 'oi' }, dono);
+
+    expect(sendQueue.add).toHaveBeenCalledWith(
+      'send-text',
+      expect.objectContaining({ instanceName: 'inst-dono' }),
+    );
+  });
+
+  it('com a flag, responde em lead privado de outro', async () => {
+    const { service, prisma, sendQueue } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({ ...leadDoVendedor(), is_private: true });
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false, manager_full_access: true });
+    prisma.whatsappInstance.findFirst.mockImplementation(instancias);
+
+    await service.sendText({ lead_id: LEAD_ID, content: 'oi' }, dono);
+
+    expect(sendQueue.add).toHaveBeenCalledWith(
+      'send-text',
+      expect.objectContaining({ instanceName: 'inst-vendedor' }),
+    );
+  });
+
+  it('sem a flag, lead privado de outro segue bloqueado', async () => {
+    const { service, prisma } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({ ...leadDoVendedor(), is_private: true });
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false, manager_full_access: false });
+
+    await expect(
+      service.sendText({ lead_id: LEAD_ID, content: 'oi' }, dono),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('em modo foco a flag não vale', async () => {
+    const { service, prisma } = makeService();
+    prisma.lead.findFirst.mockResolvedValue({ ...leadDoVendedor(), is_private: true });
+    prisma.tenant.findFirst.mockResolvedValue({ pool_enabled: false, manager_full_access: true });
+    prisma.user.findUnique.mockResolvedValue({ focus_mode: true });
+
+    await expect(
+      service.sendText({ lead_id: LEAD_ID, content: 'oi' }, dono),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});

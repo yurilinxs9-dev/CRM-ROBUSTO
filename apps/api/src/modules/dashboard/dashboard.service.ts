@@ -430,7 +430,7 @@ export class DashboardService {
     const [tenant, me] = await Promise.all([
       this.prisma.tenant.findUnique({
         where: { id: user.tenantId },
-        select: { pool_enabled: true, kanban_individual: true },
+        select: { pool_enabled: true, kanban_individual: true, manager_full_access: true },
       }),
       this.prisma.user.findUnique({
         where: { id: user.id },
@@ -451,6 +451,7 @@ export class DashboardService {
       poolEnabled: Boolean(tenant?.pool_enabled),
       focusMode,
       ownOnly: restricted,
+      managerFullAccess: Boolean(tenant?.manager_full_access),
     }) as Prisma.LeadWhereInput;
     // `tenant_id` primeiro e a visibilidade por cima: ela so escreve `OR` /
     // `responsavel_id`, entao nunca come o recorte de tenant.

@@ -10,6 +10,8 @@ export interface Tenant {
   prefix_enabled?: boolean;
   round_robin_enabled?: boolean;
   share_history_enabled?: boolean;
+  /** Gestores veem e respondem todas as conversas do chat, privadas inclusive. */
+  manager_full_access?: boolean;
   /**
    * Kanban individual: cada membro tem as PRÓPRIAS colunas, clonadas do modelo
    * base do tenant. Ausente/false = board único do workspace (comportamento

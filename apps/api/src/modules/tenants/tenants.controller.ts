@@ -12,6 +12,9 @@ const updateSettingsSchema = z.object({
   prefix_enabled: z.boolean().optional(),
   round_robin_enabled: z.boolean().optional(),
   share_history_enabled: z.boolean().optional(),
+  // Acesso total do gestor ao chat (privadas inclusive). Só SUPER_ADMIN altera
+  // — conferido no service, já que a rota admite GERENTE.
+  manager_full_access: z.boolean().optional(),
   // Fase 4: quando false, a IA so SUGERE a temperatura na ficha; quando true,
   // ela aplica sozinha no lead.
   ia_ajusta_temperatura: z.boolean().optional(),
