@@ -1,6 +1,8 @@
 import {
   Controller,
+  Delete,
   Get,
+  ParseUUIDPipe,
   Patch,
   Post,
   Param,
@@ -49,6 +51,10 @@ const linkMemberSchema = z.object({
 });
 
 const updateMemberSchema = z.object({
+  nome: z.string().trim().min(2).max(100).optional(),
+  email: z.string().trim().email().optional(),
+  // Redefinicao pelo gestor: so email/senha exigem estar acima do membro.
+  senha: z.string().min(8).max(100).optional(),
   pl_sales_only: z.boolean().optional(),
   role: z.enum(['GERENTE', 'OPERADOR', 'VISUALIZADOR']).optional(),
   titulo: z.string().max(50).nullable().optional(),
@@ -103,6 +109,12 @@ export class UsersController {
   ) {
     const dto = updateMemberSchema.parse(body);
     return this.usersService.updateTeamMember(req.user as AuthUser, id, dto);
+  }
+
+  @Delete('team/:id')
+  @Roles(UserRole.GERENTE)
+  deleteMember(@Req() req: Record<string, unknown>, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.deleteTeamMember(req.user as AuthUser, id);
   }
 
   @Patch('me')

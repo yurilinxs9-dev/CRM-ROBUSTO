@@ -179,6 +179,52 @@ export class KanbanIndividualService {
   }
 
   /**
+   * Desmonta o board pessoal de UM membro (exclusao da equipe): mesma regra do
+   * `disable()`, recortada no dono. Sem isto o `onDelete: SetNull` de
+   * Stage.user_id promoveria as colunas dele a colunas BASE do tenant — o
+   * Kanban de todo mundo ganharia um segundo "Novo", "Proposta"...
+   * Devolve quantas colunas foram removidas (0 = membro sem board pessoal).
+   */
+  async removePersonalBoard(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    userId: string,
+  ): Promise<number> {
+    const pessoais = await tx.stage.findMany({
+      where: { tenant_id: tenantId, user_id: userId },
+      orderBy: { ordem: 'asc' },
+    });
+    if (pessoais.length === 0) return 0;
+    const base = await tx.stage.findMany({
+      where: { tenant_id: tenantId, user_id: null },
+      orderBy: { ordem: 'asc' },
+    });
+
+    for (const p of pessoais) {
+      const mesmoNome = base.find(
+        (b) => b.pipeline_id === p.pipeline_id && normalizar(b.nome) === normalizar(p.nome),
+      );
+      const primeiraDoPipeline = base.find((b) => b.pipeline_id === p.pipeline_id);
+      const destino = mesmoNome ?? primeiraDoPipeline ?? base[0];
+      if (!destino) continue;
+      const mudaDePipeline = destino.pipeline_id !== p.pipeline_id;
+      await tx.lead.updateMany({
+        where: { tenant_id: tenantId, estagio_id: p.id },
+        data: mudaDePipeline
+          ? { estagio_id: destino.id, pipeline_id: destino.pipeline_id }
+          : { estagio_id: destino.id },
+      });
+    }
+
+    await tx.broadcast.updateMany({
+      where: { tenant_id: tenantId, stage_id: { in: pessoais.map((p) => p.id) } },
+      data: { stage_id: null },
+    });
+    await tx.stage.deleteMany({ where: { tenant_id: tenantId, user_id: userId } });
+    return pessoais.length;
+  }
+
+  /**
    * Liga o toggle: clona a base para cada membro ativo e puxa os leads de cada
    * responsavel para a coluna equivalente dele. Lead sem responsavel fica na
    * base. Tudo numa transacao — meio caminho aqui e board furado.
