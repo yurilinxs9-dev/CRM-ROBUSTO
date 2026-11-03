@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Shield, UserCheck, UserX, Link2 } from 'lucide-react';
+import { Plus, Shield, UserCheck, UserX, Link2, Pencil, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { canConfigurePlSalesOnly } from '@/lib/pl-sales-access';
@@ -63,6 +63,18 @@ function getInitials(name: string) {
 
 type AddMode = 'create' | 'link';
 
+function apiErrorMessage(err: unknown): string | undefined {
+  return (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+}
+
+// Espelha `assertCanManageCredentials` da API: email/senha e exclusão só de
+// quem está abaixo do gestor; colega GERENTE só o SUPER_ADMIN; nunca a si mesmo.
+function canManageMember(actor: { id: string; role: string } | null | undefined, m: TeamMember) {
+  if (!actor || m.id === actor.id || m.role === 'SUPER_ADMIN') return false;
+  if (m.role === 'GERENTE') return actor.role === 'SUPER_ADMIN';
+  return actor.role === 'SUPER_ADMIN' || actor.role === 'GERENTE';
+}
+
 // Sentinela para "sem setor" (Radix Select não aceita value="").
 const NO_SECTOR = 'none';
 
@@ -93,6 +105,13 @@ export function TeamTab() {
   const [linkRole, setLinkRole] = useState<'GERENTE' | 'OPERADOR' | 'VISUALIZADOR'>('OPERADOR');
   const [linkSectorId, setLinkSectorId] = useState('');
   const [linkSalesOnly, setLinkSalesOnly] = useState(false);
+  const [editing, setEditing] = useState<TeamMember | null>(null);
+  const [editNome, setEditNome] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editTitulo, setEditTitulo] = useState('');
+  const [editEspecialidade, setEditEspecialidade] = useState('');
+  const [editSenha, setEditSenha] = useState('');
+  const [deleting, setDeleting] = useState<TeamMember | null>(null);
   const canConfigureNew = canConfigurePlSalesOnly(actor, newRole);
   const canConfigureLink = canConfigurePlSalesOnly(actor, linkRole, linkEmail.trim().toLowerCase() === actor?.email.toLowerCase() ? actor.id : undefined);
 
@@ -153,6 +172,52 @@ export function TeamTab() {
     },
     onError: () => toast.error('Erro ao atualizar membro.'),
   });
+
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      if (!editing) return;
+      const data: Record<string, unknown> = {
+        nome: editNome.trim(),
+        titulo: editTitulo.trim() || null,
+        especialidade: editEspecialidade.trim() || null,
+      };
+      if (canManageMember(actor, editing)) {
+        if (editEmail.trim() !== editing.email) data.email = editEmail.trim();
+        if (editSenha) data.senha = editSenha;
+      }
+      await api.patch(`/api/users/team/${editing.id}`, data);
+    },
+    onSuccess: () => {
+      toast.success('Membro atualizado!');
+      queryClient.invalidateQueries({ queryKey: ['team'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      setEditing(null);
+    },
+    onError: (err: unknown) => toast.error(apiErrorMessage(err) ?? 'Erro ao atualizar membro.'),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/api/users/team/${id}`);
+    },
+    onSuccess: () => {
+      toast.success('Membro excluído.');
+      queryClient.invalidateQueries({ queryKey: ['team'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      setDeleting(null);
+    },
+    onError: (err: unknown) => toast.error(apiErrorMessage(err) ?? 'Erro ao excluir membro.'),
+  });
+
+  const openEdit = (m: TeamMember) => {
+    setEditing(m);
+    setEditNome(m.nome);
+    setEditEmail(m.email);
+    setEditTitulo(m.titulo ?? '');
+    setEditEspecialidade(m.especialidade ?? '');
+    setEditSenha('');
+  };
 
   const toggleAtivo = (m: TeamMember) => {
     updateMutation.mutate({ id: m.id, data: { ativo: !m.ativo } });
@@ -264,12 +329,123 @@ export function TeamTab() {
                       {m.ativo ? <UserX className="h-4 w-4" /> : <UserCheck className="h-4 w-4 text-emerald-500" />}
                     </button>
                   )}
+
+                  {!isSuperAdmin && (
+                    <button
+                      type="button"
+                      title="Editar"
+                      onClick={() => openEdit(m)}
+                      className="rounded p-1 text-muted-foreground hover:bg-accent"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                  )}
+
+                  {canManageMember(actor, m) && (
+                    <button
+                      type="button"
+                      title="Excluir"
+                      onClick={() => setDeleting(m)}
+                      className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
       )}
+
+      {/* Edit member dialog */}
+      <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Editar Membro</DialogTitle>
+          </DialogHeader>
+          {editing && (
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <Label>Nome</Label>
+                <Input value={editNome} onChange={(e) => setEditNome(e.target.value)} placeholder="Nome completo" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  disabled={!canManageMember(actor, editing)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Cargo <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+                <Input value={editTitulo} onChange={(e) => setEditTitulo(e.target.value)} maxLength={50} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Especialidade <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+                <Input value={editEspecialidade} onChange={(e) => setEditEspecialidade(e.target.value)} maxLength={100} />
+              </div>
+              {canManageMember(actor, editing) ? (
+                <div className="space-y-1.5">
+                  <Label>Nova senha <span className="text-muted-foreground font-normal">(deixe em branco para manter)</span></Label>
+                  <Input type="password" value={editSenha} onChange={(e) => setEditSenha(e.target.value)} placeholder="mínimo 8 caracteres" autoComplete="new-password" />
+                  <p className="text-xs text-muted-foreground">Trocar email ou senha encerra as sessões abertas do membro.</p>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {editing.id === actor?.id
+                    ? 'Email e senha da sua conta são alterados na aba Perfil.'
+                    : 'Somente o administrador pode alterar email e senha de um gerente.'}
+                </p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
+            <Button
+              onClick={() => editMutation.mutate()}
+              disabled={
+                editMutation.isPending ||
+                editNome.trim().length < 2 ||
+                !editEmail.trim() ||
+                (editSenha.length > 0 && editSenha.length < 8)
+              }
+            >
+              {editMutation.isPending ? 'Salvando...' : 'Salvar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete member confirmation */}
+      <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Excluir {deleting?.nome}?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>Esta ação não pode ser desfeita. O usuário perde o acesso imediatamente.</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Os leads dele voltam para o escritório (sem responsável).</li>
+              <li>As tarefas dele passam para você.</li>
+              <li>Mensagens e histórico ficam, sem o autor.</li>
+            </ul>
+            <p>Se ele pode voltar, prefira <strong>desativar</strong>.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleting(null)}>Cancelar</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Excluindo...' : 'Excluir'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add member dialog */}
       <Dialog open={addOpen} onOpenChange={(open) => {

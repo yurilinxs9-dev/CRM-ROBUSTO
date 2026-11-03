@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, ForbiddenException, ConflictException, NotFoundException, Logger, Optional } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { RedisCacheService } from '../../common/cache/redis-cache.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { isPlSalesOnly } from '../../common/access/pl-sales-access';
@@ -157,13 +158,25 @@ export class UsersService {
   async updateTeamMember(
     caller: AuthUser,
     targetId: string,
-    dto: { role?: string; titulo?: string | null; especialidade?: string | null; ativo?: boolean; sector_id?: string | null; pl_sales_only?: boolean },
+    dto: {
+      nome?: string;
+      email?: string;
+      senha?: string;
+      role?: string;
+      titulo?: string | null;
+      especialidade?: string | null;
+      ativo?: boolean;
+      sector_id?: string | null;
+      pl_sales_only?: boolean;
+    },
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetId },
-      select: { id: true, role: true, tenant_id: true, pl_sales_only: true },
+      select: { id: true, role: true, tenant_id: true, pl_sales_only: true, email: true, is_platform_admin: true },
     });
     if (!target || target.tenant_id !== caller.tenantId) throw new NotFoundException();
+    const mexeCredenciais = dto.email !== undefined || dto.senha !== undefined;
+    if (mexeCredenciais) this.assertCanManageCredentials(caller, target);
     this.validatePlProfile(caller, dto.role ?? target.role, dto.pl_sales_only);
     if (target.pl_sales_only && dto.role && dto.role !== 'OPERADOR' && dto.pl_sales_only !== false) throw new BadRequestException('Desative o perfil restrito antes de mudar o papel deste membro.');
     if (target.role === UserRole.SUPER_ADMIN) {
@@ -174,6 +187,14 @@ export class UsersService {
     }
 
     const data: Record<string, unknown> = {};
+    if (dto.nome !== undefined) data.nome = dto.nome.trim();
+    const novoEmail = dto.email?.trim();
+    if (novoEmail !== undefined && novoEmail !== target.email) {
+      const emUso = await this.prisma.user.findUnique({ where: { email: novoEmail }, select: { id: true } });
+      if (emUso) throw new ConflictException('Email já cadastrado');
+      data.email = novoEmail;
+    }
+    if (dto.senha !== undefined) data.senha_hash = await bcrypt.hash(dto.senha, 12);
     if (dto.pl_sales_only !== undefined) data.pl_sales_only = dto.pl_sales_only;
     if (dto.role !== undefined) data.role = dto.role;
     if (dto.titulo !== undefined) data.titulo = dto.titulo;
@@ -196,8 +217,132 @@ export class UsersService {
     // estava ATIVO) deixam o membro com papel de board e sem coluna nenhuma,
     // pelo mesmo motivo. Sem `dto.role`, o papel que vale e o atual.
     await this.garantirBoardDoMembro(caller.tenantId, targetId, dto.role ?? target.role);
-    if (dto.pl_sales_only !== undefined || dto.role !== undefined || dto.ativo !== undefined) await this.refreshAccess(targetId);
+    // Senha/email trocados pelo gestor derrubam as sessoes abertas: quem estava
+    // logado com a credencial antiga nao pode seguir renovando o token.
+    if (mexeCredenciais) await this.prisma.refreshToken.deleteMany({ where: { user_id: targetId } });
+    if (mexeCredenciais || dto.pl_sales_only !== undefined || dto.role !== undefined || dto.ativo !== undefined) await this.refreshAccess(targetId);
     return atualizado;
+  }
+
+  /**
+   * Credenciais (email/senha) e exclusao sao o caminho para tomar a conta de
+   * alguem: gerente so mexe em quem esta abaixo dele; colega GERENTE so o
+   * SUPER_ADMIN do tenant. A propria conta vai pelo Perfil (exige senha atual).
+   */
+  private assertCanManageCredentials(
+    caller: AuthUser,
+    target: { id: string; role: string; is_platform_admin: boolean },
+  ) {
+    if (target.id === caller.id) {
+      throw new BadRequestException('Use a aba Perfil para alterar a sua própria conta.');
+    }
+    if (target.role === UserRole.SUPER_ADMIN || target.is_platform_admin) {
+      throw new ForbiddenException('Não é possível alterar este usuário.');
+    }
+    if (target.role === UserRole.GERENTE && caller.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Somente o administrador pode alterar outro gerente.');
+    }
+  }
+
+  /**
+   * Exclui um membro da equipe. O historico fica: leads voltam ao escritorio
+   * (mesma forma do returnToPool), mensagens e atividades perdem o autor,
+   * tarefas passam para quem excluiu e o board pessoal e desmontado. Quem
+   * carrega dado que nao pode perder o dono (numero de WhatsApp, producao de
+   * parceiros) e barrado com o caminho a seguir — desativar continua valendo.
+   */
+  async deleteTeamMember(caller: AuthUser, targetId: string) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: {
+        id: true,
+        nome: true,
+        email: true,
+        role: true,
+        tenant_id: true,
+        is_platform_admin: true,
+        _count: {
+          select: {
+            owned_tenants: true,
+            owned_instances: true,
+            sales_partners: true,
+            partner_productions: true,
+            partner_goals: true,
+            partner_audits: true,
+          },
+        },
+      },
+    });
+    if (!target || target.tenant_id !== caller.tenantId) throw new NotFoundException();
+    this.assertCanManageCredentials(caller, target);
+    const c = target._count;
+    if (c.owned_tenants > 0) {
+      throw new ConflictException('Este usuário é o dono do workspace e não pode ser excluído.');
+    }
+    if (c.owned_instances > 0) {
+      throw new ConflictException('Este usuário é dono de instância(s) de WhatsApp. Remova ou transfira as instâncias antes de excluir.');
+    }
+    if (c.sales_partners + c.partner_productions + c.partner_goals + c.partner_audits > 0) {
+      throw new ConflictException('Este usuário tem histórico de parceiros/produção. Desative-o em vez de excluir.');
+    }
+
+    const tenantId = caller.tenantId;
+    let pipelinesAfetados: string[] = [];
+    try {
+      pipelinesAfetados = await this.prisma.$transaction(async (tx) => {
+        // Boards a recarregar: os das colunas pessoais e os dos leads devolvidos.
+        const [colunas, leads] = await Promise.all([
+          tx.stage.findMany({
+            where: { tenant_id: tenantId, user_id: targetId },
+            select: { pipeline_id: true },
+            distinct: ['pipeline_id'],
+          }),
+          tx.lead.findMany({
+            where: { tenant_id: tenantId, responsavel_id: targetId },
+            select: { pipeline_id: true },
+            distinct: ['pipeline_id'],
+          }),
+        ]);
+        await this.kanbanIndividual.removePersonalBoard(tx, tenantId, targetId);
+        // Devolucao ao escritorio, com a forma do returnToPool: carimbo para
+        // entrar na nuvem, privacidade liberada e corte de historico zerado.
+        await tx.lead.updateMany({
+          where: { tenant_id: tenantId, responsavel_id: targetId },
+          data: { responsavel_id: null, assumed_at: null, is_private: false, returned_at: new Date() },
+        });
+        // Sem soltar a conversa, a proxima mensagem do cliente procuraria o
+        // dono que nao existe mais.
+        await tx.conversation.updateMany({
+          where: { tenant_id: tenantId, responsavel_id: targetId },
+          data: { responsavel_id: null, assumed_at: null },
+        });
+        await tx.message.updateMany({ where: { sent_by_user_id: targetId }, data: { sent_by_user_id: null } });
+        await tx.message.updateMany({ where: { visible_to_user_id: targetId }, data: { visible_to_user_id: null } });
+        await tx.leadActivity.updateMany({ where: { user_id: targetId }, data: { user_id: null } });
+        // Resposta rapida pessoal morre com o dono; a global e do tenant e fica.
+        await tx.quickReply.deleteMany({ where: { user_id: targetId, is_global: false } });
+        await tx.quickReply.updateMany({ where: { user_id: targetId }, data: { user_id: null } });
+        await tx.task.updateMany({ where: { responsavel_id: targetId }, data: { responsavel_id: caller.id } });
+        await tx.user.delete({ where: { id: targetId } });
+        return [...new Set([...colunas, ...leads].map((p) => p.pipeline_id))];
+      }, TX_OPTS);
+    } catch (err) {
+      // FK fora do schema (o banco tem drift): a transacao voltou inteira e
+      // nada foi apagado. Desativar continua sendo o caminho.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        this.logger.warn(`exclusao de membro bloqueada por FK ${String(err.meta?.field_name ?? '')} user=${targetId}`);
+        throw new ConflictException('Este usuário ainda tem registros vinculados. Desative-o em vez de excluir.');
+      }
+      throw err;
+    }
+
+    await this.cache?.delPattern(`leads:list:${tenantId}:*`);
+    await this.refreshAccess(targetId);
+    for (const pipelineId of pipelinesAfetados) {
+      this.gateway?.emitPipelineStagesChanged(tenantId, pipelineId, targetId);
+    }
+    this.logger.warn(`membro excluido por ${caller.email}: ${target.nome} <${target.email}> (${targetId}) tenant=${tenantId}`);
+    return { ok: true };
   }
 
   async changePassword(user: AuthUser, dto: { currentPassword: string; newPassword: string }) {
