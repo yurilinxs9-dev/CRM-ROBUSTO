@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
@@ -8,8 +8,9 @@ import { CustomFieldsService } from '../leads/custom-fields.service';
 import { AttributionService } from '../attribution/attribution.service';
 import { CrmGateway } from '../websocket/websocket.gateway';
 import { LeadInsightsService } from '../lead-insights/lead-insights.service';
-import { IMPORT_FIELDS, IMPORT_GROUP_NAME } from './sheet-import.fields';
-import { mapRow, parseCsv, type ImportedLead } from './sheet-import.parser';
+import { parseCsv, type ImportedLead } from './sheet-import.parser';
+import { CONSORTIUM_SOURCE, PARTNER_SOURCE, type SheetImportSource } from './sheet-import.source';
+import { resolveConsortiumMatch } from './consortium-sheet.parser';
 
 export interface RunContext {
   tenantId: string;
@@ -55,12 +56,13 @@ export class SheetImportService implements OnModuleInit {
     private readonly attribution: AttributionService,
     private readonly gateway: CrmGateway,
     private readonly insights: LeadInsightsService,
+    @Optional() @Inject('SHEET_IMPORT_SOURCE') private readonly source: SheetImportSource = PARTNER_SOURCE,
   ) {
-    this.tenantId = this.config.get<string>('SHEET_IMPORT_TENANT_ID', '');
-    this.sheetId = this.config.get<string>('SHEET_IMPORT_SHEET_ID', '');
-    this.gid = this.config.get<string>('SHEET_IMPORT_GID', '');
-    this.pipelineIdEnv = this.config.get<string>('SHEET_IMPORT_PIPELINE_ID', '');
-    this.stageIdEnv = this.config.get<string>('SHEET_IMPORT_STAGE_ID', '');
+    this.tenantId = source.tenantId ?? this.config.get<string>(`${source.prefix}_TENANT_ID`, '');
+    this.sheetId = this.config.get<string>(`${source.prefix}_SHEET_ID`, '');
+    this.gid = this.config.get<string>(`${source.prefix}_GID`, '');
+    this.pipelineIdEnv = source.pipelineId ?? this.config.get<string>(`${source.prefix}_PIPELINE_ID`, '');
+    this.stageIdEnv = source.conservativeDedupe ? '' : this.config.get<string>(`${source.prefix}_STAGE_ID`, '');
   }
 
   isEnabled(): boolean {
@@ -132,19 +134,19 @@ export class SheetImportService implements OnModuleInit {
 
     const grupo =
       (await this.prisma.customFieldGroup.findFirst({
-        where: { tenant_id: tenantId, escopo: 'LEAD', nome: IMPORT_GROUP_NAME },
+        where: { tenant_id: tenantId, escopo: 'LEAD', nome: this.source.group },
         select: { id: true },
       })) ??
       (await this.prisma.customFieldGroup.create({
-        data: { tenant_id: tenantId, escopo: 'LEAD', nome: IMPORT_GROUP_NAME, ordem: GRUPO_ORDEM },
+        data: { tenant_id: tenantId, escopo: 'LEAD', nome: this.source.group, ordem: GRUPO_ORDEM },
       }));
 
     const existentes = await this.prisma.customFieldDef.findMany({
-      where: { tenant_id: tenantId, escopo: 'LEAD', key: { in: IMPORT_FIELDS.map((f) => f.key) } },
+      where: { tenant_id: tenantId, escopo: 'LEAD', key: { in: this.source.fields.map((f) => f.key) } },
       select: { key: true },
     });
     const ocupadas = new Set(existentes.map((d) => d.key));
-    const faltam = IMPORT_FIELDS.filter((f) => !ocupadas.has(f.key));
+    const faltam = this.source.fields.filter((f) => !ocupadas.has(f.key));
     if (faltam.length === 0) return;
 
     await this.prisma.customFieldDef.createMany({
@@ -163,7 +165,7 @@ export class SheetImportService implements OnModuleInit {
       })),
       skipDuplicates: true,
     });
-    this.logger.log(`Campos do formulário Meta criados no tenant ${tenantId}: ${faltam.map((f) => f.key).join(', ')}`);
+    this.logger.log(`Campos de ${this.source.group} criados no tenant ${tenantId}: ${faltam.map((f) => f.key).join(', ')}`);
   }
 
   /**
@@ -171,120 +173,97 @@ export class SheetImportService implements OnModuleInit {
    * telefone no pipeline. Lead + atividade + tags + registro da linha saem numa
    * transação curta; WS, atribuição e ficha ficam fora e nunca lançam.
    */
-  async processRow(lead: ImportedLead, ctx: RunContext): Promise<'created' | 'attached'> {
-    const dadosCustom = (await this.customFields.validateValues(
-      lead.dadosCustom,
-      ctx.tenantId,
-      'LEAD',
-    )) as Prisma.InputJsonObject;
-
-    const existente = await this.prisma.lead.findUnique({
-      where: {
-        telefone_pipeline_scope: {
-          telefone: lead.telefone,
-          pipeline_id: ctx.pipelineId,
-          lead_scope: ctx.tenantId,
-        },
-      },
-      select: { id: true, email: true, tags: true, dados_custom: true },
-    });
-
-    const tagIds = await this.upsertTags(ctx.tenantId, lead.tags);
-
-    if (existente) {
-      const atuais = (existente.dados_custom ?? {}) as Record<string, unknown>;
-      const merged: Record<string, unknown> = { ...atuais };
-      for (const [k, v] of Object.entries(dadosCustom)) {
-        const atual = atuais[k];
-        if (atual === undefined || atual === null || atual === '') merged[k] = v;
-      }
-      const tagsAtuais = Array.isArray(existente.tags) ? (existente.tags as string[]) : [];
-      const tagsMerged = [...new Set([...tagsAtuais, ...lead.tags])];
-
-      const data: Prisma.LeadUpdateInput = {
-        dados_custom: merged as Prisma.InputJsonObject,
-        tags: tagsMerged,
-      };
-      if (!existente.email && lead.email) data.email = lead.email;
-
-      await this.prisma.$transaction(async (tx) => {
-        await tx.lead.update({ where: { id: existente.id }, data });
-        await tx.leadActivity.create({
-          data: {
-            lead_id: existente.id,
-            tenant_id: ctx.tenantId,
-            tipo: 'lead_updated',
-            descricao: `Dados do formulário Meta anexados. ${lead.atividadeTexto}`,
-          },
+  async processRow(lead: ImportedLead, ctx: RunContext): Promise<'created' | 'attached' | 'skipped'> {
+    const dadosCustom = (await this.customFields.validateValues(lead.dadosCustom, ctx.tenantId, 'LEAD')) as Prisma.InputJsonObject;
+    // Both sheet writers share this lock when PL is enabled. Partner-only tenants
+    // keep their existing pipeline-local matching rules.
+    const protectedImport = this.source.conservativeDedupe ||
+      (ctx.tenantId === CONSORTIUM_SOURCE.tenantId && !!this.config.get<string>('PL_SHEET_IMPORT_SHEET_ID', ''));
+    const result = await this.prisma.$transaction(async tx => {
+      if (protectedImport) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ctx.tenantId}))`;
+        const seen = await tx.sheetImportRow.findUnique({
+          where: { tenant_id_source_row_id: { tenant_id: ctx.tenantId, source_row_id: lead.sourceRowId } },
+          select: { status: true },
         });
+        if (seen?.status === 'ok' || seen?.status === 'skipped') return { kind: 'skipped' as const };
+      }
+      const existente = protectedImport
+        ? resolveConsortiumMatch(await tx.lead.findMany({
+            where: { tenant_id: ctx.tenantId },
+            select: { id: true, telefone: true, pipeline_id: true, email: true, tags: true, dados_custom: true, updated_at: true },
+          }), lead.telefone, lead.email, ctx.pipelineId)
+        : await tx.lead.findUnique({
+            where: { telefone_pipeline_scope: { telefone: lead.telefone, pipeline_id: ctx.pipelineId, lead_scope: ctx.tenantId } },
+            select: { id: true, email: true, tags: true, dados_custom: true, updated_at: true },
+          });
+      const tagIds = await this.upsertTags(tx, ctx.tenantId, lead.tags);
+      if (existente) {
+        const atuais = (existente.dados_custom ?? {}) as Record<string, unknown>;
+        const merged = { ...atuais };
+        for (const [k, v] of Object.entries(dadosCustom)) {
+          if (atuais[k] === undefined || atuais[k] === null || atuais[k] === '') merged[k] = v;
+        }
+        const tagsAtuais = Array.isArray(existente.tags) ? (existente.tags as string[]) : [];
+        const data = {
+          dados_custom: merged as Prisma.InputJsonObject,
+          tags: [...new Set([...tagsAtuais, ...lead.tags])],
+          ...(!existente.email && lead.email ? { email: lead.email } : {}),
+        };
+        if (protectedImport) {
+          const changed = await tx.lead.updateMany({
+            where: { id: existente.id, tenant_id: ctx.tenantId, updated_at: existente.updated_at }, data,
+          });
+          if (changed.count !== 1) throw new Error('Ficha alterada durante a importação; tentar novamente preservando a edição');
+        } else {
+          await tx.lead.update({ where: { id: existente.id }, data });
+        }
+        await tx.leadActivity.create({ data: {
+          lead_id: existente.id, tenant_id: ctx.tenantId, tipo: 'lead_updated',
+          descricao: `Dados do formulário Meta anexados. ${lead.atividadeTexto}`,
+        } });
         await this.vincularTags(tx, existente.id, ctx.tenantId, tagIds);
         await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, existente.id);
-      });
-      try {
-        this.gateway.emitLeadUpdated(existente.id, data, ctx.tenantId);
-      } catch (err) {
-        this.logger.warn(`WS lead:updated failed for ${existente.id}: ${String(err)}`);
+        return { kind: 'attached' as const, id: existente.id, data };
       }
+      const agora = new Date();
+      const novo = await tx.lead.create({ data: {
+        nome: lead.nome, telefone: lead.telefone, email: lead.email,
+        origem: 'IMPORT', temperatura: 'FRIO', responsavel_id: null,
+        lead_scope: ctx.tenantId, tenant_id: ctx.tenantId, pipeline_id: ctx.pipelineId,
+        estagio_id: ctx.stageId, estagio_entered_at: agora, position: -agora.getTime(),
+        instancia_whatsapp: ctx.instancia, tags: lead.tags, dados_custom: dadosCustom,
+      }, select: { id: true } });
+      await tx.leadActivity.create({ data: {
+        lead_id: novo.id, tenant_id: ctx.tenantId, tipo: 'lead_created',
+        descricao: `Importado da planilha de leads (Meta Lead Ads). ${lead.atividadeTexto}`,
+      } });
+      await this.vincularTags(tx, novo.id, ctx.tenantId, tagIds);
+      await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, novo.id);
+      return { kind: 'created' as const, id: novo.id };
+    }, { maxWait: 5000, timeout: 15000 });
+
+    // External side effects only after commit.
+    if (result.kind === 'skipped') return 'skipped';
+    if (result.kind === 'attached') {
+      try { this.gateway.emitLeadUpdated(result.id, result.data, ctx.tenantId); }
+      catch { this.logger.warn(`WS lead:updated falhou para ${result.id}`); }
       return 'attached';
     }
-
-    const agora = new Date();
-    const novo = await this.prisma.$transaction(async (tx) => {
-      const criado = await tx.lead.create({
-        data: {
-          nome: lead.nome,
-          telefone: lead.telefone,
-          email: lead.email,
-          origem: 'IMPORT',
-          temperatura: 'FRIO',
-          responsavel_id: null,
-          lead_scope: ctx.tenantId,
-          tenant_id: ctx.tenantId,
-          pipeline_id: ctx.pipelineId,
-          estagio_id: ctx.stageId,
-          estagio_entered_at: agora,
-          position: -agora.getTime(),
-          instancia_whatsapp: ctx.instancia,
-          tags: lead.tags,
-          dados_custom: dadosCustom,
-        },
-        select: { id: true },
-      });
-      await tx.leadActivity.create({
-        data: {
-          lead_id: criado.id,
-          tenant_id: ctx.tenantId,
-          tipo: 'lead_created',
-          descricao: `Importado da planilha de leads (Meta Lead Ads). ${lead.atividadeTexto}`,
-        },
-      });
-      await this.vincularTags(tx, criado.id, ctx.tenantId, tagIds);
-      await this.registrarLinha(tx, ctx.tenantId, lead.sourceRowId, criado.id);
-      return criado;
-    });
-
-    // Fora da transação e à prova de falha: o lead já existe.
-    try {
-      this.gateway.emitLeadCreated(novo.id, { pipeline_id: ctx.pipelineId, estagio_id: ctx.stageId }, ctx.tenantId);
-    } catch (err) {
-      this.logger.warn(`WS lead:created falhou para ${novo.id}: ${(err as Error).message}`);
-    }
-    // `recordFirstTouch` engole os próprios erros; não precisa de try/catch.
-    await this.attribution.recordFirstTouch(novo.id, ctx.tenantId, lead.attribution);
-    try {
-      await this.insights.enfileirarImportado(novo.id, ctx.tenantId);
-    } catch (err) {
-      this.logger.warn(`Ficha IA não enfileirada para ${novo.id}: ${(err as Error).message}`);
-    }
+    try { this.gateway.emitLeadCreated(result.id, { pipeline_id: ctx.pipelineId, estagio_id: ctx.stageId }, ctx.tenantId); }
+    catch { this.logger.warn(`WS lead:created falhou para ${result.id}`); }
+    await this.attribution.recordFirstTouch(result.id, ctx.tenantId, lead.attribution);
+    try { await this.insights.enfileirarImportado(result.id, ctx.tenantId); }
+    catch { this.logger.warn(`Ficha IA não enfileirada para ${result.id}`); }
     return 'created';
   }
 
-  private async upsertTags(tenantId: string, nomes: string[]): Promise<string[]> {
+  private async upsertTags(tx: Prisma.TransactionClient, tenantId: string, nomes: string[]): Promise<string[]> {
     const unicos = [...new Set(nomes.map((n) => n.trim()).filter((n) => n !== ''))];
     if (unicos.length === 0) return [];
     const tags = await Promise.all(
       unicos.map((nome) =>
-        this.prisma.tag.upsert({
+        tx.tag.upsert({
           where: { tenant_id_nome: { tenant_id: tenantId, nome } },
           update: {},
           create: { nome, tenant_id: tenantId },
@@ -326,6 +305,10 @@ export class SheetImportService implements OnModuleInit {
     return this.gid !== '' ? `${base}&gid=${encodeURIComponent(this.gid)}` : base;
   }
 
+  private rowKey(id: string): string {
+    return this.source.conservativeDedupe ? `consorcio:${this.sheetId}:${this.gid || '0'}:${id}` : id;
+  }
+
   private async baixarCsv(): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -335,7 +318,7 @@ export class SheetImportService implements OnModuleInit {
       const texto = await res.text();
       // Planilha privada devolve a página de login do Google com status 200.
       const cabecalho = texto.slice(0, 2000);
-      if (!cabecalho.includes('id') || !cabecalho.includes('Telefone') || cabecalho.trimStart().startsWith('<')) {
+      if (!cabecalho.includes('id') || !cabecalho.toLowerCase().includes('telefone') || cabecalho.trimStart().startsWith('<')) {
         throw new Error('planilha não está acessível por link público (resposta não é CSV com colunas id/Telefone)');
       }
       return texto;
@@ -364,7 +347,7 @@ export class SheetImportService implements OnModuleInit {
 
     const pendentes = rows.filter((row) => {
       const id = (row.id ?? '').trim();
-      const visto = registro.get(id);
+      const visto = registro.get(this.rowKey(id));
       if (!visto) return true;
       return visto.status === 'error' && visto.attempts < MAX_TENTATIVAS;
     });
@@ -372,19 +355,27 @@ export class SheetImportService implements OnModuleInit {
     if (pendentes.length > 0) {
       await this.ensureFieldDefs(this.tenantId);
       const ctx = await this.resolveContext();
+      const processedIds = new Set<string>();
 
       for (const row of pendentes) {
-        const mapped = mapRow(row);
+        const sourceId = row.id?.trim();
+        if (this.source.conservativeDedupe && sourceId) {
+          if (processedIds.has(sourceId)) { resumo.puladas++; continue; }
+          processedIds.add(sourceId);
+        }
+        const mapped = this.source.map(row);
         if (!mapped.ok) {
           const id = (row.id ?? '').trim() || `sem-id:${resumo.puladas}`;
-          await this.marcarLinha(id, 'skipped', mapped.motivo);
+          await this.marcarLinha(this.rowKey(id), 'skipped', mapped.motivo);
           resumo.puladas++;
           continue;
         }
+        mapped.lead.sourceRowId = this.rowKey(mapped.lead.sourceRowId);
         try {
           const r = await this.processRow(mapped.lead, ctx);
           if (r === 'created') resumo.novas++;
-          else resumo.anexadas++;
+          else if (r === 'attached') resumo.anexadas++;
+          else resumo.puladas++;
         } catch (err) {
           resumo.erros++;
           const msg = (err as Error).message ?? String(err);
@@ -396,26 +387,37 @@ export class SheetImportService implements OnModuleInit {
 
     if (resumo.erros === 0) this.lastHash = hash;
     this.logger.log(
-      `Importação da planilha: ${resumo.total} linhas, ${resumo.novas} novas, ${resumo.anexadas} anexadas, ${resumo.puladas} puladas, ${resumo.erros} erros`,
+      `${this.source.group}: ${resumo.total} linhas, ${resumo.novas} novas, ${resumo.anexadas} anexadas, ${resumo.puladas} puladas, ${resumo.erros} erros`,
     );
     return resumo;
   }
 
   private async marcarLinha(sourceRowId: string, status: 'skipped' | 'error', detail: string): Promise<void> {
     const where = { tenant_id_source_row_id: { tenant_id: this.tenantId, source_row_id: sourceRowId } };
-    if (status === 'skipped') {
-      await this.prisma.sheetImportRow.upsert({
+    const write = async (tx: Prisma.TransactionClient) => {
+      await tx.sheetImportRow.upsert({
         where,
-        create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail },
-        update: { status, detail },
+        create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail, attempts: 1 },
+        update: { status, detail, ...(status === 'error' ? { attempts: { increment: 1 } } : {}) },
       });
+    };
+    const protectedImport = this.source.conservativeDedupe ||
+      (this.tenantId === CONSORTIUM_SOURCE.tenantId && !!this.config.get<string>('PL_SHEET_IMPORT_SHEET_ID', ''));
+    if (!protectedImport) {
+      if (status === 'skipped') {
+        await this.prisma.sheetImportRow.upsert({ where,
+          create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail },
+          update: { status, detail },
+        });
+      } else await write(this.prisma);
       return;
     }
-    await this.prisma.sheetImportRow.upsert({
-      where,
-      create: { tenant_id: this.tenantId, source_row_id: sourceRowId, lead_id: null, status, detail, attempts: 1 },
-      update: { status, detail, attempts: { increment: 1 } },
-    });
+    await this.prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${this.tenantId}))`;
+      const seen = await tx.sheetImportRow.findUnique({ where, select: { status: true } });
+      if (seen?.status === 'ok' || seen?.status === 'skipped') return;
+      await write(tx);
+    }, { maxWait: 5000, timeout: 15000 });
   }
 
 }

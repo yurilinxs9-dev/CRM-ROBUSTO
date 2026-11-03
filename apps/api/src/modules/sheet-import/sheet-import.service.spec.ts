@@ -7,24 +7,26 @@ import type { LeadInsightsService } from '../lead-insights/lead-insights.service
 import { SheetImportService } from './sheet-import.service';
 import { IMPORT_FIELDS, IMPORT_GROUP_NAME } from './sheet-import.fields';
 import type { ImportedLead } from './sheet-import.parser';
+import { CONSORTIUM_SOURCE, type SheetImportSource } from './sheet-import.source';
 
 /**
  * Mocks na borda (Prisma, config, serviços vizinhos, fetch). O service é
  * exercitado de verdade. Sem `any`: cast uma vez no construtor.
  */
-export function montar(env: Record<string, string | undefined> = {}) {
+export function montar(env: Record<string, string | undefined> = {}, source?: SheetImportSource) {
   const prisma = {
     customFieldGroup: { findFirst: jest.fn(), create: jest.fn() },
     customFieldDef: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn() },
     pipeline: { findFirst: jest.fn() },
     stage: { findFirst: jest.fn() },
     whatsappInstance: { findFirst: jest.fn() },
-    sheetImportRow: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn() },
-    lead: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
+    sheetImportRow: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn(), upsert: jest.fn() },
+    lead: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]), create: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     leadActivity: { create: jest.fn() },
     tag: { upsert: jest.fn() },
     leadTag: { createMany: jest.fn() },
     $transaction: jest.fn(),
+    $executeRaw: jest.fn(),
   };
   // $transaction interativo: executa o callback com o próprio mock como tx.
   prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma));
@@ -45,6 +47,7 @@ export function montar(env: Record<string, string | undefined> = {}) {
     attribution as unknown as AttributionService,
     gateway as unknown as CrmGateway,
     insights as unknown as LeadInsightsService,
+    source,
   );
   return { service, prisma, config, customFields, attribution, gateway, insights };
 }
@@ -53,6 +56,110 @@ const ENV_OK = {
   SHEET_IMPORT_TENANT_ID: 't1',
   SHEET_IMPORT_SHEET_ID: 'sheet-abc',
 };
+
+describe('Consortium source isolation and existing assignments', () => {
+  const csv = 'id,nome_completo,telefone,email,o_que_você_quer_conquistar?\nl:1,Pessoa,11999991234,p@example.com,imóvel';
+  const fetchOriginal = global.fetch;
+  afterEach(() => { global.fetch = fetchOriginal; });
+  function ready() {
+    const m = montar({ PL_SHEET_IMPORT_SHEET_ID: 'new-sheet', PL_SHEET_IMPORT_GID: '0', ...ENV_OK }, CONSORTIUM_SOURCE);
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, text: async () => csv });
+    m.prisma.stage.findFirst.mockResolvedValue({ id: 'new-stage' });
+    m.prisma.customFieldGroup.findFirst.mockResolvedValue({ id: 'group' });
+    m.prisma.tag.upsert.mockResolvedValue({ id: 'tag' });
+    m.prisma.lead.create.mockResolvedValue({ id: 'new-lead' });
+    return m;
+  }
+  it('requires its own sheet and fixes its tenant/pipeline', async () => {
+    expect(montar(ENV_OK, CONSORTIUM_SOURCE).service.isEnabled()).toBe(false);
+    const m = ready();
+    expect(await m.service.resolveContext()).toMatchObject({ tenantId: CONSORTIUM_SOURCE.tenantId, pipelineId: CONSORTIUM_SOURCE.pipelineId });
+  });
+  it('imports independently of a legacy row with the same source id; restart is idempotent', async () => {
+    const m = ready();
+    m.prisma.sheetImportRow.findMany.mockResolvedValue([{ source_row_id: 'l:1', status: 'ok' }]);
+    expect((await m.service.run()).novas).toBe(1);
+    expect(m.prisma.lead.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ responsavel_id: null, pipeline_id: CONSORTIUM_SOURCE.pipelineId, estagio_id: 'new-stage' }) }));
+    const seen = m.prisma.sheetImportRow.upsert.mock.calls[0][0].create;
+    expect(seen.source_row_id).toBe('consorcio:new-sheet:0:l:1');
+    const restarted = ready();
+    restarted.prisma.sheetImportRow.findMany.mockResolvedValue([seen]);
+    expect((await restarted.service.run()).novas).toBe(0);
+    expect(restarted.prisma.lead.create).not.toHaveBeenCalled();
+  });
+  it('only fills missing information on an assigned existing PL lead', async () => {
+    const m = ready();
+    m.prisma.lead.findMany.mockResolvedValue([{ id: 'assigned', telefone: '5511999991234', email: 'p@example.com', pipeline_id: CONSORTIUM_SOURCE.pipelineId,
+      dados_custom: { bem_de_interesse: 'Casa' }, tags: ['Original'], responsavel_id: 'seller', estagio_id: 'negotiating' }]);
+    expect((await m.service.run()).anexadas).toBe(1);
+    const data = m.prisma.lead.updateMany.mock.calls[0][0].data;
+    expect(data.dados_custom).toMatchObject({ bem_de_interesse: 'Casa', pl_objetivo: 'Imóvel' });
+    for (const key of ['responsavel_id', 'estagio_id', 'pipeline_id', 'valor_estimado']) expect(data).not.toHaveProperty(key);
+    expect(m.prisma.lead.create).not.toHaveBeenCalled();
+  });
+  it('does not create twice when the same source id occurs twice in one CSV', async () => {
+    const m = ready();
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, text: async () => csv + '\nl:1,Outra pessoa,11888881234,other@example.com,veículo' });
+    expect((await m.service.run()).novas).toBe(1);
+    expect(m.prisma.lead.create).toHaveBeenCalledTimes(1);
+  });
+  it('records a review conflict without creating or changing a partner lead', async () => {
+    const m = ready();
+    m.prisma.lead.findMany.mockResolvedValue([{ id: 'partner', telefone: '5511999991234', email: null, pipeline_id: 'partners', tags: [], dados_custom: {} }]);
+    expect((await m.service.run()).erros).toBe(1);
+    expect(m.prisma.lead.create).not.toHaveBeenCalled();
+    expect(m.prisma.lead.update).not.toHaveBeenCalled();
+    expect(m.prisma.sheetImportRow.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'error', detail: expect.stringContaining('revisão') }) }));
+  });
+  it('does not overwrite a concurrent edit and retries without marking the row successful', async () => {
+    const m = ready(), updatedAt = new Date();
+    m.prisma.lead.findMany.mockResolvedValue([{ id: 'assigned', telefone: '5511999991234', email: null, pipeline_id: CONSORTIUM_SOURCE.pipelineId, dados_custom: {}, tags: [], updated_at: updatedAt }]);
+    m.prisma.lead.updateMany.mockResolvedValue({ count: 0 });
+    expect((await m.service.run()).erros).toBe(1);
+    expect(m.prisma.lead.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ updated_at: updatedAt }) }));
+    expect(m.prisma.leadActivity.create).not.toHaveBeenCalled();
+    expect(m.gateway.emitLeadUpdated).not.toHaveBeenCalled();
+    expect(m.prisma.sheetImportRow.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ status: 'error' }) }));
+  });
+  it('serializes both sources before matching so simultaneous submissions create only one lead', async () => {
+    const env = { ...ENV_OK, SHEET_IMPORT_TENANT_ID: CONSORTIUM_SOURCE.tenantId, PL_SHEET_IMPORT_SHEET_ID: 'new-sheet' };
+    const partner = montar(env), consortium = montar(env, CONSORTIUM_SOURCE);
+    const stored: Array<Record<string, unknown>> = [];
+    let tail: Promise<void> = Promise.resolve();
+    for (const m of [partner, consortium]) {
+      let release: () => void;
+      m.prisma.$executeRaw.mockImplementation(async () => {
+        const previous = tail;
+        tail = new Promise<void>(resolve => { release = resolve; });
+        await previous;
+      });
+      m.prisma.$transaction.mockImplementation(async (fn: (tx: typeof m.prisma) => Promise<unknown>) => {
+        try { return await fn(m.prisma); } finally { release(); }
+      });
+      m.prisma.lead.findMany.mockImplementation(async () => [...stored]);
+      m.prisma.lead.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => { stored.push({ ...data, id: 'created' }); return { id: 'created' }; });
+    }
+    const tenantId = CONSORTIUM_SOURCE.tenantId!;
+    const result = await Promise.allSettled([
+      partner.service.processRow(leadImportado({ tags: [], sourceRowId: 'legacy' }), { ...CTX, tenantId }),
+      consortium.service.processRow(leadImportado({ tags: [], sourceRowId: 'consortium' }), { ...CTX, tenantId, pipelineId: CONSORTIUM_SOURCE.pipelineId! }),
+    ]);
+    expect(stored).toHaveLength(1);
+    expect(result.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(result.filter(r => r.status === 'rejected')).toHaveLength(1);
+    expect(partner.prisma.$executeRaw).toHaveBeenCalled();
+    expect(consortium.prisma.$executeRaw).toHaveBeenCalled();
+  });
+  it('preserves a successful row committed by another worker before error marking', async () => {
+    const m = ready();
+    m.prisma.sheetImportRow.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ status: 'ok' });
+    m.prisma.lead.findMany.mockResolvedValue([{ id: 'existing', telefone: '5511999991234', email: null, pipeline_id: CONSORTIUM_SOURCE.pipelineId, dados_custom: {}, tags: [], updated_at: new Date() }]);
+    m.prisma.lead.updateMany.mockResolvedValue({ count: 0 });
+    await m.service.run();
+    expect(m.prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(m.prisma.sheetImportRow.upsert).not.toHaveBeenCalled();
+  });
+});
 
 describe('SheetImportService config', () => {
   it('sem SHEET_IMPORT_TENANT_ID/SHEET_ID fica inerte', () => {

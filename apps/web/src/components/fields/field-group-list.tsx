@@ -3,6 +3,7 @@
 import { FieldRow } from './field-input';
 import { useAuthStore } from '@/stores/auth.store';
 import { PARTNERS_TENANT } from '@/lib/partners';
+import { formGroupVisible } from '@/lib/form-group-visibility';
 import {
   groupFields,
   readValue,
@@ -19,6 +20,7 @@ interface FieldGroupListProps {
   onChange: (key: string, value: unknown) => void;
   /** Some com o título quando o escopo tem só o grupo de sistema. */
   ocultarTituloUnico?: boolean;
+  pipelineId?: string;
 }
 
 /**
@@ -31,9 +33,10 @@ export function FieldGroupList({
   values,
   onChange,
   ocultarTituloUnico = true,
+  pipelineId,
 }: FieldGroupListProps) {
   const tenantId = useAuthStore(s => s.user?.tenantId);
-  const grupos = groupFields(schema, escopo).map(g => ({ ...g, fields: g.fields.filter(def =>
+  const grupos = groupFields(schema, escopo).filter(g => formGroupVisible(g.nome, escopo, tenantId, pipelineId)).map(g => ({ ...g, fields: g.fields.filter(def =>
     tenantId !== PARTNERS_TENANT || escopo !== 'LEAD' || def.key !== 'outro_bem_de_interesse' || values.bem_de_interesse === 'Outros',
   ) })).filter((g) => g.fields.length > 0);
   if (grupos.length === 0) return null;
@@ -102,7 +105,9 @@ export function FieldGroupView({
   escopo: FieldScope;
   registro: FieldRecord | null | undefined;
 }) {
+  const tenantId = useAuthStore(s => s.user?.tenantId);
   const grupos = groupFields(schema, escopo)
+    .filter(g => formGroupVisible(g.nome, escopo, tenantId, typeof registro?.pipeline_id === 'string' ? registro.pipeline_id : undefined))
     .map((g) => ({
       ...g,
       linhas: g.fields

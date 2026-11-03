@@ -129,6 +129,7 @@ export function LeadFields({ lead, editavel, onPatch }: LeadFieldsProps) {
           {defsCustom.length > 0 && schemaCustom && (
             <div className={editavel ? '' : 'pointer-events-none opacity-70'}>
               <FieldGroupList
+              pipelineId={lead.pipeline_id}
                 schema={schemaCustom}
                 escopo="LEAD"
                 values={values}

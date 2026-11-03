@@ -1329,6 +1329,7 @@ export function KanbanWorkspace({ fixedPipelineId }: { fixedPipelineId?: string 
       </div>
 
       <NewLeadDialog
+        pipelineId={activePipelineId || undefined}
         open={dialogOpen}
         onOpenChange={(open) => { createLeadMutation.reset(); setDialogOpen(open); }}
         stages={stages}

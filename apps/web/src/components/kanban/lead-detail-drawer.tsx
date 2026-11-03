@@ -448,6 +448,7 @@ export function LeadDetailDrawer({
               )}
 
               <FieldGroupList
+                pipelineId={lead?.pipeline_id}
                 schema={schema}
                 escopo="LEAD"
                 values={values}

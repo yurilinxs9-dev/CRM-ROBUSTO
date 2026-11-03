@@ -43,6 +43,7 @@ interface NewLeadDialogProps {
   onOpenChange: (open: boolean) => void;
   stages: Stage[];
   defaultStageId?: string | null;
+  pipelineId?: string;
   isLoading?: boolean;
   error?: string;
   onSubmit: (data: NewLeadFormData) => void;
@@ -63,6 +64,7 @@ export function NewLeadDialog({
   onOpenChange,
   stages,
   defaultStageId,
+  pipelineId,
   isLoading,
   error,
   onSubmit,
@@ -124,6 +126,7 @@ export function NewLeadDialog({
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             <FieldGroupList
+              pipelineId={pipelineId}
               schema={schema}
               escopo="LEAD"
               values={values}
