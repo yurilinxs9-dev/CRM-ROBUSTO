@@ -1189,6 +1189,66 @@ describe('InboundMessageService.saveIncomingMessage — rodizio no pool com inst
   });
 });
 
+describe('InboundMessageService.saveIncomingMessage — número com responsável (direct_to_owner)', () => {
+  // Ferbraço: modo Compartilhado, um WhatsApp por vendedor. Número de OPERADOR
+  // caía no pool (todo mundo via); com a marca, o lead é do dono do número.
+  const leadSemDono = { ...leadOwnedByA, responsavel_id: null, estagio_id: 'stage-1' };
+
+  function cenario(opts: { marca: boolean; rodizio?: boolean; leadExistente?: boolean }) {
+    const m = makeService();
+    m.prisma.tenant.findFirst.mockResolvedValue({
+      pool_enabled: true,
+      round_robin_enabled: opts.rodizio ?? false,
+      kanban_individual: false,
+    });
+    m.prisma.user.findUnique.mockResolvedValue({ role: 'OPERADOR', nome: 'Yago', pl_sales_only: false });
+    m.prisma.lead.upsert.mockImplementation((args: any) =>
+      Promise.resolve(opts.leadExistente ? leadSemDono : { ...leadSemDono, responsavel_id: args.create.responsavel_id }),
+    );
+    m.prisma.lead.update.mockImplementation(({ data }: any) => Promise.resolve({ ...leadSemDono, ...data }));
+    m.prisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    m.assignment.resolveSectorForInstance.mockResolvedValue('setor-1');
+    m.assignment.assignBySector.mockResolvedValue({ userId: 'C', reason: 'round-robin' });
+    m.conversations.resolveForInbound.mockResolvedValue({ id: 'conv-b', responsavel_id: 'B' });
+    m.prisma.message.upsert.mockResolvedValue({ id: 'msg-1', conversation_id: 'conv-b', visible_to_user_id: 'B' });
+    const instance = {
+      ...instanceB,
+      sector_id: opts.rodizio ? 'setor-1' : null,
+      config: opts.marca ? { provider: 'evolution', direct_to_owner: true } : { provider: 'evolution' },
+    } as any;
+    return { ...m, instance };
+  }
+
+  const criado = (prisma: any) => prisma.lead.upsert.mock.calls[0][0].create;
+
+  it('sem a marca: número de vendedor no Compartilhado segue caindo no pool (comportamento atual)', async () => {
+    const m = cenario({ marca: false });
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+    expect(criado(m.prisma).responsavel_id).toBeNull();
+  });
+
+  it('com a marca: lead novo nasce do dono do número, mesmo no Compartilhado', async () => {
+    const m = cenario({ marca: true });
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+    expect(criado(m.prisma).responsavel_id).toBe('B');
+  });
+
+  it('com a marca: vence o rodízio do setor', async () => {
+    const m = cenario({ marca: true, rodizio: true });
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+    expect(criado(m.prisma).responsavel_id).toBe('B');
+    expect(m.assignment.assignBySector).not.toHaveBeenCalled();
+  });
+
+  it('com a marca: lead parado no pool vai para o dono na próxima mensagem do cliente', async () => {
+    const m = cenario({ marca: true, leadExistente: true });
+    await m.service.saveIncomingMessage(baseInput({ instance: m.instance }));
+    expect(m.prisma.lead.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ responsavel_id: 'B', returned_at: null }) }),
+    );
+  });
+});
+
 describe('Consórcio PL — manual inbound assignment', () => {
   function manual() {
     const resolve=jest.fn().mockResolvedValue({pipeline:{id:PL_PIPELINE},firstStage:{id:'pl-new'},phone:'5511900000000',simulation:{nome:'Ana'}});
