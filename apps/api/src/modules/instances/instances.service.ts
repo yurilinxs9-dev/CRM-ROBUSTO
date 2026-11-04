@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, BadGatewayException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, BadGatewayException, OnModuleInit, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -8,6 +8,12 @@ import { UserRole } from '../../common/types/roles';
 import { isPlSalesOnly } from '../../common/access/pl-sales-access';
 import { hashTruncated } from '../../common/utils/hash-truncated';
 import { HistorySyncService } from '../webhooks/history-sync.service';
+import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
+import { RedisCacheService } from '../../common/cache/redis-cache.service';
+import { CrmGateway } from '../websocket/websocket.gateway';
+import { isManagerRole } from '../leads/lead-visibility';
+import { DIRECT_TO_OWNER_KEY } from './direct-to-owner';
+import type { Prisma } from '@prisma/client';
 
 interface UazApiCreateResponse {
   instance: {
@@ -83,6 +89,9 @@ export class InstancesService implements OnModuleInit {
     private config: ConfigService,
     private prisma: PrismaService,
     private historySync: HistorySyncService,
+    @Optional() private kanbanIndividual?: KanbanIndividualService,
+    @Optional() private cache?: RedisCacheService,
+    @Optional() private gateway?: CrmGateway,
   ) {
     this.baseUrl = this.config.get<string>('UAZAPI_BASE_URL', 'https://jgtech.uazapi.com');
     this.adminToken = this.config.get<string>('UAZAPI_ADMIN_TOKEN', '');
@@ -328,7 +337,7 @@ export class InstancesService implements OnModuleInit {
   async findAll(user: AuthUser) {
     const tenant = await this.prisma.tenant.findFirst({
       where: { id: user.tenantId },
-      select: { pool_enabled: true },
+      select: { pool_enabled: true, manager_full_access: true },
     });
     const hiddenIds = (
       await this.prisma.instanceHidden.findMany({
@@ -338,17 +347,30 @@ export class InstancesService implements OnModuleInit {
     ).map((h) => h.instance_id);
 
     // Modo Compartilhado: todos veem o mesmo número (a instância é da equipe,
-    // não pessoal). Modo Individual: cada user vê apenas as próprias.
-    const ownerFilter = tenant?.pool_enabled && !isPlSalesOnly(user) ? {} : { owner_user_id: user.id };
+    // não pessoal). Modo Individual: cada user vê apenas as próprias — exceto o
+    // gestor com acesso total (Ferbraço), que administra o número de cada
+    // vendedor e escolhe quem responde por ele (setOwner).
+    const seesAll =
+      (tenant?.pool_enabled || (tenant?.manager_full_access && isManagerRole(user.role as UserRole))) &&
+      !isPlSalesOnly(user);
+    const ownerFilter = seesAll ? {} : { owner_user_id: user.id };
 
+    const where = {
+      tenant_id: user.tenantId,
+      ...ownerFilter,
+      ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
+    };
+    if (isPlSalesOnly(user)) {
+      return this.prisma.whatsappInstance.findMany({
+        where,
+        orderBy: { created_at: 'asc' },
+        select: { id: true, nome: true, telefone: true, status: true, ultimo_check: true },
+      });
+    }
     return this.prisma.whatsappInstance.findMany({
-      where: {
-        tenant_id: user.tenantId,
-        ...ownerFilter,
-        ...(hiddenIds.length ? { id: { notIn: hiddenIds } } : {}),
-      },
+      where,
       orderBy: { created_at: 'asc' },
-      ...(isPlSalesOnly(user) ? { select: { id: true, nome: true, telefone: true, status: true, ultimo_check: true } } : {}),
+      include: { owner: { select: { id: true, nome: true } } },
     });
   }
 
@@ -400,6 +422,117 @@ export class InstancesService implements OnModuleInit {
       data: { sector_id: sectorId },
     });
     return { ok: true, sector_id: sectorId };
+  }
+
+  /**
+   * Define o vendedor responsável pelo número e liga a marca `direct_to_owner`:
+   * lead que chega nele vai direto para o dono em QUALQUER modo do tenant (no
+   * Compartilhado, número de vendedor caía no pool — ver inbound-message). O
+   * `owner_user_id` também dá ao vendedor acesso às conversas do número. Antes
+   * só valia quem conectou: o gestor que conectava o WhatsApp de cada vendedor
+   * ficava dono de todos.
+   *
+   * Aceita o MESMO dono: é como o gestor liga a regra num número que o
+   * vendedor já conectou e puxa para ele os leads parados no pool.
+   *
+   * `transferLeads`: leva junto os leads DESTE número que estão sem dono ou com
+   * o dono anterior (e as conversas/mensagens privadas deles), remapeando a
+   * coluna para o board do novo dono. Lead que outro vendedor assumiu fica.
+   */
+  async setOwner(instanceId: string, ownerUserId: string, transferLeads: boolean, user: AuthUser) {
+    const instance = await this.prisma.whatsappInstance.findFirst({
+      where: { id: instanceId, tenant_id: user.tenantId },
+      select: { id: true, nome: true, owner_user_id: true, config: true },
+    });
+    if (!instance) throw new NotFoundException('Instância não encontrada');
+    const novo = await this.prisma.user.findFirst({
+      where: { id: ownerUserId, tenant_id: user.tenantId, ativo: true },
+      select: { id: true, nome: true, role: true },
+    });
+    if (!novo) throw new BadRequestException('Usuário inválido ou inativo');
+    if (novo.role === UserRole.VISUALIZADOR) {
+      throw new BadRequestException('Visualizador não atende conversas — escolha um operador ou gerente.');
+    }
+    const anteriorId = instance.owner_user_id;
+    const trocouDono = anteriorId !== novo.id;
+
+    const tenantId = user.tenantId;
+    // Sem dono (pool/nuvem) ou com o dono anterior; nunca o que outro assumiu.
+    const donosQueSaem = [{ responsavel_id: null }, ...(trocouDono ? [{ responsavel_id: anteriorId }] : [])];
+    const leadsDoNumero = { tenant_id: tenantId, instancia_whatsapp: instance.nome, OR: donosQueSaem };
+    const leads = transferLeads
+      ? await this.prisma.lead.findMany({
+          where: leadsDoNumero,
+          select: { id: true, estagio_id: true, pipeline_id: true, responsavel_id: true },
+        })
+      : [];
+    const configAtual =
+      instance.config && typeof instance.config === 'object' && !Array.isArray(instance.config)
+        ? (instance.config as Prisma.JsonObject)
+        : {};
+    // Coluna equivalente no board do novo dono (identidade sem kanban individual).
+    // Fora da transação: a tradução lê e pode criar o board PL do vendedor.
+    const destinoPorEtapa = new Map<string, string>();
+    for (const etapa of new Set(leads.map((l) => l.estagio_id))) {
+      destinoPorEtapa.set(
+        etapa,
+        this.kanbanIndividual ? await this.kanbanIndividual.stageForOwner(tenantId, novo.id, etapa) : etapa,
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.whatsappInstance.update({
+        where: { id: instance.id },
+        data: { owner_user_id: novo.id, config: { ...configAtual, [DIRECT_TO_OWNER_KEY]: true } },
+      });
+      if (leads.length === 0) return;
+      for (const [etapa, destino] of destinoPorEtapa) {
+        await tx.lead.updateMany({
+          where: { ...leadsDoNumero, estagio_id: etapa },
+          data: {
+            responsavel_id: novo.id,
+            // Ganhou dono: sai da nuvem de devolvidos (mesma regra do inbound).
+            returned_at: null,
+            ...(destino !== etapa ? { estagio_id: destino, estagio_entered_at: new Date() } : {}),
+          },
+        });
+      }
+      // Sem a conversa, a próxima mensagem do cliente devolveria o lead ao
+      // dono anterior (ou ao pool); sem as mensagens privadas, o vendedor
+      // abriria o chat do próprio número sem o histórico.
+      await tx.conversation.updateMany({
+        where: { tenant_id: tenantId, instancia_whatsapp: instance.nome, OR: donosQueSaem },
+        data: { responsavel_id: novo.id },
+      });
+      if (trocouDono) {
+        await tx.message.updateMany({
+          where: { tenant_id: tenantId, instance_name: instance.nome, visible_to_user_id: anteriorId },
+          data: { visible_to_user_id: novo.id },
+        });
+      }
+      await tx.leadActivity.createMany({
+        data: leads.map((l) => ({
+          lead_id: l.id,
+          user_id: user.id,
+          tipo: 'REASSIGNED' as const,
+          descricao: `Lead direcionado para ${novo.nome}, responsável pelo número ${instance.nome}`,
+          dados_antes: { responsavel_id: l.responsavel_id },
+          dados_depois: { responsavel_id: novo.id },
+          tenant_id: tenantId,
+        })),
+      });
+    }, { timeout: 60_000, maxWait: 10_000 });
+
+    if (leads.length > 0) {
+      await this.cache?.delPattern(`leads:list:${tenantId}:*`);
+      for (const pipelineId of new Set(leads.map((l) => l.pipeline_id))) {
+        this.gateway?.emitPipelineStagesChanged(tenantId, pipelineId, novo.id);
+      }
+    }
+    this.logger.log(
+      `instância ${instance.nome}: responsável ${anteriorId} → ${novo.id} por ${user.email} (leads transferidos: ${leads.length})`,
+    );
+    return { ok: true, owner_user_id: novo.id, leads_transferidos: leads.length };
   }
 
   async create(nome: string, user: AuthUser) {

@@ -19,6 +19,7 @@ import { type ExtractedMessage, synthesizeMessageId } from './message-extractor'
 import { AD_REFERRAL_KEY, extractAdReferral, type AdReferral } from './ad-referral';
 import { AttributionService, CLICK_CODE_PATTERN } from '../attribution/attribution.service';
 import { KanbanIndividualService } from '../pipelines/kanban-individual.service';
+import { isDirectToOwner } from '../instances/direct-to-owner';
 import {
   assertValidMagic,
   decryptWhatsAppMedia,
@@ -500,13 +501,21 @@ export class InboundMessageService {
       tenant?.round_robin_enabled === true &&
       instance.sector_id != null &&
       !isFromMe;
+    // Número com responsável definido pelo gestor (Instâncias > Responsável):
+    // lead que chega nele é do dono, em QUALQUER modo — inclusive no
+    // Compartilhado, onde número de vendedor caía no pool e todo mundo via
+    // (Ferbraço: um WhatsApp por vendedor, cada um só o próprio). Opt-in por
+    // instância, gravado no `config` por `setOwner`; sem a marca nada muda.
+    const directToOwner = !plRoute && isDirectToOwner(instance.config) && !!instance.owner_user_id;
     const responsavelId =
-      restrictedOwner ? instance.owner_user_id : (plRoute || inPool || soloDistribute ? null : instance.owner_user_id);
+      restrictedOwner || directToOwner
+        ? instance.owner_user_id
+        : (plRoute || inPool || soloDistribute ? null : instance.owner_user_id);
     // F-02: round-robin só quando o tenant ativou explicitamente (opt-in) E o
     // lead ficou sem dono — pool do Compartilhado (inclusive a instância de
     // gestor inscrita via `poolDistribute`) ou instância com setor no Individual.
     const wantRoundRobin =
-      !restrictedOwner && !plRoute && (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
+      !restrictedOwner && !directToOwner && !plRoute && (inPool || soloDistribute) && tenant?.round_robin_enabled === true;
 
     // Escopo de identidade do lead: SEMPRE tenant_id → 1 lead por telefone+pipeline,
     // tanto no Compartilhado quanto no Individual. Antes o Individual escopava por

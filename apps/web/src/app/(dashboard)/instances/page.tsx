@@ -23,7 +23,7 @@ import { InstanceCard, type InstanceCardData } from '@/components/instances/inst
 import { QrDialog } from '@/components/instances/qr-dialog';
 import { NewInstanceDialog } from '@/components/instances/new-instance-dialog';
 import { useSectors } from '@/hooks/use-sectors';
-import { useIsPlSalesOnly } from '@/stores/auth.store';
+import { useAuthStore, useIsPlSalesOnly } from '@/stores/auth.store';
 import {
   Select,
   SelectContent,
@@ -37,6 +37,19 @@ import { Label } from '@/components/ui/label';
 const NO_SECTOR = '__none__';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+interface TeamUser {
+  id: string;
+  nome: string;
+  role: string;
+}
+
+interface OwnerChange {
+  instanceId: string;
+  instanceNome: string;
+  fromNome: string | null;
+  to: TeamUser;
+}
+
 interface QrResponse {
   qrcode?: { base64?: string };
   base64?: string;
@@ -46,6 +59,10 @@ interface QrResponse {
 export default function InstancesPage() {
   const queryClient = useQueryClient();
   const restricted = useIsPlSalesOnly();
+  const actorRole = useAuthStore((s) => s.user?.role);
+  const isManager = !restricted && (actorRole === 'SUPER_ADMIN' || actorRole === 'GERENTE');
+  const [ownerChange, setOwnerChange] = useState<OwnerChange | null>(null);
+  const [transferLeads, setTransferLeads] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [qrTarget, setQrTarget] = useState<string | null>(null);
@@ -76,6 +93,35 @@ export default function InstancesPage() {
       queryClient.invalidateQueries({ queryKey: ['instances'] });
     },
     onError: () => toast.error('Erro ao definir setor'),
+  });
+
+  // Vendedor responsável pelo número: quem recebe o lead novo que chega nele.
+  const { data: teamUsers = [] } = useQuery<TeamUser[]>({
+    queryKey: ['users', 'list'],
+    queryFn: async () => (await api.get('/api/users/list')).data as TeamUser[],
+    enabled: isManager,
+  });
+  const ownerOptions = teamUsers.filter((u) => u.role !== 'VISUALIZADOR');
+
+  const setOwnerMutation = useMutation({
+    mutationFn: async (change: OwnerChange) => {
+      const { data } = await api.patch(`/api/instances/${change.instanceId}/owner`, {
+        owner_user_id: change.to.id,
+        transfer_leads: transferLeads,
+      });
+      return data as { leads_transferidos: number };
+    },
+    onSuccess: (data, change) => {
+      const extra = data.leads_transferidos > 0 ? ` (${data.leads_transferidos} leads transferidos)` : '';
+      toast.success(`${change.instanceNome} agora é de ${change.to.nome}${extra}`);
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      setOwnerChange(null);
+    },
+    onError: (err: unknown) => {
+      const msg = axios.isAxiosError(err) ? (err.response?.data as { message?: string } | undefined)?.message : undefined;
+      toast.error(msg ?? 'Erro ao trocar o responsável');
+    },
   });
 
   const createMutation = useMutation({
@@ -298,6 +344,9 @@ export default function InstancesPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {instances.map((inst) => {
             const sectorId = (inst as { sector_id?: string | null }).sector_id ?? null;
+            const owner = (inst as { owner?: { id: string; nome: string } | null }).owner ?? null;
+            const directToOwner =
+              (inst as { config?: { direct_to_owner?: boolean } | null }).config?.direct_to_owner === true;
             return (
               <div key={inst.id} className="flex flex-col gap-2">
                 <InstanceCard
@@ -308,6 +357,51 @@ export default function InstancesPage() {
                   onDelete={(nome) => setDeleteTarget(nome)}
                   reconnecting={reconnectMutation.isPending && reconnectMutation.variables === inst.nome}
                 />
+                {isManager && owner && ownerOptions.length > 0 && (
+                  <div className="space-y-1.5 rounded-lg border px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground shrink-0">Responsável:</span>
+                    <Select
+                      value={owner.id}
+                      onValueChange={(v) => {
+                        const to = ownerOptions.find((u) => u.id === v);
+                        if (!to || to.id === owner.id) return;
+                        setTransferLeads(true);
+                        setOwnerChange({ instanceId: inst.id, instanceNome: inst.nome, fromNome: owner.nome, to });
+                      }}
+                      disabled={setOwnerMutation.isPending}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder={owner.nome} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {/* Dono atual pode estar inativo/fora da lista: mantém o rótulo. */}
+                        {!ownerOptions.some((u) => u.id === owner.id) && (
+                          <SelectItem value={owner.id}>{owner.nome}</SelectItem>
+                        )}
+                        {ownerOptions.map((u) => (
+                          <SelectItem key={u.id} value={u.id}>{u.nome}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {directToOwner ? (
+                    <p className="text-xs text-emerald-500">Leads novos vão direto para {owner.nome}.</p>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-primary hover:underline"
+                      onClick={() => {
+                        const to = ownerOptions.find((u) => u.id === owner.id) ?? { id: owner.id, nome: owner.nome, role: '' };
+                        setTransferLeads(true);
+                        setOwnerChange({ instanceId: inst.id, instanceNome: inst.nome, fromNome: owner.nome, to });
+                      }}
+                    >
+                      Direcionar leads deste número para {owner.nome}
+                    </button>
+                  )}
+                  </div>
+                )}
                 {!restricted && sectors.length > 0 && (
                   <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
                     <span className="text-xs text-muted-foreground shrink-0">Setor:</span>
@@ -380,6 +474,49 @@ export default function InstancesPage() {
             >
               {deleteMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Excluir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ownerChange !== null} onOpenChange={(v) => !v && setOwnerChange(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Responsável pelo número</DialogTitle>
+            <DialogDescription>
+              Todo lead que chegar em <span className="font-semibold text-foreground">{ownerChange?.instanceNome}</span> vai
+              direto para <span className="font-semibold text-foreground">{ownerChange?.to.nome}</span>, sem passar pelo
+              Escritório. Só ele e a gestão enxergam.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 shrink-0 accent-primary"
+              checked={transferLeads}
+              onChange={(e) => setTransferLeads(e.target.checked)}
+            />
+            <span>
+              <span className="block font-medium">Levar também os leads que já chegaram neste número</span>
+              <span className="block text-xs text-muted-foreground">
+                Os que estão sem responsável
+                {ownerChange && ownerChange.fromNome && ownerChange.fromNome !== ownerChange.to.nome
+                  ? ` ou com ${ownerChange.fromNome}`
+                  : ''}
+                . Leads que outro vendedor assumiu continuam com ele.
+              </span>
+            </span>
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOwnerChange(null)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => ownerChange && setOwnerMutation.mutate(ownerChange)}
+              disabled={setOwnerMutation.isPending}
+            >
+              {setOwnerMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Confirmar
             </Button>
           </DialogFooter>
         </DialogContent>

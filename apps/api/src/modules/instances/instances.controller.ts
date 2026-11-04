@@ -9,6 +9,10 @@ import { UserRole } from '../../common/types/roles';
 import type { AuthUser } from '../../common/types/auth-user';
 
 const setSectorSchema = z.object({ sector_id: z.string().uuid().nullable() });
+const setOwnerSchema = z.object({
+  owner_user_id: z.string().uuid(),
+  transfer_leads: z.boolean().default(false),
+});
 // deep: varre o miolo das conversas (ignora a prova de "chat em dia"). Mais
 // pesado — 1 fetch por chat sempre —, por isso opt-in e com janela limitada.
 // Contrato compartilhado com o endpoint do platform admin.
@@ -96,5 +100,13 @@ export class InstancesController {
   setSector(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
     const { sector_id } = setSectorSchema.parse(body);
     return this.instancesService.setSector(id, sector_id, req.user as AuthUser);
+  }
+
+  // Vendedor responsável pelo número: destino do lead novo no modo Individual.
+  @Patch(':id/owner')
+  @Roles(UserRole.GERENTE)
+  setOwner(@Param('id') id: string, @Body() body: unknown, @Req() req: Record<string, unknown>) {
+    const { owner_user_id, transfer_leads } = setOwnerSchema.parse(body);
+    return this.instancesService.setOwner(id, owner_user_id, transfer_leads, req.user as AuthUser);
   }
 }
