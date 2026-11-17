@@ -34,7 +34,12 @@ if [ -z "${SSH_BIN:-}" ]; then
       ;;
   esac
 fi
-ssh_vps() { "$SSH_BIN" "$VPS" "$@"; }
+# Chave específica opcional (ex.: VPS_SSH_KEY=~/.ssh/claude_vps_crm bash scripts/deploy.sh).
+SSH_OPTS=()
+if [ -n "${VPS_SSH_KEY:-}" ]; then
+  SSH_OPTS=(-i "$VPS_SSH_KEY" -o IdentitiesOnly=yes)
+fi
+ssh_vps() { "$SSH_BIN" "${SSH_OPTS[@]}" "$VPS" "$@"; }
 
 log "=== Deploy CRM WhatsApp → $VPS ==="
 
@@ -53,7 +58,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # 1. Verificar SSH
-if ! "$SSH_BIN" -o ConnectTimeout=8 "$VPS" "echo OK" >/dev/null 2>&1; then
+if ! "$SSH_BIN" "${SSH_OPTS[@]}" -o ConnectTimeout=8 "$VPS" "echo OK" >/dev/null 2>&1; then
   die "Erro: não foi possível conectar ao VPS. Verifique SSH."
 fi
 
@@ -61,16 +66,22 @@ fi
 log "Atualizando repositório na VPS..."
 # O `npm install --omit=dev` do passo 3 reescreve o package-lock.json na VPS, ou
 # seja, todo deploy deixa o working tree sujo e travaria o pull do deploy
-# seguinte. Esse arquivo é descartável lá (é regerado): restauramos. Qualquer
-# outro arquivo sujo é alteração manual que alguém fez direto na VPS — aí o
-# script para, porque descartar sem perguntar poderia apagar um hotfix.
+# seguinte. Esse arquivo é descartável lá (é regerado): restauramos.
+#
+# Outras alterações manuais na VPS (ex.: nginx/nginx.conf ajustado à mão,
+# backups .env.before-*) são preservadas: o pull --ff-only só falha se a release
+# mexe num arquivo alterado lá. Só esse caso para o script — descartar sem
+# perguntar poderia apagar um hotfix. Arquivos fora do git são ignorados.
 ssh_vps "cd $VPS_DIR && git checkout -- package-lock.json 2>/dev/null || true"
-DIRTY=$(ssh_vps "cd $VPS_DIR && git status --porcelain | head -5")
-if [ -n "$DIRTY" ]; then
-  warn "Working tree da VPS tem alteração manual — o pull vai falhar. Arquivos:"
-  echo "$DIRTY"
+ssh_vps "cd $VPS_DIR && git fetch --quiet origin $BRANCH"
+CONFLITO=$(ssh_vps "cd $VPS_DIR && for f in \$(git diff --name-only); do git diff --quiet HEAD origin/$BRANCH -- \"\$f\" || echo \"\$f\"; done")
+if [ -n "$CONFLITO" ]; then
+  warn "A release altera arquivos que foram mudados à mão na VPS — o pull vai falhar:"
+  echo "$CONFLITO"
   die "Resolva na VPS (git checkout -- <arquivo> ou git stash) e rode de novo."
 fi
+MANUAIS=$(ssh_vps "cd $VPS_DIR && git diff --name-only | head -5")
+[ -n "$MANUAIS" ] && warn "Alterações manuais preservadas na VPS: $(echo $MANUAIS)"
 ssh_vps "cd $VPS_DIR && git pull --ff-only origin $BRANCH" | tail -3
 REMOTE_SHA=$(ssh_vps "cd $VPS_DIR && git rev-parse --short HEAD")
 log "VPS em $REMOTE_SHA"
@@ -89,9 +100,13 @@ warn "aplique pelo fluxo do CLAUDE.md ANTES de seguir (script .mjs + migrate res
 log "Buildando imagem crm-backend..."
 ssh_vps "cd $VPS_DIR && docker compose build crm-backend" | tail -2
 
-# 6. Subir containers
-log "Subindo containers..."
-ssh_vps "cd $VPS_DIR && docker compose up -d" | tail -3
+# 6. Subir só o backend. `docker compose up -d` sem serviço tentava criar
+#    também o `nginx` do compose (crm-nginx): em nov/2026 o nome estava ocupado
+#    por um container antigo, o comando abortava no meio e deixava o
+#    crm-backend recriado mas PARADO (produção fora do ar). O tráfego entra pelo
+#    túnel da Cloudflare direto no backend; o deploy só reconstrói o backend.
+log "Subindo crm-backend..."
+ssh_vps "cd $VPS_DIR && docker compose up -d --no-deps crm-backend" | tail -3
 
 # 7. Health com retentativa — o container leva alguns segundos para responder
 log "Verificando health..."
