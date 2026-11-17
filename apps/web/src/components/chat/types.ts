@@ -76,6 +76,27 @@ export interface ChatMessage {
   media_archived?: boolean;
   created_at: string;
   ad_referral?: AdReferral | null;
+  /** Quem enviou — o backend só manda para gerente/admin. */
+  sender?: MessageSender | null;
+}
+
+export interface MessageSender {
+  name: string | null;
+  origin: 'crm' | 'celular' | 'ia' | 'automacao';
+}
+
+/** "Enviada por Yago", "Enviada por Yago pelo celular", "Enviada pela IA"… */
+export function senderLabel(sender: MessageSender): string {
+  switch (sender.origin) {
+    case 'ia':
+      return 'Enviada pela IA';
+    case 'automacao':
+      return 'Envio automático';
+    case 'celular':
+      return sender.name ? `Enviada por ${sender.name} pelo celular` : 'Enviada pelo celular';
+    case 'crm':
+      return sender.name ? `Enviada por ${sender.name}` : 'Enviada pelo CRM';
+  }
 }
 
 export interface ChatStage {

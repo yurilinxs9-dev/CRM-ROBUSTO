@@ -29,6 +29,7 @@ import {
   formatBytes,
   formatTime,
   isOutgoing as isOutgoingDir,
+  senderLabel,
 } from './types';
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
@@ -391,6 +392,11 @@ function MessageBubbleComponent({
             outgoing ? 'justify-end' : 'justify-start',
           )}
         >
+          {outgoing && message.sender && (
+            <span className="mr-1 truncate italic" title={senderLabel(message.sender)}>
+              {senderLabel(message.sender)} ·
+            </span>
+          )}
           <span>{formatTime(message.created_at)}</span>
           {outgoing && <StatusIcon status={message.status} />}
         </div>

@@ -33,7 +33,9 @@ import {
   withCondition,
 } from './lead-filters';
 import { buildSortOrder } from './lead-sort';
-import { buildMessageScope, isSupervising } from './lead-message-scope';
+import { buildMessageScope, isManagerRoleName, isSupervising } from './lead-message-scope';
+import { resolveMessageSender } from './message-sender';
+import type { MessageSenderLookup } from './message-sender';
 import type { MessageScopeLead } from './lead-message-scope';
 import { CustomFieldsService } from './custom-fields.service';
 import type { AuthUser } from '../../common/types/auth-user';
@@ -2317,6 +2319,11 @@ export class LeadsService {
     });
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
+    // Legenda "Enviada por …": só gerente/admin recebe o campo — o vendedor
+    // não vê quem do time escreveu em cada mensagem.
+    const senderLookup = isManagerRoleName(user.role)
+      ? await this.messageSenderLookup(sliced, user.tenantId)
+      : null;
     // É ESTE endpoint que o chat consome (`/api/leads/:id/messages`), não o
     // `MessagesService.getHistory`. O card do anúncio precisa sair daqui —
     // senão ele aparece pelo WebSocket na mensagem que chega ao vivo e some no
@@ -2328,11 +2335,37 @@ export class LeadsService {
         ...m,
         media_url: await this.resolveMediaUrl(m.media_url),
         ad_referral: extractAdReferral(metadata),
+        ...(senderLookup ? { sender: resolveMessageSender(m, senderLookup) } : {}),
       })),
     );
     return {
       messages,
       nextCursor: hasMore ? messages[messages.length - 1].id : undefined,
+    };
+  }
+
+  /** Nomes de quem enviou (CRM) e dos donos dos números (celular) da página. */
+  private async messageSenderLookup(
+    rows: Array<{ direction: string; sent_by_user_id: string | null; instance_name: string }>,
+    tenantId: string,
+  ): Promise<MessageSenderLookup> {
+    const outgoing = rows.filter((r) => r.direction === 'OUTGOING');
+    const userIds = [...new Set(outgoing.map((r) => r.sent_by_user_id).filter((id): id is string => !!id))];
+    const instanceNames = [...new Set(outgoing.map((r) => r.instance_name))];
+    const [users, instances] = await Promise.all([
+      userIds.length
+        ? this.prisma.user.findMany({ where: { id: { in: userIds }, tenant_id: tenantId }, select: { id: true, nome: true } })
+        : [],
+      instanceNames.length
+        ? this.prisma.whatsappInstance.findMany({
+            where: { nome: { in: instanceNames }, tenant_id: tenantId },
+            select: { nome: true, owner: { select: { nome: true } } },
+          })
+        : [],
+    ]);
+    return {
+      userNames: new Map(users.map((u) => [u.id, u.nome])),
+      instanceOwnerNames: new Map(instances.map((i) => [i.nome, i.owner.nome])),
     };
   }
 
