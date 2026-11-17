@@ -1,0 +1,1561 @@
+{
+  "name": "Ferbraço — Pré-atendimento com IA",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ferbraco-pre-atendimento",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "id": "1073717c-588c-4aff-8f3f-9cf1b7b142bc",
+      "name": "Webhook CRM",
+      "webhookId": "d93e231e-7e23-4ae0-9b90-878561309185"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ======= CONFIGURAÇÃO DO PRÉ-ATENDIMENTO FERBRAÇO (edite aqui) =======\nconst CFG = {\n  crmApi: 'https://api.crmpro.uk/api/v1',\n  // Servidor Evolution (mesmo EVOLUTION_BASE_URL do backend do CRM), sem barra no fim.\n  evolutionUrl: 'https://TROCAR-URL-DA-EVOLUTION',\n  instanciaPrincipal: 'thiago-henrique-gestor-comercial',\n  // Dono do número principal: lead novo chega nele com este responsável.\n  thiagoId: 'a791b088-c14b-4f46-b793-f61126ec36d2',\n  setores: {\n    balcao: '2b7949a6-d4c5-4ddf-a827-8183c29a389f', // vendas balcao ferbraco (rodízio)\n    pompeu: '07c6f18a-eb7f-4816-bf47-b7500491c8fd', // regiao pompeu e abaete\n    sul: 'ab90ed27-bd1d-40b8-9f55-9b13a4faaf55',    // regiao sul de minas\n  },\n  // WhatsApp de cada vendedor (DDI+DDD+número, só dígitos) para o aviso.\n  // Vazio = não avisa aquele vendedor pelo WhatsApp (o CRM avisa no app).\n  vendedores: {\n    '0a02bfee-6367-445f-903d-d7bff820fb0a': { nome: 'Yago', whatsapp: '' },\n    'c6cf6fcd-4ca3-49d2-9d0a-a02fc506e140': { nome: 'Bruno', whatsapp: '' },\n    '3b9961c9-4cb1-4f6b-addf-1b2cbadf8f6b': { nome: 'Giordane', whatsapp: '' },\n    'e5a9b008-fb95-44e6-8d60-1517808bd916': { nome: 'Leo', whatsapp: '' },\n    '06360642-cc21-436b-8177-8a24457cd8e0': { nome: 'Marcio', whatsapp: '' },\n    '4ca64ae8-f39b-4013-a8bf-d988011a0651': { nome: 'Pedro', whatsapp: '' },\n    '69deb20e-7e1e-4393-9c46-bf9f9e46b75d': { nome: 'Fabio', whatsapp: '' },\n    '42bcf9f1-a245-46f2-a27f-5462db228782': { nome: 'Adriano', whatsapp: '' },\n  },\n  // Lead que já existia há mais que isso quando escreveu = cliente antigo do\n  // Thiago, não passa pela triagem.\n  leadNovoMinutos: 15,\n  boasVindas: [\n    '👋 Olá! Seja bem-vindo(a) à *FERBRAÇO!* 💚🤍',\n    '',\n    '🏗️ A casa do construtor e do amigo serralheiro!',\n    '',\n    'Obrigado por entrar em contato conosco! Será um prazer ajudar você a encontrar os materiais ideais para sua obra ou projeto.',\n    '',\n    'Para agilizar seu atendimento, me informe, por gentileza:',\n    '',\n    '👤 *Qual é o seu nome?*',\n    '📍 *De qual cidade você está falando?*',\n    '📋 *Quais materiais você precisa?*',\n    '',\n    'Pode enviar sua lista de materiais por texto ou foto, que nossa equipe vai preparar seu atendimento com toda atenção!',\n    '',\n    '🚀 Estamos prontos para ajudar você a tirar seu projeto do papel!',\n    '',\n    '*FERBRAÇO — Qualidade, confiança e parceria com você!* 💚🤍',\n  ].join('\\n'),\n  perguntaCidade: 'Para eu te direcionar ao vendedor certo, me conta: *de qual cidade você está falando?* 📍',\n  direcionando: 'Obrigado! ✅ Em breve você será atendido por um de nossos vendedores. 💚',\n};\n// ======================================================================\n\nconst body = $json.body ?? {};\nconst data = body.data ?? {};\nconst msg = data.message ?? {};\nconst contato = data.contact ?? {};\nreturn [{\n  json: {\n    cfg: CFG,\n    evento: body.event_type ?? '',\n    leadId: contato.id ?? '',\n    telefone: String(contato.phone ?? '').replace(/\\D/g, ''),\n    nomeContato: contato.name ?? '',\n    direcao: msg.direction ?? '',\n    tipo: String(msg.type ?? '').toUpperCase(),\n    texto: (msg.text ?? '').trim(),\n    midia: msg.media?.url ?? null,\n    responsavel: data.metadata?.assigned_user ?? null,\n    agora: String(Date.now()),\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "id": "0906b686-68b0-4ff1-81c0-27a2a73bd26c",
+      "name": "Dados da mensagem"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c04e188a-98fa-4cd3-b844-918fb22fbbba",
+                    "leftValue": "={{ $json.direcao }}",
+                    "rightValue": "inbound",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cliente"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7fc8554a-048e-4511-a83c-fff0fd3b2b5f",
+                    "leftValue": "={{ $json.direcao }}",
+                    "rightValue": "outbound",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Atendente"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        440,
+        300
+      ],
+      "id": "7db359eb-a5bc-4996-9f38-a085cf8e4a37",
+      "name": "Entrada ou saída?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5c914542-ed94-42e5-a168-00f93d3f04a5",
+              "leftValue": "={{ $json.responsavel === $('Dados da mensagem').first().json.cfg.thiagoId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "887e2779-ce7a-4b56-bb45-7c369a7c3597",
+              "leftValue": "={{ [$('Dados da mensagem').first().json.cfg.boasVindas, $('Dados da mensagem').first().json.cfg.perguntaCidade, $('Dados da mensagem').first().json.cfg.direcionando].includes($json.texto) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        480
+      ],
+      "id": "a577ede3-337d-4b16-97d8-64534d296e6a",
+      "name": "Atendente humano?"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=ferbraco_pa_block_{{ $('Dados da mensagem').first().json.telefone }}",
+        "value": "humano",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 259200
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        880,
+        480
+      ],
+      "id": "0845cb01-a355-4d1f-bf00-09f1dffdc18a",
+      "name": "Trava (humano assumiu)",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "151d8876-2b97-42a5-928a-be45cf5d1483",
+              "leftValue": "={{ $json.evento === 'message.created' && !!$json.leadId && !!$json.telefone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "98e36848-92e6-451d-9ce1-aeac04eedf41",
+              "leftValue": "={{ !$json.responsavel || $json.responsavel === $json.cfg.thiagoId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "93ca1bea-d64c-45da-a9b1-f0f7a180d5e8",
+              "leftValue": "={{ $json.tipo === 'TEXT' || !!$json.midia }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        200
+      ],
+      "id": "0ec28113-44a0-4396-aaf8-d2c2c260b3f2",
+      "name": "Cliente sem vendedor?"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "block",
+        "key": "=ferbraco_pa_block_{{ $('Dados da mensagem').first().json.telefone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        880,
+        200
+      ],
+      "id": "adba23bc-4a1e-482a-9935-41e96e2295f1",
+      "name": "Busca trava",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/users/{{ $('Dados da mensagem').first().json.leadId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        200
+      ],
+      "id": "f4c917a8-027d-45c8-abd0-b50f58b8e008",
+      "name": "Busca lead no CRM",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "bv",
+        "key": "=ferbraco_pa_bv_{{ $('Dados da mensagem').first().json.telefone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        200
+      ],
+      "id": "67340d5b-b010-45d2-a13c-5d0b77f69bf5",
+      "name": "Busca etapa",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6829d424-401f-4b73-9933-2ef60e6cd085",
+              "leftValue": "={{ !$json.block }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        990,
+        60
+      ],
+      "id": "63146b59-6573-474e-a746-7c9c2cd3f13e",
+      "name": "Sem trava?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "63bcf269-6b35-4cda-afe8-8e8c0fac542b",
+              "leftValue": "={{ !!$json.bv }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "6aa02338-e95a-4982-abd3-41e520d7bbed",
+              "leftValue": "={{ (Date.now() - new Date($('Busca lead no CRM').first().json.created_at).getTime()) < $('Dados da mensagem').first().json.cfg.leadNovoMinutos * 60000 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        200
+      ],
+      "id": "c5e18c6a-9178-4469-b401-c612f07a1859",
+      "name": "Entra na triagem?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4b8e75ae-37e2-41ec-963e-88019012f89f",
+              "leftValue": "={{ $('Dados da mensagem').first().json.tipo === 'AUDIO' && !!$('Dados da mensagem').first().json.midia }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        200
+      ],
+      "id": "be80c565-40b9-4eee-b274-584911bc234d",
+      "name": "É áudio?"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Dados da mensagem').first().json.midia }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        340
+      ],
+      "id": "6c884107-68d5-402d-9374-f6a0d5a38403",
+      "name": "Baixa áudio"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "language",
+              "value": "pt"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        340
+      ],
+      "id": "24b58af1-99f1-4bf7-b8c4-f4e1053bb4cc",
+      "name": "Transcreve áudio",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "Groq (transcrição)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Dados da mensagem').first().json;\nlet texto = d.texto;\nif ($('Transcreve áudio').isExecuted) texto = String($('Transcreve áudio').first().json.text ?? '').trim();\nif (!texto) {\n  const rotulos = { IMAGE: '[enviou uma foto]', DOCUMENT: '[enviou um documento]', AUDIO: '[enviou um áudio]', VIDEO: '[enviou um vídeo]' };\n  texto = rotulos[d.tipo] ?? '[mensagem sem texto]';\n}\nreturn [{ json: { texto } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        200
+      ],
+      "id": "db8aa339-0eab-47db-a99b-69e7478533b9",
+      "name": "Texto do cliente"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "=ferbraco_pa_msgs_{{ $('Dados da mensagem').first().json.telefone }}",
+        "messageData": "={{ $json.texto }}",
+        "tail": true
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        200
+      ],
+      "id": "cd3f8df6-f210-42e4-81fd-20e0f869c5b0",
+      "name": "Guarda mensagem",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "incr",
+        "key": "=ferbraco_pa_bv_{{ $('Dados da mensagem').first().json.telefone }}",
+        "expire": true,
+        "ttl": 172800
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2860,
+        200
+      ],
+      "id": "6e2444f2-e512-4d15-a3ef-d8e25ca5506f",
+      "name": "Conta mensagem",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0560f2c0-af39-47fd-be5f-2d8c73ff8270",
+              "leftValue": "={{ Number(Object.values($json)[0]) === 1 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        200
+      ],
+      "id": "ce869ae8-5ff9-4e13-b02e-78f9639e1762",
+      "name": "Primeira mensagem?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/users/{{ $('Dados da mensagem').first().json.leadId }}/conversations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: 'whatsapp', type: 'text', message: $('Dados da mensagem').first().json.cfg.boasVindas }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3300,
+        60
+      ],
+      "id": "9f2a16c4-9f9e-493d-879d-74b84850a2a9",
+      "name": "Envia boas-vindas",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=ferbraco_pa_ultima_{{ $('Dados da mensagem').first().json.telefone }}",
+        "value": "={{ $('Dados da mensagem').first().json.agora }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 600
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3300,
+        300
+      ],
+      "id": "9e5900e5-c175-4b98-a473-180285698dce",
+      "name": "Marca última",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 40
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3520,
+        300
+      ],
+      "id": "f5bc66a4-d280-4ee5-8603-b889f81d2ae9",
+      "name": "Espera 40s",
+      "webhookId": "4d505e5f-9a3f-4823-95be-505cc241c001"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "ultima",
+        "key": "=ferbraco_pa_ultima_{{ $('Dados da mensagem').first().json.telefone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3740,
+        300
+      ],
+      "id": "23d96a86-521a-470f-8084-54b1161fe27f",
+      "name": "Lê última",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2edd3c12-5923-4b8d-8db8-39fc7454562e",
+              "leftValue": "={{ String($json.ultima) === String($('Dados da mensagem').first().json.agora) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3960,
+        300
+      ],
+      "id": "59428c0a-b920-4ea1-a8db-55e59d69eeb7",
+      "name": "É a última?"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "mensagens",
+        "key": "=ferbraco_pa_msgs_{{ $('Dados da mensagem').first().json.telefone }}",
+        "keyType": "list",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4180,
+        300
+      ],
+      "id": "e5ca9e39-6c3c-41c2-b7c4-ef7ed86ad1c4",
+      "name": "Lê conversa",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "block",
+        "key": "=ferbraco_pa_block_{{ $('Dados da mensagem').first().json.telefone }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        4070,
+        160
+      ],
+      "id": "c813c8f5-8584-49d2-82a5-4a9044127d37",
+      "name": "Confere trava de novo",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1b518a44-284d-473b-973a-e26bc6f1c1d6",
+              "leftValue": "={{ !$json.block }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4180,
+        160
+      ],
+      "id": "4c509b4b-1a9a-4f12-ad38-cc86bcb3f578",
+      "name": "Ainda sem trava?"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Você faz a triagem do pré-atendimento da FERBRAÇO (materiais de construção e serralheria, Minas Gerais) no WhatsApp.\nLeia as mensagens do cliente e extraia o nome, a cidade e os materiais que ele precisa. Depois decida para qual região de vendas ele vai, pela cidade.\n\nRegiões de vendas:\n- POMPEU: região de Pompéu e Abaeté (as duas cidades e as vizinhas da mesma microrregião)\n- SUL: região do Sul de Minas\n- BALCAO: qualquer outra cidade\n\nRegras:\n- Use seu conhecimento da geografia de Minas Gerais.\n- Se o cliente disse a cidade mas ela não é de POMPEU nem do SUL, use \"BALCAO\".\n- Se o cliente ainda não disse a cidade, use \"cidade\": null e \"regiao\": null. Não invente.\n- Responda SOMENTE com um JSON, sem texto em volta, neste formato:\n{\"nome\": string|null, \"cidade\": string|null, \"materiais\": string|null, \"regiao\": \"POMPEU\"|\"SUL\"|\"BALCAO\"|null}\n\nMensagens do cliente:\n{{ ([].concat($json.mensagens || [])).map((m, i) => (i + 1) + '. ' + m).join('\\n') }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        4400,
+        300
+      ],
+      "id": "5dffde95-6e28-4e55-8308-ff54be58716a",
+      "name": "IA triagem"
+    },
+    {
+      "parameters": {
+        "model": "deepseek-chat",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        4400,
+        520
+      ],
+      "id": "2e573d6d-68ad-4120-aefb-2b951b7505d8",
+      "name": "DeepSeek",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "TROCAR",
+          "name": "DeepSeek"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Dados da mensagem').first().json.cfg;\nconst bruto = String($json.text ?? '');\nlet r = {};\ntry { r = JSON.parse(bruto.slice(bruto.indexOf('{'), bruto.lastIndexOf('}') + 1)); } catch (e) { r = {}; }\nconst limpa = (v) => (typeof v === 'string' && v.trim() && !/^(null|-|n\\/a)$/i.test(v.trim()) ? v.trim().slice(0, 300) : null);\nconst nome = limpa(r.nome), cidade = limpa(r.cidade), materiais = limpa(r.materiais);\nconst regiao = String(r.regiao ?? '').toUpperCase();\nlet setor = null;\nif (regiao === 'POMPEU') setor = cfg.setores.pompeu;\nelse if (regiao === 'SUL') setor = cfg.setores.sul;\nelse if (regiao === 'BALCAO' || cidade) setor = cfg.setores.balcao;\nreturn [{ json: { nome, cidade, materiais, setor } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4620,
+        300
+      ],
+      "id": "01005742-3bf2-41ca-8d71-dedcd661616e",
+      "name": "Lê decisão"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "af001922-b57c-4b8f-8fdc-0181c88b7ad7",
+              "leftValue": "={{ !!$json.setor }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4840,
+        300
+      ],
+      "id": "0792f80b-94bb-4cce-8c6a-5807303877d5",
+      "name": "Achou a cidade?"
+    },
+    {
+      "parameters": {
+        "operation": "incr",
+        "key": "=ferbraco_pa_perg_{{ $('Dados da mensagem').first().json.telefone }}",
+        "expire": true,
+        "ttl": 172800
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        5060,
+        460
+      ],
+      "id": "772528f7-38fb-47b3-adce-7dcd658561b8",
+      "name": "Conta pergunta",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c6436413-acf4-47e0-ae87-8e91819571a9",
+              "leftValue": "={{ Number(Object.values($json)[0]) > 1 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5280,
+        460
+      ],
+      "id": "9a984ecd-1a21-4fd1-b07c-c9579b6f09c0",
+      "name": "Já perguntou?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/users/{{ $('Dados da mensagem').first().json.leadId }}/conversations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: 'whatsapp', type: 'text', message: $('Dados da mensagem').first().json.cfg.perguntaCidade }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5500,
+        600
+      ],
+      "id": "a56a6e97-a16f-4759-9b66-ec10838a07f6",
+      "name": "Pergunta a cidade",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Dados da mensagem').first().json.cfg;\nconst decisao = $('Lê decisão').first().json;\nreturn [{ json: { ...decisao, setor: decisao.setor || cfg.setores.balcao } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5500,
+        300
+      ],
+      "id": "7587f0d2-753b-406a-be93-7b8f3e1a873d",
+      "name": "Monta direcionamento"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/users/{{ $('Dados da mensagem').first().json.leadId }}/conversations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: 'whatsapp', type: 'text', message: $('Dados da mensagem').first().json.cfg.direcionando }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5720,
+        300
+      ],
+      "id": "99113a64-fd97-4f12-9dfd-d3e7da22c715",
+      "name": "Avisa o cliente",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/conversations/{{ $('Dados da mensagem').first().json.leadId }}/sector",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ sector_id: $('Monta direcionamento').first().json.setor }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5940,
+        300
+      ],
+      "id": "f2ffc2f3-0f62-4774-ae83-9fdead6cb6f8",
+      "name": "Move para o setor (rodízio)",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.crmApi }}/users/{{ $('Dados da mensagem').first().json.leadId }}/activities",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tipo: 'pre_atendimento', descricao: 'Pré-atendimento IA: ' + ($('Monta direcionamento').first().json.nome || '-') + ' | ' + ($('Monta direcionamento').first().json.cidade || 'cidade não informada') + ' | ' + ($('Monta direcionamento').first().json.materiais || '-') }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6160,
+        300
+      ],
+      "id": "a881b585-cc34-4499-8a96-0902ed225361",
+      "name": "Anota no lead",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "CRM Ferbraço (API key)"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=ferbraco_pa_block_{{ $('Dados da mensagem').first().json.telefone }}",
+        "value": "direcionado",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 259200
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        6380,
+        300
+      ],
+      "id": "becae16c-8178-477f-b024-db78bb1898fb",
+      "name": "Trava (direcionado)",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "key": "=ferbraco_pa_msgs_{{ $('Dados da mensagem').first().json.telefone }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        6600,
+        300
+      ],
+      "id": "07e1466d-df34-4bd1-8e66-b51197d8a189",
+      "name": "Limpa mensagens",
+      "credentials": {
+        "redis": {
+          "id": "TROCAR",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Dados da mensagem').first().json;\nconst decisao = $('Monta direcionamento').first().json;\nconst resp = $('Move para o setor (rodízio)').first().json.responsavel_id;\nconst vendedor = d.cfg.vendedores[resp];\nif (!vendedor || !vendedor.whatsapp) return [];\nconst texto = [\n  '🎯 *Novo cliente para você* (pré-atendimento)',\n  '',\n  '👤 *Nome:* ' + (decisao.nome || d.nomeContato || '-'),\n  '📍 *Cidade:* ' + (decisao.cidade || 'não informada'),\n  '📋 *Precisa de:* ' + (decisao.materiais || 'não informado'),\n  '📱 *WhatsApp:* https://wa.me/' + d.telefone,\n  '',\n  'Ele já está no seu CRM. Chame o cliente pelo seu número. 💚',\n].join('\\n');\nreturn [{ json: { numero: vendedor.whatsapp.replace(/\\D/g, ''), texto } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6820,
+        300
+      ],
+      "id": "dbaf55a4-eea6-4cea-b494-47aef63a0429",
+      "name": "Monta aviso ao vendedor"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Dados da mensagem').first().json.cfg.evolutionUrl }}/message/sendText/{{ $('Dados da mensagem').first().json.cfg.instanciaPrincipal }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7040,
+        300
+      ],
+      "id": "a30a387e-513f-4201-8946-3c1b0d9b1628",
+      "name": "Avisa o vendedor (WhatsApp)",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TROCAR",
+          "name": "Evolution Ferbraço (número principal)"
+        }
+      },
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "## Pré-atendimento Ferbraço\nCRM (webhook message.created) → boas-vindas → IA lê nome/cidade/materiais → setor (rodízio do CRM) → aviso ao cliente e ao vendedor.\n\nEdite tudo no nó **Dados da mensagem** (URLs, setores, WhatsApp dos vendedores, textos).",
+        "height": 260,
+        "width": 520,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -40
+      ],
+      "id": "490e4959-7253-4bb5-aeec-a5dfb2abbaea",
+      "name": "Nota"
+    }
+  ],
+  "connections": {
+    "Webhook CRM": {
+      "main": [
+        [
+          {
+            "node": "Dados da mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dados da mensagem": {
+      "main": [
+        [
+          {
+            "node": "Entrada ou saída?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entrada ou saída?": {
+      "main": [
+        [
+          {
+            "node": "Cliente sem vendedor?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Atendente humano?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atendente humano?": {
+      "main": [
+        [
+          {
+            "node": "Trava (humano assumiu)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cliente sem vendedor?": {
+      "main": [
+        [
+          {
+            "node": "Busca trava",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca trava": {
+      "main": [
+        [
+          {
+            "node": "Sem trava?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sem trava?": {
+      "main": [
+        [
+          {
+            "node": "Busca lead no CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca lead no CRM": {
+      "main": [
+        [
+          {
+            "node": "Busca etapa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca etapa": {
+      "main": [
+        [
+          {
+            "node": "Entra na triagem?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entra na triagem?": {
+      "main": [
+        [
+          {
+            "node": "É áudio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É áudio?": {
+      "main": [
+        [
+          {
+            "node": "Baixa áudio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Texto do cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixa áudio": {
+      "main": [
+        [
+          {
+            "node": "Transcreve áudio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcreve áudio": {
+      "main": [
+        [
+          {
+            "node": "Texto do cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Texto do cliente": {
+      "main": [
+        [
+          {
+            "node": "Guarda mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guarda mensagem": {
+      "main": [
+        [
+          {
+            "node": "Conta mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conta mensagem": {
+      "main": [
+        [
+          {
+            "node": "Primeira mensagem?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Primeira mensagem?": {
+      "main": [
+        [
+          {
+            "node": "Envia boas-vindas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Marca última",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marca última": {
+      "main": [
+        [
+          {
+            "node": "Espera 40s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Espera 40s": {
+      "main": [
+        [
+          {
+            "node": "Lê última",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lê última": {
+      "main": [
+        [
+          {
+            "node": "É a última?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É a última?": {
+      "main": [
+        [
+          {
+            "node": "Confere trava de novo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confere trava de novo": {
+      "main": [
+        [
+          {
+            "node": "Ainda sem trava?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ainda sem trava?": {
+      "main": [
+        [
+          {
+            "node": "Lê conversa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lê conversa": {
+      "main": [
+        [
+          {
+            "node": "IA triagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "IA triagem",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IA triagem": {
+      "main": [
+        [
+          {
+            "node": "Lê decisão",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lê decisão": {
+      "main": [
+        [
+          {
+            "node": "Achou a cidade?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Achou a cidade?": {
+      "main": [
+        [
+          {
+            "node": "Monta direcionamento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Conta pergunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conta pergunta": {
+      "main": [
+        [
+          {
+            "node": "Já perguntou?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Já perguntou?": {
+      "main": [
+        [
+          {
+            "node": "Monta direcionamento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pergunta a cidade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monta direcionamento": {
+      "main": [
+        [
+          {
+            "node": "Avisa o cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisa o cliente": {
+      "main": [
+        [
+          {
+            "node": "Move para o setor (rodízio)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move para o setor (rodízio)": {
+      "main": [
+        [
+          {
+            "node": "Anota no lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anota no lead": {
+      "main": [
+        [
+          {
+            "node": "Trava (direcionado)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trava (direcionado)": {
+      "main": [
+        [
+          {
+            "node": "Limpa mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpa mensagens": {
+      "main": [
+        [
+          {
+            "node": "Monta aviso ao vendedor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monta aviso ao vendedor": {
+      "main": [
+        [
+          {
+            "node": "Avisa o vendedor (WhatsApp)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
